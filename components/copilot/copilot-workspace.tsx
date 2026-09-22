@@ -82,7 +82,7 @@ import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { PLAN_TTL_MS } from "@/lib/copilot/plan-ttl";
 import { claimDispatch, releaseDispatch } from "@/lib/copilot/dispatch-once";
 import { lpSides } from "@/lib/copilot/lp-pair";
-import { AssistantMessage, UserBubble, ChatTurns, chatProseFromStored } from "./chat-message";
+import { AssistantMessage, UserBubble, ChatTurns } from "./chat-message";
 import { ExecutionStepper } from "./execution-stepper";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
@@ -234,62 +234,69 @@ interface ChatResponse {
 }
 
 /**
- * Suggested next prompt — a shortcut, not a claim about the answer. Keyed by the
- * `template_id` reads come back with, which is the MCP tool name.
- */
-const FOLLOW_UP: Record<string, string> = {
-  vanna_get_price: "USDC pool stats",
-  vanna_get_prices_batch: "USDC pool stats",
-  vanna_get_pool_stats: "Lend 5 USDC",
-  vanna_get_blend_reserve_stats: "Lend 5 USDC",
-  vanna_get_account_health: "Can I borrow 20 USDC?",
-  // No canned "Repay N USDC" here on purpose. "How much do I owe?" (no asset named,
-  // several different borrowed assets) suggested "Repay 2 USDC" — a placeholder with no
-  // relation to the real total just shown above it, since a multi-asset debt has no
-  // single figure to repay. `followUpFor` below already builds an accurate "Repay X
-  // SYMBOL" whenever the question narrowed to exactly one asset; a canned fallback here
-  // would only ever fire for the multi-asset case this same placeholder used to mislead.
-  vanna_get_collateral: "What's my health factor?",
-  vanna_can_borrow: "Borrow 2 USDC",
-  vanna_get_max_borrow: "Borrow 2 USDC",
-  vanna_get_wallet_balance: "Deposit 5 XLM as collateral",
-  // DOM-grounded page assist — optional bridge to live account data
-  page_assist: "What is my health factor?",
-};
-
-/**
- * The follow-up must offer what the user actually asked about.
+ * Derive an actionable follow-up prompt dynamically from the rendered answer and intent.
  *
- * The map above is a set of canned examples, so "Can I borrow 20 USDC?" — answered yes —
- * offered "Borrow 2 USDC". Nothing was truncating the 20; the suggestion simply never looked
- * at the question, and 2 is what the example happened to say. Answering a question about 20
- * and then proposing 2 reads as though the check came back with a smaller number.
- *
- * The router already resolves the amount and asset into `intent.slots`, so the verb comes
- * from the template and the quantity comes from what was asked. Anything without both slots
- * keeps its canned example, which is still the right prompt for a read that named no amount.
+ * Rules:
+ * 1. Zero hardcoded maps (no canned sentences, no invented amounts).
+ * 2. Never suggest a write after a pure read (e.g. wallet balance or price).
+ * 3. Never invent magic amounts (e.g. "Deposit 5 XLM" or "Borrow 2 USDC").
+ * 4. Only suggest an action when grounded in the live figures of the answer or
+ *    the verified amount/asset from an actionable capacity check.
+ * 5. If no valid, grounded next step exists, return undefined (show none).
  */
-const AMOUNT_VERB: Record<string, string> = {
-  vanna_can_borrow: "Borrow",
-  vanna_get_max_borrow: "Borrow",
-  vanna_get_debt: "Repay",
-  vanna_get_pool_stats: "Lend",
-  vanna_get_blend_reserve_stats: "Lend",
-};
-
-function followUpFor(
-  intent: { template_id?: string | null; slots?: Record<string, unknown> } | null | undefined,
+export function followUpFor(
+  answer?: StructuredAnswer | null,
+  intent?: { template_id?: string | null; slots?: Record<string, unknown> } | null,
 ): string | undefined {
-  const templateId = intent?.template_id;
-  if (!templateId) return undefined;
-  const verb = AMOUNT_VERB[templateId];
+  if (!intent && !answer) return undefined;
+
   const slots = (intent?.slots ?? {}) as Record<string, unknown>;
-  const amount = slots.amount;
-  const symbol = slots.symbol ?? slots.asset;
-  if (verb && amount != null && amount !== "" && typeof symbol === "string" && symbol) {
-    return `${verb} ${amount} ${symbol}`;
+  const templateId = intent?.template_id ?? "";
+
+  // If the user performed an actionable capacity check (e.g. "Can I borrow 20 XLM?"),
+  // the amount and asset come directly from their query, never invented.
+  if (templateId === "query_can_borrow" || templateId === "vanna_can_borrow") {
+    const amount = slots.amount;
+    const symbol = slots.symbol ?? slots.asset;
+    if (amount != null && amount !== "" && typeof symbol === "string" && symbol) {
+      return `Borrow ${amount} ${symbol}`;
+    }
   }
-  return FOLLOW_UP[templateId];
+
+  // If checking debt for a single asset with a live debt figure from the answer:
+  if (templateId === "query_debt" || templateId === "vanna_get_debt") {
+    const symbol = slots.symbol ?? slots.asset;
+    if (typeof symbol === "string" && symbol && answer?.facts) {
+      const debtFact = answer.facts.find((f) =>
+        /\b(?:debt|borrowed)\b/i.test(f.label),
+      );
+      if (debtFact) {
+        const num = parseFloat(debtFact.value.replace(/,/g, ""));
+        if (Number.isFinite(num) && num > 0) {
+          return `Repay ${debtFact.value} ${symbol}`;
+        }
+      }
+    }
+  }
+
+  // If checking max borrow for a single asset with a live max borrow figure:
+  if (templateId === "query_max_borrow" || templateId === "vanna_get_max_borrow") {
+    const symbol = slots.symbol ?? slots.asset;
+    if (typeof symbol === "string" && symbol && answer?.facts) {
+      const maxFact = answer.facts.find((f) =>
+        /\b(?:max|headroom|available)\b/i.test(f.label),
+      );
+      if (maxFact) {
+        const num = parseFloat(maxFact.value.replace(/,/g, ""));
+        if (Number.isFinite(num) && num > 0) {
+          return `Borrow ${maxFact.value} ${symbol}`;
+        }
+      }
+    }
+  }
+
+  // Otherwise, no canned or invented follow-up
+  return undefined;
 }
 
 // The surface's four status colours, as tokens rather than literals — read by ~60
@@ -5319,7 +5326,7 @@ export function CopilotWorkspace() {
   const reasons = response?.preview?.risk?.reasons ?? [];
   const decision = response?.preview?.risk?.decision;
   const action = response?.preview?.action;
-  const followUp = followUpFor(response?.intent);
+  const followUp = followUpFor(response?.answer, response?.intent);
   /** Same conditions the auto-submit effect uses, so the notice can't disagree with it. */
   // Multi-leg: every hop with XDR auto-submits when session signing is on — including
   // responses that older servers labeled needs_auto_sign.
@@ -5359,6 +5366,16 @@ export function CopilotWorkspace() {
   const lastUserTurn = [...investigation.turns].reverse().find((turn) => turn.role === "user")?.text ?? null;
   const pendingUser = submitted && submitted !== lastUserTurn ? submitted : null;
   const submittedRecorded = !!submitted && investigation.turns.some((turn) => turn.role === "user" && turn.text === submitted);
+  const isStaleInvestigation = Boolean(
+    investigation.result &&
+    !investigation.loading &&
+    !workflow.view &&
+    !workflow.loading &&
+    !signingJournal &&
+    lastUserTurn &&
+    investigation.prompt &&
+    lastUserTurn !== investigation.prompt
+  );
   const liveWriteUi =
     multiLeg ||
     phase === "plan" ||
@@ -5498,7 +5515,7 @@ export function CopilotWorkspace() {
                 </div>
               </div>
             ) : null}
-            {(investigation.loading || investigation.result || investigation.error || workflow.view || workflow.loading || signingJournal) && (
+            {(!isStaleInvestigation && (investigation.loading || investigation.result || investigation.error || workflow.view || workflow.loading || signingJournal)) && (
               <InvestigationCard
                 {...investigation}
                 omitTranscript
@@ -5617,10 +5634,10 @@ export function CopilotWorkspace() {
                       )}
                       {multiLeg ? (
                         <>
-                          {response?.answer && (
+                          {response && (
                             <div className="mt-4">
-                              <AssistantMessage note={response.answer.note}>
-                                {response.answer.headline}
+                              <AssistantMessage note={response.answer?.note}>
+                                {response.message}
                               </AssistantMessage>
                             </div>
                           )}
@@ -5632,19 +5649,12 @@ export function CopilotWorkspace() {
                       ) : response && !liveAssistant ? (
                         <div className="min-w-0">
                           {investigation.turns.length === 0 ? (
-                            isError ? (
-                              <AssistantMessage tone="error">
-                                {chatProseFromStored(response.message)}
-                              </AssistantMessage>
-                            ) : response.answer ? (
-                              <AssistantMessage note={response.answer.note}>
-                                {response.answer.headline}
-                              </AssistantMessage>
-                            ) : (
-                              <AssistantMessage>
-                                {chatProseFromStored(response.message)}
-                              </AssistantMessage>
-                            )
+                            <AssistantMessage
+                              tone={isError ? "error" : "default"}
+                              note={response.answer?.note}
+                            >
+                              {response.message}
+                            </AssistantMessage>
                           ) : null}
                           {sim && !multiLeg && marginProjected && <ImpactPanel sim={sim} />}
                         </div>

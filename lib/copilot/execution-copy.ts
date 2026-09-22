@@ -126,7 +126,8 @@ export function sanitizeExecutionProse(text: string): string {
  */
 export function humanizeStroopCounts(text: string, asset?: string | null): string {
   const unit = String(asset || "tokens").trim() || "tokens";
-  return String(text || "").replace(/\b(\d{7,})\b/g, (raw) => {
+  // Never scale numbers that are already qualified with a token symbol, unit, or percentage
+  return String(text || "").replace(/\b(\d{7,})\b(?!\s*(?:[A-Za-z]{2,}|%))/g, (raw) => {
     try {
       return `${stroopsToAmountString(BigInt(raw))} ${unit}`;
     } catch {

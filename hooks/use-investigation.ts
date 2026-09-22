@@ -311,6 +311,8 @@ export function useInvestigation(wallet: string | null) {
     const startedIn = conversationId.current && !isLocalConversationId(conversationId.current)
       ? conversationId.current : null;
 
+    lastResult.current = null;
+    continuation.current = null;
     let localTurns: ThreadTurn[] = [];
     setState((previous) => {
       localTurns = [
@@ -323,13 +325,13 @@ export function useInvestigation(wallet: string | null) {
         writeStoredThread(owner, {
           wallet: owner,
           turns: localTurns,
-          continuation: continuation.current,
-          result: lastResult.current,
+          continuation: null,
+          result: null,
           conversationId: startedIn,
         });
       }
       rememberLive(owner, localTurns, startedIn);
-      return { ...previous, turns: localTurns, error: null };
+      return { ...previous, turns: localTurns, result: null, error: null };
     });
 
     if (!owner) return;

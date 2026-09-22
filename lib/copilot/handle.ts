@@ -93,6 +93,7 @@ import { looksLikeMultiGoal } from "./plan-sanitize";
 import { resolveUnnamedIntent } from "./unnamed-intent";
 import { previewRoutedPlan, freezeLeveragedPlanPreview } from "./plan-preview";
 import { money, fmt2, pct, amount, usd, fmtPosAmount } from "./display-amounts";
+import { formatExactDecimalAmount } from "@/lib/utils/format-amount";
 import { usdTotal } from "./mcp-payload";
 import { VANNA_AQUARIUS_FARM_PAIRS, filterAquariusFarmPools } from "./farm-pools";
 import { mcpErrorResponse } from "./mcp-error-response";
@@ -1730,8 +1731,21 @@ async function runWrite(
   }
 
   let smartAccount = ctx.smartAccount;
-  if (action.requires_account && !smartAccount && ctx.trader) {
+  if (
+    (action.requires_account || action.op === "create_account" || action.op === "open_account") &&
+    !smartAccount &&
+    ctx.trader
+  ) {
     smartAccount = await resolveSmartAccount(getMcpClient(), ctx.trader, ctx.userId);
+  }
+
+  if (smartAccount && (action.op === "create_account" || action.op === "open_account")) {
+    return {
+      kind: "blocked",
+      message: `You already have an active margin account (${smartAccount}). You can deposit collateral, borrow, or manage positions directly.`,
+      intent: { template_id: "create_account", slots: { smart_account: smartAccount } },
+      request_id: ctx.request_id,
+    };
   }
 
   // ── Repay size: Margin 10/25/50/100% chips as language ───────────────────
@@ -1748,7 +1762,7 @@ async function runWrite(
   if (
     action.op === "withdraw_from_blend" &&
     !(action.amount != null && action.amount > 0) &&
-    action.fraction === 1
+    (action.fraction != null && action.fraction > 0)
   ) {
     if (!smartAccount) {
       return {
@@ -1786,7 +1800,12 @@ async function runWrite(
         request_id: ctx.request_id,
       };
     }
-    if (fullAmount <= 0) {
+
+    const fraction = action.fraction ?? 1;
+    const rawAmount = fullAmount * fraction;
+    const formatted = formatExactDecimalAmount(rawAmount);
+    const parsedAmount = Number(formatted);
+    if (parsedAmount <= 0) {
       return {
         kind: "blocked",
         message: `You have no ${displayAsset} supplied to Blend.`,
@@ -1795,16 +1814,133 @@ async function runWrite(
       };
     }
 
-    action.amount = fullAmount;
+    action.amount = parsedAmount;
     action.asset = displayAsset;
     action.fraction = null;
     action.requires_amount = false;
-    sizingNote = `Sized from your live ${displayAsset} Blend position.`;
+    sizingNote = fraction < 1
+      ? `Sized from ${Math.round(fraction * 100)}% of your live ${displayAsset} Blend position.`
+      : `Sized from your live ${displayAsset} Blend position.`;
     sizingFacts = {
       asset: displayAsset,
-      blend_underlying_balance: fullAmount,
-      withdrawal_fraction: 1,
+      blend_underlying_balance: parsedAmount,
+      withdrawal_fraction: fraction,
     };
+  }
+
+  if (action.op === "withdraw_from_blend" && action.amount != null && action.amount > 0) {
+    const formatted = formatExactDecimalAmount(action.amount);
+    const parsed = Number(formatted);
+    const requestedAsset = String(action.asset || "XLM").toUpperCase();
+    const blendAsset = requestedAsset === "USDC" ? "BLUSDC" : requestedAsset;
+    if (parsed <= 0) {
+      return {
+        kind: "blocked",
+        message: `You have no ${blendAsset} supplied to Blend.`,
+        intent: { template_id: action.op, slots: { asset: blendAsset, balance: 0 } },
+        request_id: ctx.request_id,
+      };
+    }
+    action.amount = parsed;
+    action.asset = blendAsset;
+  }
+
+  if (
+    action.op === "redeem" &&
+    !(action.amount != null && action.amount > 0) &&
+    (action.fraction != null && action.fraction > 0)
+  ) {
+    if (!ctx.trader) {
+      return {
+        kind: "blocked",
+        message: "I need your wallet address to read and redeem your Earn position.",
+        intent: { template_id: action.op, slots: { asset: action.asset } },
+        request_id: ctx.request_id,
+      };
+    }
+
+    const requestedAsset = String(action.asset || "XLM").toUpperCase();
+    let underlyingValue: unknown;
+    try {
+      const built = buildToolArgs("vanna_get_vtoken_balance", { symbol: requestedAsset }, {
+        trader: ctx.trader,
+        smartAccount: ctx.smartAccount,
+      });
+      if (built.blocker) {
+        return {
+          kind: "blocked",
+          message: built.blocker,
+          intent: { template_id: action.op, slots: { asset: requestedAsset } },
+          request_id: ctx.request_id,
+        };
+      }
+      const mcp = getMcpClient();
+      const res = (await mcp.call("vanna_get_vtoken_balance", built.args, ctx.userId)) as Record<string, unknown> | null;
+      if (res?.error) {
+        throw new Error(String(res.error));
+      }
+      underlyingValue = res?.redeemable_human ?? res?.human ?? 0;
+    } catch {
+      return {
+        kind: "blocked",
+        message: `I couldn't read your live ${requestedAsset} Earn position. Please retry before redeeming.`,
+        intent: { template_id: action.op, slots: { asset: requestedAsset, read_status: "unavailable" } },
+        request_id: ctx.request_id,
+      };
+    }
+
+    const fullAmount =
+      typeof underlyingValue === "number" ? underlyingValue : Number.parseFloat(String(underlyingValue ?? ""));
+    if (!Number.isFinite(fullAmount)) {
+      return {
+        kind: "blocked",
+        message: `I couldn't read your live ${requestedAsset} Earn position. Please retry before redeeming.`,
+        intent: { template_id: action.op, slots: { asset: requestedAsset, read_status: "invalid" } },
+        request_id: ctx.request_id,
+      };
+    }
+
+    const fraction = action.fraction ?? 1;
+    const rawAmount = fullAmount * fraction;
+    const formatted = formatExactDecimalAmount(rawAmount);
+    const parsedAmount = Number(formatted);
+    if (parsedAmount <= 0) {
+      return {
+        kind: "blocked",
+        message: `You have no ${requestedAsset} supplied to Earn to redeem.`,
+        intent: { template_id: action.op, slots: { asset: requestedAsset, balance: 0 } },
+        request_id: ctx.request_id,
+      };
+    }
+
+    action.amount = parsedAmount;
+    action.asset = requestedAsset;
+    action.fraction = null;
+    action.requires_amount = false;
+    sizingNote = fraction < 1
+      ? `Sized from ${Math.round(fraction * 100)}% of your live ${requestedAsset} Earn position.`
+      : `Sized from your live ${requestedAsset} Earn position.`;
+    sizingFacts = {
+      asset: requestedAsset,
+      earn_underlying_balance: parsedAmount,
+      withdrawal_fraction: fraction,
+    };
+  }
+
+  if (action.op === "redeem" && action.amount != null && action.amount > 0) {
+    const formatted = formatExactDecimalAmount(action.amount);
+    const parsed = Number(formatted);
+    const requestedAsset = String(action.asset || "XLM").toUpperCase();
+    if (parsed <= 0) {
+      return {
+        kind: "blocked",
+        message: `You have no ${requestedAsset} supplied to Earn to redeem.`,
+        intent: { template_id: action.op, slots: { asset: requestedAsset, balance: 0 } },
+        request_id: ctx.request_id,
+      };
+    }
+    action.amount = parsed;
+    action.asset = requestedAsset;
   }
 
   if (action.op === "repay") {
@@ -2758,7 +2894,9 @@ async function runWrite(
       if (action.fraction != null && action.fraction > 0 && action.fraction <= 1 && !(action.amount != null && action.amount > 0)) {
         action = { ...action, amount: live.shares * action.fraction };
       }
-      const want = action.amount;
+      const want = action.amount != null && action.amount > 0
+        ? Number(formatExactDecimalAmount(action.amount))
+        : null;
       if (want != null && want > 0 && want > live.shares + 1e-4) {
         return {
           kind: "blocked",
@@ -2772,8 +2910,7 @@ async function runWrite(
           request_id: ctx.request_id,
         };
       }
-      const fromResume = /multi-leg step/i.test(ctx.message || "");
-      if (!(fromResume && want != null && want > 0)) {
+      if (want == null || !(want > 0)) {
         const held = fmtLpAmt(live.shares);
         const prefill = want != null && want > 0 ? want : null;
         const question = `You hold ${held} LP in ${live.label}. How much should I remove?`;

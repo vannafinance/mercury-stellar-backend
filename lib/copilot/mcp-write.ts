@@ -12,7 +12,7 @@ import {
 import { cleanExecutionCopy, fmtLpAmt, humanizeStroopCounts } from "./execution-copy";
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
-import { earnPoolSymbols, lpPairs, resolveAssetDef } from "./registry/assets";
+import { allAssets, earnPoolSymbols, lpPairs, resolveAssetDef } from "./registry/assets";
 import { autoSignAllowed } from "./guardrail-policy";
 
 /**
@@ -464,6 +464,25 @@ export function staticStepBlocker(
       );
     }
   }
+  if (op === "borrow" || op === "deposit_collateral" || op === "withdraw_collateral") {
+    const sym = norm(params.asset);
+    if (sym) {
+      const def = resolveAssetDef(sym);
+      if (def && !def.marginSymbol) {
+        const supported = allAssets()
+          .filter((d) => d.marginSymbol)
+          .map((d) => d.displayLabel)
+          .join(", ");
+        const verb =
+          op === "borrow"
+            ? "borrowed"
+            : op === "deposit_collateral"
+              ? "deposited as collateral"
+              : "withdrawn from collateral";
+        return `${def.displayLabel} cannot be ${verb}. Supported margin assets are ${supported}.`;
+      }
+    }
+  }
   return null;
 }
 
@@ -504,6 +523,9 @@ export function mapOpToMcpStep(
   },
   ctx: AccountCtx,
 ): { step?: WriteStep; blocker?: string } {
+  const staticBlock = staticStepBlocker(op, params);
+  if (staticBlock) return { blocker: staticBlock };
+
   const trader = looksG(ctx.trader) ? ctx.trader : null;
   const smart = looksC(ctx.smartAccount) ? ctx.smartAccount : null;
   const symbol = (params.asset || "USDC").toUpperCase();
@@ -514,6 +536,11 @@ export function mapOpToMcpStep(
     case "create_account":
     case "open_account": {
       if (!trader) return { blocker: "Connect your wallet (G-address) to create a smart account." };
+      if (smart) {
+        return {
+          blocker: `You already have an active margin account (${smart}). You can deposit collateral, borrow, or manage positions directly.`,
+        };
+      }
       return {
         step: {
           tool: "vanna_open_account",
@@ -638,11 +665,6 @@ export function mapOpToMcpStep(
             "BLUSDC is a different token (Blend USDC) — do not substitute.",
         };
       }
-      // BLUSDC ≠ AQUSDC ≠ SOUSDC. Never silently map BLUSDC → AQUSDC.
-      {
-        const blocked = staticStepBlocker("add_liquidity", { token_a: aRaw, token_b: bRaw });
-        if (blocked) return { blocker: blocked };
-      }
       const isSouswap =
         aRaw === "SOUSDC" ||
         bRaw === "SOUSDC" ||
@@ -683,10 +705,6 @@ export function mapOpToMcpStep(
     case "remove_liquidity": {
       if (!trader || !smart) return { blocker: "Need wallet + smart account to remove LP." };
       const bRaw = (params.token_b || params.asset || "AQUSDC").toUpperCase();
-      {
-        const blocked = staticStepBlocker("remove_liquidity", { token_b: bRaw });
-        if (blocked) return { blocker: blocked };
-      }
       const isSouswap = bRaw === "SOUSDC" || bRaw === "SOROSWAP_USDC";
       const usdSym = isSouswap ? "SOUSDC" : "AQUSDC";
       const frac =
@@ -820,10 +838,6 @@ export function mapOpToMcpStep(
        * could only ever be filled with a different token — refuse and name the two that
        * are real, rather than quietly substituting one.
        */
-      if (stated === "BLUSDC") {
-        const blocked = staticStepBlocker("swap", { token_a: tokenIn, token_b: tokenOut });
-        if (blocked) return { blocker: blocked };
-      }
       if (stated && venueStated) {
         const venueSym = venue === "soroswap" ? "SOUSDC" : "AQUSDC";
         if (stated !== venueSym) {
@@ -960,13 +974,11 @@ export function mapOpToMcpStep(
       const blendCompatible =
         symbol === "BLUSDC" || symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "XLM";
       if (!blendCompatible) {
-        const blocked =
-          staticStepBlocker(op, { asset: symbol }) ??
-          // Fallback for any OTHER unrecognised symbol reaching this point (AQUSDC/SOUSDC
-          // are staticStepBlocker's named cases; this only fires for the unexpected rest).
-          `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
-            `cannot be supplied to Blend.`;
-        return { blocker: blocked };
+        return {
+          blocker:
+            `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
+            `cannot be supplied to Blend.`,
+        };
       }
       const blendSym = symbol === "XLM" ? "XLM" : "USDC";
       const uiSym = displayUsdcLabel(blendSym, symbol);
@@ -1040,11 +1052,11 @@ export function mapOpToMcpStep(
       const blendCompatible =
         symbol === "BLUSDC" || symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "XLM";
       if (!blendCompatible) {
-        const blocked =
-          staticStepBlocker(op, { asset: symbol }) ??
-          `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
-            `was never supplied to Blend.`;
-        return { blocker: blocked };
+        return {
+          blocker:
+            `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
+            `was never supplied to Blend.`,
+        };
       }
       const blendSym = symbol === "XLM" ? "XLM" : "USDC";
       const uiSym = displayUsdcLabel(blendSym, symbol);
@@ -1333,14 +1345,30 @@ export function humanizeMcpWriteError(
         `Nothing was submitted and your collateral is unchanged.`
       );
     }
+    if ((tool === "vanna_settle_account" || /settle/i.test(tool)) && /Budget|ExceededLimit|resource/i.test(raw)) {
+      return (
+        "Account settlement simulation hit the Soroban CPU budget limit (ExceededLimit). " +
+        "Try settling positions individually or retry directly from the Margin page."
+      );
+    }
+    if (/Budget,\s*ExceededLimit|HostError:\s*Error\(Budget/i.test(raw)) {
+      return (
+        "The simulation hit the Soroban CPU/resource budget limit (ExceededLimit). " +
+        "Try reducing the amount or executing steps individually."
+      );
+    }
     // Truncate huge event logs for other tools
     const firstLine = raw.split(/\n/)[0]?.slice(0, 280) || raw.slice(0, 280);
     return `Simulation failed: ${firstLine}`;
   }
 
+  const masked = raw
+    .replace(/\bon\s+C[A-Z0-9]{8,}\b/gi, "on your margin account")
+    .replace(/\bC[A-Z0-9]{16,}\b/g, "your margin account");
+
   // Cap very long messages
-  if (raw.length > 600) return raw.slice(0, 600) + "…";
-  return raw;
+  if (masked.length > 600) return masked.slice(0, 600) + "…";
+  return masked;
 }
 
 /**
@@ -1361,6 +1389,12 @@ function rejectionGuidance(tool: string): string {
       "*before* this transaction, so a combined deposit-and-borrow is refused while " +
       "your collateral is still too low — the deposit in the same call isn't counted " +
       "yet. Deposit the collateral first, then borrow against it as a second step."
+    );
+  }
+  if (tool === "vanna_margin_trade" || tool === "vanna_borrow") {
+    return (
+      "\n\nThis borrow exceeds the available borrowing capacity for your account's posted collateral. " +
+      "Check “how much can I borrow” to see your live capacity, or deposit more collateral."
     );
   }
   return "";

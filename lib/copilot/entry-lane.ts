@@ -1,3 +1,5 @@
+import { routeMessage } from "./router";
+
 /**
  * Decide which brain owns a fresh Copilot prompt.
  *
@@ -7,28 +9,65 @@
  */
 export type CopilotEntryLane = "direct" | "strategy";
 
-const STRATEGY_GOAL =
-  /\b(strateg(?:y|ize)|allocat(?:e|ion)|optim(?:ize|ise|ization|isation)|rebalance|recommend|compare (?:the )?(?:rates|returns|pools|venues|options)|best (?:rate|return|yield|apy|pool|option)|maximi[sz]e (?:my )?(?:return|yield|apy)|what should i do|where should i (?:put|deploy|invest)|build me (?:a )?(?:plan|portfolio)|invest my (?:wallet|funds|balance)|deploy my (?:wallet|funds|balance))\b/i;
-
-const STRATEGY_SIZING =
-  /\b(as much as possible|max(?:imum)? (?:i can|safe|safely)|keep (?:my )?(?:hf|health factor)|health factor (?:above|below|at least|doesn'?t|does not)|without (?:my )?(?:hf|health factor)|use (?:whatever|whichever) is best)\b/i;
-
 const LIFECYCLE_WRITE =
   /\b(?:open|create|set up|setup)\b[\s\S]{0,32}\b(?:margin|smart|c[- ]?)\s*account\b/i;
 
 const SWAP_ACTION = /\b(swap|trade|exchange|convert)\b/i;
 
+/**
+ * Classify a copilot prompt into "direct" or "strategy".
+ *
+ * Derived from resolvability rather than phrasing lists:
+ * - A prompt is "direct" if routeMessage fully resolves it into an executable
+ *   action with every required slot satisfied, or into a read, client action, or fully sized plan.
+ * - Anything routeMessage cannot resolve — an open-ended goal (prefer_max_yield),
+ *   an unsized write (missing required amount/fraction), a comparison, or a clarify response —
+ *   belongs to "strategy" (the investigation loop).
+ * - Swap and lifecycle account creation retain their dedicated review flows on "strategy".
+ */
 export function classifyCopilotEntry(message: string): CopilotEntryLane {
   const text = message.trim();
   if (!text) return "direct";
 
-  if (
-    SWAP_ACTION.test(text) ||
-    LIFECYCLE_WRITE.test(text) ||
-    STRATEGY_GOAL.test(text) ||
-    STRATEGY_SIZING.test(text)
-  ) {
+  // Dedicated review flows that remain on the strategy/investigation loop
+  if (SWAP_ACTION.test(text) || LIFECYCLE_WRITE.test(text)) {
     return "strategy";
   }
-  return "direct";
+
+  const routed = routeMessage(text);
+
+  if (routed.kind === "read") {
+    return "direct";
+  }
+
+  if (routed.kind === "client") {
+    return "direct";
+  }
+
+  if (routed.kind === "plan") {
+    return "direct";
+  }
+
+  if (routed.kind === "write") {
+    if (routed.op === "swap") {
+      return "strategy";
+    }
+    // Optimization / yield-chasing goals belong to strategy
+    if (routed.prefer_max_yield) {
+      return "strategy";
+    }
+    // Check if required amount / sizing slot is missing
+    if (routed.requires_amount) {
+      const hasAmount = routed.amount != null && Number.isFinite(routed.amount);
+      const hasFraction = routed.fraction != null && Number.isFinite(routed.fraction);
+      const hasLpAmount = routed.amount_a != null && Number.isFinite(routed.amount_a);
+      if (!hasAmount && !hasFraction && !hasLpAmount) {
+        return "strategy";
+      }
+    }
+    return "direct";
+  }
+
+  return "strategy";
 }
+

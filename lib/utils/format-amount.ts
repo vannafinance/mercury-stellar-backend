@@ -41,3 +41,36 @@ export function formatUsdValue(value: number): string {
   if (value < 0.01) return "<$0.01";
   return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
+
+/**
+ * Format any numeric magnitude into clean decimal notation.
+ * GUARANTEE: Never emits exponent / scientific notation (e.g. "7e-7", "1e-8", "1e21").
+ * Trailing zeros and trailing dot are trimmed.
+ * If value rounds to 0 within maxDecimals, returns "0".
+ */
+export function formatExactDecimalAmount(value: number, maxDecimals = STELLAR_MAX_DECIMALS): string {
+  if (!Number.isFinite(value) || value === 0) return "0";
+  let s = value.toFixed(maxDecimals);
+  if (s.includes("e") || s.includes("E")) {
+    const [coeff, expStr] = s.split(/[eE]/);
+    const exp = parseInt(expStr, 10);
+    const isNeg = coeff.startsWith("-");
+    const cleanCoeff = isNeg ? coeff.slice(1) : coeff;
+    const [intPart, fracPart = ""] = cleanCoeff.split(".");
+    if (exp > 0) {
+      const allDigits = intPart + fracPart;
+      if (exp >= fracPart.length) {
+        s = allDigits + "0".repeat(exp - fracPart.length);
+      } else {
+        s = allDigits.slice(0, intPart.length + exp) + "." + allDigits.slice(intPart.length + exp);
+      }
+    } else {
+      const absExp = Math.abs(exp);
+      s = "0." + "0".repeat(absExp - 1) + intPart + fracPart;
+    }
+    if (isNeg) s = "-" + s;
+  }
+  const trimmed = s.replace(/(\.\d*?[1-9])0+$/, "$1").replace(/\.0+$/, "").replace(/\.$/, "");
+  if (trimmed === "-0" || trimmed === "" || trimmed === "0") return "0";
+  return trimmed;
+}
