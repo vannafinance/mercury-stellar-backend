@@ -1008,7 +1008,25 @@ export function createAccountStructured(
     (typeof build.margin_account === "string" ? build.margin_account : null) ||
     pickStellarAddr(blob, "C");
 
-  const alreadyOpen = /already has|NOT submitted|one-account-per-trader/i.test(blob);
+  /**
+   * The server says so in a field; the prose is only a fallback.
+   *
+   * Live, 22 Sep: "open a margin account" on an account that already existed answered
+   * "Margin account opened." — reporting a submission that never happened. MCP's
+   * `vanna_open_account` is idempotent and says which of the two it did in
+   * `status`: `already_exists` when `discover_active_smart_account` found one
+   * (`account_tools.py`). Nothing here read that field.
+   *
+   * It read the summary instead, for three phrases — and MCP has TWO already-exists
+   * branches. The first ("already has … NOT submitted … one-account-per-trader")
+   * matches all three by luck. The recovery branch, taken when create_account's
+   * simulation trips and on-chain storage is re-read, says "Treating as existing
+   * account" and matches none, so an account that demonstrably already existed was
+   * reported as freshly opened. Wording is not a contract; `status` is.
+   */
+  const alreadyOpen =
+    build.status === "already_exists" ||
+    /already has|NOT submitted|one-account-per-trader|existing account/i.test(blob);
 
   const facts: AnswerFact[] = [];
   if (trader) facts.push({ label: "trader", value: shortAddr(trader) || trader });
