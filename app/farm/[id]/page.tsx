@@ -61,19 +61,6 @@ const positionTableHeadings = [
   { label: "b-Rate", id: "b-rate" },
 ];
 
-// Blend's own Position History adds a "b-Tokens" column (how many b-tokens
-// were minted/burned by that Supply/Withdraw) between Amount and Status —
-// kept separate from the shared `transactionTableHeadings` (Earn/Aquarius/
-// Soroswap history tables reuse that one and have no b-token concept).
-const blendHistoryHeadings = [
-  { label: "Date", id: "date" },
-  { label: "Type", id: "type" },
-  { label: "Amount", id: "amount" },
-  { label: "b-Tokens", id: "b-tokens" },
-  { label: "Status", id: "status" },
-  { label: "Tx Hash", id: "txHash" },
-];
-
 const normalizeTimestamp = (value: unknown): number => {
   const ts = Number(value ?? 0);
   if (!Number.isFinite(ts) || ts <= 0) return 0;
@@ -305,10 +292,6 @@ export default function FarmDetailPage() {
       timestamp: normalizeTimestamp(ev.timestamp),
       action: ev.type === "supply" ? "add" : "remove",
       amountDisplay: `${(parseFloat(String(ev.underlyingAmount ?? '0')) || 0).toFixed(2)} ${ev.tokenSymbol}`,
-      // How many b-tokens this event minted (Supply) or burned (Withdraw) —
-      // already computed on every event source (mercury-blend.ts,
-      // blend-history-rpc.ts, blend-utils.ts), just wasn't surfaced here.
-      bTokenDisplay: `${(parseFloat(String(ev.bTokenAmount ?? '0')) || 0).toFixed(4)} b${ev.tokenSymbol}`,
       txHash: ev.txHash ?? "",
     })).sort((a, b) => b.timestamp - a.timestamp);
   }, [events]);
@@ -327,7 +310,6 @@ export default function FarmDetailPage() {
             badge: ev.action === 'add' ? 'green' : 'orange',
           },
           { title: ev.amountDisplay },
-          { title: ev.bTokenDisplay },
           { title: 'Success', badge: 'green' },
           ev.txHash
             ? {
@@ -588,12 +570,7 @@ export default function FarmDetailPage() {
 
   // Route "All Transactions" table to the correct data source for the current pool type.
   const detailTableHeadings = useMemo(() => {
-    if (activeTab !== "current-position") {
-      // Blend-only: adds the b-Tokens column; Aquarius/Soroswap history keeps
-      // the shared heading set (no b-token concept for LP positions).
-      if (!isSoroswapEarly && !isAquariusEarly) return blendHistoryHeadings;
-      return transactionTableHeadings;
-    }
+    if (activeTab !== "current-position") return transactionTableHeadings;
     if (isSoroswapEarly) return soroswapPositionHeadings;
     if (isAquariusEarly) return aquariusPositionHeadings;
     return positionTableHeadings;

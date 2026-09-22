@@ -78,7 +78,6 @@ The Copilot handles two distinct types of credentials simultaneously:
 | `MCP_MODE` | `live` | Connects to production/staging MCP server. |
 | `MCP_BASE_URL` | `https://mcp.vanna.finance/mcp` | MCP endpoint URL. |
 | `NEXT_PUBLIC_PRIVY_APP_ID`| *(Public Privy App ID)* | Enables embedded wallets and user assertions. |
-| `COPILOT_READS_ONLY` | `false` (or `true` for testing) | Safety kill switch to disable all on-chain writes. |
 | `COPILOT_LOG` | `1` | Enables verbose structured event logging. |
 
 ---
@@ -111,4 +110,4 @@ npx tsc --noEmit
 3. **Transient Testnet RPC Flukes:**
    * If a single integration test returns `RPC down`, re-run the test suite before assuming code regression.
 4. **Auto-Sign Single Writes:**
-   * Single writes execute immediately when Auto-Sign is active. Always set `COPILOT_READS_ONLY=true` before running automated test matrices on production accounts.
+   * Single writes execute immediately when Auto-Sign is active. There is no reads-only kill switch — run automated test matrices against a throwaway testnet account, never a production one.

@@ -16,7 +16,9 @@
  */
 
 import { copilotConfig } from "./config";
+import { withMcpCall } from "./telemetry";
 import { callNeedsUserToken, currentUser } from "./user-context";
+import { RETRY, withRetry } from "./retry-policy";
 
 export type MCPErrorCode = string;
 
@@ -62,6 +64,7 @@ export interface MCPClient {
 
 class MockMCPClient implements MCPClient {
   async call(tool: string, args: Record<string, unknown>, _userId?: string): Promise<Record<string, unknown>> {
+    return withMcpCall(tool, async () => {
     if (tool === "vanna_get_account_health") {
       return {
         health_factor: 1.72,
@@ -140,6 +143,7 @@ class MockMCPClient implements MCPClient {
     }
     // write-shaped mock (unused for execution path)
     return { unsigned_xdr: `AAAA...MOCK_XDR::${tool}`, is_write: true };
+    });
   }
 }
 
@@ -173,6 +177,10 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_get_collateral: { tool: "vanna_margin_status", action: "collateral" },
   vanna_get_debt: { tool: "vanna_margin_status", action: "debt" },
   vanna_get_max_borrow: { tool: "vanna_margin_status", action: "max_borrow" },
+  vanna_get_liquidation_snapshot: { tool: "vanna_margin_status", action: "liquidation_snapshot" },
+  // Propose-time simulation (simulate.ts): the read dispatcher's `preview` — RiskEngine snapshot
+  // arithmetic plus the contract's is_borrow_allowed / is_withdraw_allowed and the pool ceiling.
+  vanna_preview_margin: { tool: "vanna_margin_status", action: "preview" },
   // margin writes + preflights
   vanna_can_borrow: { tool: "vanna_margin_trade", action: "can_borrow" },
   vanna_can_withdraw: { tool: "vanna_margin_trade", action: "can_withdraw" },
@@ -185,6 +193,7 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   // earn
   vanna_get_pool_stats: { tool: "vanna_earn_market", action: "pool_stats" },
   vanna_get_vtoken_exchange_rate: { tool: "vanna_earn_market", action: "exchange_rate" },
+  vanna_preview_earn: { tool: "vanna_earn_market", action: "preview" },
   vanna_get_vtoken_balance: { tool: "vanna_earn_position", action: "balance" },
   vanna_lend: { tool: "vanna_earn_write", action: "lend" },
   vanna_redeem: { tool: "vanna_earn_write", action: "redeem" },
@@ -200,12 +209,27 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_blend_withdraw: { tool: "vanna_farm_blend", action: "withdraw" },
   vanna_list_aquarius_pools: { tool: "vanna_farm_lp", action: "list_aquarius" },
   vanna_get_aquarius_pool_stats: { tool: "vanna_farm_lp", action: "aquarius_stats" },
+  vanna_get_soroswap_pool_stats: { tool: "vanna_farm_lp", action: "soroswap_stats" },
   vanna_get_farm_lp_position: { tool: "vanna_farm_lp", action: "lp_position" },
   vanna_get_lp_balance: { tool: "vanna_farm_lp", action: "get_lp_balance" },
   vanna_add_liquidity: { tool: "vanna_farm_lp", action: "add_liquidity" },
   vanna_remove_liquidity: { tool: "vanna_farm_lp", action: "remove_liquidity" },
-  // DEX swap via margin account
-  vanna_swap: { tool: "vanna_swap", action: "swap" },
+  /**
+   * DEX swap via margin account — DELIBERATELY ABSENT from this map.
+   *
+   * `vanna_swap` was never consolidated into a dispatcher: it is still its own tool, taking
+   * flat arguments (smart_account, token_in, token_out, amount_in, min_out, trader, venue).
+   * It was listed here as `{ tool: "vanna_swap", action: "swap" }` — mapping the name to
+   * ITSELF — which still sent it down the wrapping path, so the server received
+   * `{action: "swap", kwargs: {…}}` and answered "4 validation errors for
+   * vanna_swapArguments: smart_account Field required" (15 Sep, live: every copilot swap
+   * died as "The tool response could not be confirmed", while the website's own Swap page
+   * — which never goes through this translation — worked fine).
+   *
+   * An unmapped name passes through untouched, which is what this tool needs, and is what
+   * the block comment above already describes. It was the only self-referential entry in
+   * the table; a name that maps to itself never wants the `{action, kwargs}` envelope.
+   */
   // wallet identity / balances
   vanna_get_wallet_balance: { tool: "vanna_wallet", action: "balance" },
   vanna_get_token_balance: { tool: "vanna_wallet", action: "token_balance" },
@@ -217,18 +241,28 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_connect_wallet_start: { tool: "vanna_wallet", action: "connect_start" },
   vanna_connect_wallet_status: { tool: "vanna_wallet", action: "connect_status" },
   // signing
+  vanna_auto_sign_status: { tool: "vanna_sign", action: "session_status" },
   vanna_enable_auto_sign: { tool: "vanna_sign", action: "enable_auto_sign" },
   vanna_disable_auto_sign: { tool: "vanna_sign", action: "disable_auto_sign" },
   vanna_sign_and_submit: { tool: "vanna_sign", action: "sign_and_submit" },
 };
 
-/** Legacy call → the consolidated `{ name, arguments }` the server now expects. */
+/**
+ * Legacy call → the consolidated `{ name, arguments }` the server now expects.
+ *
+ * A name that maps to ITSELF is not a dispatcher entry — it is a tool that was never
+ * consolidated, and wrapping its flat arguments in `{action, kwargs}` makes the server
+ * reject the call for missing required fields (15 Sep, live, on `vanna_swap`). Such an
+ * entry is treated as unmapped rather than trusted, so the mistake cannot come back by
+ * someone re-adding the row. MCP `vanna_swap` now accepts both envelopes; Copilot
+ * still sends the flat shape.
+ */
 export function toServerCall(
   tool: string,
   args: Record<string, unknown>,
 ): { name: string; arguments: Record<string, unknown> } {
   const mapped = LEGACY_TOOL_MAP[tool];
-  if (!mapped) return { name: tool, arguments: args };
+  if (!mapped || mapped.tool === tool) return { name: tool, arguments: args };
   return { name: mapped.tool, arguments: { action: mapped.action, kwargs: args } };
 }
 
@@ -266,7 +300,8 @@ interface TokenSource {
   fingerprint(): string;
 }
 
-const TIMEOUT_MS = 90_000;
+export const MCP_CALL_TIMEOUT_MS = 90_000;
+const TIMEOUT_MS = MCP_CALL_TIMEOUT_MS;
 const EXPIRY_MARGIN_MS = 60_000;
 
 class M2MTokenSource implements TokenSource {
@@ -343,6 +378,8 @@ class LiveMCPClient implements MCPClient {
   /** Cached Streamable-HTTP session — see getSession. */
   private sessionId: string | null = null;
   private sessionPromise: Promise<string> | null = null;
+  /** JSON-RPC ids must be unique per in-flight call on a shared session. */
+  private nextRpcId = 2;
   /** Writes (sign/sim) often exceed 30s on testnet under load. */
   private static readonly TIMEOUT_MS = TIMEOUT_MS;
 
@@ -386,29 +423,41 @@ class LiveMCPClient implements MCPClient {
     this.sessionPromise = (async () => {
       let initRes: Response;
       try {
-        initRes = await fetch(copilotConfig.mcpBaseUrl, {
-          method: "POST",
-          headers: baseHeaders,
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "initialize",
-            params: {
-              protocolVersion: "2024-11-05",
-              capabilities: {},
-              clientInfo: { name: "vanna-copilot-next", version: "1.0.0" },
-            },
-          }),
-          signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
-          cache: "no-store",
+        // One dropped packet on initialize used to kill the whole turn: call()
+        // only retries a stale session, which is a different case. Timeout and
+        // auth stay single-shot — retrying those just waits longer for a cold
+        // server or replays a rejected token.
+        initRes = await withRetry(RETRY.mcpRead, async () => {
+          try {
+            return await fetch(copilotConfig.mcpBaseUrl, {
+              method: "POST",
+              headers: baseHeaders,
+              body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "initialize",
+                params: {
+                  protocolVersion: "2024-11-05",
+                  capabilities: {},
+                  clientInfo: { name: "vanna-copilot-next", version: "1.0.0" },
+                },
+              }),
+              signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
+              cache: "no-store",
+            });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (/abort|timeout/i.test(msg)) {
+              throw new MCPCallError(
+                `MCP initialize timed out after ${LiveMCPClient.TIMEOUT_MS / 1000}s — MCP may be cold. Retry.`,
+              );
+            }
+            throw e;
+          }
         });
       } catch (e) {
+        if (e instanceof MCPCallError) throw e;
         const msg = e instanceof Error ? e.message : String(e);
-        if (/abort|timeout/i.test(msg)) {
-          throw new MCPCallError(
-            `MCP initialize timed out after ${LiveMCPClient.TIMEOUT_MS / 1000}s — MCP may be cold. Retry.`,
-          );
-        }
         throw new MCPCallError(
           `MCP initialize network error: could not reach MCP (${msg}). Check MCP_BASE_URL and connectivity.`,
         );
@@ -455,6 +504,15 @@ class LiveMCPClient implements MCPClient {
     _userId?: string,
     retryOnStaleSession = true,
   ): Promise<Record<string, unknown>> {
+    return withMcpCall(tool, () => this.executeCall(tool, args, _userId, retryOnStaleSession));
+  }
+
+  private async executeCall(
+    tool: string,
+    args: Record<string, unknown>,
+    _userId?: string,
+    retryOnStaleSession = true,
+  ): Promise<Record<string, unknown>> {
     const token = await this.getToken();
     const baseHeaders: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -480,7 +538,9 @@ class LiveMCPClient implements MCPClient {
     // earn a 401 on every auto-sign.
     const needsUser = callNeedsUserToken(tool);
     const user = needsUser ? currentUser() : null;
-    if (user) {
+    // Freighter proofs are bound users with no Sign Service token. Attaching an
+    // empty assertion would look identical to a dropped Privy header downstream.
+    if (user?.accessToken) {
       sessionHeaders["X-Vanna-User-Assertion"] = user.accessToken;
       // The last hop this app controls, stated positively.
       //
@@ -517,20 +577,24 @@ class LiveMCPClient implements MCPClient {
       );
     }
 
+    const rpcId = this.nextRpcId++;
+    const startedAt = Date.now();
     let callRes: Response;
     try {
-      callRes = await fetch(copilotConfig.mcpBaseUrl, {
-        method: "POST",
-        headers: sessionHeaders,
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 2,
-          method: "tools/call",
-          params: toServerCall(tool, args),
+      callRes = await withRetry(needsUser ? RETRY.mcpWrite : RETRY.mcpRead, () =>
+        fetch(copilotConfig.mcpBaseUrl, {
+          method: "POST",
+          headers: sessionHeaders,
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            method: "tools/call",
+            params: toServerCall(tool, args),
+          }),
+          signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
+          cache: "no-store",
         }),
-        signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
-        cache: "no-store",
-      });
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/abort|timeout/i.test(msg)) {
@@ -564,9 +628,22 @@ class LiveMCPClient implements MCPClient {
         callRes.status === 404 || (callRes.status === 400 && /session/i.test(text));
       if (staleSession && retryOnStaleSession) {
         this.resetSession();
-        return this.call(tool, args, _userId, false);
+        return this.executeCall(tool, args, _userId, false);
       }
-      throw new MCPCallError(`MCP call '${tool}' failed (${callRes.status}): ${text.slice(0, 300)}`);
+      /**
+       * The status travels as a field, not only inside the sentence.
+       *
+       * Without `httpStatus` here every non-auth transport failure reached the user as the
+       * raw string — `MCP call 'vanna_blend_withdraw' failed (429): {"error":"rate_limited"…}`
+       * — because nothing downstream could see what the status was and act on it. It is
+       * parsed out of the payload where possible so a coded refusal keeps its code too.
+       */
+      const parsed = parseErrorObject(text);
+      throw new MCPCallError(`MCP call '${tool}' failed (${callRes.status}): ${text.slice(0, 300)}`, {
+        code: errorCode(parsed),
+        httpStatus: callRes.status,
+        retryable: callRes.status === 429 || callRes.status >= 500,
+      });
     }
 
     const payload = await consumeSseJson(callRes);
@@ -589,7 +666,11 @@ class LiveMCPClient implements MCPClient {
         { code: errorCode(error), retryable: false },
       );
     }
-    return shapeToolResult(result);
+    const shaped = shapeToolResult(result);
+    console.info("[mcp-client] call", {
+      tool, ms: Date.now() - startedAt, keys: Object.keys(shaped),
+    });
+    return shaped;
   }
 }
 
@@ -657,20 +738,58 @@ function errorMessage(value: Record<string, unknown>): string | null {
   return null;
 }
 
-function shapeToolResult(result: any): Record<string, unknown> {
-  if (result?.structuredContent && typeof result.structuredContent === "object") {
-    return result.structuredContent as Record<string, unknown>;
-  }
-  const text = extractText(result);
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+const WRAP_KEYS = new Set(["result", "data", "payload", "output"]);
+
+/**
+ * MCP CallToolResult → the financial object the normalizer reads.
+ *
+ * JSON-RPC already peeled `payload.result`. Some tools still arrive double-wrapped
+ * (`{ result: { allowed: true } }`, or the JSON string in `content[].text`), and a
+ * capability then reports "no supported display fields" next to a successful read.
+ * Unwrap here once rather than in every catalogue branch.
+ */
+export function unwrapToolData(value: unknown, depth = 0): Record<string, unknown> {
+  if (depth > 4) return isPlainObject(value) ? value : { result: value };
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return {};
+    try {
+      return unwrapToolData(JSON.parse(text), depth + 1);
+    } catch {
+      return { result: text };
     }
-    return { result: parsed };
-  } catch {
-    return { result: text };
   }
+  if (!isPlainObject(value)) return { result: value };
+
+  if (isPlainObject(value.structuredContent)) {
+    return unwrapToolData(value.structuredContent, depth + 1);
+  }
+
+  const hasFactKeys = "allowed" in value || "can_withdraw" in value || "can_borrow" in value
+    || "collateral_usd" in value || "debt_usd" in value || "health_factor" in value
+    || "collateral" in value || "debt" in value || "total_debt_usd" in value
+    || "total_value_usd" in value || "price_usd" in value || "is_healthy" in value
+    || "liquidatable" in value || "unpriceable_plain" in value;
+  if (!hasFactKeys && Array.isArray(value.content)) {
+    const text = extractText(value);
+    if (text) return unwrapToolData(text, depth + 1);
+  }
+
+  const keys = Object.keys(value);
+  const wrapKey = keys.find((key) => WRAP_KEYS.has(key));
+  const inner = wrapKey ? value[wrapKey] : undefined;
+  if (!hasFactKeys && inner !== undefined && (isPlainObject(inner) || typeof inner === "string")) {
+    return unwrapToolData(inner, depth + 1);
+  }
+  return value;
+}
+
+function shapeToolResult(result: any): Record<string, unknown> {
+  return unwrapToolData(result);
 }
 
 // ── factory ─────────────────────────────────────────────────────────────────

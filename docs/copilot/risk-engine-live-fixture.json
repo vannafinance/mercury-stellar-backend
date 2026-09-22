@@ -1,0 +1,289 @@
+{
+  "network": "testnet",
+  "registry": "CBBQQULN3XZDWDZG7D6VYD4UQKBGYH22DOFQEISKENCMZTYUPQ5LDXUO",
+  "contract": "CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY",
+  "wasmHash": "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960",
+  "resolutionLedger": 4571801,
+  "checkedAt": "2026-09-08T15:49:52.562Z",
+  "probes": [
+    {
+      "balanceWad": "109000000000000000000",
+      "debtWad": "100000000000000000000",
+      "ledger": 4571804,
+      "result": false,
+      "error": null
+    },
+    {
+      "balanceWad": "110000000000000000000",
+      "debtWad": "100000000000000000000",
+      "ledger": 4571804,
+      "result": false,
+      "error": null
+    },
+    {
+      "balanceWad": "111000000000000000000",
+      "debtWad": "100000000000000000000",
+      "ledger": 4571804,
+      "result": true,
+      "error": null
+    },
+    {
+      "balanceWad": "0",
+      "debtWad": "0",
+      "ledger": 4571804,
+      "result": true,
+      "error": null
+    },
+    {
+      "balanceWad": "0",
+      "debtWad": "9999999999999999",
+      "ledger": 4571804,
+      "result": false,
+      "error": null
+    },
+    {
+      "balanceWad": "0",
+      "debtWad": "10000000000000000",
+      "ledger": 4571804,
+      "result": false,
+      "error": null
+    }
+  ],
+  "account": {
+    "address": "CDNGNLGLM5PK4PQ2XDA66W7JDQT3FKDLDGJ7XOBHQXEVRQR5U4PJFV3C",
+    "reads": [
+      {
+        "method": "get_all_collateral_tokens",
+        "ledger": 4571801,
+        "value": [
+          "AQUSDC",
+          "XLM",
+          "USDC",
+          "BLEND_USDC",
+          "SOUSDC"
+        ],
+        "error": null
+      },
+      {
+        "symbol": "AQUSDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4571801,
+        "value": "1205417624600000000000",
+        "error": null
+      },
+      {
+        "symbol": "XLM",
+        "method": "get_collateral_token_balance",
+        "ledger": 4571801,
+        "value": "9730177192900000000000",
+        "error": null
+      },
+      {
+        "symbol": "USDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4571801,
+        "value": "1202640000000000000000",
+        "error": null
+      },
+      {
+        "symbol": "BLEND_USDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4571801,
+        "value": "0",
+        "error": null
+      },
+      {
+        "symbol": "SOUSDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4571801,
+        "value": "40000000000000000000",
+        "error": null
+      },
+      {
+        "method": "get_all_borrowed_tokens",
+        "ledger": 4571802,
+        "value": [
+          "XLM",
+          "USDC"
+        ],
+        "error": null
+      },
+      {
+        "method": "get_current_total_balance",
+        "ledger": 4571802,
+        "value": "4351587526837229373198",
+        "error": null
+      },
+      {
+        "method": "get_current_total_borrows",
+        "ledger": 4571802,
+        "value": "2819633657918416916170",
+        "error": null
+      },
+      {
+        "method": "get_oracle_contract_address",
+        "ledger": 4571802,
+        "value": "CAYHPE4U54GDKULPRHYJZNDMBAJDQ3UNQ446KFYMJ5HABBPORERZCRWB",
+        "error": null
+      },
+      {
+        "symbol": "XLM",
+        "method": "get_price_latest",
+        "ledger": 4571802,
+        "value": [
+          "19148966724914",
+          14
+        ],
+        "error": null
+      },
+      {
+        "symbol": "USDC",
+        "method": "get_price_latest",
+        "ledger": 4571802,
+        "value": [
+          "100017454670679",
+          14
+        ],
+        "error": null
+      },
+      {
+        "method": "get_tracking_token_contract_addr",
+        "ledger": 4571803,
+        "value": "CC4P2DC4J3DTKNL7CQB42S3JSZNIVVHFJEMHZWTSDR233CT6O2KK7ZK2",
+        "error": null
+      },
+      {
+        "method": "balance",
+        "ledger": 4571803,
+        "value": "377502105",
+        "error": null
+      },
+      {
+        "method": "is_borrow_allowed",
+        "ledger": 4571803,
+        "value": true,
+        "error": null
+      },
+      {
+        "method": "is_withdraw_allowed",
+        "ledger": 4571803,
+        "value": true,
+        "error": null
+      }
+    ],
+    "valuationReads": [
+      {
+        "method": "get_current_total_balance",
+        "ledger": 4571803,
+        "value": "4351587526837229373198",
+        "error": null
+      },
+      {
+        "method": "get_current_total_borrows",
+        "ledger": 4571803,
+        "value": "2819633744226229181336",
+        "error": null
+      },
+      {
+        "symbol": "AQUSDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4571803,
+        "value": "1205417624600000000000",
+        "error": null
+      },
+      {
+        "symbol": "XLM",
+        "method": "get_collateral_token_balance",
+        "ledger": 4571803,
+        "value": "9730177192900000000000",
+        "error": null
+      },
+      {
+        "symbol": "USDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4571803,
+        "value": "1202640000000000000000",
+        "error": null
+      },
+      {
+        "symbol": "BLEND_USDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4571803,
+        "value": "0",
+        "error": null
+      },
+      {
+        "symbol": "SOUSDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4571803,
+        "value": "40000000000000000000",
+        "error": null
+      },
+      {
+        "symbol": "XLM",
+        "method": "get_price_latest",
+        "ledger": 4571803,
+        "value": [
+          "19148966724914",
+          14
+        ],
+        "error": null
+      },
+      {
+        "symbol": "USDC",
+        "method": "get_price_latest",
+        "ledger": 4571803,
+        "value": [
+          "100017454670679",
+          14
+        ],
+        "error": null
+      },
+      {
+        "method": "balance",
+        "ledger": 4571803,
+        "value": "377502105",
+        "error": null
+      },
+      {
+        "method": "get_reserve",
+        "ledger": 4571803,
+        "value": {
+          "asset": "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
+          "config": {
+            "c_factor": 9500000,
+            "decimals": 7,
+            "enabled": true,
+            "index": 3,
+            "l_factor": 9500000,
+            "max_util": 9500000,
+            "r_base": 5000,
+            "r_one": 300000,
+            "r_three": 10000000,
+            "r_two": 1000000,
+            "reactivity": 20,
+            "supply_cap": "170141183460469231731687303715884105727",
+            "util": 7000000
+          },
+          "data": {
+            "b_rate": "1056080210812",
+            "b_supply": "1224272478245",
+            "backstop_credit": "1405783058",
+            "d_rate": "1069569864039",
+            "d_supply": "927309179584",
+            "ir_mod": "1740969",
+            "last_time": "1788882602"
+          },
+          "scalar": "10000000"
+        },
+        "error": null
+      },
+      {
+        "method": "decimals",
+        "ledger": 4571803,
+        "value": 7,
+        "error": null
+      }
+    ]
+  }
+}

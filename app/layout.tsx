@@ -9,13 +9,16 @@ import { LedgerSubscriberProvider } from "@/contexts/ledger-subscriber";
 import { PriceProvider } from "@/contexts/price-context";
 import { AppPrivyProvider } from "@/contexts/privy-provider";
 import { PageContextProvider } from "@/contexts/page-context";
+import { InvestigationProvider } from "@/contexts/investigation-context";
+import { WorkflowProvider } from "@/contexts/workflow-context";
+import { WalletSignerAttach } from "@/components/copilot/wallet-signer-attach";
+import { FreighterWalletSession } from "@/components/copilot/freighter-wallet-session";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
 import { TransactionProgressModal } from "@/components/ui/transaction-progress-modal";
 import { MarginAccountHydrator } from "@/components/margin-account-hydrator";
 import { AssistantLauncher } from "@/components/copilot/assistant-launcher";
 import { AnalyticsPrefetcher } from "@/components/analytics-prefetcher";
-import { isCopilotEnabled } from "@/lib/copilot/enabled";
 
 // Self-hosted, preloaded by next/font (no render-blocking external request, so
 // it helps LCP). `display: "swap"` paints text immediately with a fallback and
@@ -64,7 +67,7 @@ export const metadata: Metadata = {
   authors: [{ name: "Vanna" }],
   creator: "Vanna",
   alternates: { canonical: "/" },
-  icons: { icon: "/logos/vanna-icon.png" },
+  icons: { icon: "/favicon.ico" },
   openGraph: {
     type: "website",
     siteName: "Vanna Protocol",
@@ -106,14 +109,24 @@ export default function RootLayout({
               <LedgerSubscriberProvider>
                 <PriceProvider>
                   <PageContextProvider>
-                    <MarginAccountHydrator />
-                    <AnalyticsPrefetcher />
-                    <Navbar items={navbarItems}/>
-                    <ScaleWrapper>{children}</ScaleWrapper>
-                    <AppToaster />
-                    <TransactionProgressModal />
-                    {/* Outside ScaleWrapper so fixed FAB is not CSS-transform scaled */}
-                    {isCopilotEnabled() && <AssistantLauncher />}
+                    {/* Holds the copilot run above the router, so navigating away from
+                        /copilot unmounts the page but not the investigation. */}
+                    <InvestigationProvider>
+                      <WorkflowProvider>
+                        <MarginAccountHydrator />
+                        {/* Attaching the Vanna signer belongs to connecting, not to
+                            auto-approve — see the component docstring. */}
+                        <WalletSignerAttach />
+                        <FreighterWalletSession />
+                        <AnalyticsPrefetcher />
+                        <Navbar items={navbarItems}/>
+                        <ScaleWrapper>{children}</ScaleWrapper>
+                        <AppToaster />
+                        <TransactionProgressModal />
+                        {/* Outside ScaleWrapper so fixed FAB is not CSS-transform scaled */}
+                        <AssistantLauncher />
+                      </WorkflowProvider>
+                    </InvestigationProvider>
                   </PageContextProvider>
                 </PriceProvider>
               </LedgerSubscriberProvider>

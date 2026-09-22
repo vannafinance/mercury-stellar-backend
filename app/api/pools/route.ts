@@ -1,24 +1,16 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
 import { getAllPoolStats } from "@/lib/pool-stats";
 
 // Node runtime (Stellar SDK). Pool stats are identical for every user, so the
-// edge cache hit-rate is high — short TTL so post-supply/withdraw UIs catch up
-// within ~1–2s instead of waiting on a 30s CDN window.
+// edge cache hit-rate is high — longer TTL than the per-account snapshot.
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const pools = await getAllPoolStats();
-    // `?fresh=1` is used by post-tx resync — bypass CDN so the client sees
-    // the just-confirmed supply/withdraw totals immediately.
-    const fresh = req.nextUrl.searchParams.get("fresh") === "1";
     return NextResponse.json(pools, {
-      headers: {
-        "Cache-Control": fresh
-          ? "no-store"
-          : "public, s-maxage=5, stale-while-revalidate=30",
-      },
+      headers: { "Cache-Control": "public, s-maxage=30, stale-while-revalidate=120" },
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : "pool stats failed";

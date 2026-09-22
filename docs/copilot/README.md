@@ -4,6 +4,8 @@ Reference for the agent-native copilot: what it is, the path a message takes, wh
 does what, and where each safety property lives.
 
 Companion docs:
+- [FLASH_AGENT_UPGRADE_PLAN.md](./FLASH_AGENT_UPGRADE_PLAN.md) — phased migration to a
+  Gemini Flash investigation loop; includes current implementation and verification status.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — the same system as diagrams: services, message
   path, write and plan lifecycles, identity, multi-leg execution.
 - [GUARDRAILS.md](./GUARDRAILS.md) — every refusal and safety gate, which file owns it, and
@@ -41,8 +43,20 @@ risk and spend policy. Every time this rule has been bent, the bug that followed
 | Surface | Where | What it answers |
 |---|---|---|
 | **Copilot workspace** | `/copilot` — `components/copilot/copilot-workspace.tsx` | The full agent: intent → plan → approve → execute → receipt |
-| **Page assistant** | "Ask about this page" on any page — `lib/copilot/concept.ts`, `page-agent.ts` | Explains the screen and Vanna concepts. No MCP access, no writes |
+| **Page assistant** | "Ask about this page" on any page — `lib/copilot/concept.ts`, `page-agent.ts` | Explains the screen, the numbers it renders, and why the last attempt failed. No writes |
 | **HTTP API** | `POST /api/copilot` — `app/api/copilot/route.ts` | Same brain, no UI. What the test harnesses drive |
+
+What the page assistant is given: semantic page context plus the DOM's own metrics and
+tables, the user's text selection or drawn region, any pasted screenshot, and the last 5
+classified session events — `wallet_rejected`, `simulation_failed`, `unsigned_xdr`,
+`submitted_unconfirmed`, `horizon_failed`. Those events plus a read-only tx lookup are how
+it answers "why did that fail" from what actually happened instead of from a plausible
+guess; the lookup is the only chain read on this surface. It still never signs, submits,
+enables auto-sign, or re-plans a write — the `surface: "assistant"` gates stay.
+
+`data-copilot-id` is the contract for highlight and scroll targets: `highlightElement` and
+`scrollToSection` resolve against it, and adding one to a new control is the whole of what
+makes that control pointable.
 
 The split matters: the page assistant has **no** live account access. Sending an account
 question there produces "I do not have access to your live positions" while the copilot sits

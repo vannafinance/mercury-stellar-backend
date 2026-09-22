@@ -1,14 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { NextRequest } from "next/server";
 
 /**
  * Contract tests for the GET /api/pools route handler.
  *
  * The route is a thin cache+error wrapper over getAllPoolStats (whose math
  * is covered by tests/lib/pool-stats.test.ts). These tests pin the parts the
- * handler itself owns: the success passthrough shape, Cache-Control (short
- * s-maxage for post-tx freshness, no-store when `?fresh=1`), and the 502
- * error contract.
+ * handler itself owns: the success passthrough shape, the edge Cache-Control
+ * header (high-hit-rate s-maxage=30), and the 502/no-store error contract.
  */
 const mocks = vi.hoisted(() => ({
   getAllPoolStats: vi.fn(),
@@ -37,8 +35,6 @@ const allPools = () => ({
   SOROSWAP_USDC: poolStat(),
 });
 
-const req = (url = "http://localhost/api/pools") => new NextRequest(url);
-
 describe("GET /api/pools", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -48,7 +44,7 @@ describe("GET /api/pools", () => {
     const pools = allPools();
     mocks.getAllPoolStats.mockResolvedValue(pools);
 
-    const res = await GET(req());
+    const res = await GET();
     expect(res.status).toBe(200);
 
     const body = await res.json();
@@ -64,25 +60,18 @@ describe("GET /api/pools", () => {
     }
   });
 
-  it("sets a short edge-cache header (pool stats are identical per user)", async () => {
+  it("sets the long edge-cache header (pool stats are identical per user)", async () => {
     mocks.getAllPoolStats.mockResolvedValue(allPools());
-    const res = await GET(req());
+    const res = await GET();
     expect(res.headers.get("Cache-Control")).toBe(
-      "public, s-maxage=5, stale-while-revalidate=30",
+      "public, s-maxage=30, stale-while-revalidate=120",
     );
-  });
-
-  it("bypasses the edge cache when ?fresh=1 (post-tx resync)", async () => {
-    mocks.getAllPoolStats.mockResolvedValue(allPools());
-    const res = await GET(req("http://localhost/api/pools?fresh=1"));
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
   it("502s with pool_stats_failed + no-store when the chain read throws", async () => {
     mocks.getAllPoolStats.mockRejectedValue(new Error("rpc timeout"));
 
-    const res = await GET(req());
+    const res = await GET();
     expect(res.status).toBe(502);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
 
@@ -93,7 +82,7 @@ describe("GET /api/pools", () => {
 
   it("502 detail falls back to a string when a non-Error is thrown", async () => {
     mocks.getAllPoolStats.mockRejectedValue("boom");
-    const res = await GET(req());
+    const res = await GET();
     expect(res.status).toBe(502);
     expect((await res.json()).detail).toBe("pool stats failed");
   });

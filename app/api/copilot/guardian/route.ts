@@ -21,7 +21,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMcpClient } from "@/lib/copilot/mcp-client";
 import { executeMcpWrite, mapOpToMcpStep } from "@/lib/copilot/mcp-write";
-import { isCopilotEnabled } from "@/lib/copilot/enabled";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -223,9 +222,6 @@ async function runOneCheck(opts: {
 }
 
 export async function POST(req: NextRequest) {
-  if (!isCopilotEnabled()) {
-    return NextResponse.json({ error: "not found" }, { status: 404 });
-  }
   if (!authOk(req)) {
     return NextResponse.json(
       { error: "unauthorized", message: "Missing or invalid x-guardian-secret / CRON_SECRET." },
@@ -313,9 +309,6 @@ export async function POST(req: NextRequest) {
 
 /** Health ping / batch via GET for simple schedulers */
 export async function GET(req: NextRequest) {
-  if (!isCopilotEnabled()) {
-    return NextResponse.json({ error: "not found" }, { status: 404 });
-  }
   if (!authOk(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }

@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, copilot-upgrade]
   push:
-    branches: [main, dev]
+    branches: [main, dev, copilot-upgrade]
 
 jobs:
   verify:
@@ -28,6 +28,8 @@ jobs:
       # Hard gates — must pass to merge.
       - name: Type-check
         run: npx tsc --noEmit
+      - name: Investigation eval
+        run: npx vitest run tests/lib/investigation-eval.test.ts
       - name: Build
         run: npm run build
 

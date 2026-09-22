@@ -26,18 +26,15 @@
  *   - The venue badge per step. Earn / margin / farm are different products, and
  *     confusing them is the most expensive mistake available here, so each step says
  *     which one it touches before the user commits.
- *   - The quote-validity clock. Plans are built on live prices and health, and the
- *     server refuses one older than five minutes. Showing the countdown means expiry
- *     is visible rather than arriving as a rejection after pressing Approve.
+ *   - Waiting to Approve is not a timeout. Approve re-reads live funds; this card
+ *     stays clickable until the user acts (or an abandoned plan is retired after a day).
  *
  * A missing amount renders as "amount to be confirmed", never blank or 0 — the server
  * will ask for it mid-execution, after earlier legs have already settled.
  */
 
-import { useEffect, useMemo, useState } from "react";
-
-/** Mirrors PLAN_TTL_MS in lib/copilot/plan-approval.ts. */
-const PLAN_TTL_MS = 5 * 60_000;
+import { useMemo } from "react";
+import { PLAN_TTL_MS } from "@/lib/copilot/plan-ttl";
 
 export type PlanVenue = "earn" | "margin" | "farm" | "wallet" | "other";
 
@@ -165,19 +162,7 @@ export function PlanApprovalCard({
   autoPending = false,
   sessionSigning = false,
 }: PlanApprovalCardProps) {
-  // Tick once a second so the validity clock counts down live.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
-
-  const msLeft = Math.max(0, plan.created_at + PLAN_TTL_MS - now);
-  const expired = msLeft <= 0;
-  const urgent = !expired && msLeft < 60_000;
-  const clock = `${String(Math.floor(msLeft / 60_000)).padStart(2, "0")}:${String(
-    Math.floor((msLeft % 60_000) / 1000),
-  ).padStart(2, "0")}`;
+  const expired = Date.now() - plan.created_at > PLAN_TTL_MS;
 
   const meta = useMemo(() => {
     const stepCount = plan.steps.length;
@@ -216,16 +201,8 @@ export function PlanApprovalCard({
         ? "Auto-approving…"
         : "Approve & run";
 
-  const clockColor = expired
-    ? "var(--pc-danger-fg)"
-    : urgent
-      ? "var(--pc-warn-fg)"
-      : "var(--pc-heading)";
-  const clockLabelColor = expired
-    ? "var(--pc-danger-fg)"
-    : urgent
-      ? "var(--pc-warn-fg)"
-      : "var(--pc-muted)";
+  const clockColor = expired ? "var(--pc-danger-fg)" : "var(--pc-heading)";
+  const clockLabelColor = expired ? "var(--pc-danger-fg)" : "var(--pc-muted)";
 
   const showNotices = expired || plan.warnings.length > 0;
 
@@ -241,7 +218,7 @@ export function PlanApprovalCard({
         padding: "20px 22px 18px",
       }}
     >
-      {/* header: stage label, validity clock */}
+      {/* header: stage label, waiting is not a timeout */}
       <div className="flex items-center justify-between gap-5">
         <p
           className="m-0 uppercase"
@@ -264,11 +241,6 @@ export function PlanApprovalCard({
           }}
         >
           <span
-            style={{ fontSize: 17, fontWeight: 700, letterSpacing: ".02em" }}
-          >
-            {clock}
-          </span>
-          <span
             className="uppercase"
             style={{
               fontSize: 10,
@@ -276,7 +248,7 @@ export function PlanApprovalCard({
               color: clockLabelColor,
             }}
           >
-            {expired ? "expired" : "quote valid"}
+            {expired ? "expired" : "live check on approve"}
           </span>
         </p>
       </div>
@@ -590,8 +562,8 @@ export function PlanApprovalCard({
               >
                 !
               </span>
-              Prices moved while this plan sat idle — ask again for a fresh
-              quote.
+              This plan sat unused for more than a day — ask again for a fresh
+              one.
             </p>
           ) : null}
           {plan.warnings.map((text) => (

@@ -1,5 +1,3 @@
-import { isCopilotEnabled } from "@/lib/copilot/enabled";
-
 export const navbarItems = [
   { title: "Portfolio", link: "/portfolio", group: "primary" },
   { title: "Earn", link: "/earn", group: "primary" },
@@ -7,9 +5,7 @@ export const navbarItems = [
   { title: "Trade", link: "/trade" , group: "bordered"  },
   { title: "Farm", link: "/farm", group: "bordered" },
   { title: "Analytics", link: "/analytics/overview2", group: "secondary" },
-  ...(isCopilotEnabled()
-    ? [{ title: "Copilot", link: "/copilot", group: "secondary" }]
-    : []),
+  { title: "Copilot", link: "/copilot", group: "secondary" },
 ];
 
 export const tradeItems = [

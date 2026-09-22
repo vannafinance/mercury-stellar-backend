@@ -40,13 +40,22 @@ const tokenPrice = (token: string): number => getCachedTokenPrice(token);
 // leaving the next caller to join the same hung promise.
 const SNAPSHOT_HARD_TIMEOUT_MS = 12_000;
 
+/** Firing at 12s is correct. Callers that handle this must not log it at error level. */
+export class SnapshotTimeoutError extends Error {
+  constructor(label: string, ms: number) {
+    super(`${label} timed out after ${ms}ms`);
+    this.name = "SnapshotTimeoutError";
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    }),
-  ]);
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new SnapshotTimeoutError(label, ms)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 const canonicalMarginToken = (token: string): string => {
@@ -164,7 +173,23 @@ async function fetchBorrowRate(borrowedBalances: Balances, effectiveDebtValue: n
  */
 export async function computeMarginSnapshot(
   marginAccountAddress: string,
-  opts?: { onPartial?: (p: PartialSnapshot) => void },
+  opts?: {
+    onPartial?: (p: PartialSnapshot) => void;
+    /**
+     * Set by a caller that knows about an on-chain event the answer must include — a
+     * settled transaction hash.
+     *
+     * The in-flight map below exists to stop several views triggering the same read at
+     * once, and it hands every joiner the state as of when that read STARTED. A snapshot
+     * that began before a transaction settled therefore satisfied the request made after
+     * it, and the caller could not tell: the copilot's own impact card opened at a health
+     * factor of 49.41 while the rail beside it, refreshed a moment later, read 59.40.
+     *
+     * A caller holding a newer event cannot be served an older read, so it starts its own
+     * instead of joining. Every other caller keeps sharing as before.
+     */
+    freshAfter?: string | null;
+  },
 ): Promise<MarginSnapshot> {
   const label = `computeMarginSnapshot(${marginAccountAddress})`;
   // Progressive callers need their own onPartial callback. The route and
@@ -173,7 +198,9 @@ export async function computeMarginSnapshot(
     return withTimeout(computeMarginSnapshotUncached(marginAccountAddress, opts), SNAPSHOT_HARD_TIMEOUT_MS, label);
   }
   const existing = snapshotInflight.get(marginAccountAddress);
-  if (existing) return existing;
+  // Any read already in flight began before this caller learned of its event, so none of
+  // them can be guaranteed to contain it.
+  if (existing && !opts?.freshAfter) return existing;
   const run = withTimeout(computeMarginSnapshotUncached(marginAccountAddress), SNAPSHOT_HARD_TIMEOUT_MS, label);
   snapshotInflight.set(marginAccountAddress, run);
   try {

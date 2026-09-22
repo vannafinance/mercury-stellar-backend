@@ -2,10 +2,9 @@
 
 // Vanna Copilot workspace — Gemini understands intent; MCP executes.
 //
-// Layout follows the Copilot design: a full-width intent composer, a left-column
-// turn card (agent-run → answer / staged / executed), an independent session log
-// beneath that card, and a right rail with live account health, open positions,
-// autonomy, and on-chain writes.
+// Layout follows the Copilot design: a full-width intent composer, a turn card
+// (agent-run → answer / staged / executed), and account health under that. Auto-approve
+// sits in the header next to New chat and History.
 //
 // Theming: every surface/border/text colour comes from the app's own dark-aware
 // tokens (`surface`, `vgray-*`, `shadow-vanna`), so the page follows the global
@@ -16,10 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight,
-  LayoutTemplate,
-  X,
   Loader2,
-  Sparkles,
   Check,
   CircleAlert,
   ShieldCheck,
@@ -33,14 +29,13 @@ import {
   refreshBorrowedBalances,
   isSnapshotFeedSuppressed,
 } from "@/store/margin-account-info-store";
-import { useCopilotSettingsStore, setAutoApprove } from "@/store/copilot-settings";
+import { setAutoApprove, useCopilotSettingsStore } from "@/store/copilot-settings";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import type { Simulation as ServerSimulation } from "@/lib/copilot/types";
 import { liveUsdLabel, oracleSwapRateLabel } from "@/lib/copilot/swap-quote";
-import { farmReceiptLine } from "@/lib/copilot/execution-copy";
 import {
   isBadSequenceError,
   isSignableXdr,
@@ -52,7 +47,11 @@ import {
 import {
   hopAutoSubmitKey,
   promoteSignableAutoSignResponse,
+  shouldArmAutoApprove,
+  shouldAutoApproveProposedWorkflow,
   shouldSessionAutoSubmit,
+  signServiceFromSessionRead,
+  preserveLastConclusiveSignState,
 } from "./session-auto-sign";
 import {
   claimFirstAwaitingLeg,
@@ -69,18 +68,33 @@ import {
   strategyIsComplete,
 } from "./resume-policy";
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
-import { localExecutionAnswer } from "@/lib/copilot/execution-receipt";
+import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { answerToText } from "@/lib/copilot/answer-schema";
+import { shortWriteLabel } from "@/lib/copilot/execution-copy";
 import { executeClientTools } from "@/lib/assistant/client-tools";
-import { getPrivyAuthControls } from "@/lib/wallet-adapter";
+import { getPrivyAuthControls, signTransaction as signWorkflowTransaction } from "@/lib/wallet-adapter";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
 import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-card";
 import { HealthDial } from "./health-dial";
 import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
+import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
 import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
+import { PLAN_TTL_MS } from "@/lib/copilot/plan-ttl";
+import { claimDispatch, releaseDispatch } from "@/lib/copilot/dispatch-once";
 import { lpSides } from "@/lib/copilot/lp-pair";
-import { AnswerView } from "./answer-view";
+import { AssistantMessage, UserBubble, ChatTurns } from "./chat-message";
+import { ExecutionStepper } from "./execution-stepper";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
+import { useLiveInvestigation } from "@/contexts/investigation-context";
+import { CopilotShell } from "./copilot-shell";
+import { CopilotRailTop, CopilotRailBody, CopilotRailMini } from "./copilot-rail";
+import { useCopilotEntry } from "@/hooks/use-copilot-entry";
+import { useLiveWorkflow } from "@/contexts/workflow-context";
+import { InvestigationCard } from "./investigation-card";
+import { ConversationMenu } from "./conversation-menu";
+import { AutoApproveMenu } from "./auto-approve-menu";
+import { shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
   status: string;
@@ -90,7 +104,11 @@ interface BrainHealth {
   in_process?: boolean;
   execution_mode?: string;
   /** "developer_login" means routing depends on this machine's `gcloud auth login`. */
-  vertex_auth?: "workload_identity" | "service_account" | "developer_login";
+  vertex_auth?:
+    | "workload_identity"
+    | "service_account"
+    | "attached_service_account"
+    | "developer_login";
 }
 
 interface AutoSignPrompt {
@@ -215,100 +233,70 @@ interface ChatResponse {
   } | null;
 }
 
-/** Idle-state cards: what the agent can actually run, with the MCP tool behind each. */
-const CAPABILITIES: Array<{ tag: string; tone: "read" | "write" | "multi"; label: string; tool: string }> = [
-  { tag: "read", tone: "read", label: "What's my health factor?", tool: "vanna_get_account_health" },
-  { tag: "read", tone: "read", label: "How is the USDC pool doing?", tool: "vanna_get_pool_stats" },
-  { tag: "write", tone: "write", label: "Deposit 5 XLM as collateral", tool: "vanna_deposit_collateral" },
-  {
-    tag: "write · multi-leg",
-    tone: "multi",
-    label: "Swap 10 XLM to AQUSDC then add liquidity in Aquarius",
-    tool: "multi_leg_agent",
-  },
-];
-
-const PROMPTS: Record<string, string[]> = {
-  market: ["Price of XLM", "USDC pool stats", "Blend USDC reserve APY", "List protocol addresses"],
-  "my account": [
-    "What's my health factor?",
-    "How much collateral do I have?",
-    "How much do I owe?",
-    "Can I borrow 20 USDC?",
-  ],
-  actions: [
-    "Open a margin account",
-    "Deposit 5 XLM",
-    "Lend 5 USDC",
-    "Borrow 2 USDC",
-    "Repay 5 BLUSDC then deposit 10 XLM as collateral",
-    // Reported live: "Swap 10 XLM to BLUSDC then farm Blend" was one of the product's
-    // own suggested prompts, and BLUSDC trades on no AMM — the suggestion itself was
-    // statically impossible (see staticStepBlocker, mcp-write.ts). Replaced with a
-    // strategy that actually executes: AQUSDC is swappable on Aquarius and Aquarius LP
-    // is what "add liquidity" is for.
-    "Swap 10 XLM to AQUSDC then add liquidity in Aquarius",
-    "Enable auto-sign",
-  ],
-};
-
 /**
- * Suggested next prompt — a shortcut, not a claim about the answer. Keyed by the
- * `template_id` reads come back with, which is the MCP tool name.
- */
-const FOLLOW_UP: Record<string, string> = {
-  vanna_get_price: "USDC pool stats",
-  vanna_get_prices_batch: "USDC pool stats",
-  vanna_get_pool_stats: "Lend 5 USDC",
-  vanna_get_blend_reserve_stats: "Lend 5 USDC",
-  vanna_get_account_health: "Can I borrow 20 USDC?",
-  // No canned "Repay N USDC" here on purpose. "How much do I owe?" (no asset named,
-  // several different borrowed assets) suggested "Repay 2 USDC" — a placeholder with no
-  // relation to the real total just shown above it, since a multi-asset debt has no
-  // single figure to repay. `followUpFor` below already builds an accurate "Repay X
-  // SYMBOL" whenever the question narrowed to exactly one asset; a canned fallback here
-  // would only ever fire for the multi-asset case this same placeholder used to mislead.
-  vanna_get_collateral: "What's my health factor?",
-  vanna_can_borrow: "Borrow 2 USDC",
-  vanna_get_max_borrow: "Borrow 2 USDC",
-  vanna_get_wallet_balance: "Deposit 5 XLM as collateral",
-  // DOM-grounded page assist — optional bridge to live account data
-  page_assist: "What is my health factor?",
-};
-
-/**
- * The follow-up must offer what the user actually asked about.
+ * Derive an actionable follow-up prompt dynamically from the rendered answer and intent.
  *
- * The map above is a set of canned examples, so "Can I borrow 20 USDC?" — answered yes —
- * offered "Borrow 2 USDC". Nothing was truncating the 20; the suggestion simply never looked
- * at the question, and 2 is what the example happened to say. Answering a question about 20
- * and then proposing 2 reads as though the check came back with a smaller number.
- *
- * The router already resolves the amount and asset into `intent.slots`, so the verb comes
- * from the template and the quantity comes from what was asked. Anything without both slots
- * keeps its canned example, which is still the right prompt for a read that named no amount.
+ * Rules:
+ * 1. Zero hardcoded maps (no canned sentences, no invented amounts).
+ * 2. Never suggest a write after a pure read (e.g. wallet balance or price).
+ * 3. Never invent magic amounts (e.g. "Deposit 5 XLM" or "Borrow 2 USDC").
+ * 4. Only suggest an action when grounded in the live figures of the answer or
+ *    the verified amount/asset from an actionable capacity check.
+ * 5. If no valid, grounded next step exists, return undefined (show none).
  */
-const AMOUNT_VERB: Record<string, string> = {
-  vanna_can_borrow: "Borrow",
-  vanna_get_max_borrow: "Borrow",
-  vanna_get_debt: "Repay",
-  vanna_get_pool_stats: "Lend",
-  vanna_get_blend_reserve_stats: "Lend",
-};
-
-function followUpFor(
-  intent: { template_id?: string | null; slots?: Record<string, unknown> } | null | undefined,
+export function followUpFor(
+  answer?: StructuredAnswer | null,
+  intent?: { template_id?: string | null; slots?: Record<string, unknown> } | null,
 ): string | undefined {
-  const templateId = intent?.template_id;
-  if (!templateId) return undefined;
-  const verb = AMOUNT_VERB[templateId];
+  if (!intent && !answer) return undefined;
+
   const slots = (intent?.slots ?? {}) as Record<string, unknown>;
-  const amount = slots.amount;
-  const symbol = slots.symbol ?? slots.asset;
-  if (verb && amount != null && amount !== "" && typeof symbol === "string" && symbol) {
-    return `${verb} ${amount} ${symbol}`;
+  const templateId = intent?.template_id ?? "";
+
+  // If the user performed an actionable capacity check (e.g. "Can I borrow 20 XLM?"),
+  // the amount and asset come directly from their query, never invented.
+  if (templateId === "query_can_borrow" || templateId === "vanna_can_borrow") {
+    const amount = slots.amount;
+    const symbol = slots.symbol ?? slots.asset;
+    if (amount != null && amount !== "" && typeof symbol === "string" && symbol) {
+      return `Borrow ${amount} ${symbol}`;
+    }
   }
-  return FOLLOW_UP[templateId];
+
+  // If checking debt for a single asset with a live debt figure from the answer:
+  if (templateId === "query_debt" || templateId === "vanna_get_debt") {
+    const symbol = slots.symbol ?? slots.asset;
+    if (typeof symbol === "string" && symbol && answer?.facts) {
+      const debtFact = answer.facts.find((f) =>
+        /\b(?:debt|borrowed)\b/i.test(f.label),
+      );
+      if (debtFact) {
+        const num = parseFloat(debtFact.value.replace(/,/g, ""));
+        if (Number.isFinite(num) && num > 0) {
+          return `Repay ${debtFact.value} ${symbol}`;
+        }
+      }
+    }
+  }
+
+  // If checking max borrow for a single asset with a live max borrow figure:
+  if (templateId === "query_max_borrow" || templateId === "vanna_get_max_borrow") {
+    const symbol = slots.symbol ?? slots.asset;
+    if (typeof symbol === "string" && symbol && answer?.facts) {
+      const maxFact = answer.facts.find((f) =>
+        /\b(?:max|headroom|available)\b/i.test(f.label),
+      );
+      if (maxFact) {
+        const num = parseFloat(maxFact.value.replace(/,/g, ""));
+        if (Number.isFinite(num) && num > 0) {
+          return `Borrow ${maxFact.value} ${symbol}`;
+        }
+      }
+    }
+  }
+
+  // Otherwise, no canned or invented follow-up
+  return undefined;
 }
 
 // The surface's four status colours, as tokens rather than literals — read by ~60
@@ -492,22 +480,9 @@ function readAutoCaps(): { tx: number; day: number } | null {
 }
 
 /**
- * The two spend budgets the Autonomy card offers.
- *
- * The default's hint does not name a figure. MCP owns `default_cap_usd` and only reports it
- * in the enable response, so printing "$1000 / tx" here would be this UI inventing a policy
- * before the server has stated one — the exact failure in brief §6.6.
+ * Default vs custom spend caps. The default figure is owned by MCP and only
+ * reported after enable — this UI must not print a dollar amount before that.
  */
-const CAPS_CHOICES = [
-  { id: "defaults", label: "Default caps", hint: "the server's own limit · shown once enabled" },
-  { id: "custom", label: "Custom limits", hint: "set your own per-tx and daily caps" },
-] as const;
-
-const CAPS_FIELDS = [
-  { id: "tx", label: "per tx", placeholder: "500", aria: "Per transaction cap in USD" },
-  { id: "day", label: "per day", placeholder: "2000", aria: "Per day cap in USD" },
-] as const;
-
 interface LogLeg {
   label: string;
   tool: string;
@@ -534,15 +509,13 @@ interface LogEntry {
 }
 
 /**
- * How many turns the copilot remembers, and how many it shows before you ask for the rest.
+ * How many turns the copilot remembers.
  *
  * The log used to hold 8 and live in component state, so it was gone on reload — which is
  * why history had to be added rather than merely surfaced. 40 is enough to cover a working
- * session without the stored blob getting large; the visible 8 keeps the card the same size
- * it was.
+ * session without the stored blob getting large.
  */
 const HISTORY_MAX = 40;
-const HISTORY_VISIBLE = 8;
 
 /** localStorage key. Per wallet, because the turns are about that wallet's account. */
 const historyKey = (address: string) => `vanna_copilot_history:${address}`;
@@ -591,14 +564,16 @@ function Eyebrow({
   as?: "h2" | "p";
   children: React.ReactNode;
 }) {
+  /**
+   * Sentence case, the page's own face, no tracking: an all-caps monospace eyebrow with a
+   * middle dot is the commonest tell of a generated page, and it made every panel label
+   * look like a data readout. The stage number stays where the panels are a sequence.
+   */
+  const text = typeof children === "string" ? children.charAt(0).toUpperCase() + children.slice(1) : children;
   return (
-    <Tag className="font-mono text-[11px] font-normal uppercase tracking-[0.25em] text-vgray-400">
-      {n ? (
-        <>
-          <span className="text-violet-500">{n}</span> ·{" "}
-        </>
-      ) : null}
-      {children}
+    <Tag className="text-[12px] font-semibold text-vgray-500">
+      {n ? <span className="mr-1.5 tabular-nums text-violet-500">{n.replace(/^0/, "")}</span> : null}
+      {text}
     </Tag>
   );
 }
@@ -789,39 +764,13 @@ function RiskChip({ decision }: { decision: keyof typeof RISK_TONE }) {
 
 /** The agent-run trace: one line per stage of the turn, with the tool that ran. */
 function StepList({ steps, running }: { steps: Step[]; running: boolean }) {
+  const complete = steps.filter((step) => step.state === "done").length;
+  const active = steps.find((step) => step.state === "active");
   return (
-    <div className="mt-3.5 rounded-2xl border border-vgray-100 bg-vgray-50 px-4 py-1.5 sm:px-[18px]">
-      {steps.map((s, i) => (
-        <div key={i} className="flex items-start gap-3 border-b border-vgray-100 py-[11px] last:border-0">
-          <span className="mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-            <span
-              className={`h-2 w-2 rounded-full ${s.state === "active" ? "animate-pulse" : ""}`}
-              style={{
-                background: s.state === "done" ? OK_INK : s.state === "active" ? ACCENT : "var(--color-vgray-300)",
-                opacity: s.state === "pending" ? 0.45 : 1,
-              }}
-            />
-          </span>
-          <span className="flex min-w-0 flex-1 flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5">
-            <span
-              className={`text-body-2 font-semibold ${s.state === "pending" ? "text-vgray-400" : "text-vgray-900"}`}
-            >
-              {s.label}
-            </span>
-            <span
-              className={`break-all text-right font-mono text-[11px] ${
-                s.state === "pending" ? "text-vgray-300" : "text-vgray-500"
-              }`}
-            >
-              {s.detail}
-            </span>
-          </span>
-        </div>
-      ))}
-      <div className="h-0.5 overflow-hidden">
-        {running && <div className="h-0.5 w-[30%] rounded-full bg-gradient" style={{ animation: "cp-sweep 1.1s ease-in-out infinite" }} />}
-      </div>
-    </div>
+    <p className="mt-3 flex items-center gap-2 text-[13px] leading-[20px] text-vgray-500" role={running ? "status" : undefined}>
+      {running ? <Loader2 size={14} className="shrink-0 animate-spin text-violet-500" /> : <Check size={14} className="shrink-0 text-vgray-400" />}
+      {running ? (active?.label || "Working…") : `Checked ${complete || steps.length} reads`}
+    </p>
   );
 }
 
@@ -1104,6 +1053,25 @@ function isMultiLegResponse(data?: Record<string, unknown> | null): boolean {
   return !!(data && (data.multi_leg === true || Array.isArray(data.multi_leg_steps)));
 }
 
+function isRealStrategyRun(
+  steps: Array<{ op?: string }> | null | undefined,
+  data?: Record<string, unknown> | null,
+): boolean {
+  if (data?.asset_setup === true) return false;
+  const rawSteps = steps && steps.length > 0
+    ? steps
+    : Array.isArray(data?.multi_leg_steps)
+      ? (data!.multi_leg_steps as Array<{ op?: string }>)
+      : [];
+  const nonSetupOps = rawSteps.filter(
+    (s) => s.op && s.op !== "ensure_asset_setup" && s.op !== "asset_setup" && s.op !== "report",
+  );
+  if (rawSteps.length > 0) {
+    return nonSetupOps.length > 1;
+  }
+  return data?.multi_leg === true && ((data?.remaining_legs != null) || ((data?.total_steps as number) ?? 0) > 1);
+}
+
 /**
  * Whether a resume hop response means "this leg was accepted by the server and
  * we may advance the client queue to the next leg".
@@ -1305,9 +1273,7 @@ function FactsGrid({
   }
   if (!rows.length) return null;
   return (
-    <div
-      className="mt-[18px] grid w-full grid-cols-1 gap-x-8 rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4 sm:grid-cols-2"
-    >
+    <div className="mt-[18px] grid w-full grid-cols-1 gap-x-8 border-t border-vgray-100 pt-3 sm:grid-cols-2">
       {/*
        * Reported live: "give my margin account collateral" on a 6-asset account (6
        * summary figures + 6 per-asset amounts = 12 rows) silently lost the two
@@ -1325,11 +1291,71 @@ function FactsGrid({
 }
 
 /**
+ * Project the served simulation onto the account the user is actually looking at.
+ *
+ * The server builds a simulation from a snapshot it takes when the card is built. After a
+ * transaction settles that snapshot is a lap behind: a withdraw card opened at "49.41 →
+ * 54.22" while the rail beside it already read 59.40, and the borrow card before it had
+ * finished at 51.36 against a rail of 51.31. Two health factors on one screen, both
+ * presented as current.
+ *
+ * What the simulation contributes is the EFFECT of the action — the collateral and debt
+ * deltas — which is the part the client cannot compute. The baseline is the account state,
+ * and there is exactly one of those on this page: the store the rail renders from. So the
+ * deltas are re-applied to the live figures and the health factor is recomputed with
+ * `deriveMarginHealth`, the same function the rail uses, which is what makes the two
+ * numbers incapable of disagreeing.
+ *
+ * Falls back to the served simulation whenever the store has no funded account to rebase
+ * onto — an unconnected wallet, or a first paint before the snapshot lands.
+ */
+function rebaseSimulationOnLiveAccount(sim: Simulation): Simulation {
+  // An op that never touches margin has a deliberately empty baseline and its own
+  // message; giving it live collateral would turn "None" into a full no-op projection.
+  if (sim.margin_applicable === false) return sim;
+  const store = useMarginAccountInfoStore.getState();
+  if (!store.hasMarginAccount) return sim;
+  const gross = store.grossCollateralValue ?? 0;
+  const debt = store.totalBorrowedValue ?? 0;
+  if (!(gross > 0) && !(debt > 0)) return sim;
+  if (!Number.isFinite(sim.collateral_before) || !Number.isFinite(sim.debt_before)) return sim;
+
+  const dCollateral = sim.collateral_after - sim.collateral_before;
+  const dDebt = sim.debt_after - sim.debt_before;
+  if (!Number.isFinite(dCollateral) || !Number.isFinite(dDebt)) return sim;
+
+  const collateralAfter = Math.max(0, gross + dCollateral);
+  const debtAfter = Math.max(0, debt + dDebt);
+  const hf = (collateral: number, owed: number): number | null => {
+    if (!(owed > 0.01)) return null;
+    const derived = deriveMarginHealth({
+      grossCollateralValue: collateral,
+      effectiveDebtValue: owed,
+      totalBorrowedValue: owed,
+    });
+    return Number.isFinite(derived.avgHealthFactor) ? derived.avgHealthFactor : null;
+  };
+
+  return {
+    ...sim,
+    collateral_before: gross,
+    collateral_after: collateralAfter,
+    debt_before: debt,
+    debt_after: debtAfter,
+    hf_before: hf(gross, debt),
+    hf_after: hf(collateralAfter, debtAfter),
+    ltv_before: gross > 0 ? debt / gross : 0,
+    ltv_after: collateralAfter > 0 ? debtAfter / collateralAfter : 0,
+  };
+}
+
+/**
  * Before→after projection for a staged write. Informational: the binding gates
  * run in the MCP server and the Sign Service, so this panel only appears when
  * the brain managed to read the account and project the impact.
  */
-function ImpactPanel({ sim }: { sim: Simulation }) {
+function ImpactPanel({ sim: served }: { sim: Simulation }) {
+  const sim = rebaseSimulationOnLiveAccount(served);
   const after = sim.hf_after;
   const color = hfColor(after);
   const rows: Array<{ k: string; before: string; after: string }> = [
@@ -1420,16 +1446,19 @@ function ImpactPanel({ sim }: { sim: Simulation }) {
 
 export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
+  // Lives in the root layout, not here: an in-flight run must survive leaving this page.
+  const investigation = useLiveInvestigation();
+
+  const workflow = useLiveWorkflow();
+  const persistedWorkflowReceiptRef = useRef<string | null>(null);
   const walletKind = useUserStore((s) => s.walletKind);
   const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const hasMarginAccount = useMarginAccountInfoStore((s) => s.hasMarginAccount);
   const storeGrossCollateral = useMarginAccountInfoStore((s) => s.grossCollateralValue);
   const storeCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
   const storeBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
-  const storeNetValue = useMarginAccountInfoStore((s) => s.netAvailableCollateral);
   const storeCollateralBalances = useMarginAccountInfoStore((s) => s.collateralBalances);
   const storeBorrowedBalances = useMarginAccountInfoStore((s) => s.borrowedBalances);
-  const autoApprove = useCopilotSettingsStore((s) => (address ? !!s.autoApproveByWallet[address] : false));
 
   // Same live snapshot feed as margin / portfolio so the right rail tracks
   // real on-chain HF / collateral / debt instead of a one-shot store paint.
@@ -1437,6 +1466,7 @@ export function CopilotWorkspace() {
 
   const [intentText, setIntentText] = useState("");
   const [submitted, setSubmitted] = useState<string | null>(null);
+  const [signingJournal, setSigningJournal] = useState(false);
   /** The prompt the user typed — never replaced by "Approved plan" on resume hops. */
   const originalIntentRef = useRef("");
   /** Collateral/debt tail paused because HF dropped below the stated floor. */
@@ -1459,22 +1489,13 @@ export function CopilotWorkspace() {
   /** Hop keys that already started auto-submit (declared early — used inside signWithWallet). */
   const autoSubmittedRef = useRef<string | null>(null);
   const [health, setHealth] = useState<BrainHealth | null>(null);
-  const [paletteOpen, setPaletteOpen] = useState(false);
   const [customTx, setCustomTx] = useState("500");
   const [customDay, setCustomDay] = useState("2000");
   const [showCustom, setShowCustom] = useState(false);
-  /**
-   * Spend-budget picker lives inside the rail's Autonomy card.
-   *
-   * Turning the switch on used to POST `auto_sign: {action:"start"}`, which answered with
-   * `kind:"needs_auto_sign"` and moved the whole main column to the 03 · AUTO-SIGN gate —
-   * so a rail control silently took over the transcript, and the choice appeared nowhere
-   * near the switch that asked for it. The caps question belongs on the card that owns the
-   * setting; only the confirmed choice goes to MCP.
-   */
-  const [railBudgetOpen, setRailBudgetOpen] = useState(false);
   const [railCapsMode, setRailCapsMode] = useState<"defaults" | "custom">("defaults");
   const [savedCaps, setSavedCaps] = useState<{ tx: number; day: number } | null>(null);
+  /** MCP `default_cap_usd` — shown under Default, never guessed from a custom session. */
+  const [mcpDefaultCap, setMcpDefaultCap] = useState<number | null>(null);
   const [log, setLogRaw] = useState<LogEntry[]>([]);
 
   /**
@@ -1501,7 +1522,6 @@ export function CopilotWorkspace() {
     },
     [],
   );
-  const [showAllHistory, setShowAllHistory] = useState(false);
 
   /**
    * History survives a reload.
@@ -1523,17 +1543,17 @@ export function CopilotWorkspace() {
    * deterministic fingerprint, so the second run updated the first run's row).
    *
    * Nothing was broken in the status mapping: a row only leaves a pre-terminal state when
-   * something reports a terminal one, and an abandoned run never reports anything. Since a
-   * plan's quote is only valid for `PLAN_TTL_MS` (5 min), a staged row that survives a
-   * reload is definitively finished — it just never said so. Applied ONLY on hydration, so
-   * a live run in this tab is never relabelled underneath the user.
+   * something reports a terminal one, and an abandoned run never reports anything. A plan
+   * can wait for Approve for up to a day (`PLAN_TTL_MS`); a staged row older than that is
+   * finished — it just never said so. Applied ONLY on hydration, so a live run in this tab
+   * is never relabelled underneath the user.
    */
   const settleAbandonedRow = (e: LogEntry): LogEntry => {
     const PRE_TERMINAL = new Set(["staged", "needs sign", "in progress", "needs authorization"]);
     if (!PRE_TERMINAL.has(String(e.status))) return e;
-    // Generous margin over the 5-minute plan TTL, so a genuine slow settle is never
+    // Generous margin over the plan TTL, so a genuine wait-to-Approve is never
     // mislabelled — this only catches rows that outlived any possible in-flight run.
-    if (Date.now() - Number(e.ts || 0) < 30 * 60_000) return e;
+    if (Date.now() - Number(e.ts || 0) < PLAN_TTL_MS + 60 * 60_000) return e;
     return {
       ...e,
       status: "not completed",
@@ -1602,7 +1622,6 @@ export function CopilotWorkspace() {
 
   const clearHistory = useCallback(() => {
     setLogRaw([]);
-    setShowAllHistory(false);
     if (!address) return;
     try {
       localStorage.removeItem(historyKey(address));
@@ -1640,10 +1659,47 @@ export function CopilotWorkspace() {
   /** Strategy meta (summary, HF floor, SA) from multi-leg payloads — survives hop clears. */
   const strategyMetaRef = useRef<Record<string, unknown>>({});
   const abortRef = useRef<AbortController | null>(null);
+  /** Bumped when enable/disable lands so an in-flight GET /sessions cannot overwrite it. */
+  const signReadSeq = useRef(0);
   /** Stops chain effect + in-flight fetch without wiping settled log legs. */
   const cancelledRef = useRef(false);
+  /**
+   * "New chat" and "open a conversation" both leave the current plan card behind: the
+   * journal keeps every proposal server-side, the screen shows one conversation at a time.
+   * The direct `/api/copilot` turn lives in this component, not in investigation, so it
+   * has to be cleared here or a "fetch failed" note stays on a blank chat.
+   */
+  const leavePlanCard = useCallback(() => {
+    setSigningJournal(false);
+    workflow.reset();
+    setIntentText("");
+    setSubmitted(null);
+    setResponse(null);
+    setLoading(false);
+    cancelledRef.current = false;
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, [workflow]);
+  const startNewChat = useCallback(() => { leavePlanCard(); investigation.newChat(); }, [leavePlanCard, investigation]);
+  const openConversation = useCallback((id: string) => { leavePlanCard(); void investigation.open(id); }, [leavePlanCard, investigation]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  /**
+   * Grow the intent box to fit its text, capped at six rows.
+   *
+   * Driven by an effect on `intentText` rather than the change handler, because the text is
+   * also set programmatically — a Prompts chip, a reset, restoring the original intent after
+   * a run — and those paths would otherwise leave a multi-line value in a one-row box.
+   */
+  useEffect(() => {
+    const node = inputRef.current;
+    if (!node) return;
+    node.style.height = "auto";
+    const lineHeight = 26;
+    node.style.height = `${Math.min(node.scrollHeight, lineHeight * 6)}px`;
+    node.style.overflowY = node.scrollHeight > lineHeight * 6 ? "auto" : "hidden";
+  }, [intentText]);
   const stagedSectionRef = useRef<HTMLDivElement>(null);
   const lpScrollPendingRef = useRef(false);
   useEffect(() => {
@@ -1776,36 +1832,34 @@ export function CopilotWorkspace() {
     setHfPaused(false);
   }, []);
 
-  // Session signing only applies to Privy embedded wallets — Freighter always
-  // prompts through its extension, so the toggle can't apply there.
-  const sessionSigningAvailable = walletKind === "privy" && !!address;
-  const sessionSigning = sessionSigningAvailable && autoApprove;
+  const storedAutoApprove = useCopilotSettingsStore(
+    (s) => (address ? Boolean(s.autoApproveByWallet[address]) : false)
+  );
+  const freighterAutoApprove = walletKind === "freighter" && Boolean(address) && storedAutoApprove;
+
+  // Session signing via Sign Service applies to Privy embedded wallets.
+  // For Freighter, auto-approve acts as auto-dispatch directly to the extension popup.
+  const sessionSigningAvailable = (walletKind === "privy" || walletKind === "freighter") && !!address;
+
+  const [autoApprovePending, setAutoApprovePending] = useState(false);
 
   /**
-   * What the MCP Sign Service said last time we tried to enable auto-sign.
+   * What the Sign Service last reported for this wallet (`GET /sessions` on
+   * connect, then enable / disable).
    *
-   * Separate from `autoApprove` because they are two different mechanisms and only one of
-   * them currently works. `autoApprove` is in-app session signing: the Privy embedded
-   * wallet signs a staged XDR without a prompt, client-side. The Sign Service is a
-   * server-side signer that would also enforce the spend caps as policy — and it rejects
-   * our machine-to-machine token with `invalid_user_assertion` / "Invalid token audience",
-   * so it is not enforcing anything today.
-   *
-   * The UI conflated the two: enabling auto-approve flipped the switch on and printed
-   * "Caps $1000/tx · $1000/day" next to a visible 401, which claims a policy that does not
-   * exist. Holding the Sign Service's answer separately lets the rail say which half is on.
+   * Auto-approve may arm only when this is `ok`. A client-side cap is not a
+   * policy — calling the API directly would bypass it.
    *
    * `unbound` is a third answer, not a flavour of `unavailable`. "The Sign Service
    * refused our credential" is our fault and the user can do nothing about it;
    * "this wallet is not authorized for Vanna to sign" is a consent they have never
-   * been asked for, and it has a button. Collapsing the two is what made a
-   * `wallet_not_bound` 403 look like an outage and sent the operator round the
-   * reconnect loop — a wallet-connect modal cannot produce a signing binding.
+   * been asked for, and it has a button.
    */
   const [signServiceState, setSignServiceState] = useState<{
+    address: string | null;
     status: "unknown" | "ok" | "unavailable" | "unbound";
     reason: string | null;
-  }>({ status: "unknown", reason: null });
+  }>({ address: null, status: "unknown", reason: null });
 
   /**
    * The in-app consent is running (Privy may be showing its own sheet).
@@ -1816,12 +1870,130 @@ export function CopilotWorkspace() {
    */
   const [bindingInApp, setBindingInApp] = useState(false);
 
-  /** Switch clicked on, budget not yet confirmed — engaged but not asserting a policy. */
-  const autoPending = railBudgetOpen && !sessionSigning;
-  /** Only the per-tx cap is required; a blank daily cap falls back to it in enableAutoSign. */
-  const capsValid = railCapsMode === "defaults" || Number(customTx) > 0;
   /** Whether anything server-side is actually holding the caps. */
-  const capsEnforced = signServiceState.status === "ok";
+  const capsEnforced = signServiceState.address === address && signServiceState.status === "ok";
+
+  /** Whether auto-approve is toggled on in the UI by the user. */
+  const autoApproveUiOn = Boolean(address) && storedAutoApprove;
+
+  // The browser value is the user's intent. The Sign Service session is the
+  // authority, so a switch changed by MCP or remote session sync updates the store.
+  const autoApprove = autoApproveUiOn;
+
+  /**
+   * On wallet connect, read the live Sign Service session. Without this the rail
+   * stayed `unknown` until a successful enable in this tab, so a session that
+   * already existed (another MCP client, or a prior visit) never showed
+   * "Budget active".
+   */
+  useEffect(() => {
+    if (!address || !sessionSigningAvailable) {
+      setSignServiceState({ address: null, status: "unknown", reason: null });
+      return;
+    }
+    let cancelled = false;
+    const seq = ++signReadSeq.current;
+    let readController: AbortController | null = null;
+    setSignServiceState({ address, status: "unknown", reason: null });
+    let attempts = 0;
+    const run = async () => {
+      readController?.abort();
+      const controller = new AbortController();
+      readController = controller;
+      try {
+        const headers = await copilotRequestHeaders();
+        if (cancelled || seq !== signReadSeq.current) return;
+        if (!headers[PRIVY_TOKEN_HEADER]) {
+          if (attempts++ < 12) window.setTimeout(() => { void run(); }, 500);
+          return;
+        }
+        const res = await fetch("/api/copilot", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            user_id: address,
+            tier: "paid",
+            surface: "copilot",
+            auto_sign: { action: "status" },
+          }),
+          signal: controller.signal,
+        });
+        const data = (await res.json()) as ChatResponse;
+        if (cancelled || seq !== signReadSeq.current) return;
+        const next = signServiceFromSessionRead(data);
+        // An unavailable/transient read is not proof that a previously conclusive
+        // wallet-global session was revoked. Keep the last server-confirmed state.
+        setSignServiceState((current) => {
+          const currentForWallet =
+            current.address === address
+              ? current
+              : { address, status: "unknown" as const, reason: null };
+          const stable = preserveLastConclusiveSignState(currentForWallet, next);
+          return { address, ...stable };
+        });
+        if (next.status === "unavailable") return;
+        if (address) {
+          setAutoApprove(address, next.status === "ok");
+        }
+        if (next.caps) {
+          try {
+            localStorage.setItem(
+              AUTO_CAPS_KEY,
+              JSON.stringify({
+                max_per_tx_usd: next.caps.tx,
+                max_per_day_usd: next.caps.day,
+              }),
+            );
+          } catch {
+            /* ignore */
+          }
+          setSavedCaps({ tx: next.caps.tx, day: next.caps.day });
+        }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        // A failed read is not evidence the Sign Service is down — leave unknown
+        // so the enable path still works.
+      }
+    };
+    void run();
+    /**
+     * A hidden tab does not poll, and the interval is 45s rather than 15s.
+     *
+     * A browser allows ~6 connections per origin, and this page already holds several
+     * slow ones: the investigation stream for the whole of a run, and account snapshot
+     * reads that take 6-10s each. A 15s poll per open tab on top of that exhausts the
+     * pool, and the request that loses the race never leaves the browser at all — the
+     * user sees "Sending your request" counting up against a server that logged nothing
+     * (17 Sep: three swap tests stalled this way, minutes each, nothing server-side to
+     * show for them; §9 of the 16 Sep handover records the same symptom).
+     *
+     * Nothing is lost by waiting: the session state this reads changes when the user
+     * enables or disables auto-sign, and both of those already write it directly. The
+     * poll only catches a change made elsewhere — another tab, or MCP — which no one is
+     * watching the rail for in a hidden tab. Becoming visible reads immediately, so the
+     * rail is never stale by the time it is looked at.
+     */
+    const visible = () => document.visibilityState === "visible";
+    const runIfVisible = () => { if (visible()) void run(); };
+    const poll = window.setInterval(runIfVisible, 45_000);
+    const onFocus = () => runIfVisible();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      cancelled = true;
+      readController?.abort();
+      window.clearInterval(poll);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [address, sessionSigningAvailable]);
+  /**
+   * Auto-approve is armed when the Sign Service is enforcing caps (for Privy),
+   * or when the user has enabled auto-dispatch (for Freighter).
+   */
+  const sessionSigning =
+    (walletKind === "freighter" && freighterAutoApprove) ||
+    (sessionSigningAvailable && autoApprove && capsEnforced);
 
   // Feed the shared margin store from /api/account (identical path to margin page).
   useEffect(() => {
@@ -1857,7 +2029,6 @@ export function CopilotWorkspace() {
 
   // Prefer snapshot numbers (same source as margin/portfolio), fall back to store.
   const effHasAccount = snapshot?.hasMarginAccount ?? hasMarginAccount;
-  const effSmartAccount = snapshot?.marginAccountAddress ?? smartAccount;
   const effGross = snapshot?.grossCollateralValue ?? storeGrossCollateral;
   const effBorrowed = snapshot?.totalBorrowedValue ?? storeBorrowedValue;
   const effCollateral = snapshot?.totalCollateralValue ?? storeCollateralValue;
@@ -1872,9 +2043,6 @@ export function CopilotWorkspace() {
   // "net value" = equity (collateral minus debt), NOT `totalValue` — that field is
   // `netAvailableCollateral + totalBorrowedValue`, which algebraically always
   // collapses back to gross collateral (adding debt back cancels the subtraction
-  // that made it). Labeled "net", it silently showed gross collateral with no debt
-  // netted out — netAvailableCollateral is the figure that's actually net of debt.
-  const netValue = snapshot?.netAvailableCollateral ?? storeNetValue ?? derivedHealth.netAvailableCollateral;
   const liveHf = effHasAccount && healthFactor ? healthFactor : null;
 
   /**
@@ -1960,7 +2128,14 @@ export function CopilotWorkspace() {
 
   /** Force-refresh rail stats after a prompt/sign so values match margin page. */
   const refreshRailStats = useCallback(
-    async (opts?: { force?: boolean }) => {
+    /**
+     * `after` is a settled transaction hash. The snapshot route is cached for 15s on
+     * TIME, so a refresh fired the instant a write landed was answered from the body
+     * taken before it — which is why the rail held the old health factor until the user
+     * reloaded the page. Passing the hash makes the read go past that cache, so the event
+     * that changed the account is what invalidates it.
+     */
+    async (opts?: { force?: boolean; after?: string | null }) => {
       if (!address) return;
       const force = opts?.force !== false;
       try {
@@ -1972,7 +2147,7 @@ export function CopilotWorkspace() {
         if (acct) {
           await refreshBorrowedBalances(acct, force);
         }
-        await refreshSnapshot();
+        await refreshSnapshot(opts?.after ?? null);
       } catch {
         // Rail refresh is best-effort — never block the agent turn.
       }
@@ -2007,7 +2182,6 @@ export function CopilotWorkspace() {
         e.preventDefault();
         inputRef.current?.focus();
       }
-      if (e.key === "Escape") setPaletteOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -2309,21 +2483,32 @@ export function CopilotWorkspace() {
     async (
       body: Record<string, unknown>,
       promptLabel: string,
-      opts?: { chainHop?: boolean; background?: boolean },
+      opts?: { chainHop?: boolean; background?: boolean; signal?: AbortSignal },
     ) => {
-      if (cancelledRef.current && (opts?.chainHop || opts?.background)) {
+      const silent = !!opts?.background;
+      /** Header auto-approve on/off: toast only — do not steal the turn card or abort a run. */
+      const quiet = silent && !opts?.chainHop && !body.summarize_execution;
+      /**
+       * A fresh typed turn is allowed even if the previous one was cancelled.
+       * `cancelledRef` is a latch for chain hops / background work after Cancel —
+       * without clearing it here, every later prompt still POSTed, then threw the
+       * JSON away, so the server looked idle and the thread kept the last error.
+       */
+      if (!opts?.chainHop && !silent) {
+        cancelledRef.current = false;
+      } else if (cancelledRef.current && (opts?.chainHop || opts?.background) && !quiet) {
         return null;
       }
-
-      const silent = !!opts?.background;
-      abortRef.current?.abort();
       const ac = new AbortController();
-      abortRef.current = ac;
+      if (!quiet) {
+        abortRef.current?.abort();
+        abortRef.current = ac;
+      }
 
       if (!silent) setLoading(true);
       // Keep last response on chain hops so the strategy card doesn't flash empty;
       // full new prompts still clear.
-      if (!opts?.chainHop && !body.summarize_execution) {
+      if (!quiet && !opts?.chainHop && !body.summarize_execution) {
         setResponse(null);
       }
       setShowCustom(false);
@@ -2341,7 +2526,7 @@ export function CopilotWorkspace() {
             session_signing: autoApprove,
             ...body,
           }),
-          signal: ac.signal,
+          signal: opts?.signal ? AbortSignal.any([ac.signal, opts.signal]) : ac.signal,
         });
         if (cancelledRef.current) {
           return null;
@@ -2402,7 +2587,9 @@ export function CopilotWorkspace() {
         if (address) {
           if (/\bauto-sign disabled\b/i.test(data.message || "")) {
             setAutoApprove(address, false);
+            setSignServiceState({ address, status: "unknown", reason: null });
           } else if (/\bauto-sign (?:already active|enabled)\b/i.test(data.message || "")) {
+            setSignServiceState({ address, status: "ok", reason: null });
             setAutoApprove(address, true);
           }
         }
@@ -2459,13 +2646,13 @@ export function CopilotWorkspace() {
               },
             };
           });
-        } else {
+        } else if (!quiet || data.kind === "needs_wallet_bind") {
           setResponse(data);
         }
         // Agent-chain hops (pending_write / explicit chain) fold into the parent log row.
         // Full multi_leg payloads create/refresh the parent strategy row.
         // Do not log pure summarize receipts as a new turn noise — still fold if multi.
-        if (!body.summarize_execution) {
+        if (!quiet && !body.summarize_execution) {
           pushLog(promptLabel, data, {
             chainHop: !!(opts?.chainHop || body.pending_write || body.resume_multi_leg),
             hopLabel: promptLabel,
@@ -2481,7 +2668,7 @@ export function CopilotWorkspace() {
           data.kind === "executed" ||
           data.kind === "needs_wallet_sign" ||
           Boolean(data.execution?.tx_hash);
-        void refreshRailStats({ force });
+        void refreshRailStats({ force, after: data.execution?.tx_hash ?? null });
         return data;
       } catch (e) {
         // Cancel must leave already-executed legs in the log and on the card.
@@ -2492,18 +2679,56 @@ export function CopilotWorkspace() {
         ) {
           return null;
         }
-        const failed: ChatResponse = { kind: "error", message: "Copilot request failed." };
+        /**
+         * Say what failed.
+         *
+         * This catch replaced every reply with one sentence, so a session-append
+         * rejected by Google (`invalid_grant` / `invalid_rapt`, in the same minute as
+         * the reported turn), a network drop and a JSON parse error were all "Copilot
+         * request failed." — and the actual reason was only ever in the console. The
+         * thrown value already carries it; nothing needed to be invented, only kept.
+         */
+        const detail = e instanceof Error ? e.message.trim() : String(e ?? "").trim();
+        const failed: ChatResponse = {
+          kind: "error",
+          message: detail
+            ? `That request failed before it could answer: ${detail}`
+            : "That request failed before it could answer, and returned no reason.",
+        };
         if (!silent) {
           setResponse(failed);
           pushLog(promptLabel, failed);
         }
         return silent ? null : failed;
       } finally {
-        if (abortRef.current === ac) abortRef.current = null;
+        if (!quiet && abortRef.current === ac) abortRef.current = null;
         if (!silent) setLoading(false);
       }
     },
     [address, smartAccount, autoApprove, pushLog, pushActivity, refreshRailStats, absorbStrategySteps],
+  );
+
+  /**
+   * Write an outcome into the conversation, not just a toast.
+   *
+   * Cancel flipped `cancelledRef` and raised a toast; nothing reached the thread, so a
+   * stopped run left the last thing the copilot said standing as if it were still true —
+   * a staged panel asking for a signature the user had just refused. A toast is gone in
+   * three seconds and is not a record.
+   *
+   * Appends when the prompt has no turn yet (cancelled mid-request, before the reply was
+   * recorded) and replaces the pending assistant line when it does (cancelled at the
+   * signature, where that line is the staged request being answered).
+   */
+  const noteOutcome = useCallback(
+    (text: string) => {
+      const prompt = (submitted || originalIntentRef.current || "").trim();
+      const recorded =
+        !!prompt && investigation.turns.some((t) => t.role === "user" && t.text === prompt);
+      if (recorded) void investigation.updateLastAssistantText(text);
+      else if (prompt) void investigation.recordDirect(prompt, text);
+    },
+    [investigation, submitted],
   );
 
   const cancelInFlight = useCallback(() => {
@@ -2522,22 +2747,209 @@ export function CopilotWorkspace() {
     toast("Request cancelled — completed steps stay in the log. Nothing further will be submitted.", {
       duration: 3500,
     });
-  }, []);
+    noteOutcome(
+      "Cancelled. Nothing was submitted — any step that had already settled stays on-chain.",
+    );
+  }, [noteOutcome]);
 
-  const run = useCallback(
-    async (text: string) => {
-      const t = text.trim();
-      if (!t || loading) return;
-      cancelledRef.current = false;
+  const { run: investigate } = investigation;
+  const resetWorkflow = workflow.reset;
+  const runInvestigation = useCallback(async (text: string, signal?: AbortSignal) => {
+    const continuing = shouldContinueInvestigation(text, investigation.result);
+    if (shouldReplacePlan(text, investigation.result)) {
+      setSigningJournal(false);
+      resetWorkflow();
       resetStrategyAccumulator();
-      originalIntentRef.current = t;
-      setSubmitted(t);
-      setIntentText(t);
-      setPaletteOpen(false);
-      await postCopilot({ message: t }, t);
-    },
-    [loading, postCopilot, resetStrategyAccumulator],
-  );
+      setResponse(null);
+    } else if (!(continuing && investigation.result?.question)) {
+      setResponse(null);
+    }
+    setSubmitted(text);
+    setIntentText("");
+    await investigate(text, signal);
+  }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result]);
+  const runDirect = useCallback(async (text: string, signal: AbortSignal) => {
+    const continuing = shouldContinueInvestigation(text, investigation.result);
+    if (shouldReplacePlan(text, investigation.result)) {
+      setSigningJournal(false);
+      resetWorkflow();
+      resetStrategyAccumulator();
+    } else if (!(continuing && investigation.result?.question)) {
+      setResponse(null);
+    }
+    setSubmitted(text);
+    setIntentText("");
+    const direct = await postCopilot({ message: text }, text, { signal });
+    /**
+     * A write's turn is what it is about to do, not the signing boilerplate.
+     *
+     * `message` on a staged write is `readyToSignMessage` — "Built and ready — approve to
+     * sign it with your wallet." — which is chrome for a card, and it was what the
+     * conversation kept as the record of the turn. `human_summary` is the sentence the
+     * write actually names ("Supply 50 XLM to Blend"), and it is replaced by the receipt
+     * once the transaction settles.
+     */
+    const actionSummary = direct?.preview?.action
+      ? shortWriteLabel({
+          op: direct.preview.action.op,
+          amount: direct.preview.action.amount,
+          asset: direct.preview.action.asset,
+          token_a: direct.preview.action.token_a,
+          token_b: direct.preview.action.token_b,
+          venue: direct.preview.action.venue,
+        })
+      : null;
+    const rawLine = (direct?.preview?.human_summary || "").trim() || (direct?.message || "").trim();
+    const line = /built and ready/i.test(rawLine) ? (actionSummary || text) : (rawLine || actionSummary || text);
+    if (line) await investigation.recordDirect(text, line);
+  }, [investigation, postCopilot, resetStrategyAccumulator, resetWorkflow]);
+  const entry = useCopilotEntry({
+    wallet: address,
+    onInvestigate: runInvestigation,
+    onDirect: runDirect,
+  });
+
+  const { run: dispatchRun } = entry;
+
+  /**
+   * Sized Blend options go through the workflow journal (`/propose`, `/approve`,
+   * `/advance`) so the amounts the card showed are the ones held for approval.
+   * This runs only when the investigation reached a conclusion with a candidate.
+   */
+  const proposePlan = workflow.propose;
+  const confirmWorkflow = workflow.confirm;
+  const updateExecutionReceipt = investigation.updateExecutionReceipt;
+  useEffect(() => {
+    const view = workflow.view;
+    const network = investigation.result?.scope.network;
+    if (!view || !network || !investigation.conversationId) return;
+    const receipt = executionReceiptFromWorkflowView(view, network);
+    const key = JSON.stringify(receipt);
+    if (persistedWorkflowReceiptRef.current === key) return;
+    persistedWorkflowReceiptRef.current = key;
+    void updateExecutionReceipt(receipt).then((saved) => {
+      if (!saved && persistedWorkflowReceiptRef.current === key) persistedWorkflowReceiptRef.current = null;
+    });
+  }, [workflow.view, investigation.result?.scope.network, investigation.conversationId, updateExecutionReceipt]);
+  useEffect(() => {
+    const view = investigation.result;
+    if (!view || investigation.loading || investigation.error) return;
+    if (view.status !== "researched" || view.question) return;
+    /**
+     * Only what the server NOMINATED is prepared without a click. It nominates a candidate
+     * only when there is exactly one — several competing strategies are the user's choice
+     * to make, and this effect feeds the auto-approve effect below, which with session
+     * signing on signs and broadcasts (15 Sep, S4: the first of two options was executed
+     * before it could be read). The `?? feasible[0]` fallback that used to sit here
+     * re-nominated exactly what the server had declined to, which is why the server-side
+     * rule alone did nothing.
+     */
+    const candidateId = view.proposalCandidateId;
+    if (view.pendingWrite?.op || !candidateId || !view.continuation) return;
+    if (workflow.view || workflow.loading) return;
+    /**
+     * A turn this page ran carries on by itself; a turn read back from the thread does not.
+     * Both arrive in the same `result`, so the two are told apart by where it came from —
+     * and the claim makes the dispatch survive a remount, which the old ref could not.
+     */
+    if (investigation.resultOrigin !== "live") return;
+    const proposeKey = `propose:${view.continuation}:${candidateId}`;
+    if (!claimDispatch(address, proposeKey)) return;
+    void proposePlan(view.continuation, candidateId).then((prepared) => {
+      if (!prepared) releaseDispatch(address, proposeKey);
+    });
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, address]);
+  useEffect(() => {
+    const view = investigation.result;
+    if (!view || investigation.loading || investigation.error) return;
+    const op = view.pendingWrite?.op;
+    if (!op) return;
+    if (investigation.resultOrigin !== "live") return;
+    const key = `write:${view.continuation}:${op}`;
+    if (!claimDispatch(address, key)) return;
+    void postCopilot({ pending_write: { op }, message: view.originalRequest }, view.originalRequest).then((sent) => {
+      if (!sent) releaseDispatch(address, key);
+    });
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, postCopilot, address]);
+
+  const signJournalXdr = useCallback(async (auto = false) => {
+    const view = workflow.view;
+    if (!view || workflow.loading || signingJournal) return;
+    const step = view.steps.find((entry) => entry.status === "awaiting_signature" && entry.unsignedXdr);
+    if (!step?.unsignedXdr) return;
+    const signKey = `sign:${view.id}:${step.id}`;
+    if (auto && !claimDispatch(address, signKey)) return;
+    setSigningJournal(true);
+    try {
+      const result = await signWorkflowTransaction(step.unsignedXdr, { networkPassphrase: "Test SDF Network ; September 2015", address: address ?? undefined });
+      if (result.error || !result.signedTxXdr || result.signerAddress && result.signerAddress !== address) {
+        toast.error("The approved transaction could not be signed by the connected wallet.");
+        if (auto) releaseDispatch(address, signKey);
+        return;
+      }
+      await confirmWorkflow(result.signedTxXdr);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "The transaction could not be signed.");
+      if (auto) releaseDispatch(address, signKey);
+    } finally {
+      setSigningJournal(false);
+    }
+  }, [workflow.view, workflow.loading, signingJournal, address, confirmWorkflow]);
+
+  /**
+   * Auto-approve ON means the journal should not wait for a second click.
+   * Propose no longer does the live price/balance pass — Approve does. The Sign
+   * Service still enforces caps; this only presses Approve the way the user already armed.
+   * A transient risk miss leaves the journal `proposed`; the one-shot claim stops a loop.
+   *
+   * A journal read back on mount is not an armed click either: `restored` keeps Approve
+   * waiting for the person, so returning to the page cannot broadcast what they left alone.
+   */
+  useEffect(() => {
+    if (!sessionSigning) return;
+    const view = workflow.view;
+    // A plan the live re-check withdrew is not one an armed session may press Approve on.
+    if (!view || workflow.loading || workflow.error || workflow.restored || workflow.stale) return;
+    if (
+      !shouldAutoApproveProposedWorkflow({
+        sessionSigning,
+        status: view.status,
+        steps: view.steps,
+        slippageAccepted: view.slippageAccepted,
+      })
+    ) {
+      return;
+    }
+    const approveKey = `approve:${view.id}:${view.revision}`;
+    if (!claimDispatch(address, approveKey)) return;
+    void workflow.approve().then((approved) => {
+      if (!approved) releaseDispatch(address, approveKey);
+    });
+  }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.restored, workflow.stale, workflow.approve, address]);
+
+  useEffect(() => {
+    if (!sessionSigning) return;
+    const view = workflow.view;
+    if (!view || workflow.loading || signingJournal || workflow.restored) return;
+    if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr)) return;
+    void signJournalXdr(true);
+  }, [sessionSigning, workflow.view, workflow.loading, workflow.restored, signingJournal, signJournalXdr]);
+
+  const run = useCallback(async (text: string) => {
+    if (signing) return;
+    /**
+     * Supersede the in-flight turn without latching Cancel. `cancelInFlight()` sets
+     * `cancelledRef`, and the replacement POST then discarded its own response.
+     */
+    cancelledRef.current = false;
+    if (loading) {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setLoading(false);
+    }
+    setIntentText(text);
+    await dispatchRun(text);
+  }, [loading, signing, dispatchRun]);
 
   /**
    * Send an approved plan back for execution.
@@ -2551,7 +2963,6 @@ export function CopilotWorkspace() {
       if (loading) return;
       const label = submitted || plan.summary || `Approve ${plan.steps.length} steps`;
       strategyParentRef.current = { id: `plan-${plan.plan_id}`, prompt: label };
-      setPaletteOpen(false);
       await postCopilot(
         {
           message: "approve plan",
@@ -2588,7 +2999,6 @@ export function CopilotWorkspace() {
       if (!legs.length || loading) return;
       const label = originalIntentRef.current || submitted || summary || `Resume ${legs.length} steps`;
       setHfPaused(false);
-      setPaletteOpen(false);
       await postCopilot(
         {
           message: label,
@@ -2616,14 +3026,16 @@ export function CopilotWorkspace() {
       // Distinct from "the Sign Service rejected our token" (a fault on our side the
       // user cannot act on) and from success — this one has a specific user action.
       if (data.kind === "needs_wallet_bind") {
+        signReadSeq.current += 1;
         if (action === "disable") setAutoApprove(address, false);
-        setSignServiceState({ status: "unbound", reason: null });
+        setSignServiceState({ address, status: "unbound", reason: null });
         return;
       }
 
       if (action === "disable") {
+        signReadSeq.current += 1;
         setAutoApprove(address, false);
-        setSignServiceState({ status: "unknown", reason: null });
+        setSignServiceState({ address, status: "unknown", reason: null });
         return;
       }
       if (data.kind === "needs_auto_sign") return;
@@ -2639,12 +3051,15 @@ export function CopilotWorkspace() {
         facts.error ||
         (data.kind === "error" ? data.message : null) ||
         null;
-      setSignServiceState(
-        mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason },
-      );
+      signReadSeq.current += 1;
+      setSignServiceState({
+        address,
+        ...(mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason }),
+      });
 
       const fromMcp = Number(facts.default_cap_usd);
-      const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : 1000;
+      if (Number.isFinite(fromMcp) && fromMcp > 0) setMcpDefaultCap(fromMcp);
+      const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : mcpDefaultCap ?? 1000;
       const txCap = action === "custom" ? Number(customTx) || mcpDef : mcpDef;
       const dayCap = action === "custom" ? Number(customDay || customTx) || txCap : mcpDef;
       try {
@@ -2657,21 +3072,21 @@ export function CopilotWorkspace() {
       }
       setSavedCaps({ tx: txCap, day: dayCap });
 
-      // Nothing to turn on for a wallet that cannot sign without its own prompt, and the
-      // Sign Service could not stand in for it. Saying so beats a switch that lights up
-      // and changes nothing.
-      if (!sessionSigningAvailable && !mcpEnabled) {
-        toast.error("Auto-approve unavailable for this wallet — every write still needs a signature.");
+      const arm = shouldArmAutoApprove({ mcpEnabled, sessionSigningAvailable });
+      if (!arm.arm) {
+        setAutoApprove(address, false);
+        toast.error(
+          arm.reason === "sign_service_not_enforcing"
+            ? "Auto-approve refused — the Sign Service is not enforcing spend caps. " +
+              "A limit that only lives in this browser can be bypassed."
+            : "Auto-approve unavailable for this wallet — every write still needs a signature.",
+        );
         return;
       }
       setAutoApprove(address, true);
-      toast.success(
-        mcpEnabled
-          ? `Auto-approve on · $${txCap}/tx · $${dayCap}/day`
-          : `Auto-approve on in-app · caps $${txCap}/tx · $${dayCap}/day not enforced by the Sign Service`,
-      );
+      toast.success(`Auto-approve on · $${txCap}/tx · $${dayCap}/day`);
     },
-    [address, customTx, customDay, sessionSigningAvailable],
+    [address, customTx, customDay, sessionSigningAvailable, mcpDefaultCap],
   );
 
   /**
@@ -2753,7 +3168,10 @@ export function CopilotWorkspace() {
   );
 
   const enableAutoSign = useCallback(
-    async (action: "start" | "use_defaults" | "custom" | "disable") => {
+    async (
+      action: "start" | "use_defaults" | "custom" | "disable",
+      opts?: { quiet?: boolean },
+    ) => {
       const label =
         action === "disable"
           ? "Disable auto-sign"
@@ -2762,7 +3180,7 @@ export function CopilotWorkspace() {
             : action === "custom"
               ? `Enable auto-sign ($${customTx}/$${customDay || customTx})`
               : "Enable auto-sign";
-      setSubmitted(submitted ?? label);
+      if (!opts?.quiet) setSubmitted(submitted ?? label);
       const data = await postCopilot(
         {
           message:
@@ -2788,25 +3206,22 @@ export function CopilotWorkspace() {
             : null,
         },
         label,
+        opts?.quiet ? { background: true } : undefined,
       );
-      // Sync local auto-approve (session auto-submit) with the user's cap choice.
-      //
-      // Two outcomes are recorded, not one. `signServiceState` is whether MCP actually
-      // enabled server-side auto-sign; `autoApprove` is whether this app may sign a staged
-      // XDR with the embedded wallet without a prompt. The second does not depend on the
-      // first — which is the only reason auto-approve is usable at all right now, since the
-      // Sign Service currently rejects our M2M token. What it must NOT do is claim the
-      // first succeeded: it used to flip on and print the caps as policy even when the
-      // response was `kind: "error"` carrying a 401.
-      // Unbound wallet: finish the binding in THIS gesture rather than handing the
-      // user a second quest. See completeWalletBindInApp.
+      // Sync local auto-approve with the Sign Service session. Caps that only
+      // live in this browser are not a policy — applyAutoSignOutcome refuses to
+      // arm unless MCP actually enabled a server-side session.
       if (data?.kind === "needs_wallet_bind" && data.wallet_bind) {
+        if (opts?.quiet) setSubmitted(label);
         const finished = await completeWalletBindInApp(data.wallet_bind);
         if (finished) return;
+        if (address) setAutoApprove(address, false);
       }
 
       if (address && data && action !== "start") {
         applyAutoSignOutcome(action, data);
+      } else if (address && !data && action !== "disable") {
+        setAutoApprove(address, false);
       }
     },
     [
@@ -2820,6 +3235,67 @@ export function CopilotWorkspace() {
       completeWalletBindInApp,
     ],
   );
+
+  const handleAutoApproveToggle = useCallback(() => {
+    if (loading || autoApprovePending) return;
+    if (!address) {
+      toast.error("Connect a wallet first.");
+      return;
+    }
+    if (walletKind === "freighter") {
+      const next = !freighterAutoApprove;
+      setAutoApprove(address, next);
+      if (next) {
+        toast.success("Auto-dispatch on — transactions will open directly in Freighter");
+      } else {
+        toast.success("Auto-dispatch off");
+      }
+      return;
+    }
+    if (autoApproveUiOn) {
+      setAutoApprove(address, false);
+      setSignServiceState((prev) => ({ ...prev, status: "unknown" }));
+      setAutoApprovePending(true);
+      void enableAutoSign("disable", { quiet: true }).finally(() => {
+        setAutoApprovePending(false);
+      });
+      toast.success("Auto-approve off");
+      return;
+    }
+    if (!sessionSigningAvailable) {
+      toast.error("Connect a wallet first.");
+      return;
+    }
+    if (capsEnforced) {
+      setAutoApprove(address, true);
+      toast.success(
+        savedCaps ? `Auto-approve on · $${savedCaps.tx}/tx · $${savedCaps.day}/day` : "Auto-approve on",
+      );
+      return;
+    }
+    if (railCapsMode === "custom" && Number(customTx) <= 0) {
+      toast.error("Enter a per-tx cap above 0.");
+      return;
+    }
+    setAutoApprove(address, true);
+    setAutoApprovePending(true);
+    void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults", { quiet: true }).finally(() => {
+      setAutoApprovePending(false);
+    });
+  }, [
+    loading,
+    autoApprovePending,
+    address,
+    walletKind,
+    freighterAutoApprove,
+    autoApproveUiOn,
+    sessionSigningAvailable,
+    capsEnforced,
+    savedCaps,
+    railCapsMode,
+    customTx,
+    enableAutoSign,
+  ]);
 
   /**
    * Poll the pending additional-signer consent, and let the server finish the job.
@@ -3140,7 +3616,47 @@ export function CopilotWorkspace() {
           },
         );
         pushActivity(summary, result.hash);
-        await refreshRailStats({ force: true });
+        await refreshRailStats({ force: true, after: result.hash ?? null });
+        if (result.hash) {
+          const receipt: ExecutionReceiptSnapshot = {
+            workflowId: response?.request_id || `tx-${result.hash.slice(0, 8)}`,
+            status: "completed",
+            network: investigation.result?.scope.network || "testnet",
+            steps: [
+              {
+                operation: (action?.op as any) ?? "submit",
+                asset: String(action?.asset ?? action?.token_b ?? ""),
+                amount: String(action?.amount ?? action?.amount_a ?? ""),
+                status: "settled",
+                txHash: result.hash,
+              },
+            ],
+          };
+          void updateExecutionReceipt(receipt);
+        }
+        if (investigation.turns.length > 0) {
+          /**
+           * The turn becomes the receipt, not the request.
+           *
+           * `response.message` is the sentence written before the signature — it describes
+           * a signature still being waited for. It was kept as the turn text unless it
+           * contained one of two exact phrases, so every other pre-signature wording
+           * survived as the record of a settled transaction. Built from what happened
+           * instead: what was signed, its hash, the health factor the rail now shows.
+           */
+          void investigation.updateLastAssistantText(
+            answerToText(
+              singleWriteReceiptAnswer({
+                summary,
+                op: action?.op ?? null,
+                asset: action?.asset ?? null,
+                amount: action?.amount ?? null,
+                txHash: result.hash ?? null,
+                hf: readLiveHfFromStore(),
+              }),
+            ),
+          );
+        }
 
         // Wait until Horizon shows this tx's sequence as applied before asking MCP
         // to build the next leg. Otherwise hop 2 is simulated against a stale seq and
@@ -3317,8 +3833,15 @@ export function CopilotWorkspace() {
           });
           return;
         }
+        /**
+         * Same rule as the resume effect below: advancing is not signing.
+         *
+         * This is the hop that runs the instant a leg is signed and submitted, so with
+         * `!!autoApprove` here a run with the switch off stalled at exactly the moment
+         * it should have moved on - leg 1 on chain, the queue never asked for leg 2.
+         * Gating both sites made the stall survive fixing either one alone.
+         */
         const preferResume =
-          !!autoApprove &&
           !complete &&
           !pauseForLp &&
           (shouldAutoResume({
@@ -3397,7 +3920,7 @@ export function CopilotWorkspace() {
           setLoading(true);
           await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
           if (cancelledRef.current) return;
-          await refreshRailStats({ force: true });
+          await refreshRailStats({ force: true, after: result.hash ?? null });
           const hop = await postCopilot(
             {
               message: parentPrompt,
@@ -3453,8 +3976,8 @@ export function CopilotWorkspace() {
           setLoading(true);
           await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
           if (cancelledRef.current) return;
-          await refreshRailStats({ force: true });
-          await postCopilot(
+          await refreshRailStats({ force: true, after: result.hash ?? null });
+          const hop = await postCopilot(
             {
               message: `${nextStep.op.replace(/_/g, " ")} ${nextStep.amount} ${nextStep.asset || ""}`.trim(),
               pending_write: {
@@ -3468,6 +3991,9 @@ export function CopilotWorkspace() {
             label,
             { chainHop: true },
           );
+          if (hop?.message) {
+            void investigation.updateLastAssistantText(hop.message);
+          }
           return;
         }
 
@@ -3679,6 +4205,12 @@ export function CopilotWorkspace() {
         }
 
         toast.error(errText);
+        // The refusal belongs in the thread, not only in a toast — see noteOutcome.
+        // A rejected signature that leaves no record reads, on the next scroll, like a
+        // request that is still waiting.
+        if (!("hash" in result && result.hash)) {
+          noteOutcome(`The signature was not completed — nothing was submitted. ${errText}`);
+        }
         // Sign/submit failed: stay on needs_wallet_sign (same staged panel) but stop
         // the auto-submit spinner for THIS hop so Approve & sign is available.
         // Do not advance multi-leg queue on a failed signature.
@@ -3699,6 +4231,7 @@ export function CopilotWorkspace() {
     address,
     smartAccount,
     submitted,
+    noteOutcome,
     pushActivity,
     postCopilot,
     refreshRailStats,
@@ -3908,8 +4441,24 @@ export function CopilotWorkspace() {
     // Prefer-resume alone must not decide completion (false complete + empty
     // remaining was the old shortcut that killed the queue mid-run).
     const done = cardComplete && remaining.length === 0;
+    /**
+     * Auto-approve skips the SIGNING PROMPT, not the plan.
+     *
+     * `!!autoApprove` used to gate this, so with the switch off a run simply stopped
+     * after the first leg settled: the queue never advanced, no signature was ever
+     * requested, and the card sat on "waiting to advance" with legs 2..n PENDING
+     * forever. Reported as the run being dropped after a step or two, and reproduced
+     * live on 21 Sep with "deposit 100 XLM into margin account" - leg 1 on chain,
+     * legs 2-5 stranded.
+     *
+     * Advancing is not signing. The hop returns `needs_wallet_sign` and the card shows
+     * Approve & sign; `shouldSessionAutoSubmit` still requires `sessionSigning`, so
+     * with auto-approve off nothing is ever signed without the user. The real pauses -
+     * an unsized LP leg and a breached HF floor - keep their own gates below.
+     *
+     * `shouldAutoResume` was already auto-approve-agnostic; only this call site was not.
+     */
     const preferResume =
-      !!autoApprove &&
       !cardComplete &&
       !pauseForLp &&
       !hfFloorPause &&
@@ -3992,7 +4541,7 @@ export function CopilotWorkspace() {
         setLoading(true);
         await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
         if (cancelledRef.current) return;
-        await refreshRailStats({ force: true });
+        await refreshRailStats({ force: true, after: response.execution?.tx_hash ?? null });
         if (cancelledRef.current) return;
         const hop = await postCopilot(
           {
@@ -4109,7 +4658,7 @@ export function CopilotWorkspace() {
           prompt: submitted,
         };
       }
-      await postCopilot(
+      const hop = await postCopilot(
         {
           message: `${next.op.replace(/_/g, " ")} ${next.amount} ${next.asset || ""}`.trim(),
           pending_write: {
@@ -4123,8 +4672,11 @@ export function CopilotWorkspace() {
         label,
         { chainHop: true },
       );
+      if (hop?.message) {
+        void investigation.updateLastAssistantText(hop.message);
+      }
     })();
-  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove, absorbStrategySteps, hfPaused, liveHf]);
+  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove, absorbStrategySteps, hfPaused, liveHf, investigation]);
 
   /**
    * Liquidation guardian (auto-approve / session signing only).
@@ -4298,9 +4850,8 @@ export function CopilotWorkspace() {
     });
   }, [liveHf, submitted]);
 
-  const brainOnline = health?.status === "ok";
   const multiLeg =
-    isMultiLegResponse(response?.data ?? null) || strategySteps.length > 0;
+    isRealStrategyRun(strategySteps, response?.data ?? null);
   const strategyOpen = (() => {
     const src = strategySteps.length
       ? strategySteps
@@ -4337,10 +4888,29 @@ export function CopilotWorkspace() {
    */
   const bindGate =
     response?.kind === "needs_wallet_bind" ? (response.wallet_bind ?? null) : null;
+  /**
+   * A signature that has already been given is not a signature still being waited on.
+   *
+   * The staged panel — "Approve & sign", the impact projection, the Step-by-Step Approval
+   * header — is derived from `response.kind`, and the kind stays `needs_wallet_sign` on
+   * any path that stamps the hash without rewriting it. So a plain "Deposit 5 AQUSDC" left
+   * its approval card on screen after the transaction had settled, asking for a signature
+   * the chain already had, while the receipt sat in the turn above it.
+   *
+   * Derived from the one fact that settles it: a transaction hash exists for this
+   * response. That holds for every path that can produce one — wallet signature, session
+   * auto-sign, a resumed leg — rather than for the kinds we happened to think of.
+   */
+  const responseSubmitted = Boolean(
+    response?.execution?.tx_hash ||
+      (typeof (response?.data as { tx_hash?: unknown } | undefined)?.tx_hash === "string" &&
+        (response?.data as { tx_hash: string }).tx_hash),
+  );
   // needs_auto_sign + XDR is staged (session auto-sign), not the enable-caps gate.
   const stagedForSessionSign =
-    response?.kind === "needs_wallet_sign" ||
-    (response?.kind === "needs_auto_sign" && isSignableXdr(response.unsigned_xdr));
+    !responseSubmitted &&
+    (response?.kind === "needs_wallet_sign" ||
+      (response?.kind === "needs_auto_sign" && isSignableXdr(response.unsigned_xdr)));
   const phase = bindGate
     ? "bind"
     : loading
@@ -4351,19 +4921,45 @@ export function CopilotWorkspace() {
           ? "autosign"
           : stagedForSessionSign
             ? "staged"
-            : response?.kind === "executed"
+            : response?.kind === "executed" || responseSubmitted
               ? "done"
               : response
                 ? "answer"
                 : "idle";
 
+  /**
+   * Elapsed seconds for the in-flight turn.
+   *
+   * `/api/copilot` streams no progress, so the only truthful things to show while it runs
+   * are that it is running and for how long. The three-row pipeline that used to render
+   * here — "Parsing intent" active, "MCP tool call" pending, "Composing response" pending
+   * — was hardcoded and never advanced, so it still read "MCP tool call pending" long
+   * after the server had finished that stage and moved on to composing. A stage marker
+   * that cannot move is worse than a clock: it looks stalled precisely when work is
+   * happening. Showing a fabricated sequence instead would break the surface's own rule
+   * that progress must reflect events that actually occurred.
+   */
+  const [elapsedSec, setElapsedSec] = useState(0);
+  useEffect(() => {
+    if (!loading) return;
+    const startedAt = Date.now();
+    setElapsedSec(0);
+    const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [loading]);
+
   /** Agent-run trace, built from the turn that actually happened. */
   const steps = useMemo<Step[]>(() => {
     if (loading) {
+      const clock = elapsedSec >= 60
+        ? `${Math.floor(elapsedSec / 60)}m ${String(elapsedSec % 60).padStart(2, "0")}s`
+        : `${elapsedSec}s`;
       return [
-        { label: "Parsing intent", detail: "gemini · vertex", state: "active" },
-        { label: "MCP tool call", detail: multiLeg ? "multi-leg plan…" : "pending", state: "pending" },
-        { label: "Composing response", detail: "pending", state: "pending" },
+        {
+          label: multiLeg ? "Running multi-leg plan" : "Reading your position and the markets",
+          detail: clock,
+          state: "active",
+        },
       ];
     }
     if (!response) return [];
@@ -4425,7 +5021,8 @@ export function CopilotWorkspace() {
       state: response.kind === "executed" ? "done" : response.kind === "blocked" ? "done" : "active",
     });
     return out;
-  }, [loading, response, strategySteps]);
+  // elapsedSec drives the in-flight clock; without it the memo freezes at 0s.
+  }, [loading, response, strategySteps, multiLeg, elapsedSec]);
 
   /**
    * The same legs the agent-run list shows, in the shape the run card renders.
@@ -4715,19 +5312,41 @@ export function CopilotWorkspace() {
   useEffect(() => setSavedCaps(readAutoCaps()), []);
 
   const sim = response?.preview?.simulation ?? null;
+  /**
+   * Does this write move margin health?
+   *
+   * `OP_FLOW` (lib/copilot/workflow/types.ts) declares it per op and `evaluateWriteRisk`
+   * passes the answer through as `margin_applicable`, so the card no longer names ops.
+   * The list it replaces — swap, add_liquidity, remove_liquidity — had to be extended by
+   * hand for every health-neutral op added, and Blend supply and Blend withdraw were
+   * never added: both drew a full "projected impact" card reading 59.40 → 59.40 over a
+   * write that cannot change a health factor, and did it while covering the thread.
+   */
+  const marginProjected = sim?.margin_applicable !== false;
   const reasons = response?.preview?.risk?.reasons ?? [];
   const decision = response?.preview?.risk?.decision;
   const action = response?.preview?.action;
-  const followUp = followUpFor(response?.intent);
+  const followUp = followUpFor(response?.answer, response?.intent);
   /** Same conditions the auto-submit effect uses, so the notice can't disagree with it. */
   // Multi-leg: every hop with XDR auto-submits when session signing is on — including
   // responses that older servers labeled needs_auto_sign.
+  /**
+   * The SAME question the auto-submit effect asks, with the same inputs.
+   *
+   * `allow_session_sign` was missing here and passed there, so the two disagreed
+   * exactly when the server withheld session-signing (`forbid_session_sign`, or a
+   * high-impact swap): the effect declined to sign, while this said it would and
+   * rendered the "no click needed" spinner INSTEAD of the Approve button. Nothing
+   * signed and nothing could be clicked — the run just span. Live, 21 Sep, on a
+   * staged deposit showing "risk gate · confirm".
+   */
   const willAutoSubmit = shouldSessionAutoSubmit({
     kind: response?.kind,
     sessionSigning,
     riskDecision: decision,
     autoSubmitBlocked,
     hasSignableXdr: isSignableXdr(response?.unsigned_xdr),
+    allowSessionSign: response?.preview?.allow_session_sign,
   });
   const txHash =
     response?.execution?.tx_hash ??
@@ -4737,1577 +5356,862 @@ export function CopilotWorkspace() {
         ? String((response?.data as { "tx hash": string })["tx hash"])
         : null);
 
+  /** The rail collapses to a 60px icon column; the stage takes the width back. */
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  /**
+   * No turn on screen. Drives the stage grid: centred composer, hero and chips when
+   * empty; docked composer once there is a thread.
+   */
+  const stageEmpty = investigation.turns.length === 0 && !response && phase === "idle" && !investigation.loading && !submitted;
+  const lastUserTurn = [...investigation.turns].reverse().find((turn) => turn.role === "user")?.text ?? null;
+  const pendingUser = submitted && submitted !== lastUserTurn ? submitted : null;
+  const submittedRecorded = !!submitted && investigation.turns.some((turn) => turn.role === "user" && turn.text === submitted);
+  const isStaleInvestigation = Boolean(
+    investigation.result &&
+    !investigation.loading &&
+    !workflow.view &&
+    !workflow.loading &&
+    !signingJournal &&
+    lastUserTurn &&
+    investigation.prompt &&
+    lastUserTurn !== investigation.prompt
+  );
+  const liveWriteUi =
+    multiLeg ||
+    phase === "plan" ||
+    phase === "autosign" ||
+    phase === "staged" ||
+    phase === "bind" ||
+    phase === "done";
+  /**
+   * Live `/api/copilot` reply, painted before (or if) it is mirrored into the session.
+   *
+   * `response.message` — never `answer.headline`. For a structured answer the message IS
+   * the headline plus the figures, flattened by `answerToText`, and `ChatTurns` renders
+   * that whole document (chat-message.tsx). Taking the headline alone dropped the
+   * holdings the read had already fetched, and did it only for the live turn, so the
+   * same answer gained rows the moment the session reloaded.
+   */
+  const liveReply = response
+    ? (response.preview?.human_summary || "").trim() || response.message
+    : null;
+  const liveAssistant = liveReply && !submittedRecorded ? liveReply : null;
+  /**
+   * The rail's flat position list, from the same `positionRows` the page already built.
+   * One state, two views — the rail must never compute its own figures.
+   */
+  const railPositions = useMemo(() => {
+    const usd = (n: number) =>
+      `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return [
+      ...positionRows.collateral.map((r) => ({
+        symbol: r.symbol, role: "Margin · Collateral", amount: r.amount, usd: usd(r.usd),
+      })),
+      ...positionRows.borrowed.map((r) => ({
+        symbol: r.symbol, role: "Margin · Borrowed", amount: r.amount, usd: usd(r.usd),
+      })),
+    ];
+  }, [positionRows]);
+
+
   return (
-    <div className="cp-root mx-auto max-w-[1344px] px-5 pt-9 pb-24 sm:px-8 lg:px-12">
-      {/* Page header */}
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-5">
-        <div className="flex flex-col gap-1.5">
-          <Eyebrow as="p">
-            <span className="text-violet-500">agent-native</span> · orchestrator
-          </Eyebrow>
-          <h1 className="text-h5 font-semibold text-vgray-900">
-            Vanna <span className="bg-gradient bg-clip-text text-transparent">Copilot</span>
-          </h1>
-        </div>
-        <div className="flex items-center gap-2.5">
-          <div className="flex items-center gap-2 rounded-full border border-vgray-100 bg-surface px-3.5 py-[7px] font-mono text-[11px] text-vgray-500">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${brainOnline ? "animate-pulse" : ""}`}
-              style={{ background: brainOnline ? OK_INK : BAD_INK }}
-            />
-            {health
-              ? `${health.llm_provider} · mcp ${health.mcp_mode} · ${health.templates} tools`
-              : brainOnline
-                ? "online"
-                : "brain offline"}
-          </div>
-          {/* A developer login expires, and when it does the model call throws and routing
-              silently falls back to keyword matching — which is how the same prompt answered
-              on one machine and returned the capability list on another. Say so while it is
-              still working, not after. */}
-          {health?.vertex_auth === "developer_login" && (
-            <div
-              className="flex items-center gap-[7px] rounded-full border px-3.5 py-[7px] font-mono text-[11px]"
-              style={{
-                color: "var(--cp-warn-fg)",
-                background: "var(--cp-warn-bg)",
-                borderColor: "var(--cp-warn-bd)",
-              }}
-              title={
-                "Vertex is authenticating with this machine's `gcloud auth login`, which expires. " +
-                "Set GOOGLE_SERVICE_ACCOUNT_JSON for a credential that works here and in every deploy."
-              }
-            >
-              <CircleAlert size={13} /> gcloud login
-            </div>
-          )}
-          {sessionSigning && (
-            <div className="flex items-center gap-[7px] rounded-full border border-violet-100 bg-violet-50 px-3.5 py-[7px] font-mono text-[11px] font-semibold text-violet-500">
-              <ShieldCheck size={13} /> auto-approve on
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Composer — full-width card above the two-column grid (design: "Your intent"). */}
-      <div
-        className="bg-surface"
-        style={{
-          borderRadius: 11,
-          border: "1px solid var(--cp-violet-soft-border)",
-          borderLeft: "3px solid var(--cp-violet-500)",
-          padding: "22px 26px 22px 23px",
-        }}
-      >
-        <p className="mb-2.5 font-mono text-[10.5px] uppercase tracking-[0.22em] text-violet-500">
-          Your intent
-        </p>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            /**
-             * A paused swap answered with just the corrected token ("SOUSDC") used to fire
-             * a brand-new, context-free message through `run()` — the router cannot infer
-             * a whole trade from one word, so the paused strategy was silently abandoned
-             * instead of resumed. When the composer is currently showing a swap leg
-             * waiting on exactly this kind of answer, and the typed text resolves to a
-             * known token, treat it as the answer to THAT leg instead.
-             */
-            const pausedSwap = execLegs.find(
-              (l) => l.status === "needs_input" && l.op === "swap",
-            );
-            const resolvedToken = pausedSwap ? resolveAssetSymbolFromText(intentText) : null;
-            if (pausedSwap && resolvedToken) {
-              submitLegTokenAnswer(pausedSwap, resolvedToken);
-              return;
-            }
-            run(intentText);
-          }}
-        >
-          <div className="flex items-center gap-3.5">
-            <ChevronRight size={20} className="shrink-0 text-violet-500" />
-            <input
-              ref={inputRef}
-              value={intentText}
-              onChange={(e) => setIntentText(e.target.value)}
-              placeholder="Ask, or state an action — “deposit 5 XLM as collateral”…"
-              className="min-w-0 flex-1 bg-transparent text-[23px] leading-[34px] text-vgray-900 placeholder:text-vgray-300 focus:outline-none"
-              spellCheck={false}
-            />
-            <button
-              type="button"
-              onClick={() => setPaletteOpen((o) => !o)}
-              disabled={loading || signing}
-              className={`hidden shrink-0 items-center gap-1.5 px-3 py-2 text-[12px] sm:flex ${BTN_QUIET}`}
-            >
-              <LayoutTemplate size={12} /> Prompts
-            </button>
-            <button
-              type={loading || signing ? "button" : "submit"}
-              disabled={!loading && !signing && !intentText.trim()}
-              onClick={
-                loading || signing
-                  ? (e) => {
-                      e.preventDefault();
-                      cancelInFlight();
-                    }
-                  : undefined
-              }
-              className={
-                loading || signing
-                  ? `shrink-0 px-6 py-2.5 ${BTN_QUIET}`
-                  : `shrink-0 px-6 py-2.5 ${BTN_GRADIENT}`
-              }
-            >
-              {loading || signing ? "Cancel" : "Run"}
-            </button>
-          </div>
-        </form>
-
-        {paletteOpen && (
-          <div className="mt-4 max-h-72 overflow-y-auto rounded-[14px] border border-vgray-100 bg-vgray-50 p-4">
-            <div className="mb-2.5 flex items-center justify-between">
-              <Eyebrow>what you can ask</Eyebrow>
-              <button
-                type="button"
-                onClick={() => setPaletteOpen(false)}
-                className="text-vgray-400 transition-colors hover:text-vgray-700"
-              >
-                <X size={14} />
-              </button>
-            </div>
-            <div className="flex flex-col gap-3">
-              {Object.entries(PROMPTS).map(([cat, items]) => (
-                <div key={cat} className="flex flex-col gap-1.5">
-                  <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-violet-500">{cat}</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {items.map((q) => (
-                      <button
-                        key={q}
-                        type="button"
-                        onClick={() => run(q)}
-                        className="rounded-r2 border border-vgray-100 bg-surface px-3 py-[7px] text-[12.5px] font-medium text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
-                      >
-                        {q}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="mt-5 grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_372px]">
-        {/* ── Main column: turn card, then independent session log ── */}
-        <div className="flex min-w-0 flex-col gap-5">
-          <div
-            className="min-w-0 bg-surface"
-            style={{
-              borderRadius: 11,
-              border: "1px solid var(--cp-violet-soft-border)",
-              borderLeft: "3px solid var(--cp-violet-500)",
-              padding: "26px 28px 26px 25px",
+    <div className="cp-root">
+      <CopilotShell
+        collapsed={railCollapsed}
+        onToggleCollapsed={() => setRailCollapsed((v) => !v)}
+        empty={stageEmpty}
+        justSubmitted={Boolean(pendingUser && loading)}
+        scrollKey={`${investigation.turns.length}-${pendingUser}-${liveReply}-${loading}-${response?.request_id}`}
+        railTop={
+          <CopilotRailTop
+            onNewChat={startNewChat}
+            autoApprove={{
+              on: autoApproveUiOn,
+              busy: autoApprovePending || loading,
+              capsMode: railCapsMode,
+              customTx,
+              customDay,
+              defaultTx: mcpDefaultCap ?? 1000,
+              defaultDay: mcpDefaultCap ?? 1000,
+              onToggle: handleAutoApproveToggle,
+              onCapsMode: setRailCapsMode,
+              onCustomTx: setCustomTx,
+              onCustomDay: setCustomDay,
             }}
-          >
-            {/* Idle — what the agent can run */}
-            {phase === "idle" && (
-              <div>
-                <Eyebrow>What the agent can run</Eyebrow>
-                <div className="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                  {CAPABILITIES.map((c) => {
-                    const color = c.tone === "read" ? OK_INK : c.tone === "multi" ? WARN_INK : ACCENT;
-                    return (
-                      <button
-                        key={c.label}
-                        type="button"
-                        onClick={() => run(c.label)}
-                        className="flex flex-col gap-1.5 rounded-xl border border-vgray-100 bg-surface px-3.5 py-3 text-left transition-colors hover:border-violet-400"
-                      >
-                        <span
-                          className="flex items-center gap-[7px] font-mono text-[9.5px] uppercase tracking-[0.16em]"
-                          style={{ color }}
-                        >
-                          <span className="h-[5px] w-[5px] rounded-full" style={{ background: color }} />
-                          {c.tag}
-                        </span>
-                        <span className="text-[14px] font-semibold leading-5 text-vgray-900">{c.label}</span>
-                      </button>
-                    );
-                  })}
+          />
+        }
+        railBody={
+          <CopilotRailBody
+            hasWallet={Boolean(address)}
+            healthFactor={liveHf}
+            positions={railPositions}
+            conversations={investigation.conversations}
+            activeId={investigation.conversationId}
+            onOpen={openConversation}
+            onRename={(id, title) => { void investigation.rename(id, title); }}
+            onDelete={(id) => { void investigation.remove(id); }}
+          />
+        }
+        railMini={
+          <CopilotRailMini
+            onExpand={() => setRailCollapsed(false)}
+            onNewChat={startNewChat}
+            autoApprove={{
+              on: autoApproveUiOn,
+              busy: autoApprovePending || loading,
+              capsMode: railCapsMode,
+              customTx,
+              customDay,
+              defaultTx: mcpDefaultCap ?? 1000,
+              defaultDay: mcpDefaultCap ?? 1000,
+              onToggle: handleAutoApproveToggle,
+              onCapsMode: setRailCapsMode,
+              onCustomTx: setCustomTx,
+              onCustomDay: setCustomDay,
+            }}
+            healthFactor={liveHf}
+            conversations={investigation.conversations}
+            activeId={investigation.conversationId}
+            onOpen={openConversation}
+            onRename={(id, title) => { void investigation.rename(id, title); }}
+            onDelete={(id) => { void investigation.remove(id); }}
+          />
+        }
+        thread={
+            <div style={{ paddingTop: 24, paddingBottom: 8, display: "flex", flexDirection: "column", gap: 34 }}>
+
+            {/* Thread content is a conversation, not one giant console card. Individual
+                decision and execution components keep their own boundaries. */}
+            {(investigation.turns.length > 0 || pendingUser || investigation.loading || investigation.result || investigation.error || phase !== "idle") && (
+            <section aria-label="Copilot conversation" className="min-w-0">
+            <ChatTurns
+              turns={investigation.turns}
+              pendingUser={pendingUser}
+              working={Boolean(pendingUser && loading && !investigation.loading)}
+              liveAssistant={liveAssistant}
+              liveNote={!isError ? response?.answer?.note : null}
+              liveTone={isError ? "error" : "default"}
+              sessionSigning={sessionSigning}
+            />
+            {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
+              <div className="flex items-start gap-2.5 max-w-[85%]">
+                <div className="w-[18px] shrink-0" aria-hidden="true" />
+                <div className="min-w-0 w-full">
+                  <ExecutionStepper
+                    steps={[
+                      {
+                        id: "direct-tx",
+                        label: "",
+                        op: String(action?.op ?? "submit"),
+                        asset: String(action?.asset ?? ""),
+                        amount: String(action?.amount ?? ""),
+                        status: "settled",
+                        txHash,
+                      },
+                    ]}
+                    currentStepIndex={0}
+                    autoApprove={sessionSigning}
+                  />
                 </div>
               </div>
+            ) : null}
+            {(!isStaleInvestigation && (investigation.loading || investigation.result || investigation.error || workflow.view || workflow.loading || signingJournal)) && (
+              <InvestigationCard
+                {...investigation}
+                omitTranscript
+                onPropose={investigation.result?.continuation
+                  ? (candidateId) => {
+                      const continuation = investigation.result!.continuation;
+                      // Claimed here so the auto-prepare effect does not send the same plan again.
+                      claimDispatch(address, `propose:${continuation}:${candidateId}`);
+                      void workflow.propose(continuation, candidateId);
+                    }
+                  : undefined}
+                workflow={workflow.view}
+                planWithdrawn={workflow.stale}
+                planLiveFloor={workflow.quote}
+                workflowError={workflow.error}
+                workflowLoading={workflow.loading || signingJournal}
+                onApprove={() => { void workflow.approve(); }}
+                onResume={() => { void workflow.resume(); }}
+                onCancelPlan={() => { void workflow.cancelPlan(); }}
+                onSign={() => { void signJournalXdr(false); }}
+                wallet={address}
+                autoSign={sessionSigning}
+              />
             )}
+            <div
+              hidden={
+                !response && !loading &&
+                !!(investigation.turns.length > 0 || investigation.loading || investigation.result || investigation.error || workflow.view || workflow.loading)
+              }
+              className="min-w-0"
+            >
+              {/*
+                The idle capability grid is gone. It listed four example prompts in big
+                tappable cards, which is exactly what the Prompts button already opens — the
+                same suggestions twice, with the duplicate occupying the space the actual
+                work needs. An empty console now shows nothing rather than filler.
+              */}
+              {/* A turn in flight or complete */}
+              {phase !== "idle" && (phase !== "done" || strategyOpen) && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12, animation: "cp-in 300ms ease-out forwards" }}>
+                  { !submittedRecorded && !pendingUser && (submitted || investigation.turns.find((t) => t.role === "user")?.text) && (
+                    <UserBubble>
+                      {submitted || investigation.turns.find((t) => t.role === "user")?.text}
+                    </UserBubble>
+                  )}
 
-            {/* A turn in flight or complete */}
-            {phase !== "idle" && (
-              <div style={{ animation: "cp-in 300ms ease-out forwards" }}>
-                {submitted && <p className="mb-[18px] text-h7 leading-snug text-vgray-900">{submitted}</p>}
+                  {loading && !multiLeg && !pendingUser ? (
+                    <p role="status" aria-live="polite" className="text-[13px] leading-[20px] text-violet-500">Working…</p>
+                  ) : null}
 
-                {/* A multi-leg run gets the live execution card — one card that advances
-                    in place, narrating each leg as it settles. The plain step list stays
-                    for single-turn work, where there is no chain to narrate. */}
-                {multiLeg && execLegs.length > 0 && (phase !== "done" || strategyOpen) ? (
-                  <RunExecutionCard
-                    eyebrow="02"
-                    legs={execLegs}
-                    hf={liveHf}
-                    floor={
-                      // "keep me above 1.4" in the prompt wins over the stored default.
-                      strategyMetaRef.current.min_hf != null &&
-                      Number.isFinite(Number(strategyMetaRef.current.min_hf))
-                        ? Number(strategyMetaRef.current.min_hf)
-                        : guardianFloor
-                    }
-                    busy={loading || signing}
-                    signerLive={sessionSigning}
-                    signerText={
-                      sessionSigning
-                        ? "vanna embedded signer"
-                        : walletKind === "privy"
-                          ? "privy wallet"
-                          : "freighter wallet"
-                    }
-                    footerNote={
-                      hfPaused
-                        ? "Health factor dropped below the floor you asked for. Continue the remaining collateral/debt steps, or stop here. Settled legs stay on-chain."
-                        : undefined
-                    }
-                    footerTone={hfPaused ? "warn" : undefined}
-                    onCancel={loading || signing ? cancelInFlight : undefined}
-                    onContinue={hfPaused ? continueRemainingLegs : undefined}
-                    onStop={
-                      hfPaused
-                        ? stopRemainingLegs
-                        : execLegs.some((l) => l.status === "failed")
-                          ? reset
+                  {/* A multi-leg run gets the live execution card — one card that advances
+                      in place, narrating each leg as it settles. The plain step list stays
+                      for single-turn work, where there is no chain to narrate. */}
+                  {multiLeg && execLegs.length > 0 && (phase !== "done" || strategyOpen) ? (
+                    <RunExecutionCard
+                      eyebrow="02"
+                      legs={execLegs}
+                      hf={liveHf}
+                      floor={
+                        // "keep me above 1.4" in the prompt wins over the stored default.
+                        strategyMetaRef.current.min_hf != null &&
+                        Number.isFinite(Number(strategyMetaRef.current.min_hf))
+                          ? Number(strategyMetaRef.current.min_hf)
+                          : guardianFloor
+                      }
+                      busy={loading || signing}
+                      signerLive={sessionSigning}
+                      signerText={
+                        sessionSigning
+                          ? "vanna embedded signer"
+                          : walletKind === "privy"
+                            ? "privy wallet"
+                            : "freighter wallet"
+                      }
+                      footerNote={
+                        hfPaused
+                          ? "Health factor dropped below the floor you asked for. Continue the remaining collateral/debt steps, or stop here. Settled legs stay on-chain."
                           : undefined
-                    }
-                    onNewIntent={reset}
-                    onViewTx={txHash ? () => window.open(txUrl(txHash), "_blank") : undefined}
-                    onSubmitAmount={submitLegAmount}
-                    onLpEntered={() => {
-                      if (execLegs.length > 1) lpScrollPendingRef.current = true;
-                    }}
-                  />
-                ) : (
-                  <>
-                    <Eyebrow n="02">Agent run</Eyebrow>
+                      }
+                      footerTone={hfPaused ? "warn" : undefined}
+                      onCancel={loading || signing ? cancelInFlight : undefined}
+                      onContinue={hfPaused ? continueRemainingLegs : undefined}
+                      onStop={
+                        hfPaused
+                          ? stopRemainingLegs
+                          : execLegs.some((l) => l.status === "failed")
+                            ? reset
+                            : undefined
+                      }
+                      onNewIntent={reset}
+                      onViewTx={txHash ? () => window.open(txUrl(txHash), "_blank") : undefined}
+                      onSubmitAmount={submitLegAmount}
+                      onLpEntered={() => {
+                        if (execLegs.length > 1) lpScrollPendingRef.current = true;
+                      }}
+                    />
+                  ) : liveWriteUi ? (
                     <StepList steps={steps} running={loading} />
-                  </>
-                )}
+                  ) : null}
 
-                {/* The run card carries its own in-flight indicator; a second spinner
-                    underneath read as a separate thing still loading. */}
-                {loading && !(multiLeg && execLegs.length > 0) && (
-                  <div className="mt-5 flex items-center gap-2 text-body-2 text-violet-500">
-                    <Loader2 size={15} className="animate-spin" /> working…
-                  </div>
-                )}
-
-                {/* Answer / note. Hidden while a hop is in flight so Strategy /
-                    Ask another cannot sit under a live Cancel. */}
-                {phase === "answer" && (response || multiLeg) && (
-                  <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <Eyebrow n="03">
-                        {multiLeg ? "Strategy" : isError ? "Note" : "Answer"}
-                      </Eyebrow>
-                      {decision && !multiLeg && <RiskChip decision={decision} />}
-                    </div>
-                    {multiLeg ? (
-                      <>
-                        {response?.answer && (
-                          <div
-                            className="mt-4 rounded-2xl px-5 py-4"
-                            style={{
-                              border: "1px solid var(--cp-g100)",
-                              background: "var(--cp-surface)",
-                            }}
-                          >
-                            <AnswerView answer={response.answer} />
-                          </div>
-                        )}
-                        {/* No strategy card here. The plan is reviewed once in
-                            "03 Approve plan"; from then on "02 Agent run" IS the live
-                            step view. Repeating the same legs in a second card during and
-                            after execution showed them twice with nothing left to decide. */}
-                      </>
-                    ) : response ? (
-                      <div className="mt-3 flex gap-3">
-                        {isError ? (
-                          <CircleAlert size={18} className="mt-1.5 shrink-0 text-imperial-500" />
-                        ) : (
-                          <Sparkles size={18} className="mt-1.5 shrink-0 text-violet-500" />
-                        )}
-                        {/* Structured answer when the model returned data; the prose
-                            paragraph remains for errors, clarifications, Hinglish and
-                            anything the structured call could not produce.
-
-                            ImpactPanel and FactsGrid live in this same indented column
-                            (not as siblings of it) so every card in the answer lines up
-                            under the icon at the same left edge and the same width,
-                            instead of the facts-grid card sitting flush left of it. */}
-                        <div className="min-w-0 flex-1">
-                          {response.answer && !isError ? (
-                            <AnswerView answer={response.answer} />
-                          ) : (
-                            <p
-                              className={`whitespace-pre-wrap text-[20px] leading-[32px] ${
-                                isError ? "text-imperial-600" : "text-vgray-800"
-                              }`}
+                  {/* Answer / note. Hidden while a hop is in flight so Strategy /
+                      Ask another cannot sit under a live Cancel. Plain reads already
+                      live in ChatTurns (user right, copilot left). */}
+                  {phase === "answer" && (response || multiLeg) && (
+                    liveWriteUi ||
+                    response?.kind === "clarification" ||
+                    !!followUp ||
+                    (!submittedRecorded && !liveAssistant)
+                  ) && (
+                    <div className={liveWriteUi ? "mt-[26px]" : undefined} style={{ animation: "cp-in 300ms ease-out forwards" }}>
+                      {(multiLeg || (isError && liveWriteUi) || (decision && !multiLeg && liveWriteUi)) && (
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          {(multiLeg || (isError && liveWriteUi)) && <Eyebrow>{multiLeg ? "Strategy" : "Note"}</Eyebrow>}
+                          {decision && !multiLeg && liveWriteUi && <RiskChip decision={decision} />}
+                        </div>
+                      )}
+                      {multiLeg ? (
+                        <>
+                          {response && (
+                            <div className="mt-4">
+                              <AssistantMessage note={response.answer?.note}>
+                                {response.message}
+                              </AssistantMessage>
+                            </div>
+                          )}
+                          {/* No strategy card here. The plan is reviewed once in
+                              "03 Approve plan"; from then on "02 Agent run" IS the live
+                              step view. Repeating the same legs in a second card during and
+                              after execution showed them twice with nothing left to decide. */}
+                        </>
+                      ) : response && !liveAssistant ? (
+                        <div className="min-w-0">
+                          {investigation.turns.length === 0 ? (
+                            <AssistantMessage
+                              tone={isError ? "error" : "default"}
+                              note={response.answer?.note}
                             >
                               {response.message}
-                            </p>
-                          )}
-                          {sim && !multiLeg && action?.op !== "swap" && action?.op !== "add_liquidity" && <ImpactPanel sim={sim} />}
-                          {response?.data && !multiLeg && !response.answer && (
-                            <FactsGrid data={response.data} />
-                          )}
+                            </AssistantMessage>
+                          ) : null}
+                          {sim && !multiLeg && marginProjected && <ImpactPanel sim={sim} />}
                         </div>
-                      </div>
-                    ) : null}
+                      ) : null}
 
-                    {/* USDC variant (or other) clarify chips */}
-                    {response?.kind === "clarification" &&
-                      response.clarify_options &&
-                      response.clarify_options.length > 0 && (
-                        <div className="mt-5 flex flex-col gap-2.5">
-                          {response.intent?.template_id === "clarify_usdc_variant" ? null : (
-                          <p className="font-mono text-[10.5px] uppercase tracking-[0.15em] text-vgray-400">
-                            {response.pending_write?.clarify_slot === "fraction"
-                              ? "how much to repay"
-                              : response.pending_write?.clarify_slot === "borrow" ||
-                                  response.pending_write?.clarify_slot === "collateral"
-                                ? "choose usdc type"
-                                : "choose an option"}
-                          </p>
-                          )}
-                          <div className="flex flex-wrap gap-2.5">
-                            {response.clarify_options.map((opt) => (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                disabled={loading}
-                                onClick={() => void pickClarifyOption(opt)}
-                                className="rounded-r3 border border-violet-100 bg-violet-50 px-4 py-3 text-left transition-colors hover:border-violet-400 disabled:opacity-50"
-                              >
-                                <span className="block font-mono text-[13px] font-semibold text-violet-600">
-                                  {opt.label}
-                                </span>
-                                {opt.description && (
-                                  <span className="mt-0.5 block text-[12px] leading-snug text-vgray-500">
-                                    {opt.description}
+                      {/* USDC variant (or other) clarify chips */}
+                      {response?.kind === "clarification" &&
+                        response.clarify_options &&
+                        response.clarify_options.length > 0 && (
+                          <div className="mt-5 flex flex-col gap-2.5">
+                            {response.intent?.template_id === "clarify_usdc_variant" ? null : (
+                            <p className="font-mono text-[10.5px] uppercase tracking-[0.15em] text-vgray-400">
+                              {response.pending_write?.clarify_slot === "fraction"
+                                ? "how much to repay"
+                                : response.pending_write?.clarify_slot === "borrow" ||
+                                    response.pending_write?.clarify_slot === "collateral"
+                                  ? "choose usdc type"
+                                  : "choose an option"}
+                            </p>
+                            )}
+                            <div className="flex flex-wrap gap-2.5">
+                              {response.clarify_options.map((opt) => (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  disabled={loading}
+                                  onClick={() => void pickClarifyOption(opt)}
+                                  className="rounded-r3 border border-violet-100 bg-violet-50 px-4 py-3 text-left transition-colors hover:border-violet-400 disabled:opacity-50"
+                                >
+                                  <span className="block font-mono text-[13px] font-semibold text-violet-600">
+                                    {opt.label}
                                   </span>
-                                )}
-                              </button>
-                            ))}
+                                  {opt.description && (
+                                    <span className="mt-0.5 block text-[12px] leading-snug text-vgray-500">
+                                      {opt.description}
+                                    </span>
+                                  )}
+                                </button>
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      )}
-
-                    {!(loading || signing || hfPaused || (multiLeg && strategyOpen)) && (
-                    <div className="mt-[22px] flex flex-wrap gap-2.5">
-                      <button
-                        type="button"
-                        onClick={reset}
-                        className={`px-[18px] py-2.5 ${BTN_QUIET}`}
-                      >
-                        Ask another
-                      </button>
-                      {followUp && (
-                        <button
-                          type="button"
-                          /**
-                           * Loads the composer; it does not run.
-                           *
-                           * This suggestion is now a WRITE carrying the amount the user asked
-                           * about, and with auto-approve on a write leaves no gate — one click
-                           * here used to be one borrow, at whatever size the label said. Filling
-                           * the box puts the amount in front of the user with Run one deliberate
-                           * press away, which is also what makes the carried-through amount safe
-                           * to show in the first place.
-                           */
-                          onClick={() => {
-                            setIntentText(followUp);
-                            inputRef.current?.focus();
-                            inputRef.current?.scrollIntoView({
-                              block: "center",
-                              behavior: "smooth",
-                            });
-                          }}
-                          className={`px-[18px] py-2.5 ${BTN_TINT}`}
-                        >
-                          {followUp}
-                        </button>
-                      )}
-                    </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Multi-leg plan awaiting approval. Nothing has executed yet — the
-                    server froze these steps and will only run them if we post the same
-                    plan back, fingerprint intact. */}
-                {phase === "plan" && response?.plan && (
-                  <PlanApprovalCard
-                    plan={response.plan}
-                    busy={loading}
-                    sessionSigning={autoApprove}
-                    onApprove={approvePlan}
-                    onModify={() => {
-                      // Put the original wording back in the composer so it can be
-                      // edited — v1 "modify" is re-prompting, not inline step editing.
-                      setIntentText(submitted || "");
-                      setResponse(null);
-                    }}
-                    onCancel={() => setResponse(null)}
-                  />
-                )}
-
-                {/* Staged write — MCP built the XDR, wallet signs once */}
-                {phase === "staged" && response && (
-                  <div
-                    ref={stagedSectionRef}
-                    className="mt-[26px]"
-                    style={{ animation: "cp-in 300ms ease-out forwards" }}
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      {/* With auto-approve on this never waits for a click, so calling it
-                          "Staged action" and showing a signature request — then submitting
-                          a second later anyway — read as the copilot changing its mind. */}
-                      <Eyebrow n="03">{willAutoSubmit ? "Auto-approving" : "Staged action"}</Eyebrow>
-                      {decision && <RiskChip decision={decision} />}
-                    </div>
-
-                    <div className="mt-3.5 flex flex-wrap items-start justify-between gap-6">
-                      <div className="max-w-full min-w-0">
-                        <p className="whitespace-nowrap text-h6 font-semibold text-vgray-900">
-                          {response.preview?.human_summary || response.message}
-                        </p>
-                        {/* Full agent note (e.g. the 2-step plan). Suppressed while
-                            auto-approving: it talks about needing a signature. */}
-                        {!willAutoSubmit &&
-                          response.message &&
-                          response.preview?.human_summary &&
-                          response.message.trim() !== response.preview.human_summary.trim() && (
-                            <p className="mt-2 whitespace-pre-wrap text-body-2 leading-relaxed text-vgray-600">
-                              {response.message}
-                            </p>
-                          )}
-                      </div>
-                    </div>
-
-                    {action?.multi_leg && (
-                      <p className="mt-3.5 rounded-2xl border border-vgray-100 bg-surface px-[18px] py-3 font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: WARN_INK }}>
-                        multi-step strategy · legs are not atomic
-                      </p>
-                    )}
-
-                    {sim && action?.op !== "swap" && action?.op !== "add_liquidity" && action?.op !== "remove_liquidity" && <ImpactPanel sim={sim} />}
-
-                    {reasons.length > 0 && (
-                      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1">
-                        {reasons.map((r, i) => {
-                          const bad = decision === "block";
-                          const color = bad ? BAD_INK : action?.multi_leg ? WARN_INK : OK_INK;
-                          return (
-                            <span key={i} className="inline-flex items-center gap-2 text-body-2 text-vgray-500">
-                              {bad || action?.multi_leg ? (
-                                <CircleAlert size={14} className="shrink-0" style={{ color }} />
-                              ) : (
-                                <ShieldCheck size={14} className="shrink-0" style={{ color }} />
-                              )}
-                              {r}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {action?.amount != null && action.op !== "add_liquidity" && (
-                      <div className="mt-5">
-                        {action.op === "swap" && action.expected_out != null && action.expected_out > 0 ? (
-                          <>
-                            <p className="m-0 font-mono text-[17px] leading-7 text-vgray-900">
-                              You pay {action.amount} {action.asset ?? ""} → you receive ~
-                              {Number(action.expected_out).toLocaleString(undefined, { maximumFractionDigits: 4 })}{" "}
-                              {action.token_b || ""}
-                            </p>
-                            <SwapOracleRateLine
-                              tokenIn={String(action.asset || action.token_a || "XLM")}
-                              tokenOut={String(action.token_b || "")}
-                            />
-                          </>
-                        ) : (
-                          <p className="m-0 font-mono text-[17px] leading-7 text-vgray-900">
-                            {action.op === "remove_liquidity"
-                              ? `Removing ${action.amount} LP`
-                              : `${action.amount} ${action.asset ?? ""}`}
-                            {action.op === "remove_liquidity" && (action.token_a || action.token_b)
-                              ? ` · ${action.token_a}/${action.token_b}${action.venue ? ` · ${action.venue}` : ""}`
-                              : ""}
-                          </p>
                         )}
-                      </div>
-                    )}
 
-                    {/* Staged writes use the one-line title (shortWriteLabel). MCP's
-                        SUMMARY paragraph is not a fact the user needs before signing. */}
-
-                    {sessionSigning && !willAutoSubmit && (
-                      <p className="mt-[18px] flex items-start gap-[7px] font-mono text-[11px]" style={{ color: WARN_INK }}>
-                        <CircleAlert size={13} className="mt-px shrink-0" />
-                        {decision === "block"
-                          ? "auto-approve is on, but the risk gate blocked this write — it will not auto-sign"
-                          : autoSubmitBlocked
-                            ? "auto-sign failed for this step — click Approve & sign to retry"
-                            : "auto-approve is on — approve once if auto-sign did not start"}
-                      </p>
-                    )}
-
-                    {/* One state, not two. Auto-approve shows a progress line and no
-                        button at all — offering "Approve & sign" for a second before
-                        submitting on its own is the confusing part. */}
-                    {willAutoSubmit ? (
-                      <div className="mt-[22px] flex flex-wrap items-center gap-2.5">
-                        <div className="flex flex-1 items-center gap-2.5 rounded-r3 border border-violet-50 bg-violet-50 px-6 py-4 font-mono text-[12px] font-semibold text-violet-500">
-                          <Loader2 size={15} className="animate-spin" />
-                          auto-approving — signing and submitting for you, no click needed
-                        </div>
-                        <button
-                          type="button"
-                          onClick={reset}
-                          className="rounded-r3 px-[18px] py-[15px] text-[14px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="mt-[22px] flex flex-wrap items-center gap-2.5">
-                        <button
-                          type="button"
-                          disabled={!address || signing}
-                          onClick={signWithWallet}
-                          className="flex-1 rounded-r3 bg-gradient px-6 py-[15px] text-[15px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-                          style={{ boxShadow: "0 12px 30px -10px rgba(112,58,230,.6)" }}
-                        >
-                          {signing
-                            ? "Signing…"
-                            : !address
-                              ? "Connect wallet to sign"
-                              : action?.multi_leg
-                                ? "Confirm all legs & sign"
-                                : "Approve & sign"}
-                        </button>
-                        {!signing && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIntentText(submitted || "");
-                            setResponse(null);
-                            inputRef.current?.focus();
-                          }}
-                          className="rounded-r3 border border-vgray-100 bg-transparent px-[22px] py-[15px] text-[14px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
-                        >
-                          Modify
-                        </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={reset}
-                          className="rounded-r3 px-[18px] py-[15px] text-[14px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Signing-authority consent gate.
-                    Separate from the auto-sign gate on purpose: this one is not about
-                    spend limits, it is the permission that has to exist before any
-                    limit can be enforced. Wording never says "connect your wallet" —
-                    the wallet IS connected, and telling the user to reconnect is the
-                    dead end this panel exists to end. */}
-                {phase === "bind" && response && bindGate && (
-                  <div className="mt-[26px] space-y-5" style={{ animation: "cp-in 300ms ease-out forwards" }}>
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <Eyebrow n="03">Signing authority</Eyebrow>
-                    </div>
-                    <p className="whitespace-pre-wrap text-subtext text-vgray-800">{response.message}</p>
-
-                    {/* State of the two permissions, side by side. The whole diagnosis
-                        of this bug is that these are different rows. */}
-                    <div className="rounded-r4 border border-vgray-100 p-4">
-                      <div className="flex flex-col gap-1.5">
-                        <Row k="wallet connected" v="yes" color={ACCENT} />
-                        <Row
-                          k="vanna may sign"
-                          v={
-                            bindGate.status === "bound"
-                              ? "authorized"
-                              : bindGate.status === "pending"
-                                ? "awaiting your approval"
-                                : "not authorized"
-                          }
-                          color={bindGate.status === "bound" ? ACCENT : WARN_INK}
-                        />
-                        {bindGate.wallet_address && (
-                          <Row k="wallet" v={`${bindGate.wallet_address.slice(0, 6)}…${bindGate.wallet_address.slice(-4)}`} />
-                        )}
-                      </div>
-                    </div>
-
-                    {/* In-app consent in flight — Privy may be showing its own sheet.
-                        Deliberately renders INSTEAD of the fallback buttons so the
-                        external link never flashes up during the path that replaces it. */}
-                    {bindingInApp ? (
-                      <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
-                        <p className="flex items-center gap-2 text-body-2 text-violet-600">
-                          <Loader2 size={14} className="animate-spin" />
-                          Authorizing Vanna as an additional signer on your wallet…
-                        </p>
-                      </div>
-                    ) : bindGate.connect_url ? (
-                      <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
-                        <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
-                          <ShieldCheck size={14} /> authorize additional signer
-                        </p>
-                        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-                          {/* Retrying in-app is the primary action whenever a signer id
-                              exists — the same one gesture, not a trip to another tab. */}
-                          {bindGate.signer_id && (
-                            <button
-                              type="button"
-                              disabled={loading}
-                              onClick={() => void completeWalletBindInApp(bindGate)}
-                              className={`px-[18px] py-2.5 ${BTN_GRADIENT}`}
-                            >
-                              {loading ? "Working…" : "Authorize in app"}
-                            </button>
-                          )}
+                      {!(loading || signing || hfPaused || (multiLeg && strategyOpen)) && followUp && (
+                      <div className="mt-[22px] flex flex-wrap gap-2.5">
                           <button
                             type="button"
-                            disabled={loading || !bindGate.request_id}
-                            onClick={() => void checkWalletBind(bindGate)}
-                            className={`px-[18px] py-2.5 ${BTN_ON_TINT}`}
-                          >
-                            {loading ? "Checking…" : "Check again"}
-                          </button>
-                        </div>
-                        <p className="mt-3 text-body-2 text-vgray-500">
-                          Vanna is added <em>alongside</em> your own key — it never replaces it,
-                          and you can revoke it in Privy whenever you want.
-                        </p>
-                        {/* Last resort, and framed as one. Reaching for this means the
-                            in-app SDK path could not run at all. */}
-                        <p className="mt-2 text-body-2 text-vgray-400">
-                          Not working here?{" "}
-                          <a
-                            href={bindGate.connect_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 underline hover:text-violet-500"
-                          >
-                            Authorize on Vanna&apos;s page
-                            <ExternalLink size={11} />
-                          </a>
-                          {bindGate.expires_in
-                            ? ` · link valid ${Math.round(bindGate.expires_in / 60)} min`
-                            : ""}
-                        </p>
-                      </div>
-                    ) : (
-                      <div
-                        className="rounded-r4 border p-4"
-                        style={{ borderColor: "var(--cp-warn-bd)", background: "var(--cp-warn-bg)" }}
-                      >
-                        <p className="text-body-2" style={{ color: WARN_INK }}>
-                          {bindGate.status === "expired"
-                            ? "The authorization link expired before it was completed."
-                            : "No authorization link is available right now."}
-                        </p>
-                        <button
-                          type="button"
-                          disabled={loading}
-                          onClick={() => void startWalletBind(bindGate.retry_action ?? undefined)}
-                          className={`mt-3 px-[18px] py-2.5 ${BTN_GRADIENT}`}
-                        >
-                          {loading ? "Working…" : "Get a new link"}
-                        </button>
-                      </div>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={reset}
-                      className="rounded-r2 px-[18px] py-2.5 text-[13px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )}
-
-                {/* Auto-sign enable gate */}
-                {phase === "autosign" && response && (
-                  <div className="mt-[26px] space-y-5" style={{ animation: "cp-in 300ms ease-out forwards" }}>
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <Eyebrow n="03">Auto-sign</Eyebrow>
-                      {decision && <RiskChip decision={decision} />}
-                    </div>
-                    <p className="whitespace-pre-wrap text-subtext text-vgray-800">{response.message}</p>
-                    {sim && action?.op !== "swap" && action?.op !== "add_liquidity" && action?.op !== "remove_liquidity" && <ImpactPanel sim={sim} />}
-                    <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
-                      <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
-                        <ShieldCheck size={14} /> enable auto-sign
-                      </p>
-                      {!address && <p className="mb-3 text-body-2" style={{ color: WARN_INK }}>Connect your wallet first.</p>}
-                      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                        <button
-                          type="button"
-                          disabled={!address || loading}
-                          onClick={() => enableAutoSign("use_defaults")}
-                          className={`px-[18px] py-2.5 ${BTN_GRADIENT}`}
-                        >
-                          {(() => {
-                            try {
-                              const raw = response?.auto_sign?.raw as
-                                | { default_cap_usd?: number }
-                                | null
-                                | undefined;
-                              const d = Number(raw?.default_cap_usd);
-                              if (Number.isFinite(d) && d > 0) return `Defaults ($${d} / $${d})`;
-                            } catch {
-                              /* ignore */
-                            }
-                            return "Defaults (MCP default caps)";
-                          })()}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={!address || loading}
-                          onClick={() => setShowCustom((s) => !s)}
-                          aria-expanded={showCustom}
-                          className={`px-[18px] py-2.5 ${BTN_ON_TINT}`}
-                        >
-                          Custom limits
-                        </button>
-                      </div>
-                      {showCustom && (
-                        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                          <label className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">
-                            max per tx USD
-                            <input
-                              value={customTx}
-                              onChange={(e) => setCustomTx(e.target.value)}
-                              className="mt-1 w-full border-b-2 border-vgray-200 bg-transparent pb-1 font-mono text-[15px] text-vgray-900 focus:border-violet-500 focus:outline-none"
-                            />
-                          </label>
-                          <label className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">
-                            max per day USD
-                            <input
-                              value={customDay}
-                              onChange={(e) => setCustomDay(e.target.value)}
-                              className="mt-1 w-full border-b-2 border-vgray-200 bg-transparent pb-1 font-mono text-[15px] text-vgray-900 focus:border-violet-500 focus:outline-none"
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            disabled={!address || loading}
-                            onClick={() => enableAutoSign("custom")}
-                            className={`px-[18px] py-2.5 sm:col-span-2 ${BTN_GRADIENT}`}
-                          >
-                            Enable custom
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={reset}
-                      className="rounded-r2 px-[18px] py-2.5 text-[13px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )}
-
-                {/* Executed */}
-                {phase === "done" && response && !strategyOpen && (
-                  <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
-                    <Eyebrow n="04">{multiLeg ? "Response" : "Executed"}</Eyebrow>
-                    {/* Closing summary of what actually ran. Server-side when the brain
-                        finishes the last leg; client-signed finals POST summarize_execution. */}
-                    {/* A receipt is the last thing the user reads after money moved, so it
-                        gets the emphasis of a result rather than the flat panel a read
-                        answer sits in: a violet left rule marking it as the conclusion of
-                        the run above, and a surface that reads as raised, not as another
-                        row in the list. */}
-                    {response.answer && (
-                      <div
-                        className="mt-4 overflow-hidden rounded-2xl"
-                        style={{
-                          border: "1px solid var(--cp-g100)",
-                          borderLeft: "3px solid var(--cp-violet-500)",
-                          background: "var(--cp-surface)",
-                          padding: "18px 20px 20px",
-                        }}
-                      >
-                        <AnswerView
-                          answer={{
-                            ...response.answer,
-                            headline:
-                              farmReceiptLine(
-                                response.preview?.human_summary,
-                                response.answer.headline,
-                              ) || response.answer.headline,
-                          }}
-                        />
-                        {txHash ? <ExecutedTxReceipt action={action} txHash={txHash} /> : null}
-                      </div>
-                    )}
-                    {!response.answer && (
-                      <>
-                        <div className="mt-4 flex items-center gap-4">
-                          <span
-                            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full"
-                            style={{ background: TONE_TINT.ok, color: TONE_INK.ok }}
-                          >
-                            <Check size={26} />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-h6 font-semibold text-vgray-900">
-                              {farmReceiptLine(response.preview?.human_summary) ||
-                                response.preview?.human_summary ||
-                                "Submitted on-chain"}
-                            </p>
-                            <p className="mt-1 text-body-2 text-vgray-500">
-                              Signed and submitted on-chain.
-                            </p>
-                          </div>
-                        </div>
-                        <ExecutedTxReceipt action={action} txHash={txHash} />
-                      </>
-                    )}
-                    <div className="mt-[22px] flex flex-wrap gap-2.5">
-                      <button
-                        type="button"
-                        onClick={reset}
-                        className={`px-[18px] py-2.5 ${BTN_QUIET}`}
-                      >
-                        New intent
-                      </button>
-                      {txHash && (
-                        <a
-                          href={txUrl(txHash)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`flex items-center gap-1.5 px-[18px] py-2.5 ${BTN_QUIET}`}
-                        >
-                          View on Stellar Expert <ExternalLink size={12} />
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Session log — independent of the turn card, left column only.
-              Design places it inside the card; the annotated layout moves it below. */}
-          <div>
-            <div className="mb-3 flex items-baseline justify-between gap-3">
-              <p className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-vgray-400">
-                Session log
-              </p>
-              <div className="flex items-center gap-3">
-                <p className="font-mono text-[10.5px] text-vgray-400">
-                  {log.length} {log.length === 1 ? "turn" : "turns"}
-                </p>
-                {log.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={clearHistory}
-                    className="font-mono text-[11px] text-vgray-400 underline-offset-2 transition-colors hover:text-imperial-500 hover:underline"
-                  >
-                    clear
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {log.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-vgray-100 px-[26px] py-[26px] text-center">
-                <p className="text-[13.5px] leading-5 text-vgray-400">
-                  Nothing yet — every intent you run lands here as one card, with its tool call and
-                  outcome.
-                </p>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2.5">
-                {(showAllHistory ? log : log.slice(0, HISTORY_VISIBLE)).map((e) => {
-                  const kindLabel =
-                    e.status === "executed"
-                      ? "write"
-                      : e.status === "answered"
-                        ? "read"
-                        : e.status === "staged" || e.status === "needs sign"
-                          ? "staged"
-                          : e.status === "error" || e.status === "blocked"
-                            ? "error"
-                            : e.strategy
-                              ? "strategy"
-                              : "turn";
-                  return (
-                    <div
-                      key={e.id}
-                      className="rounded-2xl border border-vgray-100 bg-surface px-[18px] py-4"
-                    >
-                      <div className="flex items-start gap-3.5">
-                        <span
-                          className="mt-[5px] h-2 w-2 shrink-0 rounded-full"
-                          style={{ background: TONE_INK[entryTone(e)] }}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <button
-                            type="button"
+                            /**
+                             * Loads the composer; it does not run.
+                             *
+                             * This suggestion is now a WRITE carrying the amount the user asked
+                             * about, and with auto-approve on a write leaves no gate — one click
+                             * here used to be one borrow, at whatever size the label said. Filling
+                             * the box puts the amount in front of the user with Run one deliberate
+                             * press away, which is also what makes the carried-through amount safe
+                             * to show in the first place.
+                             */
                             onClick={() => {
-                              setIntentText(e.prompt);
+                              setIntentText(followUp);
                               inputRef.current?.focus();
                               inputRef.current?.scrollIntoView({
                                 block: "center",
                                 behavior: "smooth",
                               });
                             }}
-                            title={`${e.prompt}\n\nClick to put this back in the composer`}
-                            className="w-full text-left text-[14.5px] font-semibold leading-[21px] text-vgray-900 text-pretty transition-colors hover:text-violet-500"
+                            className={`px-[18px] py-2.5 ${BTN_TINT}`}
                           >
-                            {e.prompt}
+                            {followUp}
                           </button>
-                          <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
-                            <span
-                              className="rounded-md px-2 py-[3px] font-mono text-[9.5px] font-bold uppercase tracking-[0.16em]"
-                              style={{
-                                color: TONE_INK[entryTone(e)],
-                                background: TONE_TINT[entryTone(e)],
-                              }}
-                            >
-                              {kindLabel}
-                            </span>
-                            <span className="font-mono text-[10.5px] text-vgray-400">
-                              {e.tool}
-                            </span>
-                            {e.ts != null && (
-                              <span className="font-mono text-[10.5px] text-vgray-300">
-                                {relTime(e.ts)}
-                              </span>
-                            )}
+                      </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Multi-leg plan awaiting approval. Nothing has executed yet — the
+                      server froze these steps and will only run them if we post the same
+                      plan back, fingerprint intact. */}
+                  {phase === "plan" && response?.plan && (
+                    <PlanApprovalCard
+                      plan={response.plan}
+                      busy={loading}
+                      sessionSigning={sessionSigning}
+                      onApprove={approvePlan}
+                      onModify={() => {
+                        // Put the original wording back in the composer so it can be
+                        // edited — v1 "modify" is re-prompting, not inline step editing.
+                        setIntentText(submitted || "");
+                        setResponse(null);
+                      }}
+                      onCancel={() => setResponse(null)}
+                    />
+                  )}
+
+                  {/* Staged write — execution progress stepper inside the thread */}
+                  {phase === "staged" && response && !txHash && (
+                    <div
+                      ref={stagedSectionRef}
+                      className="mt-4 flex flex-col gap-3"
+                      style={{ animation: "cp-in 300ms ease-out forwards" }}
+                    >
+                      <ExecutionStepper
+                        steps={[
+                          {
+                            id: "direct-tx",
+                            label:
+                              response.preview?.human_summary ||
+                              `${action?.op?.replace(/_/g, " ") ?? "submit"} ${action?.amount ?? ""} ${action?.asset ?? ""}`.trim(),
+                            op: String(action?.op ?? "submit"),
+                            asset: String(action?.asset ?? ""),
+                            amount: String(action?.amount ?? ""),
+                            status: signing ? "signing" : willAutoSubmit ? "submitting" : "pending",
+                          },
+                        ]}
+                        currentStepIndex={0}
+                        autoApprove={sessionSigning}
+                      />
+
+                      {sessionSigning && !willAutoSubmit && (
+                        <p className="flex items-start gap-1.5 font-mono text-[11px]" style={{ color: WARN_INK }}>
+                          <CircleAlert size={13} className="mt-px shrink-0" />
+                          {decision === "block"
+                            ? "Auto-approve is on, but the risk gate blocked this write — manual approval required."
+                            : autoSubmitBlocked
+                              ? "Auto-sign failed for this step — click Approve & sign to retry."
+                              : "Auto-approve is on — click Approve & sign if auto-sign did not start."}
+                        </p>
+                      )}
+
+                      {willAutoSubmit ? (
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          <div className="flex flex-1 items-center gap-2.5 rounded-lg border border-violet-100 bg-violet-50/60 px-4 py-3 font-mono text-[12px] font-semibold text-violet-600">
+                            <Loader2 size={14} className="animate-spin" />
+                            Auto-approving — signing and submitting for you…
                           </div>
-                          {e.strategy && e.legs && e.legs.length > 0 && (
-                            <p className="mt-2 font-mono text-[11.5px] leading-[19px] text-vgray-500">
-                              {e.legs.map((l) => `${l.label} · ${l.status}`).join(" → ")}
-                            </p>
+                          <button
+                            type="button"
+                            onClick={reset}
+                            className="rounded-lg px-3.5 py-2.5 text-[13px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-600"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          <button
+                            type="button"
+                            disabled={!address || signing}
+                            onClick={signWithWallet}
+                            className="flex-1 rounded-lg bg-gradient px-5 py-3 text-[14px] font-semibold text-white shadow-sm transition-opacity hover:opacity-90 disabled:opacity-40"
+                          >
+                            {signing
+                              ? "Signing…"
+                              : !address
+                                ? "Connect wallet to sign"
+                                : action?.multi_leg
+                                  ? "Confirm all legs & sign"
+                                  : "Approve & sign"}
+                          </button>
+                          {!signing && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIntentText(submitted || "");
+                                setResponse(null);
+                                inputRef.current?.focus();
+                              }}
+                              className="rounded-lg border border-vgray-200 bg-transparent px-4 py-3 text-[13px] font-semibold text-vgray-700 transition-colors hover:border-violet-100 hover:bg-violet-50 hover:text-violet-600"
+                            >
+                              Modify
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={reset}
+                            className="rounded-lg px-3.5 py-3 text-[13px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-600"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Signing-authority consent gate.
+                      Separate from the auto-sign gate on purpose: this one is not about
+                      spend limits, it is the permission that has to exist before any
+                      limit can be enforced. Wording never says "connect your wallet" —
+                      the wallet IS connected, and telling the user to reconnect is the
+                      dead end this panel exists to end. */}
+                  {phase === "bind" && response && bindGate && (
+                    <div className="mt-[26px] space-y-5" style={{ animation: "cp-in 300ms ease-out forwards" }}>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <Eyebrow n="03">Signing authority</Eyebrow>
+                      </div>
+                      <p className="whitespace-pre-wrap text-subtext text-vgray-800">{response.message}</p>
+
+                      {/* State of the two permissions, side by side. The whole diagnosis
+                          of this bug is that these are different rows. */}
+                      <div className="rounded-r4 border border-vgray-100 p-4">
+                        <div className="flex flex-col gap-1.5">
+                          <Row k="wallet connected" v="yes" color={ACCENT} />
+                          <Row
+                            k="vanna may sign"
+                            v={
+                              bindGate.status === "bound"
+                                ? "authorized"
+                                : bindGate.status === "pending"
+                                  ? "awaiting your approval"
+                                  : "not authorized"
+                            }
+                            color={bindGate.status === "bound" ? ACCENT : WARN_INK}
+                          />
+                          {bindGate.wallet_address && (
+                            <Row k="wallet" v={`${bindGate.wallet_address.slice(0, 6)}…${bindGate.wallet_address.slice(-4)}`} />
                           )}
                         </div>
-                        <div className="shrink-0 text-right">
-                          <p
-                            className="font-mono text-[11px] font-semibold"
-                            style={{ color: TONE_INK[entryTone(e)] }}
-                          >
-                            {e.status}
+                      </div>
+
+                      {/* In-app consent in flight — Privy may be showing its own sheet.
+                          Deliberately renders INSTEAD of the fallback buttons so the
+                          external link never flashes up during the path that replaces it. */}
+                      {bindingInApp ? (
+                        <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
+                          <p className="flex items-center gap-2 text-body-2 text-violet-600">
+                            <Loader2 size={14} className="animate-spin" />
+                            Authorizing Vanna as an additional signer on your wallet…
                           </p>
                         </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {log.length > HISTORY_VISIBLE && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAllHistory((s) => !s)}
-                    className="font-mono text-[11px] text-violet-500 underline-offset-2 hover:underline"
-                  >
-                    {showAllHistory ? "show fewer" : `show all ${log.length} turns`}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ── Right rail ──────────────────────────────────────────── */}
-        <div className="flex flex-col gap-5">
-          {/* Account — the dial replaces the flat ratio + linear bar. A number cannot show
-              proximity: 1.35 and 3.40 read alike in a table, and only one of them is close
-              to being liquidated. The tile carries its own zone tint, so the rail changes
-              colour when the position does. */}
-          {!address ? (
-            <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
-              <Eyebrow>Your account</Eyebrow>
-              <p className="mt-3 text-body-1 text-vgray-500">
-                Connect your wallet for account actions.
-              </p>
-            </div>
-          ) : !effHasAccount ? (
-            <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
-              <Eyebrow>Your account</Eyebrow>
-              <p className="mt-3 text-body-1 text-vgray-500">
-                No margin account yet — open one and the dial appears here.
-              </p>
-              <div className="mt-[18px] flex flex-col">
-                <Row k="wallet" v={truncAddr(address)} />
-              </div>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-5">
-              <HealthDial
-                hf={liveHf}
-                floor={guardianFloor}
-                collateralUsd={collateralValue ?? null}
-                debtUsd={borrowedValue ?? null}
-                noDebt={(borrowedValue ?? 0) < 0.5}
-              >
-                <div className="mt-4 flex flex-col">
-                  <Row k="wallet" v={truncAddr(address)} />
-                  <Row k="smart acct" v={truncAddr(effSmartAccount)} />
-                  <Row k="collateral" v={usd(collateralValue)} />
-                  <Row k="debt" v={usd(borrowedValue)} />
-                  <Row k="net value" v={usd(netValue)} />
-                </div>
-              </HealthDial>
-
-              {/* Open positions — same snapshot / rules as the Margin positions table. */}
-              <div
-                className="bg-surface"
-                style={{
-                  borderRadius: 11,
-                  border: "1px solid var(--cp-g100)",
-                  borderLeft: "3px solid var(--cp-g300)",
-                  padding: "22px 22px 22px 19px",
-                }}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <p className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-vgray-400">
-                    Open positions
-                  </p>
-                  <span className="font-mono text-[10.5px] text-vgray-400">{positionMeta}</span>
-                </div>
-                {positionRows.collateral.length === 0 && positionRows.borrowed.length === 0 ? (
-                  <p className="mt-3 font-mono text-[11px] text-vgray-400">
-                    nothing open — deposited collateral and borrows appear here per token.
-                  </p>
-                ) : (
-                  <div>
-                    {positionRows.collateral.length > 0 && (
-                      <div className="mt-4">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="h-1.5 w-1.5 rounded-full"
-                            style={{ background: "var(--z-healthy, #0b8f68)" }}
-                          />
-                          <span
-                            className="font-mono text-[10px] uppercase tracking-[0.16em]"
-                            style={{ color: "var(--z-healthy, #0b8f68)" }}
-                          >
-                            supplied
-                          </span>
-                          <span className="flex-1" />
-                          <span className="font-mono text-[11px] tabular-nums text-vgray-500">
-                            {usd(
-                              positionRows.collateral.reduce((s, r) => s + r.usd, 0),
+                      ) : bindGate.connect_url ? (
+                        <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
+                          <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
+                            <ShieldCheck size={14} /> authorize additional signer
+                          </p>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                            {/* Retrying in-app is the primary action whenever a signer id
+                                exists — the same one gesture, not a trip to another tab. */}
+                            {bindGate.signer_id && (
+                              <button
+                                type="button"
+                                disabled={loading}
+                                onClick={() => void completeWalletBindInApp(bindGate)}
+                                className={`px-[18px] py-2.5 ${BTN_GRADIENT}`}
+                              >
+                                {loading ? "Working…" : "Authorize in app"}
+                              </button>
                             )}
-                          </span>
-                        </div>
-                        {positionRows.collateral.map((r) => (
-                          <div
-                            key={`c-${r.symbol}`}
-                            className="flex items-center gap-3 border-b border-vgray-100 py-[9px] last:border-0"
-                          >
-                            <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
-                              <span
-                                className="shrink-0 rounded-md border px-[7px] py-0.5 font-mono text-[8.5px] font-bold uppercase tracking-[0.14em]"
-                                style={{
-                                  color: "var(--venue-margin-fg)",
-                                  background: "var(--venue-margin-bg)",
-                                  borderColor: "var(--venue-margin-bd)",
-                                }}
-                              >
-                                margin
-                              </span>
-                              <span className="font-mono text-[13px] font-semibold text-vgray-900">
-                                {r.symbol}
-                              </span>
-                            </span>
-                            <span className="shrink-0 text-right">
-                              <span className="block font-mono text-[13px] tabular-nums text-vgray-900">
-                                {r.amount}
-                              </span>
-                              <span className="block font-mono text-[10.5px] tabular-nums text-vgray-400">
-                                {usd(r.usd)}
-                              </span>
-                            </span>
+                            <button
+                              type="button"
+                              disabled={loading || !bindGate.request_id}
+                              onClick={() => void checkWalletBind(bindGate)}
+                              className={`px-[18px] py-2.5 ${BTN_ON_TINT}`}
+                            >
+                              {loading ? "Checking…" : "Check again"}
+                            </button>
                           </div>
-                        ))}
-                      </div>
-                    )}
-                    {positionRows.borrowed.length > 0 && (
-                      <div className="mt-4">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="h-1.5 w-1.5 rounded-full"
-                            style={{ background: "var(--z-warn, #c98214)" }}
-                          />
-                          <span
-                            className="font-mono text-[10px] uppercase tracking-[0.16em]"
-                            style={{ color: "var(--z-warn, #c98214)" }}
-                          >
-                            borrowed
-                          </span>
-                          <span className="flex-1" />
-                          <span className="font-mono text-[11px] tabular-nums text-vgray-500">
-                            {usd(positionRows.borrowed.reduce((s, r) => s + r.usd, 0))}
-                          </span>
+                          <p className="mt-3 text-body-2 text-vgray-500">
+                            Vanna is added <em>alongside</em> your own key — it never replaces it,
+                            and you can revoke it in Privy whenever you want.
+                          </p>
+                          {/* Last resort, and framed as one. Reaching for this means the
+                              in-app SDK path could not run at all. */}
+                          <p className="mt-2 text-body-2 text-vgray-400">
+                            Not working here?{" "}
+                            <a
+                              href={bindGate.connect_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 underline hover:text-violet-500"
+                            >
+                              Authorize on Vanna&apos;s page
+                              <ExternalLink size={11} />
+                            </a>
+                            {bindGate.expires_in
+                              ? ` · link valid ${Math.round(bindGate.expires_in / 60)} min`
+                              : ""}
+                          </p>
                         </div>
-                        {positionRows.borrowed.map((r) => (
-                          <div
-                            key={`d-${r.symbol}`}
-                            className="flex items-center gap-3 border-b border-vgray-100 py-[9px] last:border-0"
-                          >
-                            <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
-                              <span
-                                className="shrink-0 rounded-md border px-[7px] py-0.5 font-mono text-[8.5px] font-bold uppercase tracking-[0.14em]"
-                                style={{
-                                  color: "var(--venue-margin-fg)",
-                                  background: "var(--venue-margin-bg)",
-                                  borderColor: "var(--venue-margin-bd)",
-                                }}
-                              >
-                                margin
-                              </span>
-                              <span className="font-mono text-[13px] font-semibold text-vgray-900">
-                                {r.symbol}
-                              </span>
-                            </span>
-                            <span className="shrink-0 text-right">
-                              <span className="block font-mono text-[13px] tabular-nums text-vgray-900">
-                                {r.amount}
-                              </span>
-                              <span className="block font-mono text-[10.5px] tabular-nums text-vgray-400">
-                                {usd(r.usd)}
-                              </span>
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <p className="mt-3 text-[11px] leading-[17px] text-vgray-400">
-                      Margin account only — same balances as the Margin page. Blend supplies and
-                      Aquarius LP shares stay on Farm.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Autonomy */}
-          <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
-            <div className="flex items-center justify-between gap-3">
-              <Eyebrow>Autonomy</Eyebrow>
-              <span
-                className="flex items-center gap-[7px] font-mono text-[11px] font-semibold"
-                style={{ color: sessionSigning || autoPending ? ACCENT : "var(--color-vgray-400)" }}
-              >
-                <span
-                  className="h-1.5 w-1.5 rounded-full"
-                  style={{
-                    background: sessionSigning || autoPending ? ACCENT : "var(--color-vgray-400)",
-                  }}
-                />
-                {sessionSigning ? "auto-approve on" : autoPending ? "choosing budget" : "manual signing"}
-              </span>
-            </div>
-
-            {/*
-              The real switch, moved here from the wallet dropdown: this setting only
-              affects the copilot, so it belongs on the copilot's own surface where the
-              user can see its state while a write is staged — buried in the wallet menu
-              it was invisible at the moment it mattered.
-            */}
-            {/*
-              `aria-disabled`, never `disabled`.
-
-              A `disabled` button swallows the click, so on a Freighter wallet this control
-              did nothing at all — no movement, no message, nothing to read except an
-              11px subtitle. It was reported as a broken toggle, and from the outside that
-              is indistinguishable from one. Now the click always lands and the reason is
-              said out loud; only the state change is withheld.
-            */}
-            <button
-              type="button"
-              role="switch"
-              aria-checked={sessionSigning}
-              aria-disabled={!address || loading}
-              onClick={() => {
-                if (loading) return;
-                if (!address) {
-                  toast.error("Connect a wallet first.");
-                  return;
-                }
-                if (sessionSigning) {
-                  // Turning off: local toggle + MCP disable.
-                  setRailBudgetOpen(false);
-                  setAutoApprove(address, false);
-                  void enableAutoSign("disable");
-                  toast.success("Auto-approve off");
-                  return;
-                }
-                if (!sessionSigningAvailable) {
-                  toast.error(
-                    "Auto-approve needs a Vanna embedded wallet. Freighter signs in its own " +
-                      "extension popup, which this app cannot skip.",
-                  );
-                  return;
-                }
-                // Turning on opens the budget picker below, in this card. Nothing is sent
-                // to MCP until a budget is confirmed there.
-                if (savedCaps) {
-                  setCustomTx(String(savedCaps.tx));
-                  setCustomDay(String(savedCaps.day));
-                }
-                setRailCapsMode("defaults");
-                setRailBudgetOpen(true);
-              }}
-              className={`mt-4 flex w-full items-center gap-3 rounded-2xl border border-vgray-100 bg-vgray-50 p-3 text-left transition-colors hover:border-violet-400 ${
-                sessionSigningAvailable ? "" : "opacity-70"
-              }`}
-            >
-              <ShieldCheck
-                size={16}
-                className="shrink-0"
-                style={{ color: sessionSigning || autoPending ? ACCENT : "var(--color-vgray-400)" }}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="block text-[13px] font-semibold text-vgray-900">Auto-approve</span>
-                {/* The caps live in the summary chip below, once and only once. */}
-                <span className="block text-[11px] text-vgray-500">
-                  {!sessionSigningAvailable
-                    ? "Needs a Vanna embedded wallet — tap for why"
-                    : autoPending
-                      ? "Pick a spend budget below to finish turning this on"
-                      : sessionSigning
-                        ? "On · cleared writes run without a prompt"
-                        : "Turn on → choose MCP defaults or custom caps"}
-                </span>
-              </span>
-              {/*
-                A switch that does not move when clicked is the same bug as a `disabled` one:
-                indistinguishable from broken. It cannot claim "on" before MCP answers either,
-                so while the budget picker is open the knob sits mid-travel on a violet track —
-                visibly engaged, not yet asserting a policy that does not exist.
-              */}
-              <span
-                className="relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200"
-                style={{
-                  background: sessionSigning
-                    ? ACCENT
-                    : autoPending
-                      ? "var(--color-violet-100)"
-                      : "var(--color-vgray-200)",
-                }}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
-                    sessionSigning ? "translate-x-4" : autoPending ? "translate-x-2" : "translate-x-0"
-                  }`}
-                />
-              </span>
-            </button>
-            <p className="mt-3 text-body-2 text-vgray-500">
-              {sessionSigning
-                ? signServiceState.status === "unavailable"
-                  ? "Writes execute without a signing prompt — this app signs them with your embedded wallet. The caps are this browser's own limit, not Sign Service policy: MCP declined to register a server-side session (see “sign service” below), so nothing is enforcing them on the server. Liquidation guardian is on: if HF drops under your floor (default 1.3, or the last “keep HF above X” you said), copilot auto-repays a slice of debt."
-                  : "Writes that clear the Sign Service policy execute without a signing prompt. Liquidation guardian is also on: if HF drops under your floor (default 1.3, or the last “keep HF above X” you said), copilot auto-repays a slice of debt."
-                : sessionSigningAvailable
-                  ? "Every write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay."
-                  : "Every write is signed in your wallet. Session signing (and HF guardian) needs a Vanna embedded wallet — Freighter signs in its own popup, which this app cannot skip."}
-            </p>
-
-            {/* Spend-budget picker — the choice the 03 · AUTO-SIGN gate used to hijack the
-                main column for, asked here beside the switch that raised it. */}
-            {railBudgetOpen && (
-              <div className="mt-4">
-                <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-violet-500">
-                  choose a spend budget
-                </p>
-                <div role="radiogroup" aria-label="Spend budget" className="flex flex-col gap-2">
-                  {CAPS_CHOICES.map((c) => {
-                    const on = railCapsMode === c.id;
-                    return (
-                      <button
-                        key={c.id}
-                        type="button"
-                        role="radio"
-                        aria-checked={on}
-                        onClick={() => setRailCapsMode(c.id)}
-                        className={`flex min-w-0 items-center gap-[11px] rounded-xl border-[1.5px] p-[12px_13px] text-left transition-colors ${
-                          on
-                            ? "border-violet-500 bg-violet-50"
-                            : "border-vgray-100 hover:border-violet-400"
-                        }`}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className={`flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full border-2 ${
-                            on ? "border-violet-500" : "border-vgray-200"
-                          }`}
+                      ) : (
+                        <div
+                          className="rounded-r4 border p-4"
+                          style={{ borderColor: "var(--cp-warn-bd)", background: "var(--cp-warn-bg)" }}
                         >
-                          <span
-                            className={`h-[7px] w-[7px] rounded-full ${on ? "bg-violet-500" : ""}`}
-                          />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[13.5px] font-semibold text-vgray-900">
-                            {c.label}
-                          </span>
-                          <span className="block font-mono text-[11px] text-vgray-500">
-                            {c.hint}
-                          </span>
-                        </span>
+                          <p className="text-body-2" style={{ color: WARN_INK }}>
+                            {bindGate.status === "expired"
+                              ? "The authorization link expired before it was completed."
+                              : "No authorization link is available right now."}
+                          </p>
+                          <button
+                            type="button"
+                            disabled={loading}
+                            onClick={() => void startWalletBind(bindGate.retry_action ?? undefined)}
+                            className={`mt-3 px-[18px] py-2.5 ${BTN_GRADIENT}`}
+                          >
+                            {loading ? "Working…" : "Get a new link"}
+                          </button>
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={reset}
+                        className="rounded-r2 px-[18px] py-2.5 text-[13px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
+                      >
+                        Cancel
                       </button>
-                    );
-                  })}
-                </div>
-
-                {railCapsMode === "custom" && (
-                  <div className="mt-2.5 grid grid-cols-2 gap-2.5">
-                    {CAPS_FIELDS.map((f) => (
-                      <label key={f.id} className="block min-w-0">
-                        <span className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-vgray-400">
-                          {f.label}
-                        </span>
-                        <span className="mt-[5px] flex min-w-0 items-center gap-1.5 rounded-[9px] border border-vgray-200 bg-surface px-2.5 focus-within:border-violet-500">
-                          <span className="font-mono text-[13px] text-vgray-400">$</span>
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            min="0"
-                            value={f.id === "tx" ? customTx : customDay}
-                            onChange={(e) =>
-                              (f.id === "tx" ? setCustomTx : setCustomDay)(e.target.value)
-                            }
-                            placeholder={f.placeholder}
-                            aria-label={f.aria}
-                            className="w-full min-w-0 flex-1 border-0 bg-transparent py-2.5 font-mono text-[14px] tabular-nums text-vgray-900 outline-none"
-                          />
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    disabled={!address || loading || !capsValid}
-                    onClick={() => {
-                      setRailBudgetOpen(false);
-                      void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults");
-                    }}
-                    className={`px-[18px] py-2.5 ${BTN_GRADIENT}`}
-                  >
-                    Done
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRailBudgetOpen(false)}
-                    className="rounded-r2 border border-vgray-100 px-4 py-2.5 text-[13px] font-semibold text-vgray-600 transition-colors hover:bg-vgray-50"
-                  >
-                    Cancel
-                  </button>
-                </div>
-                {railCapsMode === "custom" && !capsValid && (
-                  <p className="mt-2 font-mono text-[11px]" style={{ color: WARN_INK }}>
-                    Enter a per-tx cap above 0 to continue.
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* Confirmed budget. Tinted amber, not violet, when only half of it is true:
-                the app will sign without a prompt but no server-side policy is holding
-                these caps, and a violet check mark would claim one. */}
-            {sessionSigning && !railBudgetOpen && (
-              <div
-                className={`mt-3.5 flex min-w-0 items-center gap-[11px] rounded-xl border p-[12px_14px] ${
-                  capsEnforced ? "border-violet-100 bg-violet-50" : ""
-                }`}
-                style={
-                  capsEnforced
-                    ? undefined
-                    : { borderColor: "var(--cp-warn-bd)", background: "var(--cp-warn-bg)" }
-                }
-              >
-                <ShieldCheck
-                  size={15}
-                  className={`shrink-0 ${capsEnforced ? "text-violet-500" : ""}`}
-                  style={capsEnforced ? undefined : { color: WARN_INK }}
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] font-semibold text-vgray-900">
-                    {capsEnforced ? "Budget active" : "Budget set — in-app only"}
-                  </span>
-                  <span
-                    className={`block font-mono text-[11px] ${capsEnforced ? "text-violet-500" : ""}`}
-                    style={capsEnforced ? undefined : { color: WARN_INK }}
-                  >
-                    {savedCaps
-                      ? `$${savedCaps.tx}/tx · $${savedCaps.day}/day`
-                      : "MCP default caps"}
-                    {capsEnforced ? "" : " · not enforced by the Sign Service"}
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (savedCaps) {
-                      setCustomTx(String(savedCaps.tx));
-                      setCustomDay(String(savedCaps.day));
-                      setRailCapsMode("custom");
-                    }
-                    setRailBudgetOpen(true);
-                  }}
-                  className="shrink-0 rounded-lg border border-violet-100 px-3 py-1.5 text-[12px] font-semibold text-violet-500 transition-colors hover:bg-violet-100"
-                >
-                  Edit
-                </button>
-              </div>
-            )}
-
-            <div className="mt-4 flex flex-col">
-              <Row
-                k="signing"
-                v={sessionSigning ? "session key" : "wallet prompt"}
-                color={sessionSigning ? ACCENT : undefined}
-              />
-              {/* The Sign Service is a separate mechanism from in-app session signing and
-                  can fail on its own. Stating it here is what stops "auto-approve on" from
-                  being read as "the server is enforcing my caps". */}
-              {signServiceState.status !== "unknown" && (
-                <Row
-                  k="sign service"
-                  v={
-                    signServiceState.status === "ok"
-                      ? "session registered"
-                      : signServiceState.status === "unbound"
-                        ? "not authorized for this wallet"
-                        : `unavailable (${signServiceState.reason ?? "rejected"})`
-                  }
-                  color={signServiceState.status === "ok" ? ACCENT : WARN_INK}
-                />
-              )}
-              {/* Two permissions, two rows — never one.
-                  "Privy connected" is a browser wallet session; "signing authority" is
-                  a binding at the Sign Service that only the additional-signer consent
-                  can create. One row for both is what made reconnecting the wallet look
-                  like a fix for a 403 it can never fix. */}
-              {address && (
-                <Row
-                  k="signing authority"
-                  v={
-                    signServiceState.status === "ok"
-                      ? "bound to your identity"
-                      : signServiceState.status === "unbound"
-                        ? "not bound — needs your approval"
-                        : "unknown"
-                  }
-                  color={
-                    signServiceState.status === "ok"
-                      ? ACCENT
-                      : signServiceState.status === "unbound"
-                        ? WARN_INK
-                        : undefined
-                  }
-                />
-              )}
-              <Row
-                k="guardian"
-                v={
-                  sessionSigning
-                    ? (() => {
-                        try {
-                          const f = localStorage.getItem("vanna_copilot_guardian_min_hf");
-                          return f ? `auto-repay if HF < ${f}` : "auto-repay if HF < 1.3";
-                        } catch {
-                          return "auto-repay if HF < 1.3";
-                        }
-                      })()
-                    : "off (enable auto-approve)"
-                }
-                color={sessionSigning ? ACCENT : undefined}
-              />
-              <Row k="signer" v={walletKind === "privy" ? "vanna embedded" : address ? "freighter" : "—"} />
-              <Row k="enforcement" v="mcp + sign service" />
-              <Row k="custody" v="non-custodial" />
-            </div>
-          </div>
-
-          {/* Recent on-chain writes */}
-          <div
-                className="bg-surface"
-                style={{
-                  borderRadius: 11,
-                  border: "1px solid var(--cp-g100)",
-                  borderLeft: "3px solid var(--cp-g300)",
-                  padding: "22px 22px 22px 19px",
-                }}
-              >
-            <p className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-vgray-400">
-              Recent on-chain
-            </p>
-            {activity.length === 0 ? (
-              <p className="mt-3 font-mono text-[11px] text-vgray-400">
-                no writes yet — signed transactions appear here with their hash, and stay after a
-                reload.
-              </p>
-            ) : (
-              <div className="mt-2">
-                {activity.map((a) => (
-                  <a
-                    key={a.hash}
-                    href={txUrl(a.hash)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-2.5 border-b border-vgray-100 py-[11px] last:border-0"
-                  >
-                    <span
-                      className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-r2 bg-vgray-50"
-                      style={{ color: OK_INK }}
-                    >
-                      <Check size={13} />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-[13px] font-semibold leading-[19px] text-vgray-800">{a.label}</p>
-                      <p className="font-mono text-[10.5px] text-vgray-400">{truncHash(a.hash)}</p>
                     </div>
-                    <span className="shrink-0 font-mono text-[10.5px] text-vgray-400">{relTime(a.ts)}</span>
-                  </a>
+                  )}
+
+                  {/* Auto-sign enable gate */}
+                  {phase === "autosign" && response && (
+                    <div className="mt-[26px] space-y-5" style={{ animation: "cp-in 300ms ease-out forwards" }}>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <Eyebrow n="03">Auto-sign</Eyebrow>
+                        {decision && <RiskChip decision={decision} />}
+                      </div>
+                      <p className="whitespace-pre-wrap text-subtext text-vgray-800">{response.message}</p>
+                      {sim && marginProjected && <ImpactPanel sim={sim} />}
+                      <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
+                        <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
+                          <ShieldCheck size={14} /> enable auto-sign
+                        </p>
+                        {!address && <p className="mb-3 text-body-2" style={{ color: WARN_INK }}>Connect your wallet first.</p>}
+                        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                          <button
+                            type="button"
+                            disabled={!address || loading}
+                            onClick={() => enableAutoSign("use_defaults")}
+                            className={`px-[18px] py-2.5 ${BTN_GRADIENT}`}
+                          >
+                            {(() => {
+                              try {
+                                const raw = response?.auto_sign?.raw as
+                                  | { default_cap_usd?: number }
+                                  | null
+                                  | undefined;
+                                const d = Number(raw?.default_cap_usd);
+                                if (Number.isFinite(d) && d > 0) return `Defaults ($${d} / $${d})`;
+                              } catch {
+                                /* ignore */
+                              }
+                              return "Defaults (MCP default caps)";
+                            })()}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!address || loading}
+                            onClick={() => setShowCustom((s) => !s)}
+                            aria-expanded={showCustom}
+                            className={`px-[18px] py-2.5 ${BTN_ON_TINT}`}
+                          >
+                            Custom limits
+                          </button>
+                        </div>
+                        {showCustom && (
+                          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                            <label className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">
+                              max per tx USD
+                              <input
+                                value={customTx}
+                                onChange={(e) => setCustomTx(e.target.value)}
+                                className="mt-1 w-full border-b-2 border-vgray-200 bg-transparent pb-1 font-mono text-[15px] text-vgray-900 focus:border-violet-500 focus:outline-none"
+                              />
+                            </label>
+                            <label className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">
+                              max per day USD
+                              <input
+                                value={customDay}
+                                onChange={(e) => setCustomDay(e.target.value)}
+                                className="mt-1 w-full border-b-2 border-vgray-200 bg-transparent pb-1 font-mono text-[15px] text-vgray-900 focus:border-violet-500 focus:outline-none"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              disabled={!address || loading}
+                              onClick={() => enableAutoSign("custom")}
+                              className={`px-[18px] py-2.5 sm:col-span-2 ${BTN_GRADIENT}`}
+                            >
+                              Enable custom
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={reset}
+                        className="rounded-r2 px-[18px] py-2.5 text-[13px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+
+                </div>
+              )}
+            </div>
+
+            </section>
+            )}
+          </div>
+        }
+        composer={
+          <>
+            {/* Hero — only while the stage is empty. It shares the composer's block so
+                the two move together as the grid recentres them. */}
+            {stageEmpty && (
+              <div style={{ textAlign: "center", marginBottom: 16 }}>
+                <div className="text-[28px] leading-[42px] font-semibold text-vgray-900">
+                  What&apos;s the next move?
+                </div>
+                <div className="mt-1.5 text-[16px] leading-[24px] text-vgray-500">
+                  Read the book, size a plan, or run a change.
+                </div>
+              </div>
+            )}
+            {/* The pill is styled inline for the reason recorded in globals.css: a custom
+                class declared there did not survive into the served stylesheet, and the
+                composer must never render as an unstyled row. */}
+            <div
+              className="cp-composer"
+              style={{
+                minWidth: 0,
+                background: "var(--cp-surface)",
+                border: "1px solid var(--cp-g100)",
+                borderRadius: 28,
+                padding: "8px 8px 8px 18px",
+              }}
+            >
+          {/* One surface, one Run. Which engine handles a turn is the server's decision from
+              the request itself, never a mode the user has to pick — a person asking for a
+              strategy should not have to know that research and execution are different code
+              paths, and a mode switch made "deposit 5 XLM" silently non-executable. */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (signing) return;
+              /**
+               * A paused swap answered with just the corrected token ("SOUSDC") used to fire
+               * a brand-new, context-free message through `run()` — the router cannot infer
+               * a whole trade from one word, so the paused strategy was silently abandoned
+               * instead of resumed. When the composer is currently showing a swap leg
+               * waiting on exactly this kind of answer, and the typed text resolves to a
+               * known token, treat it as the answer to THAT leg instead.
+               */
+              const pausedSwap = execLegs.find(
+                (l) => l.status === "needs_input" && l.op === "swap",
+              );
+              const resolvedToken = pausedSwap ? resolveAssetSymbolFromText(intentText) : null;
+              if (pausedSwap && resolvedToken) {
+                submitLegTokenAnswer(pausedSwap, resolvedToken);
+                return;
+              }
+              run(intentText);
+            }}
+          >
+            <div className="flex items-end gap-2">
+              {/*
+                A textarea that grows with the text, not a single-line input.
+                A long intent scrolled sideways out of view, so the beginning of your own
+                instruction — usually the objective, with the constraint at the end — was
+                hidden exactly when you wanted to re-read it before running. It grows to six
+                rows and then scrolls, so it can never push Run off the screen.
+
+                Enter still runs; Shift+Enter takes a newline. Losing Enter-to-run to gain
+                multiline would be a bad trade for the common case.
+              */}
+              <textarea
+                ref={inputRef}
+                value={intentText}
+                onChange={(e) => setIntentText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    e.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                // Short enough not to wrap the empty box onto a second line.
+                placeholder={investigation.result?.question
+                  ? "Answer the question, or refine the plan…"
+                  : "Ask about a position, or describe a change"}
+                aria-label="Copilot intent"
+                maxLength={8000}
+                rows={1}
+                className="cp-composer-input min-w-0 flex-1 bg-transparent text-vgray-900 placeholder:text-vgray-300 focus:outline-none"
+                // Inline, not a utility class: the drag-to-resize grip is the browser default
+                // and must not appear. The box sizes itself from the text; a manual handle
+                // only lets the user fight that.
+                style={{ resize: "none" }}
+                spellCheck={false}
+              />
+              <button
+                type={loading || signing || investigation.loading || entry.loading ? "button" : "submit"}
+                disabled={!loading && !signing && !investigation.loading && !entry.loading && !intentText.trim()}
+                onClick={
+                  loading || signing || investigation.loading || entry.loading
+                    ? (e) => {
+                        e.preventDefault();
+                        entry.cancel();
+                        investigation.cancel();
+                        cancelInFlight();
+                      }
+                    : undefined
+                }
+                aria-label={loading || signing || investigation.loading || entry.loading ? "Cancel" : "Send"}
+                className={
+                  loading || signing || investigation.loading || entry.loading
+                    ? `shrink-0 rounded-full px-4 py-2 text-[13px] ${BTN_QUIET}`
+                    : "flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-100"
+                }
+                style={
+                  loading || signing || investigation.loading || entry.loading
+                    ? undefined
+                    : { background: "var(--gradient, linear-gradient(135deg, #FC5457 10%, #703AE6 80%))" }
+                }
+              >
+                {loading || signing || investigation.loading || entry.loading ? (
+                  "Cancel"
+                ) : (
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M12 19V5" /><path d="m5 12 7-7 7 7" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          </form>
+
+          {entry.error && <p role="alert" className="mt-3 text-[13px] text-imperial-500">{entry.error}</p>}
+
+        </div>
+            <p className="mt-1.5 text-center text-[11px] leading-[17px] text-vgray-400">
+              {autoApproveUiOn
+                ? "Auto-approve on · writes inside the limits run without a prompt"
+                : "Auto-approve off · every write asks for a signature"}
+            </p>
+            {/* Starter prompts, shown only on an empty stage. They run through the same
+                composer path a typed prompt does, so nothing here is a shortcut past the
+                classifier, the reads or any gate. */}
+            {stageEmpty && (
+              <div style={{ paddingTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
+                {["Price of XLM", "What's my health factor?", "Deposit 5 XLM"].map((text) => (
+                  <button
+                    key={text}
+                    type="button"
+                    disabled={loading || signing || investigation.loading || entry.loading}
+                    onClick={() => { void run(text); }}
+                    className="w-full cursor-pointer rounded-r2 px-1.5 py-2.5 text-left text-[14px] leading-[21px] text-vgray-500 transition-colors hover:bg-vgray-50 hover:text-vgray-900 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {text}
+                  </button>
                 ))}
               </div>
             )}
-          </div>
-
-          <p className="text-center text-body-3 text-vgray-400">
-            Every action runs the same safety checks — nothing touches the chain until policy passes.
-          </p>
-        </div>
-      </div>
+          </>
+        }
+      />
     </div>
   );
+
 }
 
 export default CopilotWorkspace;

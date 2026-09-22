@@ -12,7 +12,8 @@ import {
 import { cleanExecutionCopy, fmtLpAmt, humanizeStroopCounts } from "./execution-copy";
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
-import { earnPoolSymbols, resolveAssetDef } from "./registry/assets";
+import { allAssets, earnPoolSymbols, lpPairs, resolveAssetDef } from "./registry/assets";
+import { autoSignAllowed } from "./guardrail-policy";
 
 /**
  * Earn pool symbols, from the registry rather than from a doc.
@@ -126,10 +127,19 @@ export function needsUsdcVariant(asset?: string | null): boolean {
  * Returns null when nothing is ambiguous, which is the answer for every message that
  * names a concrete token: AQUSDC, BLUSDC, SOUSDC, XLM, AQUA. Only bare "USDC" prompts.
  */
-export function ambiguousUsdcSlot(action: {
-  asset?: string | null;
-  borrow_asset?: string | null;
-}): "collateral" | "borrow" | null {
+export function ambiguousUsdcSlot(
+  action: {
+    asset?: string | null;
+    borrow_asset?: string | null;
+  },
+  userMessage?: string,
+): "collateral" | "borrow" | null {
+  if (userMessage != null) {
+    // Only prompt when the user's own text contains the ambiguous bare USDC token.
+    // A default inserted by the router or downstream must not count.
+    const hasBareUsdcInText = /(?:^|[^A-Z0-9])USDC(?:[^A-Z0-9]|$)/i.test(userMessage);
+    if (!hasBareUsdcInText) return null;
+  }
   if (needsUsdcVariant(action.asset)) return "collateral";
   if (needsUsdcVariant(action.borrow_asset)) return "borrow";
   return null;
@@ -405,6 +415,19 @@ export function staticStepBlocker(
         "  • Farm Blend with BLUSDC: “farm Blend at 2x with 20 BLUSDC” / “supply 20 BLUSDC to Blend”"
       );
     }
+    const checkLpVenue = (sym: string): string | null => {
+      if (!sym) return null;
+      const def = resolveAssetDef(sym);
+      if (def && def.id !== "XLM" && !def.lpVenue) {
+        const supported = lpPairs()
+          .map((p) => `${p.tokens[0]}/${p.tokens[1]} on ${p.venue}`)
+          .join(" and ");
+        return `${def.id} has no LP venue. Supported LP pairs are ${supported}.`;
+      }
+      return null;
+    };
+    const unsupported = checkLpVenue(aRaw) || checkLpVenue(bRaw);
+    if (unsupported) return unsupported;
   }
   if (op === "remove_liquidity") {
     const bRaw = norm(params.token_b) || norm(params.asset);
@@ -414,6 +437,13 @@ export function staticStepBlocker(
         "For Aquarius use “remove half my liquidity from XLM/USDC” (AQUSDC pair) " +
         "or name AQUSDC/SOUSDC explicitly."
       );
+    }
+    const def = resolveAssetDef(bRaw);
+    if (def && def.id !== "XLM" && !def.lpVenue) {
+      const supported = lpPairs()
+        .map((p) => `${p.tokens[0]}/${p.tokens[1]} on ${p.venue}`)
+        .join(" and ");
+      return `${def.id} has no LP venue. Supported LP pairs are ${supported}.`;
     }
   }
   if (op === "deploy_to_blend" || op === "supply_to_blend" || op === "withdraw_from_blend") {
@@ -432,6 +462,25 @@ export function staticStepBlocker(
         `cannot be ${verb} Blend. ${op === "withdraw_from_blend" ? `It was never in Blend to begin with — check ${venue}` : `Add liquidity on ${venue} instead`}, or name BLUSDC/USDC/XLM ` +
         `for Blend.`
       );
+    }
+  }
+  if (op === "borrow" || op === "deposit_collateral" || op === "withdraw_collateral") {
+    const sym = norm(params.asset);
+    if (sym) {
+      const def = resolveAssetDef(sym);
+      if (def && !def.marginSymbol) {
+        const supported = allAssets()
+          .filter((d) => d.marginSymbol)
+          .map((d) => d.displayLabel)
+          .join(", ");
+        const verb =
+          op === "borrow"
+            ? "borrowed"
+            : op === "deposit_collateral"
+              ? "deposited as collateral"
+              : "withdrawn from collateral";
+        return `${def.displayLabel} cannot be ${verb}. Supported margin assets are ${supported}.`;
+      }
     }
   }
   return null;
@@ -458,6 +507,13 @@ export function mapOpToMcpStep(
     expected_out?: number | string | null;
     min_out?: number | string | null;
     slippage_pct?: number | string | null;
+    /**
+     * Set only after a human approved a card that showed this fill's price impact.
+     * MCP withholds Sign Service auto-sign above 10% impact unless this is true.
+     */
+    acknowledged_price_impact?: boolean | null;
+    /** Pre-computed impact for the swap label (same formula MCP uses). */
+    price_impact_pct?: number | string | null;
     /** Resolved Registry blend pool C-address for deploy_to_blend. */
     blend_pool_address?: string | null;
     /** enable_auto_sign only — Sign Service policy caps. */
@@ -467,6 +523,9 @@ export function mapOpToMcpStep(
   },
   ctx: AccountCtx,
 ): { step?: WriteStep; blocker?: string } {
+  const staticBlock = staticStepBlocker(op, params);
+  if (staticBlock) return { blocker: staticBlock };
+
   const trader = looksG(ctx.trader) ? ctx.trader : null;
   const smart = looksC(ctx.smartAccount) ? ctx.smartAccount : null;
   const symbol = (params.asset || "USDC").toUpperCase();
@@ -477,6 +536,11 @@ export function mapOpToMcpStep(
     case "create_account":
     case "open_account": {
       if (!trader) return { blocker: "Connect your wallet (G-address) to create a smart account." };
+      if (smart) {
+        return {
+          blocker: `You already have an active margin account (${smart}). You can deposit collateral, borrow, or manage positions directly.`,
+        };
+      }
       return {
         step: {
           tool: "vanna_open_account",
@@ -515,6 +579,11 @@ export function mapOpToMcpStep(
     case "redeem":
     case "withdraw_supply": {
       if (!trader) return { blocker: "Connect your wallet to redeem." };
+      if (!params.asset) {
+        return {
+          blocker: "Which asset do you want to redeem from Earn? e.g. “redeem 10 XLM from earn” or “redeem all BLUSDC”.",
+        };
+      }
       const args: Record<string, unknown> = { symbol, lender: trader };
       if (amount) args.amount = amount;
       else args.redeem_all = true;
@@ -596,11 +665,6 @@ export function mapOpToMcpStep(
             "BLUSDC is a different token (Blend USDC) — do not substitute.",
         };
       }
-      // BLUSDC ≠ AQUSDC ≠ SOUSDC. Never silently map BLUSDC → AQUSDC.
-      {
-        const blocked = staticStepBlocker("add_liquidity", { token_a: aRaw, token_b: bRaw });
-        if (blocked) return { blocker: blocked };
-      }
       const isSouswap =
         aRaw === "SOUSDC" ||
         bRaw === "SOUSDC" ||
@@ -641,10 +705,6 @@ export function mapOpToMcpStep(
     case "remove_liquidity": {
       if (!trader || !smart) return { blocker: "Need wallet + smart account to remove LP." };
       const bRaw = (params.token_b || params.asset || "AQUSDC").toUpperCase();
-      {
-        const blocked = staticStepBlocker("remove_liquidity", { token_b: bRaw });
-        if (blocked) return { blocker: blocked };
-      }
       const isSouswap = bRaw === "SOUSDC" || bRaw === "SOROSWAP_USDC";
       const usdSym = isSouswap ? "SOUSDC" : "AQUSDC";
       const frac =
@@ -778,10 +838,6 @@ export function mapOpToMcpStep(
        * could only ever be filled with a different token — refuse and name the two that
        * are real, rather than quietly substituting one.
        */
-      if (stated === "BLUSDC") {
-        const blocked = staticStepBlocker("swap", { token_a: tokenIn, token_b: tokenOut });
-        if (blocked) return { blocker: blocked };
-      }
       if (stated && venueStated) {
         const venueSym = venue === "soroswap" ? "SOUSDC" : "AQUSDC";
         if (stated !== venueSym) {
@@ -838,6 +894,13 @@ export function mapOpToMcpStep(
         params.slippage_pct != null && Number(params.slippage_pct) > 0
           ? String(params.slippage_pct)
           : "0.5";
+      const impactPct =
+        params.price_impact_pct != null && Number.isFinite(Number(params.price_impact_pct))
+          ? Number(params.price_impact_pct).toFixed(2)
+          : null;
+      const fillLabel = expectedOut
+        ? `Swap ${amount} ${uiIn} → ${Number(expectedOut).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${uiOut} (${venue})`
+        : `Swap ${amount} ${uiIn} → ${uiOut} (${venue})`;
       return {
         step: {
           tool: "vanna_swap",
@@ -852,10 +915,11 @@ export function mapOpToMcpStep(
             trader,
             venue,
             protocol: venue,
+            ...(params.acknowledged_price_impact === true
+              ? { acknowledged_price_impact: true }
+              : {}),
           },
-          label: expectedOut
-            ? `Swap ${amount} ${uiIn} → ${Number(expectedOut).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${uiOut} (${venue})`
-            : `Swap ${amount} ${uiIn} → ${uiOut} (${venue})`,
+          label: impactPct ? `${fillLabel} · ${impactPct}% price impact` : fillLabel,
         },
       };
     }
@@ -910,13 +974,11 @@ export function mapOpToMcpStep(
       const blendCompatible =
         symbol === "BLUSDC" || symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "XLM";
       if (!blendCompatible) {
-        const blocked =
-          staticStepBlocker(op, { asset: symbol }) ??
-          // Fallback for any OTHER unrecognised symbol reaching this point (AQUSDC/SOUSDC
-          // are staticStepBlocker's named cases; this only fires for the unexpected rest).
-          `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
-            `cannot be supplied to Blend.`;
-        return { blocker: blocked };
+        return {
+          blocker:
+            `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
+            `cannot be supplied to Blend.`,
+        };
       }
       const blendSym = symbol === "XLM" ? "XLM" : "USDC";
       const uiSym = displayUsdcLabel(blendSym, symbol);
@@ -990,11 +1052,11 @@ export function mapOpToMcpStep(
       const blendCompatible =
         symbol === "BLUSDC" || symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "XLM";
       if (!blendCompatible) {
-        const blocked =
-          staticStepBlocker(op, { asset: symbol }) ??
-          `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
-            `was never supplied to Blend.`;
-        return { blocker: blocked };
+        return {
+          blocker:
+            `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
+            `was never supplied to Blend.`,
+        };
       }
       const blendSym = symbol === "XLM" ? "XLM" : "USDC";
       const uiSym = displayUsdcLabel(blendSym, symbol);
@@ -1283,14 +1345,30 @@ export function humanizeMcpWriteError(
         `Nothing was submitted and your collateral is unchanged.`
       );
     }
+    if ((tool === "vanna_settle_account" || /settle/i.test(tool)) && /Budget|ExceededLimit|resource/i.test(raw)) {
+      return (
+        "Account settlement simulation hit the Soroban CPU budget limit (ExceededLimit). " +
+        "Try settling positions individually or retry directly from the Margin page."
+      );
+    }
+    if (/Budget,\s*ExceededLimit|HostError:\s*Error\(Budget/i.test(raw)) {
+      return (
+        "The simulation hit the Soroban CPU/resource budget limit (ExceededLimit). " +
+        "Try reducing the amount or executing steps individually."
+      );
+    }
     // Truncate huge event logs for other tools
     const firstLine = raw.split(/\n/)[0]?.slice(0, 280) || raw.slice(0, 280);
     return `Simulation failed: ${firstLine}`;
   }
 
+  const masked = raw
+    .replace(/\bon\s+C[A-Z0-9]{8,}\b/gi, "on your margin account")
+    .replace(/\bC[A-Z0-9]{16,}\b/g, "your margin account");
+
   // Cap very long messages
-  if (raw.length > 600) return raw.slice(0, 600) + "…";
-  return raw;
+  if (masked.length > 600) return masked.slice(0, 600) + "…";
+  return masked;
 }
 
 /**
@@ -1311,6 +1389,12 @@ function rejectionGuidance(tool: string): string {
       "*before* this transaction, so a combined deposit-and-borrow is refused while " +
       "your collateral is still too low — the deposit in the same call isn't counted " +
       "yet. Deposit the collateral first, then borrow against it as a second step."
+    );
+  }
+  if (tool === "vanna_margin_trade" || tool === "vanna_borrow") {
+    return (
+      "\n\nThis borrow exceeds the available borrowing capacity for your account's posted collateral. " +
+      "Check “how much can I borrow” to see your live capacity, or deposit more collateral."
     );
   }
   return "";
@@ -1347,6 +1431,12 @@ function traceOf(tool: string, build: Record<string, unknown>, xdr?: string | nu
 function readyToSignMessage(_label: string): string {
   // The card's own headline is the label, so repeating it here says it twice in a row.
   return "Built and ready — approve to sign it with your wallet.";
+}
+
+function writeOpForTool(tool: string): string {
+  const name = tool.replace(/^vanna_/, "");
+  if (name === "settle_account") return "settle";
+  return name;
 }
 
 export async function executeMcpWrite(
@@ -1683,10 +1773,31 @@ export async function executeMcpWrite(
     };
   }
 
+  // High price impact: MCP built the XDR but withheld Sign Service auto-sign
+  // until a human who was shown the figure confirms it. Do not let in-app
+  // auto-approve silent-sign this XDR — that would empty the gate. A click on
+  // Approve still session-signs (or a later call with `acknowledged_price_impact`).
+  if (as === "withheld_price_impact" && xdr) {
+    const warning = String(build.message || build.price_impact_warning || "").trim();
+    return {
+      tool: step.tool,
+      label: step.label,
+      build,
+      unsigned_xdr: xdr,
+      status: "needs_wallet_sign",
+      forbid_session_sign: true,
+      message:
+        warning ||
+        "This fill is far below oracle fair value. Auto-sign is withheld until you confirm it.",
+      mcp_trace: { ...baseTrace, auto_sign: as },
+    };
+  }
+
   // Never call vanna_sign_and_submit from the brain. If a Sign Service session
   // is active, MCP write tools submit themselves (`auto_sign: "on"`) and we
   // already returned above. If not, unsigned XDR is the contract: in-app
   // auto-approve is client session-signing of this XDR, not a server submit.
+  const humanSign = !autoSignAllowed(writeOpForTool(step.tool));
   return {
     tool: step.tool,
     label: step.label,
@@ -1694,6 +1805,7 @@ export async function executeMcpWrite(
     unsigned_xdr: xdr,
     status: "needs_wallet_sign",
     message: readyToSignMessage(step.label),
+    ...(humanSign ? { forbid_session_sign: true } : {}),
     mcp_trace: { ...baseTrace, auto_sign: "disabled" },
   };
 }

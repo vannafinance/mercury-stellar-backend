@@ -43,6 +43,8 @@ yarn-error.log*
 
 # Stray dev-server log from `npm run dev > dev.log`.
 dev.log
+copilot-dev.log
+copilot-dev.err.log
 
 # vercel
 .vercel
@@ -58,6 +60,8 @@ next-env.d.ts
 .cursor
 
 # local-only notes / snapshots (do not commit)
+/.agents/
+.agents/
 PHASE_1_SNAPSHOT.txt
 skills-lock.json
 .claude.md
@@ -94,6 +98,7 @@ scripts/__tmp_verify_addliq_eurc.mjs
 
 # Claude Code project guide — kept local, not shipped in the repo
 CLAUDE.md
+CLAUDE-HANDOFF-*.md
 
 testsprite_tests/
 
@@ -107,5 +112,9 @@ docs/*.docx
 # Ignored so a handoff bundle can never be swept into a commit by `git add -A`.
 /.handoff-extract/
 /.handoff-prev/
+/.local/copilot-workflows/
 *-handoff.zip
 
+
+# Copilot runtime state: sessions, audit log, workflow checkpoints (user data + signed tokens)
+.local/

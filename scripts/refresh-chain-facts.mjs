@@ -163,6 +163,42 @@ for (const sym of pools) {
   else canonical.push(sym);
 }
 
+// ── LP pools: which USDC each router pairs with XLM ─────────────────────────
+/**
+ * Soroswap answers from the router (`router_pair_for`); Aquarius from
+ * `vanna_get_aquarius_pool_stats` once the MCP resolves the pool through its router
+ * (until then that read scans page 1 of the public API by code and finds nothing).
+ * A venue whose read fails keeps its previous recording, and says so on stdout.
+ */
+const previous = fs.existsSync(OUT) ? JSON.parse(fs.readFileSync(OUT, "utf8")).lpPools ?? {} : {};
+const lpPools = {
+  _source: [
+    "aquarius: vanna_get_aquarius_pool_stats { token_a: XLM, token_b: USDC } — the pool the Aquarius router resolves for the protocol's SACs",
+    "soroswap: vanna_get_lp_balance { venue: soroswap } → soroswap_router.router_pair_for(XLM, get_soroswap_usdc_addr)",
+  ],
+  recordedAt: new Date().toISOString().slice(0, 10),
+};
+try {
+  const aq = await call("vanna_get_aquarius_pool_stats", { token_a: "XLM", token_b: "USDC" });
+  const pool = aq.found ? aq.pool : null;
+  if (!pool?.pool_address) throw new Error(aq.message ?? "no pool");
+  lpPools.aquarius = { pool: pool.pool_address, tokens: ["XLM", "AQUSDC"] };
+} catch (error) {
+  console.warn(`  aquarius LP: read failed (${error.message}); keeping the previous recording`);
+  if (previous.aquarius) lpPools.aquarius = previous.aquarius;
+}
+try {
+  const addresses = await call("vanna_list_protocol_addresses", {});
+  const holder = addresses.registry ?? addresses.margin_registry ?? addresses.address_book?.registry;
+  const so = await call("vanna_get_lp_balance", { smart_account: holder, token_a: "XLM", token_b: "USDC", venue: "soroswap" });
+  if (!so.lp_token_contract) throw new Error(so.message ?? "not resolvable");
+  lpPools.soroswap = { pair: so.lp_token_contract, tokens: ["XLM", "SOUSDC"] };
+} catch (error) {
+  console.warn(`  soroswap LP: read failed (${error.message}); keeping the previous recording`);
+  if (previous.soroswap) lpPools.soroswap = previous.soroswap;
+}
+console.log("lp pools:", lpPools);
+
 const facts = {
   _comment: [
     "Protocol facts read from the live MCP, recorded so CI can check the asset registry",
@@ -193,6 +229,7 @@ const facts = {
     aliases,
     rejected,
   },
+  lpPools,
 };
 
 fs.writeFileSync(OUT, JSON.stringify(facts, null, 2) + "\n");

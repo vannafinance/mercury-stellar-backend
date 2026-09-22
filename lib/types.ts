@@ -31,8 +31,6 @@ export interface Position {
   borrowed: BorrowInfo[];
 
   leverage: number;
-  /** Account-level health factor (cross-margin — same HF for the whole row). */
-  healthFactor: number;
   interestAccrued: number;
 
   isOpen: boolean;

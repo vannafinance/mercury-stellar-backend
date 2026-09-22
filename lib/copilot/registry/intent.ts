@@ -423,7 +423,9 @@ export function slotsToAction(op: string, slots: IntentSlots, ctx: ActionCtx): C
 export function actionFrom(raw: unknown, ctx: ActionCtx): CopilotAction {
   const o = (raw ?? {}) as Record<string, unknown>;
   const op = String(o.op ?? o.tool ?? "");
-  return slotsToAction(op, toSlots(o), ctx);
+  const action = slotsToAction(op, toSlots(o), ctx);
+  if (o.acknowledged_price_impact === true) action.acknowledged_price_impact = true;
+  return action;
 }
 
 // ── boundary validation ─────────────────────────────────────────────────────

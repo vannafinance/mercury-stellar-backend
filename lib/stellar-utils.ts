@@ -1,5 +1,6 @@
 import { requestAccess, getAddress, signTransaction } from '@/lib/wallet-adapter';
 import * as StellarSdk from '@stellar/stellar-sdk';
+import { RETRY, withRetry } from '@/lib/copilot/retry-policy';
 import { markTxSubmitted } from './tx-progress';
 
 export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
@@ -303,7 +304,7 @@ export class WalletService {
   static async getBalance(address: string): Promise<string> {
     try {
       const server = new StellarSdk.Horizon.Server(HORIZON_URL);
-      const account = await server.loadAccount(address);
+      const account = await withRetry(RETRY.rpcRead, () => server.loadAccount(address));
       
       const xlmBalance = account.balances.find(
         (balance: any) => balance.asset_type === 'native'
@@ -387,16 +388,14 @@ export class ContractService {
 
       const sim = await server.simulateTransaction(tx);
       if (!StellarSdk.rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
-        if (options?.throwOnError) throw new Error(`Token balance simulation failed for ${tokenContract}`);
-        return '0';
+        throw new Error(`Token balance simulation failed for ${tokenContract}`);
       }
 
       const raw = StellarSdk.scValToNative(sim.result.retval) as bigint;
       const decimals = options?.decimals ?? await this.getTokenDecimals(tokenContract);
       return (Number(raw) / 10 ** decimals).toFixed(7);
     } catch (error) {
-      if (options?.throwOnError) throw error;
-      return '0';
+      throw error;
     }
   }
 
@@ -615,7 +614,7 @@ export class ContractService {
    */
   static async pollTransactionStatus(server: StellarSdk.rpc.Server, hash: string): Promise<void> {
     let attempts = 0;
-    const maxAttempts = 45;
+    const maxAttempts = 30;
 
     while (attempts < maxAttempts) {
       try {
@@ -639,9 +638,7 @@ export class ContractService {
         // Continue polling
       }
       
-      // 1s poll — confirmation UI and post-tx earn/margin resync start sooner
-      // on testnet (was 2s × 30 ≈ up to 60s of wait after send).
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, 2000));
       attempts++;
     }
     
@@ -1003,8 +1000,8 @@ export class ContractService {
     // Horizon and RPC source-account reads are independent. Starting them
     // together removes the old Horizon-before-Soroban waterfall.
     const [horizonResult, rpcAccountResult] = await Promise.allSettled([
-      horizon.loadAccount(address),
-      rpc.getAccount(address),
+      withRetry(RETRY.rpcRead, () => horizon.loadAccount(address)),
+      withRetry(RETRY.rpcRead, () => rpc.getAccount(address)),
     ]);
 
     let xlmBalance = '0';

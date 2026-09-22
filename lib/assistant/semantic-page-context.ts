@@ -3,6 +3,8 @@
  * Do NOT send raw document.body.innerHTML. Clean JSON only.
  */
 
+import { isElementOnScreen, isTransparent } from "./visibility";
+
 export type PageSection = {
   level: 1 | 2 | 3;
   text: string;
@@ -46,7 +48,9 @@ function clean(s: string): string {
 function isVisible(el: Element): boolean {
   if (!(el instanceof HTMLElement)) return true;
   const st = window.getComputedStyle(el);
-  if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+  if (st.display === "none" || st.visibility === "hidden" || isTransparent(st.opacity)) {
+    return false;
+  }
   return true;
 }
 
@@ -120,11 +124,22 @@ function extractMainText(root: Element, maxChars: number): string {
   return deduped.join("\n").slice(0, maxChars);
 }
 
+/**
+ * The `data-copilot-id` targets the Guide is allowed to point at.
+ *
+ * Hidden nodes are skipped and ids are de-duplicated: the Earn and Farm forms mount the
+ * same panel twice (an inline desktop card and a mobile bottom sheet, both in the DOM),
+ * so an unfiltered scan handed the model the same label twice and burned two of its
+ * forty hint slots on a control the user cannot see.
+ */
 function extractInteractiveHints(root: Element): Array<{ id: string; label: string }> {
   const out: Array<{ id: string; label: string }> = [];
+  const seen = new Set<string>();
   root.querySelectorAll("[data-copilot-id]").forEach((el) => {
     const id = el.getAttribute("data-copilot-id");
-    if (!id) return;
+    if (!id || seen.has(id)) return;
+    if (el.closest(SKIP_SELECTORS) || !isElementOnScreen(el)) return;
+    seen.add(id);
     const label = clean(el.getAttribute("aria-label") || el.textContent || id).slice(0, 80);
     out.push({ id, label });
   });

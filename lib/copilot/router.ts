@@ -1,6 +1,12 @@
 /**
  * Deterministic intent router (keyword + regex).
- * Primary path when no external LLM is configured; always available as fallback.
+ *
+ * Exact-match reads (health, single-asset price) return from the shared
+ * investigation read-cache and never plan. Write/plan keyword matching remains
+ * for tests and the unnamed (non-copilot, non-assistant) surface; the Copilot
+ * page never calls this (`investigation_owns_planning`), and the assistant
+ * widget redirects writes before Vertex/LLM planning.
+ * This function must never override a researched plan.
  *
  * Strips G/C Stellar addresses before parsing amounts so digits inside addresses
  * never become fake quantities.
@@ -8,8 +14,11 @@
 
 import type { RoutedIntent } from "./types";
 import { findAmountFraction, findBalanceFraction } from "./amount-intent";
+import { matchFastPath } from "./investigation/read-cache";
 import { ASSET_SCAN_ORDER } from "./registry/assets";
 import { needsUsdcVariant, usdcVariantClarifyMessage } from "./mcp-write";
+import { namesEarnPoolMetric } from "./earn-pool-copy";
+import { contradictsStatedSource } from "./leg-direction";
 
 /**
  * Scan order comes from the asset registry — one membership list, guarded by a test,
@@ -41,11 +50,17 @@ const EARN_POOL_ASSETS = new Set(["XLM", "BLUSDC", "AQUSDC", "SOUSDC"]);
 const ADDR_RE = /\b[GC][A-Z0-9]{55,56}\b/g;
 const AMOUNT_ASSET_RE = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "i");
 const BARE_AMOUNT_RE = /(\d+(?:\.\d+)?)/;
-// `×` (U+00D7) needs no trailing \b the way ascii "x" does — it's never a prefix of a
-// real word, and the app's OWN summaries/labels render leverage as "2×", not "2x" (see
-// step-extractor.ts's PLAN_SUMMARY and plan-approval.ts's labelFor). Matching only ascii
-// "x" meant a resent/rendered summary silently lost its leverage on the round trip.
-const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*(?:x\b|×)/i;
+// `×` (U+00D7) needs no trailing \b the way ascii "x" does, but must not match when
+// directly followed by letters (e.g. "10×lm" where × is the letter X of XLM).
+const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*(?:x\b|×(?![a-zA-Z]))/i;
+/**
+ * Taking a position out — THE vocabulary, so every venue's exit branch and the guard
+ * that keeps such a sentence away from the position READS read the same words. Kept
+ * whole-word and exit-only: entry verbs like "supply" and "deposit" belong to ordinary
+ * holdings questions too ("what is my total supply in earn"), and reading those as
+ * instructions would turn a question into a write.
+ */
+const POSITION_EXIT_VERBS = /\b(remove|withdraw|take\s*out|takeout|pull\s*out|unwind|redeem|close|exit)\b/i;
 
 function stripAddresses(message: string): string {
   return message.replace(ADDR_RE, " ");
@@ -56,9 +71,10 @@ function stripAddresses(message: string): string {
  * Never treat the "USDC" inside "BLUSDC" as bare USDC.
  */
 export function findAsset(text: string): string | null {
-  const upper = text.toUpperCase();
+  const normalized = text.replace(/[×\u00d7\u2715\u2716\u2a2f]/g, "X");
+  const upper = normalized.toUpperCase();
   for (const a of ASSETS) {
-    const re = new RegExp(`(?:^|[^A-Z0-9])${a}(?:[^A-Z0-9]|$)`);
+    const re = new RegExp(`(?:^|[^A-Z])${a}(?:[^A-Z0-9]|$)`);
     if (re.test(upper)) return a;
   }
   return null;
@@ -74,9 +90,10 @@ export function findAsset(text: string): string | null {
  * the USDC inside BLUSDC never matches on its own.
  */
 export function firstAssetByPosition(text: string): string | null {
-  const m = text
+  const normalized = text.replace(/[×\u00d7\u2715\u2716\u2a2f]/g, "X");
+  const m = normalized
     .toUpperCase()
-    .match(new RegExp(`(?:^|[^A-Z0-9])(${ASSETS.join("|")})(?:[^A-Z0-9]|$)`));
+    .match(new RegExp(`(?:^|[^A-Z])(${ASSETS.join("|")})(?:[^A-Z0-9]|$)`));
   return m ? (m[1] as string) : null;
 }
 
@@ -139,13 +156,15 @@ export function findCollateralAsset(text: string): string | null {
  * An explicit borrow size, when the user gave one instead of (or beside) a multiple.
  *
  * Leverage is stripped first so "3x" never reads as a quantity — the same trap
- * findAmount guards against for the deposit slot.
+ * findAmount guards against for the deposit slot. Shorthand ("10k") is expanded the
+ * same way findAmount expands it for a deposit — this used to skip that step, so
+ * "borrow 10k XLM" read as 10, the substring before the "k" (15 Sep, findings C1/B1).
  *
  * Bare "borrow 3" (no asset) next to a deposit is leverage, not 3 tokens — see
  * {@link findLeverage}. Returning 3 here is what sized a $3 loan instead of 3×.
  */
 export function findBorrowAmount(text: string): number | null {
-  const cleaned = stripAddresses(text).replace(LEVERAGE_RE, " ");
+  const cleaned = stripAddresses(normalizeShorthandAmounts(text)).replace(LEVERAGE_RE, " ");
   const verb = cleaned.match(BORROW_VERB);
   if (!verb || verb.index == null) return null;
   let after = cleaned.slice(verb.index + verb[0].length);
@@ -163,7 +182,23 @@ export function findBorrowAmount(text: string): number | null {
     return null;
   }
   const m = after.match(/(\d+(?:\.\d+)?)/);
-  if (!m) return null;
+  if (!m || m.index == null) return null;
+  /**
+   * A health-factor floor is not a size. `matchMinHealthFactor` is the shared, canonical
+   * detector for "keep/maintain/stays above N" phrasings — reused here rather than a
+   * second regex that could disagree with it — but it is DELIBERATELY narrow beyond
+   * that: floor-anchored.test.ts documents "stays above" as a gap on purpose, because in
+   * the main pipeline the MODEL reports the floor and its quote is verified against the
+   * user's own words, not re-derived by widening this regex list. This function has no
+   * model to defer to, so for the one phrasing it cannot afford to miss — "floor" said
+   * immediately before a number, which is never a token quantity in ANY phrasing — the
+   * check is local to this function rather than a change to the shared detector's scope.
+   * Until both checks existed, "borrow BLUSDC to HF floor 1.40" read 1.40 as the borrow
+   * size (findings C1, 15 Sep): the only number in `after` IS the floor.
+   */
+  const floor = matchMinHealthFactor(after);
+  if (floor && m.index >= floor.start && m.index < floor.end) return null;
+  if (/\bfloor\b[^\d]{0,12}$/i.test(after.slice(0, m.index))) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
@@ -189,43 +224,236 @@ export function findUnsupportedAsset(text: string): string | null {
 function normalizeShorthandAmounts(text: string): string {
   return text
     .replace(/(\d),(?=\d{3}\b)/g, "$1")
-    .replace(/\b(\d+(?:\.\d+)?)\s*k\b/gi, (_m, n) => String(Number(n) * 1000));
+    .replace(/\b(\d+(?:\.\d+)?)\s*k\b/gi, (_m, n) => String(Number(n) * 1000))
+    .replace(/(\d)\s*[×\u00d7\u2715\u2716\u2a2f](?=[a-zA-Z])/g, "$1 X")
+    .replace(/[×\u00d7\u2715\u2716\u2a2f](?=[a-zA-Z])/g, "X");
 }
 
-function findAmount(text: string): number | null {
-  const cleaned = stripAddresses(normalizeShorthandAmounts(text));
-  // Explicit negative amounts (Sanujit EW8) — return the signed value so
-  // validateLendParams can reject them instead of dropping the sign.
+/** `soft` marks a value the user never said (a liquidation-avoidance phrase); investigation ignores those. */
+export type MinHealthFactorMatch = { value: number; start: number; end: number; soft?: boolean };
+
+/** “keep HF above 1.5” / “health factor over 2” / “never liquidate” */
+export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null {
+  const m =
+    text.match(
+      /(?:keep|maintain|hold|stay|above|over|min(?:imum)?)\s*(?:my\s+)?(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?|of\s+)?\s*(\d+(?:\.\d+)?)/i,
+    ) ||
+    /**
+     * `floor` is how the product itself names this number — the approval card says
+     * "your 1.3 health-factor floor" — so a user echoing it back reads as a floor here
+     * too. Without it, "borrow BLUSDC to HF floor 1.40" matched no pattern at all, and
+     * both halves of that failed at once: the stated floor was dropped (nothing
+     * enforced it), and 1.40, the only number in the sentence, was left unclaimed for
+     * the amount scan to read as the borrow size (findings C1, 15 Sep).
+     */
+    text.match(/(?:hf|health\s*factor)\s*(?:above|over|at\s+least|floor(?:\s+of)?|>=?)\s*(\d+(?:\.\d+)?)/i) ||
+    text.match(/(?:above|over|at\s+least)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i) ||
+    text.match(
+      /(?:hf|health\s*factor)[^.]{0,40}?(?:not|never|no|without)\s+[^.]{0,24}?(?:below|under|lower\s+than|beneath|dropping\s+below|dipping\s+below)\s*(\d+(?:\.\d+)?)/i,
+    ) ||
+    text.match(
+      /(?:not|never|no|without)\s+[^.]{0,40}?(?:hf|health\s*factor)[^.]{0,24}?(?:below|under|lower\s+than|beneath|dropping\s+below|dipping\s+below)\s*(\d+(?:\.\d+)?)/i,
+    ) ||
+    text.match(
+      /(?:not|never|no|without)\s+[^.]{0,24}?(?:below|under|lower\s+than|dropping\s+below|dipping\s+below)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i,
+    );
+  if (m && m.index != null) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n > 0 && n < 50) {
+      return { value: n, start: m.index, end: m.index + m[0].length };
+    }
+  }
+  const soft =
+    text.match(/\b(?:avoid|prevent|never|no)\s+liquidat\w*/i) ||
+    text.match(/\bdon'?t\s+(?:get\s+)?liquidat\w*/i) ||
+    text.match(/\bprotect\s+(?:me|my\s+account)\s+from\s+liquidat\w*/i);
+  if (soft && soft.index != null) {
+    return { value: 1.3, start: soft.index, end: soft.index + soft[0].length, soft: true };
+  }
+  return null;
+}
+
+export type HealthFactorCeilingMatch = { value: number; start: number; end: number };
+
+export function matchHealthFactorCeilingMatch(text: string): HealthFactorCeilingMatch | null {
+  const m =
+    text.match(/(?:hf|health\s*factor)\s*(?:below|under|less\s+than|beneath|<=?)\s*(\d+(?:\.\d+)?)/i) ||
+    text.match(/(?:below|under|less\s+than|beneath)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i);
+  if (!m || m.index == null) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 && n < 50
+    ? { value: n, start: m.index, end: m.index + m[0].length }
+    : null;
+}
+
+export function matchHealthFactorCeiling(text: string): number | null {
+  return matchHealthFactorCeilingMatch(text)?.value ?? null;
+}
+
+export function parseMinHealthFactor(text: string): number | null {
+  return matchMinHealthFactor(text)?.value ?? null;
+}
+
+export type ClaimedSpan = {
+  start: number;
+  end: number;
+  kind: "min_health_factor" | "health_factor_ceiling" | "leverage" | "percentage" | "hypothetical_price" | "amount" | string;
+};
+
+/**
+ * Character span claim registry.
+ *
+ * Numbers claimed by constraints (health factor floors, ceilings, leverage multiples,
+ * percentage fractions, or hypothetical prices) are registered with their exact character
+ * span [start, end].
+ *
+ * Before amount parsing runs, claimed spans are masked with spaces. This preserves exact
+ * string length, word boundaries, and character offsets without modifying indices, while
+ * ensuring numbers claimed by constraints are completely invisible to amount extractors.
+ */
+export class ClaimRegistry {
+  private claims: ClaimedSpan[] = [];
+
+  claim(span: ClaimedSpan | null | undefined): void {
+    if (!span) return;
+    if (span.start >= span.end) return;
+    this.claims.push(span);
+  }
+
+  claimAll(spans: readonly (ClaimedSpan | null | undefined)[]): void {
+    for (const s of spans) this.claim(s);
+  }
+
+  getClaims(): readonly ClaimedSpan[] {
+    return this.claims;
+  }
+
+  isClaimed(start: number, end: number): boolean {
+    return this.claims.some((c) => Math.max(start, c.start) < Math.min(end, c.end));
+  }
+
+  mask(text: string): string {
+    if (this.claims.length === 0) return text;
+    const chars = Array.from(text);
+    for (const { start, end } of this.claims) {
+      const s = Math.max(0, Math.min(start, chars.length));
+      const e = Math.max(0, Math.min(end, chars.length));
+      for (let i = s; i < e; i++) {
+        chars[i] = " ";
+      }
+    }
+    return chars.join("");
+  }
+}
+
+/**
+ * Collect all constraint spans in text (health factor floors, ceilings, leverage, percentages, prices).
+ */
+export function collectStandardConstraints(text: string, registry: ClaimRegistry): void {
+  // 1. Min health factor floor (e.g. "keeping HF above 1.4", "health factor over 2")
+  const minHf = matchMinHealthFactor(text);
+  if (minHf && !minHf.soft) {
+    registry.claim({ start: minHf.start, end: minHf.end, kind: "min_health_factor" });
+  }
+
+  // 2. Health factor ceiling (e.g. "HF below 1.3", "keep hf under 1.25")
+  const hfCeil = matchHealthFactorCeilingMatch(text);
+  if (hfCeil) {
+    registry.claim({ start: hfCeil.start, end: hfCeil.end, kind: "health_factor_ceiling" });
+  }
+
+  // 3. Stated leverage multiple (e.g. "3x", "leverage of 5")
+  const levWithX = text.matchAll(new RegExp(LEVERAGE_RE.source, "gi"));
+  for (const m of levWithX) {
+    if (m.index != null) {
+      registry.claim({ start: m.index, end: m.index + m[0].length, kind: "leverage" });
+    }
+  }
+  const levPhrases = text.matchAll(/\bleverage\s*(?:of\s*)?(\d+(?:\.\d+)?)\b|\b(\d+(?:\.\d+)?)\s*leverage\b/gi);
+  for (const m of levPhrases) {
+    if (m.index != null) {
+      registry.claim({ start: m.index, end: m.index + m[0].length, kind: "leverage" });
+    }
+  }
+
+  // 4. Percentage shares (e.g. "25%", "50 %")
+  const pctMatches = text.matchAll(/\b\d+(?:\.\d+)?\s*%/g);
+  for (const m of pctMatches) {
+    if (m.index != null) {
+      registry.claim({ start: m.index, end: m.index + m[0].length, kind: "percentage" });
+    }
+  }
+
+  // 5. Hypothetical price clauses ("pretend the price is $10")
+  const priceMatches = text.matchAll(
+    /\b(?:pretend|imagine|assume|suppose|say|treat it as if)\b[^.?!]*?\bprice\b[^.?!]*?\$?\s*\d+(?:\.\d+)?/gi,
+  );
+  for (const m of priceMatches) {
+    if (m.index != null) {
+      registry.claim({ start: m.index, end: m.index + m[0].length, kind: "hypothetical_price" });
+    }
+  }
+}
+
+export type AmountMatch = { value: number; start: number; end: number };
+
+export function findAmountMatch(text: string, registry?: ClaimRegistry): AmountMatch | null {
+  const reg = registry ?? new ClaimRegistry();
+  if (!registry) {
+    collectStandardConstraints(text, reg);
+  }
+
+  // Mask claimed constraint spans so amount scan only sees unclaimed text
+  const masked = reg.mask(text);
+  const cleaned = stripAddresses(normalizeShorthandAmounts(masked));
+
+  // Explicit negative amounts (Sanujit EW8)
   const negWithAsset = cleaned.match(
     new RegExp(String.raw`(-\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "i"),
   );
-  if (negWithAsset) {
+  if (negWithAsset && negWithAsset.index != null) {
     const n = Number(negWithAsset[1]);
-    return Number.isFinite(n) ? n : null;
+    if (Number.isFinite(n)) {
+      const matchStart = negWithAsset.index;
+      const matchEnd = matchStart + negWithAsset[1].length;
+      const match: AmountMatch = { value: n, start: matchStart, end: matchEnd };
+      reg.claim({ start: matchStart, end: matchEnd, kind: "amount" });
+      return match;
+    }
   }
+
   const withAsset = cleaned.match(AMOUNT_ASSET_RE);
-  if (withAsset) {
+  if (withAsset && withAsset.index != null) {
     const n = Number(withAsset[1]);
-    return Number.isFinite(n) && n > 0 ? n : null;
+    if (Number.isFinite(n) && n > 0) {
+      const matchStart = withAsset.index;
+      const matchEnd = matchStart + withAsset[1].length;
+      const match: AmountMatch = { value: n, start: matchStart, end: matchEnd };
+      reg.claim({ start: matchStart, end: matchEnd, kind: "amount" });
+      return match;
+    }
   }
-  // Avoid treating leverage "5x" or share "25%" as an absolute size — those are
-  // leverage / fraction slots. "repay 25% of my XLM" must not become amount=25.
-  //
-  // Also strip a fabricated price ("pretend the price of XLM is $10 and size my borrow
-  // off that" — J-07). No asset sits next to that $10, so it fell through to this bare
-  // fallback and became a real borrow of 10 XLM — the number was never a size the user
-  // stated, only a hypothetical price. The bare fallback has no way to tell a genuine
-  // size from any other digit in the sentence, so the fix is removing the price clause
-  // before it ever reaches this pattern.
+
   const noPretendPrice = cleaned.replace(
     /\b(?:pretend|imagine|assume|suppose|say|treat it as if)\b[^.?!]*?\bprice\b[^.?!]*?\$?\s*\d+(?:\.\d+)?/gi,
     " ",
   );
   const noLev = noPretendPrice.replace(LEVERAGE_RE, " ").replace(/\b\d+(?:\.\d+)?\s*%/g, " ");
   const m = noLev.match(BARE_AMOUNT_RE);
-  if (!m) return null;
+  if (!m || m.index == null) return null;
   const n = Number(m[1]);
-  return Number.isFinite(n) && n > 0 ? n : null;
+  if (Number.isFinite(n) && n > 0) {
+    const matchStart = m.index;
+    const matchEnd = matchStart + m[1].length;
+    const match: AmountMatch = { value: n, start: matchStart, end: matchEnd };
+    reg.claim({ start: matchStart, end: matchEnd, kind: "amount" });
+    return match;
+  }
+  return null;
+}
+
+export function findAmount(text: string, registry?: ClaimRegistry): number | null {
+  return findAmountMatch(text, registry)?.value ?? null;
 }
 
 /**
@@ -372,9 +600,18 @@ function any(text: string, ...words: string[]): boolean {
  * Every multi-goal gate that only counted `swap|lend|borrow|…` silently dropped the
  * second clause of "swap … and add liquidity in <venue>" and executed the swap alone.
  * One matcher, used by the plan-builder and `looksLikeMultiGoal`, so they cannot drift.
+ *
+ * The verb and "liquidity" are matched independently, not as an adjacent phrase.
+ * "provide 20 XLM and AQUSDC liquidity on aquarius" — the catalogue's own documented
+ * shape for this write — has the amounts sitting between "provide" and "liquidity",
+ * so an adjacent-phrase check ("provide liquidity") never fires. Live, 21 Sep: that
+ * exact prompt fell through to a different branch entirely, which built an LP step
+ * naming BLUSDC — a token no Aquarius/Soroswap pool holds — and refused with a
+ * message about an asset the user never mentioned.
  */
 export function hasAmmLpIntent(text: string): boolean {
-  return any(text, "add liquidity", "provide liquidity", "add lp", "remove liquidity");
+  if (any(text, "add lp", "remove liquidity")) return true;
+  return any(text, "add", "provide") && any(text, "liquidity");
 }
 
 /** Every "N ASSET" pair in the message, longest-ticker first via ASSET_ALT. */
@@ -413,7 +650,7 @@ function trySizedEarnLendPlan(raw: string, text: string): RoutedIntent | null {
   if (
     legs.length === 2 &&
     (any(text, "aquarius") || any(text, "soroswap")) &&
-    any(text, "add liquidity", "provide liquidity", "add lp")
+    hasAmmLpIntent(text)
   ) {
     return null;
   }
@@ -447,44 +684,7 @@ export function ammLpStable(venue: AmmVenue): "AQUSDC" | "SOUSDC" {
   return venue === "soroswap" ? "SOUSDC" : "AQUSDC";
 }
 
-/**
- * The floor with the character range it was read from.
- *
- * Span accounting (plan-ir.ts) needs to know which part of the message the floor
- * consumed, so that "keep me above 1.4" is not later reported as text no component
- * claimed. The regexes live here only — `parseMinHealthFactor` reads its value from
- * this, so the two can never disagree about what counts as a floor.
- */
-export type MinHealthFactorMatch = { value: number; start: number; end: number };
 
-/** “keep HF above 1.5” / “health factor over 2” / “never liquidate” */
-export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null {
-  const m =
-    text.match(
-      /(?:keep|maintain|hold|stay|above|over|min(?:imum)?)\s*(?:my\s+)?(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i,
-    ) ||
-    text.match(/(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i) ||
-    text.match(/(?:above|over|at\s+least)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i);
-  if (m && m.index != null) {
-    const n = Number(m[1]);
-    if (Number.isFinite(n) && n > 0 && n < 50) {
-      return { value: n, start: m.index, end: m.index + m[0].length };
-    }
-  }
-  // Soft floor when user only says avoid liquidation (no number).
-  const soft =
-    text.match(/\b(?:avoid|prevent|never|no)\s+liquidat\w*/i) ||
-    text.match(/\bdon'?t\s+(?:get\s+)?liquidat\w*/i) ||
-    text.match(/\bprotect\s+(?:me|my\s+account)\s+from\s+liquidat\w*/i);
-  if (soft && soft.index != null) {
-    return { value: 1.3, start: soft.index, end: soft.index + soft[0].length };
-  }
-  return null;
-}
-
-export function parseMinHealthFactor(text: string): number | null {
-  return matchMinHealthFactor(text)?.value ?? null;
-}
 
 /** “invest where max profit” / “best yield” / “earn me something” allocation intent */
 export function isMaxYieldInvestIntent(text: string): boolean {
@@ -593,7 +793,7 @@ function tryMultiGoalPlan(
     steps.push({
       kind: "write",
       op: "repay",
-      asset: repayM?.[2]?.toUpperCase() ?? asset ?? "USDC",
+      asset: repayM?.[2]?.toUpperCase() ?? asset ?? null,
       amount: repayM ? Number(repayM[1]) : null,
     });
   }
@@ -622,9 +822,10 @@ function tryMultiGoalPlan(
   /**
    * "swap" alone never satisfies `multiVerbCount` (it does not count "add liquidity"
    * as a verb). Pair it with `hasAmmLpIntent` so swap-then-LP is a plan, not a
-   * single swap that silently drops the Farm LP leg.
+   * single swap that silently drops the Farm LP leg. Adding, not removing — a
+   * swap-then-EXIT reads as two different intents, so "remove" is excluded here.
    */
-  const wantsLp = hasAmmLpIntent(text) && any(text, "add liquidity", "provide liquidity", "add lp");
+  const wantsLp = hasAmmLpIntent(text) && !any(text, "remove liquidity", "remove lp");
   const swapMultiStep = multiVerbCount >= 2 || wantsLp;
   let swapStepTokenIn: string | null = null;
   let swapStepTokenOut: string | null = null;
@@ -813,6 +1014,25 @@ function tryMultiGoalPlan(
 
   if (deduped.length < 2) return null;
 
+  /**
+   * A plan that moves money the way the user did not ask is never the best available
+   * answer.
+   *
+   * Live, 22 Sep: "withdraw 30 XLM from blend and lend it in earn" came back as
+   * `lend 30 XLM` then `deploy_to_blend BLUSDC` — INTO Blend, in an asset never
+   * mentioned, waiting on a signature. The Blend leg is pushed on the presence of the
+   * word "blend" alone, so a sentence taking money OUT of Blend builds a leg putting
+   * money in.
+   *
+   * Refused whole rather than repaired: dropping the offending leg would leave a plan
+   * missing something the user stated, and re-pointing it would be this same guessing
+   * in the other direction. Refusing lets the single-leg route read the sentence,
+   * which it already does correctly — the direction is right, and the message is the
+   * user's own words rather than an inversion of them. Planning both legs faithfully
+   * is the stated-action path's job, not this keyword builder's.
+   */
+  if (deduped.some((step) => contradictsStatedSource(String(step.op), raw))) return null;
+
   const parts = deduped.map((s, i) => {
     const a = s.amount != null ? `${s.amount} ` : "";
     const L = s.leverage != null && s.leverage > 1 ? ` at ${s.leverage}×` : "";
@@ -855,13 +1075,40 @@ export function routeMessage(message: string): RoutedIntent {
   if (!raw) {
     return { kind: "clarify", message: "Please type a question or action." };
   }
+  /**
+   * Exact-match reads return here. This function has no authority to override a
+   * researched plan: write/plan clauses miss the cache and, on the Copilot
+   * surface, never reach `routeMessage` at all (`investigation_owns_planning`).
+   */
+  const cached = matchFastPath(raw);
+  if (cached?.kind === "health") {
+    return {
+      kind: "read",
+      tool: "vanna_get_account_health",
+      args: {},
+      requires_account: true,
+      template_id: "query_account_health",
+    };
+  }
+  if (cached?.kind === "price") {
+    return {
+      kind: "read",
+      tool: "vanna_get_price",
+      args: { symbol: cached.asset },
+      template_id: "query_price",
+    };
+  }
   // Collapsed once, here, so every exact-phrase `any(text, "...")` check below benefits —
   // "how   much    do i owe" (G-04) has the same words as "how much do i owe" but none of
   // the phrase lists match irregular whitespace, so it fell through to the generic
   // clarify_capabilities blurb instead of answering.
   const text = raw.toLowerCase().replace(/\s+/g, " ");
+  const registry = new ClaimRegistry();
+  collectStandardConstraints(raw, registry);
+
   const asset = findAsset(raw);
-  const amount = findAmount(raw);
+  const amountMatch = findAmountMatch(raw, registry);
+  const amount = amountMatch?.value ?? null;
   const leverage = findLeverage(raw);
 
   /**
@@ -884,6 +1131,24 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   // ── restricted ──────────────────────────────────────────────────────────
+  /**
+   * Outbound asset transfers to external addresses are not a Copilot capability.
+   * "send my funds to G..." / "send 10 XLM to G..." must be refused cleanly
+   * rather than reinterpreted as an internal margin withdrawal.
+   */
+  const isSendToExternalAddress =
+    /\b(send|transfer|pay|forward|give|wire)\b[\s\S]*?\b(?:to|towards|into)\b[\s\S]*?(?:[GC][A-Za-z0-9_.-]{3,}|[GC]…|0x[a-fA-F0-9]{6,}|(?:another|external|an\s+external|someone\s+else(?:'s)?|my\s+other)\s+(?:wallet|address|account|recipient))/i.test(raw) &&
+    !/\b(?:to|towards|into)\s+(?:my\s+)?(?:margin|smart\s+account|blend|earn|pool|vault|aquarius|soroswap)\b/i.test(raw);
+  if (isSendToExternalAddress) {
+    return {
+      kind: "restricted",
+      reason:
+        "Outbound asset transfers to external addresses are not supported. " +
+        "Copilot only manages smart accounts and protocol positions — use your wallet directly to send funds to another address.",
+      template_id: "unsupported_transfer",
+    };
+  }
+
   /**
    * "What is Collateral Left Before Liquidation of my margin account?" was refused
    * outright as a restricted keeper action — it contains "liquidation of", which the
@@ -1190,14 +1455,29 @@ export function routeMessage(message: string): RoutedIntent {
   // Soft NL: “earn me yield from farm / invest for max profit” — handled in runWrite ranking.
   if (isMaxYieldInvestIntent(text) || any(text, "earn me something", "earn me yield from farm", "invest in market pools")) {
     const minHf = parseMinHealthFactor(raw);
+    /**
+     * Wanting the best yield says nothing about the size, so this branch asked for one
+     * even when the sentence had already given it: "invest my idle tokens in farm
+     * market" answered "How much XLM do you want to supply to Blend?" (22 Sep, live),
+     * and "invest all my USDC for max profit" did the same with "all my USDC" sitting
+     * in it. `requires_amount` was hard `true` and no fraction was carried, so a stated
+     * share had nowhere to go — the Earn lend branch below already reads exactly this
+     * and sizes off the live balance.
+     *
+     * The ranking preference and the size are two separate instructions;
+     * `findBalanceFraction` keeps them apart, refusing to read the "max" of "max yield"
+     * as a size.
+     */
+    const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "lend",
       template_id: "invest_max_yield",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
+      fraction,
       requires_account: false,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
       prefer_max_yield: true,
       min_hf: minHf,
     };
@@ -1222,7 +1502,13 @@ export function routeMessage(message: string): RoutedIntent {
    * "withdraw 20 XLM from Blend" named no supply verb at all and matched neither the
    * phrase list nor the supply-verb alternative below it, so it fell through everything.
    */
-  const blendRemoveVerb = /\b(remove|withdraw|take out|takeout|pull out|unwind|redeem)\b/i.test(text);
+  const blendRemoveVerb = POSITION_EXIT_VERBS.test(text);
+  const withdrawsWholeBlendPosition =
+    blendRemoveVerb &&
+    (/\b(all|entire|full|whole)\b/i.test(text) ||
+      /\b(?:my\s+)?(?:(?:xlm|blusdc|usdc)\s+)?position\b/i.test(text));
+  const asksPersonalBlendSupply =
+    /\b(what|how much)\b[\s\S]{0,40}\bsupply\b|\bmy\b[\s\S]{0,30}\bsupply\b|\bsupplied\b/i.test(text);
   const isBlendFarmWrite =
     any(
       text,
@@ -1236,38 +1522,57 @@ export function routeMessage(message: string): RoutedIntent {
       "blend pool",
     ) ||
     (any(text, "blend") && any(text, "add", "liquidity") && !any(text, "stats", "apy")) ||
+    /**
+     * "position" excludes a READ from being mistaken for a write — but "remove my blend
+     * position" is not a read, and this shut it out of the write too. With the guard on
+     * the read side also missing the removal verbs, the sentence had nowhere left to go
+     * and landed on the generic capabilities blurb (22 Sep, live). A removal verb
+     * settles which of the two it is, so the noun stops deciding.
+     */
     (any(text, "blend") &&
       (any(text, "farm", "deploy", "supply", "deposit", "add", "liquidity") || blendRemoveVerb) &&
-      !any(text, "position", "stats", "apy")) ||
+      (blendRemoveVerb || !any(text, "position")) &&
+      !any(text, "stats", "apy")) ||
     (any(text, "blend") && leverage != null && leverage > 1 && !any(text, "position", "stats", "apy"));
-  if (isBlendFarmWrite && blendRemoveVerb && !any(text, "position", "stats", "apy", "btoken", "which reserve")) {
+  if (isBlendFarmWrite && blendRemoveVerb && !any(text, "stats", "apy", "btoken", "which reserve")) {
     return {
       kind: "write",
       op: "withdraw_from_blend",
       template_id: "withdraw_from_blend",
       asset: asset ?? "XLM",
       amount,
+      fraction: amount == null && withdrawsWholeBlendPosition ? 1 : null,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amount == null && !withdrawsWholeBlendPosition,
     };
   }
   if (
     isBlendFarmWrite &&
     !blendRemoveVerb &&
+    !asksPersonalBlendSupply &&
     (any(text, "supply", "deposit", "deploy", "farm", "leverage", "lever", "add", "liquidity") ||
       (leverage != null && leverage > 1)) &&
     (!any(text, "supply apy", "borrow apy", "btoken", "pays more", "which reserve") &&
       (!any(text, "position") || any(text, "add", "liquidity")))
   ) {
+    /**
+     * "deploy my idle funds into blend" states its size — everything idle — and was
+     * asked "How much XLM do you want to supply to Blend?" anyway (22 Sep, live),
+     * because `requires_amount` was hard `true` here and no share was carried. Same
+     * reading as the Earn lend branch below, so the two cannot disagree about what
+     * counts as a size.
+     */
+    const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "deploy_to_blend",
       template_id: "deploy_to_blend",
       asset: asset ?? "XLM",
       amount,
+      fraction,
       multi_leg: false,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
       leverage: leverage ?? null,
     };
   }
@@ -1275,8 +1580,10 @@ export function routeMessage(message: string): RoutedIntent {
   // Aquarius / Soroswap LP — add liquidity (must beat bare deposit / lend).
   const dual = parseDualAmounts(raw);
   const single = dual ? null : parseSingleAmountToken(raw);
+  // "remove liquidity" is its own branch below; hasAmmLpIntent recognises both
+  // directions, so an exit reads that word too and must not land here first.
   if (
-    any(text, "add liquidity", "provide liquidity", "add lp") ||
+    (hasAmmLpIntent(text) && !any(text, "remove liquidity", "remove lp")) ||
     (any(text, "add") && any(text, "aquarius", "soroswap", "to aquarius", "lp")) ||
     (any(text, "add") && dual && any(text, "xlm") && any(text, "usdc", "blusdc", "aqusdc", "sousdc"))
   ) {
@@ -1295,7 +1602,7 @@ export function routeMessage(message: string): RoutedIntent {
      */
     const venueOtherToken = any(text, "soroswap") ? "SOUSDC" : any(text, "aquarius") ? "AQUSDC" : null;
     const token_b =
-      dual?.token_b ?? single?.otherToken ?? venueOtherToken ?? (asset && asset !== "XLM" ? asset : "AQUSDC");
+      dual?.token_b ?? single?.otherToken ?? (asset && asset !== "XLM" ? asset : venueOtherToken) ?? "AQUSDC";
     return {
       kind: "write",
       op: "add_liquidity",
@@ -1341,6 +1648,18 @@ export function routeMessage(message: string): RoutedIntent {
   ) {
     const half = any(text, "half", "50%", "50 %");
     /**
+     * "Remove my liquidity" — no number, no "half" — is an explicit whole-position
+     * removal, the same reading `withdraw_from_blend` already gives "Remove my XLM
+     * position from Blend": stating the position IS the size, not a request to be
+     * asked. Live, this fell through to "Amount missing for 'remove liquidity'.
+     * Include a size like '10 BLUSDC' or '20 XLM'" on a message that named no size
+     * because it meant all of it — the same clause that TRIGGERED this branch
+     * ("remove my liquidity", one of the phrases above) was never read as an answer.
+     *
+     * Only when nothing else stated a size: an explicit amount or "half" still wins.
+     */
+    const all = amount == null && !half;
+    /**
      * Pair default XLM / USDC family from message. A named venue outranks a bare "USDC"
      * — "remove 10 LP from Aquarius XLM and USDC Pool" says "USDC", not "AQUSDC", but
      * naming the venue explicitly already answers which USDC it means, same as `farm
@@ -1359,12 +1678,12 @@ export function routeMessage(message: string): RoutedIntent {
       op: "remove_liquidity",
       template_id: "remove_liquidity",
       asset: token_b,
-      amount: half ? null : amount,
+      amount: half || all ? null : amount,
       token_a: "XLM",
       token_b,
-      fraction: half ? 0.5 : null,
+      fraction: half ? 0.5 : all ? 1 : null,
       requires_account: true,
-      requires_amount: !half,
+      requires_amount: !half && !all,
     };
   }
 
@@ -1389,7 +1708,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "deposit_and_borrow",
       template_id: "deposit_and_borrow",
-      asset: findCollateralAsset(raw) ?? asset ?? "USDC",
+      asset: findCollateralAsset(raw) ?? asset ?? null,
       amount,
       borrow_asset: findBorrowAsset(raw),
       borrow_amount: leverage != null && leverage > 1 ? null : findBorrowAmount(raw),
@@ -1499,13 +1818,40 @@ export function routeMessage(message: string): RoutedIntent {
      * it apart from a genuine "USDC". When nothing was named, ask for both amount
      * and asset together instead of inventing an asset the user never said.
      */
+    /**
+     * A sizing word IS a quantity. "Borrow the max I can safely" states how much without
+     * stating a number, so it is an instruction missing only its asset — the clarify
+     * below is the right answer for it, and the headroom read is not.
+     */
+    const sizedWithoutNumber = findAmountFraction(text) != null || findBalanceFraction(text) != null;
+    if (asset == null && amount == null && !sizedWithoutNumber) {
+      /**
+       * Neither a size nor an asset is not an instruction to borrow — there is nothing
+       * to execute in it. "How much i can borrow" landed here (the exclusion list above
+       * knows "can i borrow", not "i can borrow") and was answered with "How much do you
+       * want to borrow, and in which asset?" — the user's own question handed back.
+       *
+       * Rather than growing that list by one more wording, the branch now asks what a
+       * write actually needs: a write with no quantity and no asset has nothing to stage,
+       * and the read that answers what borrowing is possible is the headroom fan-out.
+       * Naming an asset alone still stages a write and prompts for the size, which is a
+       * real instruction missing one field.
+       */
+      return {
+        kind: "read",
+        tool: "vanna_get_max_borrow",
+        args: {},
+        requires_account: true,
+        template_id: "query_available_credit",
+      };
+    }
     if (asset == null) {
       return {
         kind: "clarify",
         message:
           amount != null
             ? `Borrow ${amount} of which asset? e.g. "borrow ${amount} XLM" or "borrow ${amount} BLUSDC".`
-            : `How much do you want to borrow, and in which asset? e.g. "borrow 50 XLM" or "borrow 20 BLUSDC".`,
+            : `Borrow how much, and in which asset? e.g. "borrow 50 XLM" or "borrow 20 BLUSDC".`,
         template_id: "borrow_amount_and_asset",
       };
     }
@@ -1513,7 +1859,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "borrow",
       template_id: "borrow",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       requires_account: true,
       requires_amount: true,
@@ -1539,14 +1885,25 @@ export function routeMessage(message: string): RoutedIntent {
   if (
     !asksWhichAssets &&
     ((any(text, "deposit") && any(text, "collateral")) ||
-      any(text, "add collateral", "post collateral", "as collateral"))
+      any(text, "add collateral", "post collateral", "as collateral") ||
+      (/\b(?:send|transfer|deposit|move)\b[\s\S]*?\b(?:to|into)\b[\s\S]*?\b(?:margin|smart\s+account)\b/i.test(text)))
   ) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Deposit ${amount} of which collateral asset? e.g. "deposit ${amount} XLM as collateral" or "deposit ${amount} BLUSDC".`
+            : `How much collateral do you want to deposit, and in which asset? e.g. "deposit 100 XLM as collateral".`,
+        template_id: "deposit_collateral_amount_and_asset",
+      };
+    }
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "deposit_collateral",
       template_id: "deposit_collateral",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: true,
@@ -1571,15 +1928,27 @@ export function routeMessage(message: string): RoutedIntent {
    */
   if (
     !any(text, "can i withdraw", "can i pull out", "withdraw allowed") &&
-    ((any(text, "withdraw", "transfer", "move", "send") && any(text, "collateral")) ||
+    !/\b(?:to|into)\b[\s\S]*?\b(?:margin|smart\s+account)\b/i.test(text) &&
+    ((any(text, "withdraw") && (any(text, "collateral") || asset != null)) ||
+      (any(text, "transfer", "move", "send") && any(text, "collateral", "to wallet", "from margin")) ||
       any(text, "take out collateral", "pull collateral"))
   ) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Withdraw ${amount} of which collateral asset? e.g. "withdraw ${amount} XLM collateral".`
+            : `How much collateral do you want to withdraw, and in which asset? e.g. "withdraw 50 XLM collateral".`,
+        template_id: "withdraw_collateral_amount_and_asset",
+      };
+    }
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "withdraw_collateral",
       template_id: "withdraw_collateral",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: true,
@@ -1632,15 +2001,16 @@ export function routeMessage(message: string): RoutedIntent {
     "leverage",
     "lever",
   );
-  if (blendVenueNamed && blendRemoveVerb && !blendRateRead) {
+  if (blendVenueNamed && blendRemoveVerb && (!blendRateRead || withdrawsWholeBlendPosition)) {
     return {
       kind: "write",
       op: "withdraw_from_blend",
       template_id: "withdraw_from_blend",
       asset: asset ?? "XLM",
       amount,
+      fraction: amount == null && withdrawsWholeBlendPosition ? 1 : null,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amount == null && !withdrawsWholeBlendPosition,
     };
   }
   if (
@@ -1712,6 +2082,16 @@ export function routeMessage(message: string): RoutedIntent {
         !asksAboutOwnPoolDeposit &&
         any(text, "pool", "earn", "vault", "to the pool", "into the pool", "to earn")));
   if (isLendWrite) {
+    if (asset == null && !wantsHighestPool && !isMaxYieldInvestIntent(text)) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Supply ${amount} of which asset to Earn? e.g. "lend ${amount} XLM" or "lend ${amount} BLUSDC".`
+            : `How much do you want to supply to Earn, and in which asset? e.g. "lend 50 XLM" or "lend 20 BLUSDC".`,
+        template_id: "lend_amount_and_asset",
+      };
+    }
     const minHf = parseMinHealthFactor(raw);
     // "supply 50% of the XLM in my wallet" states a size. Carried as a fraction and
     // sized off the live wallet balance in handle.ts — same rungs as the Earn form.
@@ -1720,7 +2100,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "lend",
       template_id: wantsHighestPool || isMaxYieldInvestIntent(text) ? "lend_highest" : "lend",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: false,
@@ -1739,12 +2119,22 @@ export function routeMessage(message: string): RoutedIntent {
   // write clause above uses, so a possessive/question shape naming a pool/earn/vault
   // deposit never reaches a write trigger at all.
   if (any(text, "deposit") && !asksAboutOwnPoolDeposit && !/\btvl\b|\btotal\s+value\s+locked\b/i.test(text)) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Deposit ${amount} of which collateral asset? e.g. "deposit ${amount} XLM as collateral" or "deposit ${amount} BLUSDC".`
+            : `How much collateral do you want to deposit, and in which asset? e.g. "deposit 100 XLM as collateral".`,
+        template_id: "deposit_collateral_amount_and_asset",
+      };
+    }
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "deposit_collateral",
       template_id: "deposit_collateral",
-      asset: asset ?? "XLM",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: true,
@@ -1754,16 +2144,31 @@ export function routeMessage(message: string): RoutedIntent {
 
   if (
     any(text, "redeem") ||
-    (any(text, "withdraw") && any(text, "pool", "supply", "earn", "from the pool", "my supply"))
+    // "remove my earn position" is the same instruction as "redeem", and only this
+    // branch's narrower verb list kept it out — Earn's exit reads the shared vocabulary
+    // for the same reason Blend's does.
+    (POSITION_EXIT_VERBS.test(text) && any(text, "pool", "supply", "earn", "from the pool", "my supply"))
   ) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Redeem ${amount} of which asset from Earn? e.g. "redeem ${amount} XLM" or "redeem ${amount} BLUSDC".`
+            : `How much do you want to redeem from Earn, and in which asset? e.g. "redeem 10 XLM" or "redeem all BLUSDC".`,
+        template_id: "redeem_amount_and_asset",
+      };
+    }
+    const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "redeem",
       template_id: "redeem",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
+      fraction,
       requires_account: false,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
     };
   }
 
@@ -1851,9 +2256,28 @@ export function routeMessage(message: string): RoutedIntent {
    * *as a whole* — the ones no earlier branch looks for. Not `hasActionWriteIntent`: that
    * list contains "farm", which would swallow "what am I farming".
    */
-  const actsOnPosition = /\b(close|exit|unwind|reduce|increase|hedge|liquidate|rebalance)\b/i.test(
-    text,
-  );
+  /**
+   * Taking a position OUT is acting on it, not asking about it.
+   *
+   * Live, 22 Sep: "remove xlm blend position" answered with the position's balances and
+   * "To remove or withdraw this position, initiate a withdrawal transaction through the
+   * Vanna interface" — a read, and a dead end, for a sentence whose first word is an
+   * instruction. "remove my earn position" and "withdraw my entire blend position" did
+   * the same. The read branches are guarded by `!actsOnPosition`, so the guard was
+   * right and its verb list was short: it held `close`, `exit` and `unwind` but not
+   * `remove` or `withdraw`, and the noun "position" then carried the sentence to a
+   * read.
+   *
+   * `remove my lp position` escaped only because the LP branch is ordered earlier —
+   * the same sentence shape working for one venue and not the others is what gave the
+   * missing vocabulary away.
+   *
+   * Shared with `blendRemoveVerb` rather than restated, so a venue's exit branch and
+   * this guard cannot disagree about which words mean "take it out".
+   */
+  const actsOnPosition =
+    POSITION_EXIT_VERBS.test(text) ||
+    /\b(reduce|increase|hedge|liquidate|rebalance|optimize|optimise)\b/i.test(text);
 
   /**
    * Named single-figure margin questions ask for ONE specific number, not the whole
@@ -1981,6 +2405,24 @@ export function routeMessage(message: string): RoutedIntent {
         ? "soroswap"
         : null;
   if (asksAboutHoldings && !actsOnPosition && any(text, "farm", "blend", "aquarius", "soroswap") && !any(text, "earn")) {
+    /**
+     * One venue and one asset is one position, and Blend publishes that read directly.
+     *
+     * "What is my current XLM Blend supply" went to the whole-farm overview, whose answer
+     * is the Farm page's Deposit TVL headline plus every venue's holdings — so a question
+     * about one reserve was headlined "Your Blend Deposit TVL is $0.00" with a dust row
+     * under it. The overview is what answers "what am I farming"; a named venue AND a
+     * named asset have already narrowed it to a position that has its own read.
+     */
+    if (farmVenue === "blend" && asset) {
+      return {
+        kind: "read",
+        tool: "vanna_get_blend_position",
+        args: { symbol: asset.toUpperCase() === "BLUSDC" ? "USDC" : asset.toUpperCase() },
+        requires_account: true,
+        template_id: "query_blend_position",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_get_farm_overview",
@@ -2021,6 +2463,19 @@ export function routeMessage(message: string): RoutedIntent {
       template_id: "query_margin_positions",
     };
   }
+  // "what are my LP positions" names neither Blend nor a pool venue, so it used to
+  // fall through to the all-positions fan-out. That read pulls Blend first, and a
+  // Soroban ECONNRESET there failed the whole turn before Aquarius or Soroswap
+  // were answered.
+  if (asksAboutHoldings && !actsOnPosition && any(text, "lp", "liquidity") && !any(text, "earn", "blend")) {
+    return {
+      kind: "read",
+      tool: "vanna_get_farm_overview",
+      args: { venue: "lp" },
+      requires_account: true,
+      template_id: "query_farm_position",
+    };
+  }
   if (asksAboutHoldings && !actsOnPosition && !namesOneVenue) {
     return {
       kind: "read",
@@ -2038,10 +2493,12 @@ export function routeMessage(message: string): RoutedIntent {
   // "whats my helth factr" (G-06) — a loose enough match to survive the common drop of a
   // vowel in either word ("helth", "factr") without turning into a real fuzzy matcher.
   const asksHealthFactorTypo = /\bh\w*lth\s+fact\w*\b/i.test(text);
+  const isStrategyOrBuildIntent = /\b(strategy|strategize|build|create|optimize|optimise|plan|recommend|suggest)\b/i.test(text);
   if (
     (any(text, "health factor", "am i safe", "close to liquidation", "at risk", "my health", "account health") ||
       asksHealthFactorTypo) &&
-    !hasActionWriteIntent
+    !hasActionWriteIntent &&
+    !isStrategyOrBuildIntent
   ) {
     return {
       kind: "read",
@@ -2160,7 +2617,7 @@ export function routeMessage(message: string): RoutedIntent {
     return {
       kind: "read",
       tool: "vanna_get_max_borrow",
-      args: { symbol: asset ?? "USDC" },
+      args: asset ? { symbol: asset } : {},
       requires_account: true,
       template_id: "query_available_credit",
     };
@@ -2185,12 +2642,35 @@ export function routeMessage(message: string): RoutedIntent {
         usdc_variants: ["BLUSDC", "AQUSDC", "SOUSDC"],
       };
     }
+    /**
+     * `vanna_can_borrow` is a yes/no test on ONE amount. With no amount there is nothing
+     * for it to test, and it was still being called — `symbol: "USDC"`, no `amount` — so
+     * "how much can I borrow?" got a pass/fail on an unstated figure, which the composer
+     * then wrote up as "You can borrow 1 USDC" against ~$1.8k of collateral and ~$36 of
+     * debt. Headroom is a different read: `vanna_get_max_borrow`, the same one the credit
+     * branch above already uses.
+     *
+     * The discriminator is the presence of an amount, not the wording. Any phrasing that
+     * reaches here without a figure is asking how much, whatever words it used.
+     */
+    if (amount == null) {
+      // No asset named means every asset — see the fan-out in handle-read.ts, which
+      // treats a missing symbol as the request for the whole range rather than
+      // defaulting to a token the user never said.
+      return {
+        kind: "read",
+        tool: "vanna_get_max_borrow",
+        args: asset ? { symbol: asset } : {},
+        requires_account: true,
+        template_id: "query_available_credit",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_can_borrow",
       args: {
         symbol: asset ?? "USDC",
-        ...(amount != null ? { amount: String(amount) } : {}),
+        amount: String(amount),
       },
       requires_account: true,
       template_id: "query_can_borrow",
@@ -2446,12 +2926,19 @@ export function routeMessage(message: string): RoutedIntent {
     /**
      * "How is my XLM pool doing?" names a ticker but not Earn vs Farm · Blend.
      * Ask rather than guessing the Earn lending pool (or the Blend reserve).
+     *
+     * But only when the question is about the SURFACE. "What is the XLM supply APY" names
+     * a figure the Earn pool read returns, and got the chip anyway — while the identical
+     * sentence with the word "earn" in it answered straight away. A question that names
+     * the figure has already said what it wants; the chip is for the one that has not.
+     * See `namesEarnPoolMetric`, which reads that vocabulary off the read's own fields.
      */
     const venueNamed = any(text, "earn", "blend", "farm", "aquarius", "soroswap", "lending");
     if (
       asset &&
       /^(XLM|BLUSDC|AQUSDC|SOUSDC)$/i.test(asset) &&
-      !venueNamed
+      !venueNamed &&
+      !namesEarnPoolMetric(text)
     ) {
       const venues =
         asset === "AQUSDC"
@@ -2573,7 +3060,7 @@ export function routeMessage(message: string): RoutedIntent {
 
   // Standing risk preference without a write verb — still answer with guidance.
   const minHfOnly = parseMinHealthFactor(raw);
-  if (minHfOnly != null && any(text, "health", "liquidat", "safe", "risk", "hf")) {
+  if (minHfOnly != null && any(text, "health", "liquidat", "safe", "risk", "hf") && !isStrategyOrBuildIntent) {
     return {
       kind: "read",
       tool: "vanna_get_account_health",

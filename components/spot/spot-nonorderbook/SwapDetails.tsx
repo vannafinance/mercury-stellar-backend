@@ -23,11 +23,6 @@ interface SwapDetailsProps {
   onRefreshRate: () => void;
   isRefreshing?: boolean;
   onEditSlippage?: () => void;
-  /** Projected margin health factor before → after this swap (margin mode). */
-  healthFactorBefore?: string | null;
-  healthFactorAfter?: string | null;
-  /** True when post-swap HF would be below the liquidation threshold. */
-  healthFactorAtRisk?: boolean;
 }
 
 const priceImpactColors: Record<string, string> = {
@@ -52,15 +47,10 @@ export const SwapDetails = ({
   onRefreshRate,
   isRefreshing,
   onEditSlippage,
-  healthFactorBefore,
-  healthFactorAfter,
-  healthFactorAtRisk,
 }: SwapDetailsProps) => {
   const { isDark } = useTheme();
 
   if (!isVisible) return null;
-
-  const showHealthFactor = Boolean(healthFactorBefore && healthFactorAfter);
 
   return (
     <div
@@ -104,28 +94,6 @@ export const SwapDetails = ({
                 {exchangeRate}
               </span>
             )
-          )}
-          {showHealthFactor && (
-            <span
-              className={`text-[11px] font-medium leading-[18px] ${
-                isDark ? "text-[#888]" : "text-[#999]"
-              }`}
-            >
-              · HF{" "}
-              <span className={isDark ? "text-[#CCC]" : "text-[#555]"}>{healthFactorBefore}</span>
-              <span className="mx-1">→</span>
-              <span
-                className={
-                  healthFactorAtRisk
-                    ? "text-[#FC5457] font-semibold"
-                    : isDark
-                      ? "text-white font-semibold"
-                      : "text-[#111] font-semibold"
-                }
-              >
-                {healthFactorAfter}
-              </span>
-            </span>
           )}
           {/* Refresh button */}
           <motion.button
@@ -209,33 +177,6 @@ export const SwapDetails = ({
                         }}
                       />
                     )}
-                  </div>
-                </DetailRow>
-              )}
-
-              {/* Projected health factor after this margin swap */}
-              {showHealthFactor && (
-                <DetailRow label="Health Factor" isDark={isDark}>
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={`text-[12px] font-medium leading-[18px] ${
-                        isDark ? "text-[#CCCCCC]" : "text-[#555555]"
-                      }`}
-                    >
-                      {healthFactorBefore}
-                    </span>
-                    <span className={`text-[11px] ${isDark ? "text-[#666]" : "text-[#AAA]"}`}>→</span>
-                    <span
-                      className={`text-[12px] font-semibold leading-[18px] ${
-                        healthFactorAtRisk
-                          ? "text-[#FC5457]"
-                          : isDark
-                            ? "text-white"
-                            : "text-[#111]"
-                      }`}
-                    >
-                      {healthFactorAfter}
-                    </span>
                   </div>
                 </DetailRow>
               )}

@@ -31,9 +31,10 @@ import {
 import { workflowLegCount } from "./registry/workflows";
 import type { PlanConstraints } from "./plan-ir";
 import type { RoutedIntent } from "./types";
+import { PLAN_TTL_MS as SHARED_PLAN_TTL_MS } from "./plan-ttl";
 
-/** A plan is built on live prices and account health; both move. */
-export const PLAN_TTL_MS = 5 * 60_000;
+/** A plan is built on live prices and account health; both move. Waiting to Approve is not a timeout — Approve re-reads. */
+export const PLAN_TTL_MS = SHARED_PLAN_TTL_MS;
 
 export interface PlanStepView {
   n: number;
@@ -476,8 +477,7 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
       ok: false,
       reason: "expired",
       message:
-        "That plan is more than a few minutes old, and it was built on prices and a health factor that have since moved. " +
-        "Ask me again and I'll draw up a fresh one.",
+        "That plan sat unused for more than a day. Ask again and I'll draw up a fresh one — Approve re-reads live funds until then.",
     };
   }
 

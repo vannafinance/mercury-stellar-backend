@@ -45,7 +45,8 @@ type GlobalWithStore = typeof globalThis & {
 export interface BoundUser {
   /**
    * The subject the Sign Service will key bindings on: `did:privy:…` for a Privy
-   * session (the default path), `user_…` for a WorkOS Connect OAuth login.
+   * session (the default path), `user_…` for a WorkOS Connect OAuth login,
+   * `stellar:<G>` for a Freighter ownership proof that never goes to Sign Service.
    */
   sub: string;
   email?: string;
@@ -53,10 +54,16 @@ export interface BoundUser {
    * The end-user's own token. Forwarded to the MCP as `X-Vanna-User-Assertion`,
    * NEVER as the bearer — the bearer stays the app's M2M credential, because the
    * two answer different questions ("which app is calling" vs "who is asking").
+   *
+   * Empty on `kind: "stellar"`: there is no Sign Service assertion to forward.
+   * Writes then wallet-sign in Freighter, which is the only signing that wallet
+   * can do.
    */
   accessToken: string;
   /** Which identity system minted `accessToken`. Diagnostics only. */
-  kind: "privy" | "workos";
+  kind: "privy" | "workos" | "stellar";
+  /** Proven G-address when `kind` is `stellar`. */
+  wallet?: string;
 }
 
 const globalWithStore = globalThis as GlobalWithStore;
@@ -104,6 +111,7 @@ const READ_ONLY_TOOLS = new Set<string>([
   "vanna_get_collateral",
   "vanna_get_debt",
   "vanna_get_max_borrow",
+  "vanna_get_liquidation_snapshot",
   "vanna_can_borrow",
   "vanna_can_withdraw",
   "vanna_get_pool_stats",
@@ -115,6 +123,11 @@ const READ_ONLY_TOOLS = new Set<string>([
   "vanna_get_blend_position",
   "vanna_list_aquarius_pools",
   "vanna_get_aquarius_pool_stats",
+  // Its Soroswap counterpart, added with the read itself and missed here: the catalogue
+  // offered `soroswap_pool_reserves` while this list — what may be called without a
+  // write's scrutiny — did not know the tool, so the two disagreed about a read that
+  // changes nothing on chain.
+  "vanna_get_soroswap_pool_stats",
   "vanna_get_farm_lp_position",
   "vanna_get_lp_balance",
   "vanna_get_inactive_accounts",

@@ -28,6 +28,8 @@ describe("read/write credential split", () => {
       "vanna_oracle",
       "vanna_margin_status",
       "vanna_list_smart_accounts",
+      "vanna_get_aquarius_pool_stats",
+      "vanna_get_soroswap_pool_stats",
     ]) {
       expect(callNeedsUserToken(tool)).toBe(false);
     }
@@ -40,6 +42,7 @@ describe("read/write credential split", () => {
       "vanna_swap",
       "vanna_deposit_collateral",
       "vanna_enable_auto_sign",
+      "vanna_auto_sign_status",
       "vanna_sign_and_submit",
       "vanna_sign",
       "vanna_earn_write",

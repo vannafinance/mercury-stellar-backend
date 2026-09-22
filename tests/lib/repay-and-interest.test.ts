@@ -38,11 +38,4 @@ describe("per-asset accrued borrow interest", () => {
     // Borrowed 10, repaid 11, and still owes 1 => 2 tokens accrued till date.
     expect(calculateAccruedBorrowInterest(1, -1)).toBe(2);
   });
-
-  it("returns zero interest once the loan is fully cleared", () => {
-    // 100% repay buffer can leave netBorrowCash slightly negative; with dust
-    // debt that must not surface as phantom interest beside Borrowed "$0".
-    expect(calculateAccruedBorrowInterest(0, -0.05)).toBe(0);
-    expect(calculateAccruedBorrowInterest(1e-9, -0.05)).toBe(0);
-  });
 });

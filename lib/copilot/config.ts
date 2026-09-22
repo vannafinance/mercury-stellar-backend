@@ -176,9 +176,16 @@ export const copilotConfig = {
   // transport keep using the M2M credential either way: WorkOS remains the
   // machine identity, Privy is the human one.
 
-  /** Privy app id. Public by design — it is the token audience, not a secret. */
+  /**
+   * Privy app id. Public by design — it is the token audience, not a secret.
+   *
+   * Must be a literal `process.env.NEXT_PUBLIC_*` read. Next 16 only inlines that
+   * shape at `next build`. `env("NEXT_PUBLIC_PRIVY_APP_ID")` is `process.env[key]`,
+   * which stays empty on Cloud Run (no `.env.local`), so live copilot reported
+   * `privy_not_configured` and dropped the wallet session as the user assertion.
+   */
   get privyAppId(): string {
-    return env("NEXT_PUBLIC_PRIVY_APP_ID");
+    return (process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "").trim();
   },
   /**
    * Where to fetch Privy's signing keys. Derived from the app id so a deploy
@@ -209,6 +216,13 @@ export const copilotConfig = {
   },
   get vertexModel(): string {
     return env("VERTEX_MODEL", "gemini-3.7-flash");
+  },
+  /**
+   * Leftover greeting/identity lane only. Never the investigate/lend model.
+   * Flash-Lite + MINIMAL thinking; a 2s abort lives on the caller.
+   */
+  get vertexSocialModel(): string {
+    return env("VERTEX_SOCIAL_MODEL", "gemini-3.5-flash-lite");
   },
   /**
    * Fallback models when primary Vertex model returns 404/unavailable.
@@ -252,10 +266,6 @@ export const copilotConfig = {
   get maxPositionUsd(): number {
     return envFloat("MAX_POSITION_USD", 50_000);
   },
-  get readsOnly(): boolean {
-    return env("COPILOT_READS_ONLY", "false").toLowerCase() === "true";
-  },
-
   /**
    * Max atomic legs MultiLegAgent will expand/execute per turn.
    * Caps latency and blast radius on free-form plans.
@@ -263,6 +273,15 @@ export const copilotConfig = {
   get multiLegMaxLegs(): number {
     const n = Math.floor(envFloat("COPILOT_MULTI_LEG_MAX", 8));
     return n >= 1 && n <= 12 ? n : 8;
+  },
+  /**
+   * Per authenticated subject (or the shared guest bucket) per UTC day.
+   * A research loop costs tens of thousands of tokens; 250k used to trip mid-session
+   * on testnet. Override with COPILOT_DAILY_TOKEN_CAP.
+   */
+  get dailyTokenCap(): number {
+    const n = Math.floor(envFloat("COPILOT_DAILY_TOKEN_CAP", 2_000_000));
+    return n >= 10_000 && n <= 5_000_000 ? n : 2_000_000;
   },
 };
 

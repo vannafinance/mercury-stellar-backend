@@ -1,0 +1,46 @@
+flowchart LR
+
+subgraph C1["1 · Domain classifier"]
+  direction TB
+  C1R["READS<br/>the prompt only"]
+  C1M["Gemini Flash<br/>effort: low<br/>cached per prompt hash"]
+  C1W["WRITES<br/>in_domain true/false<br/>+ short reason"]
+  C1R --> C1M --> C1W
+end
+
+subgraph C2["2 · Goal extraction"]
+  direction TB
+  C2R["READS<br/>prompt + bounded<br/>message history"]
+  C2M["Gemini Flash<br/>effort: default"]
+  C2W["WRITES<br/>objective · constraints ·<br/>borrowing permission ·<br/>open questions"]
+  C2R --> C2M --> C2W
+end
+
+subgraph C3["3 · Investigation loop"]
+  direction TB
+  C3R["READS<br/>goal + evidence<br/>gathered so far"]
+  C3M["Gemini Flash<br/>effort: MEDIUM<br/>native function calling"]
+  C3W["WRITES<br/>inspect / clarify /<br/>blocked / research_complete"]
+  C3R --> C3M --> C3W
+end
+
+subgraph C4["4 · Answer formatting"]
+  direction TB
+  C4R["READS<br/><b>computed figures only</b><br/>never raw tools"]
+  C4M["Gemini Flash<br/>effort: LOW<br/>nothing to reason about"]
+  C4W["WRITES<br/>prose around numbers<br/>it cannot change"]
+  C4R --> C4M --> C4W
+end
+
+subgraph C5["5 · Execution receipt"]
+  direction TB
+  C5R["READS<br/>settled tx results"]
+  C5M["Gemini Flash<br/>effort: default"]
+  C5W["WRITES<br/>narration of what<br/>actually landed"]
+  C5R --> C5M --> C5W
+end
+
+C1 -->|in domain| C2 --> C3
+C3 -.->|research complete| CORE[["Deterministic core<br/>computes every number"]]
+CORE --> C4
+C4 -.->|after approval + execution| C5

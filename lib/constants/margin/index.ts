@@ -7,7 +7,6 @@ export const TABLE_ROW_HEADINGS = [
   "Collateral Deposited",
   "Borrowed Assets",
   "Leverage Taken",
-  "Health Factor",
   "Interest accrued till date",
   "Action",
 ] as const;
@@ -128,14 +127,6 @@ export const LARGE_FORMAT_FIELDS = [
 ] as const;
 
 /**
- * Fields shown with full (7dp, Stellar's own precision) decimal precision
- * instead of InfoCard's default 2dp — for exchange-rate-shaped values close
- * to 1.0 (e.g. underlying-per-vToken), 2dp rounds away the entire signal
- * (1.0047294 displayed as "1.00" looked identical to an unmoved 1:1 rate).
- */
-export const PRECISE_NUMBER_FIELDS = ["tokenPerVToken"] as const;
-
-/**
  * Fields rendered as USD currency. InfoCard auto-prefixes "$" to these.
  * Keep this list in sync with any new dollar-valued field IDs.
  */
@@ -175,11 +166,6 @@ export const ACCOUNT_STATS_ITEMS = [
     id: "netAmountBorrowed",
     name: "Net amount Borrowed",
     icon: "/margin/retry.png",
-  },
-  {
-    id: "netLeverageTaken",
-    name: "Net Leverage Taken",
-    icon: "/margin/bag.png",
   },
 ] as const;
 

@@ -34,6 +34,8 @@ interface PrivyAuthControls {
   logout: () => Promise<void>;
   /** Whether Privy already has a live session (calling `login()` then no-ops). */
   authenticated: boolean;
+  /** False while the SDK is still hydrating. Absent on older test doubles. */
+  ready?: boolean;
   /**
    * Re-applies the current Privy session's Stellar wallet to the wallet store.
    * Lets the connect flow recover a session that's still live in Privy but no
@@ -142,6 +144,35 @@ export function registerPrivyAuthControls(controls: PrivyAuthControls | null): v
 
 export function getPrivyAuthControls(): PrivyAuthControls | null {
   return privyAuthControls;
+}
+
+export type PrivyConnectResult = "unavailable" | "login" | "resync" | "pending-wallet";
+
+/**
+ * Start the email/Google (Privy) connect path from outside the Privy tree.
+ *
+ * Privy's `login()` is a silent no-op when a session already exists — that is
+ * the "Create Vanna wallet does nothing" click. If we are already
+ * authenticated, resync the embedded Stellar wallet into the store instead of
+ * calling `login()` again.
+ */
+export function startPrivyConnect(): PrivyConnectResult {
+  const controls = getPrivyAuthControls();
+  if (!controls) return "unavailable";
+
+  setActiveWalletKind("privy");
+
+  if (controls.authenticated) {
+    return controls.resync() ? "resync" : "pending-wallet";
+  }
+
+  const opened = controls.login() as void | Promise<unknown>;
+  if (opened && typeof (opened as Promise<unknown>).then === "function") {
+    void (opened as Promise<unknown>).catch((error: unknown) => {
+      console.error("Privy login failed:", error);
+    });
+  }
+  return "login";
 }
 
 /**
@@ -325,4 +356,17 @@ export async function signTransaction(
   }
 
   return FreighterApi.signTransaction(xdr, opts);
+}
+
+/**
+ * Sign a UTF-8 string with the connected Freighter account (SEP-53).
+ *
+ * Used to prove the navbar G-address to copilot. Privy identity is a JWT, so
+ * this is never called on the Privy path.
+ */
+export async function signMessage(
+  message: string,
+  opts: { address: string },
+): Promise<{ signedMessage: string | Uint8Array | null; signerAddress?: string; error?: WalletApiError }> {
+  return FreighterApi.signMessage(message, opts);
 }

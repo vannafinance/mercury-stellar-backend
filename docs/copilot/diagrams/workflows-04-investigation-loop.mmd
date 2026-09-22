@@ -1,0 +1,32 @@
+flowchart TB
+
+START(["Goal + seeded position"])
+TURN{"Turn budget left?<br/><b>max 12</b>"}
+DECIDE["Flash decides<br/>native function calling<br/>scope-filtered read catalogue"]
+KIND{"Decision"}
+
+INSPECT["INSPECT<br/>up to 8 reads, batched"]
+VALID{"Arguments valid?<br/>exact key set ·<br/>strict decimal · enum"}
+REJECT["One failed observation<br/>with a reason<br/><b>the batch continues</b>"]
+SEED{"Already in the<br/>seeded snapshot?"}
+FROMSEED["Served from seed<br/>tagged source · inherits<br/>the seed's timestamp"]
+CALL["MCP call<br/><b>own 15s deadline</b>"]
+OBS["Observation recorded<br/>id · timestamp · status<br/>sanitised · 16KB cap"]
+
+CLARIFY(["CLARIFY"])
+BLOCKED(["BLOCKED"])
+DONE(["RESEARCH COMPLETE"])
+STOP(["DEADLINE<br/>keep what was gathered"])
+
+START --> TURN
+TURN -->|no| STOP
+TURN -->|yes| DECIDE --> KIND
+KIND -->|inspect| INSPECT --> VALID
+VALID -->|no| REJECT --> OBS
+VALID -->|yes| SEED
+SEED -->|yes| FROMSEED --> OBS
+SEED -->|no| CALL --> OBS
+OBS --> TURN
+KIND -->|clarify| CLARIFY
+KIND -->|blocked| BLOCKED
+KIND -->|research_complete| DONE

@@ -68,10 +68,13 @@ describe("assistant surface never executes a transaction", () => {
     expect(res.intent?.template_id).toBe("assistant_surface_redirect");
   });
 
-  it("does not gate the copilot surface — it still reaches the write path", async () => {
-    // Forced to the in-memory mock client so this never makes a real network call —
-    // this test is only proving the gate does not fire outside surface: "assistant",
-    // not exercising the real write pipeline (that is covered elsewhere).
+  /**
+   * What this case guards is the gate above it: the copilot is never redirected the way the
+   * widget is. Which brain answers on that surface has since changed — a plain, fully stated
+   * capability used to be handed to investigation from here, and now the direct lane answers
+   * it with the capability the user named. An open-ended goal still reaches investigation.
+   */
+  it("does not treat the copilot surface as the assistant widget", async () => {
     process.env.MCP_MODE = "mock";
     resetMcpClient();
     try {
@@ -80,6 +83,46 @@ describe("assistant surface never executes a transaction", () => {
         surface: "copilot",
         message: "deposit 5 XLM as collateral",
       });
+      expect(res.intent?.template_id).not.toBe("assistant_surface_redirect");
+      expect(res.kind).not.toBe("blocked");
+      expect(res.intent?.template_id).toBe("deposit_collateral");
+    } finally {
+      delete process.env.MCP_MODE;
+      resetMcpClient();
+    }
+  });
+
+  it("redirects the owner-style strategy paragraph without keyword-planning it", async () => {
+    const res = await handleChat({
+      ...base,
+      surface: "assistant",
+      message:
+        "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 — you can use spot and farm markets yourself, and you can even take new loans.",
+    });
+    expect(res.kind).toBe("blocked");
+    expect(res.intent?.template_id).toBe("assistant_surface_redirect");
+  });
+
+  it("redirects enable auto-sign instead of starting a session", async () => {
+    const res = await handleChat({
+      ...base,
+      surface: "assistant",
+      message: "enable auto-sign",
+    });
+    expect(res.kind).toBe("blocked");
+    expect(res.intent?.template_id).toBe("assistant_surface_redirect");
+  });
+
+  it("does not Vertex-plan a live health question into a write", async () => {
+    process.env.MCP_MODE = "mock";
+    resetMcpClient();
+    try {
+      const res = await handleChat({
+        ...base,
+        surface: "assistant",
+        message: "what's my health factor?",
+      });
+      expect(res.kind).not.toBe("executed");
       expect(res.intent?.template_id).not.toBe("assistant_surface_redirect");
     } finally {
       delete process.env.MCP_MODE;

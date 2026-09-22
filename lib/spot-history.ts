@@ -232,19 +232,14 @@ export function decodeTraderExec(
 
 async function fromMercury(marginAccountAddress: string): Promise<SpotHistoryEntry[]> {
   const results = await Promise.allSettled([
-    // Cap AccountManager pagination — walking the default 50 pages blocked the
-    // whole Spot History query for 15–30s+ on cold load (UI showed empty until
-    // a later swap forced a refetch). Recent swaps live in the first pages;
-    // RPC fills anything this window misses.
     fetchContractEvents({
       contract: CONTRACT_ADDRESSES.ACCOUNT_MANAGER,
       account: marginAccountAddress,
-      maxPages: 5,
     }),
     ...SPOT_TOKEN_CONTRACTS.map((contract) => fetchContractEvents({
       contract,
       account: marginAccountAddress,
-      maxPages: 5,
+      maxPages: 10,
     })),
   ]);
 
@@ -354,37 +349,18 @@ async function fromRpc(marginAccountAddress: string): Promise<SpotHistoryEntry[]
   return Array.from(byHash.values());
 }
 
-/** Race a promise against a timeout so one slow indexer can't blank the UI. */
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 /** Spot swaps reconstructed exclusively from immutable on-chain events. */
 export async function getSpotHistory(
   marginAccountAddress: string | null | undefined,
 ): Promise<SpotHistoryEntry[]> {
   if (!marginAccountAddress) return [];
-  // Cap each source so a hung Mercury walk can't leave Spot History empty for
-  // the entire page session. RPC usually returns within a few seconds; Mercury
-  // is allowed a bit longer but must not block indefinitely.
   const [mercury, rpc] = await Promise.allSettled([
-    withTimeout(fromMercury(marginAccountAddress), 6_000),
-    withTimeout(fromRpc(marginAccountAddress), 8_000),
+    fromMercury(marginAccountAddress),
+    fromRpc(marginAccountAddress),
   ]);
   const byHash = new Map<string, SpotHistoryEntry>();
-  // Prefer RPC first (recent, usually faster), then Mercury for longer history.
-  if (rpc.status === "fulfilled") rpc.value.forEach((row) => byHash.set(row.txHash, row));
-  if (mercury.status === "fulfilled") mercury.value.forEach((row) => {
+  if (mercury.status === "fulfilled") mercury.value.forEach((row) => byHash.set(row.txHash, row));
+  if (rpc.status === "fulfilled") rpc.value.forEach((row) => {
     if (!byHash.has(row.txHash)) byHash.set(row.txHash, row);
   });
   return Array.from(byHash.values()).sort((a, b) => b.timestamp - a.timestamp);

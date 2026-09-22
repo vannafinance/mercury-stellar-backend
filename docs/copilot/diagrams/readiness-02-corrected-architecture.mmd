@@ -1,0 +1,49 @@
+flowchart TB
+
+USER(["User objective"])
+
+subgraph APP["APPLICATION"]
+  direction TB
+  ADMIT["Admission<br/>classifier · token cap · identity"]
+  UNDERSTAND["Understanding & investigation<br/>Flash loop · audited reads · evidence ledger"]
+  CORE["Deterministic core<br/>WAD sizing · candidates · risk validator"]
+  APPROVE["Approval<br/>fingerprint · expiry · bound to user+wallet+network"]
+  EXECUTE["Execution<br/>leg by leg · idempotent · resumable"]
+  VERIFY["Settlement verification"]
+  ADMIT --> UNDERSTAND --> CORE --> APPROVE --> EXECUTE --> VERIFY
+end
+
+subgraph OBS["TELEMETRY PLANE  ·  new"]
+  direction LR
+  OTEL["OpenTelemetry GenAI<br/>LLM · agent · tool spans<br/>token + latency metrics"]
+  LF["Langfuse<br/>trace view · session replay<br/>eval scoring"]
+  OTEL --> LF
+end
+
+subgraph STATE["DURABLE STATE  ·  new"]
+  direction LR
+  PG[("Cloud SQL · Postgres")]
+  SESS["sessions + history"]
+  APPR["approval records"]
+  CKPT["execution checkpoints"]
+  ORD["standing orders"]
+  AUD["audit log<br/><i>who · what · when · under which mandate</i>"]
+  PG --- SESS
+  PG --- APPR
+  PG --- CKPT
+  PG --- ORD
+  PG --- AUD
+end
+
+MCP[["MCP · reads audited · writes never declared to the model"]]
+CHAIN[("Soroban")]
+
+USER --> APP
+APP <--> MCP <--> CHAIN
+
+UNDERSTAND -.->|spans| OTEL
+CORE -.->|spans| OTEL
+EXECUTE -.->|spans| OTEL
+APPROVE <-.->|persist| PG
+EXECUTE <-.->|checkpoint each leg| PG
+EXECUTE -.->|append| AUD

@@ -1,0 +1,318 @@
+﻿diff --git a/app/api/mercury/events/route.ts b/app/api/mercury/events/route.ts
+index 9658043..b95dbb3 100644
+--- a/app/api/mercury/events/route.ts
++++ b/app/api/mercury/events/route.ts
+@@ -35,10 +35,13 @@ function accountTopicXdr(account: string): string | null {
+ 
+ export async function GET(req: NextRequest) {
+   if (!REST_BASE || !MERCURY_KEY) {
+-    return NextResponse.json(
+-      { error: "Mercury is not configured (MERCURY_URL / MERCURY_KEY missing)." },
+-      { status: 500, headers: { "Cache-Control": "no-store" } },
+-    );
++    return NextResponse.json([], {
++      status: 200,
++      headers: {
++        "Cache-Control": "no-store",
++        "X-Mercury-Configured": "0",
++      },
++    });
+   }
+ 
+   const sp = req.nextUrl.searchParams;
+diff --git a/app/api/mercury/route.ts b/app/api/mercury/route.ts
+index 9793383..9d725b5 100644
+--- a/app/api/mercury/route.ts
++++ b/app/api/mercury/route.ts
+@@ -18,8 +18,20 @@ const MERCURY_KEY = process.env.MERCURY_KEY;
+ export async function POST(req: NextRequest) {
+   if (!MERCURY_URL || !MERCURY_KEY) {
+     return NextResponse.json(
+-      { errors: [{ message: "Mercury is not configured (MERCURY_URL / MERCURY_KEY missing)." }] },
+-      { status: 500 },
++      {
++        data: null,
++        errors: [{
++          message: "Mercury is not configured (MERCURY_URL / MERCURY_KEY missing).",
++          extensions: { code: "not_configured" },
++        }],
++      },
++      {
++        status: 200,
++        headers: {
++          "Cache-Control": "no-store",
++          "X-Mercury-Configured": "0",
++        },
++      },
+     );
+   }
+ 
+diff --git a/lib/account-snapshot.ts b/lib/account-snapshot.ts
+index 3ab4886..435775e 100644
+--- a/lib/account-snapshot.ts
++++ b/lib/account-snapshot.ts
+@@ -89,6 +89,33 @@ export type MarginSnapshot = {
+   debtLimit: number;
+ };
+ 
++export const DEFAULT_SNAPSHOT_TIMEOUT_MS = 12_000;
++
++/** A snapshot that would understate debt or invent a total from a failed read. */
++export class SnapshotUnavailableError extends Error {
++  constructor(message: string) {
++    super(message);
++    this.name = "SnapshotUnavailableError";
++  }
++}
++
++export class SnapshotTimeoutError extends SnapshotUnavailableError {
++  constructor(timeoutMs = DEFAULT_SNAPSHOT_TIMEOUT_MS) {
++    super(`Margin snapshot timed out after ${timeoutMs}ms`);
++    this.name = "SnapshotTimeoutError";
++  }
++}
++
++function withTimeout<T>(promise: Promise<T>, ms: number, errorFactory: () => Error): Promise<T> {
++  let timer: NodeJS.Timeout | undefined;
++  const timeoutPromise = new Promise<never>((_, reject) => {
++    timer = setTimeout(() => reject(errorFactory()), ms);
++  });
++  return Promise.race([promise, timeoutPromise]).finally(() => {
++    if (timer) clearTimeout(timer);
++  });
++}
++
+ // Multiple mounted surfaces can request the same account snapshot at once
+ // (Copilot, the right rail, Margin, and Portfolio). Share the active read by
+ // address so those surfaces do not launch overlapping Soroban scans. This is
+@@ -96,6 +123,10 @@ export type MarginSnapshot = {
+ // mutation-driven refreshes still get fresh chain data.
+ const snapshotInflight = new Map<string, Promise<MarginSnapshot>>();
+ 
++export function resetMarginSnapshotCache(): void {
++  snapshotInflight.clear();
++}
++
+ /**
+  * Early slice of a {@link MarginSnapshot} emitted via `onPartial` once the fast
+  * debt/collateral totals are known, before the heavier farm/SAC/rate reads —
+@@ -115,6 +146,11 @@ export type PartialSnapshot = Pick<
+   | "collateralLeftBeforeLiquidation"
+ >;
+ 
++export type ComputeMarginSnapshotOptions = {
++  onPartial?: (p: PartialSnapshot) => void;
++  timeoutMs?: number;
++};
++
+ /** Borrow rate for the largest debt asset (independent of collateral reads). */
+ async function fetchBorrowRate(borrowedBalances: Balances, effectiveDebtValue: number): Promise<number> {
+   if (effectiveDebtValue <= 0) return 0;
+@@ -139,27 +175,47 @@ async function fetchBorrowRate(borrowedBalances: Balances, effectiveDebtValue: n
+  */
+ export async function computeMarginSnapshot(
+   marginAccountAddress: string,
+-  opts?: { onPartial?: (p: PartialSnapshot) => void },
++  opts?: ComputeMarginSnapshotOptions,
+ ): Promise<MarginSnapshot> {
++  const timeoutMs = opts?.timeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS;
+   // Progressive callers need their own onPartial callback. The route and
+   // Copilot all use the no-callback form and can safely share one read.
+   if (opts?.onPartial) return computeMarginSnapshotUncached(marginAccountAddress, opts);
+   const existing = snapshotInflight.get(marginAccountAddress);
+   if (existing) return existing;
+-  const run = computeMarginSnapshotUncached(marginAccountAddress);
++
++  const run = computeMarginSnapshotUncached(marginAccountAddress, { timeoutMs });
+   snapshotInflight.set(marginAccountAddress, run);
+-  try {
+-    return await run;
+-  } finally {
++
++  const clearInflight = () => {
+     if (snapshotInflight.get(marginAccountAddress) === run) {
+       snapshotInflight.delete(marginAccountAddress);
+     }
++  };
++  run.then(clearInflight, clearInflight);
++
++  try {
++    return await run;
++  } finally {
++    clearInflight();
+   }
+ }
+ 
+-async function computeMarginSnapshotUncached(
++export async function computeMarginSnapshotUncached(
++  marginAccountAddress: string,
++  opts?: ComputeMarginSnapshotOptions,
++): Promise<MarginSnapshot> {
++  const timeoutMs = opts?.timeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS;
++  return withTimeout(
++    computeMarginSnapshotCore(marginAccountAddress, opts),
++    timeoutMs,
++    () => new SnapshotTimeoutError(timeoutMs),
++  );
++}
++
++async function computeMarginSnapshotCore(
+   marginAccountAddress: string,
+-  opts?: { onPartial?: (p: PartialSnapshot) => void },
++  opts?: ComputeMarginSnapshotOptions,
+ ): Promise<MarginSnapshot> {
+   const [borrowedResult, collateralResult] = await Promise.all([
+     MarginAccountService.getCurrentBorrowedBalances(marginAccountAddress, { includePrices: false }),
+@@ -170,38 +226,42 @@ async function computeMarginSnapshotUncached(
+     fetchTokenPrices([...PRICEABLE_TOKENS]),
+   ]);
+ 
++  if (!borrowedResult.success || !borrowedResult.data) {
++    throw new SnapshotUnavailableError(borrowedResult.error || "Failed to get borrowed balances");
++  }
++
++  if (!collateralResult.success || !collateralResult.data) {
++    throw new SnapshotUnavailableError(collateralResult.error || "Failed to get collateral balances");
++  }
++
+   let totalBorrowedValue = 0;
+   let totalCollateralValue = 0;
+   const borrowedBalances: Balances = {};
+   const collateralBalances: Balances = {};
+ 
+-  if (borrowedResult.success && borrowedResult.data) {
+-    const deduped: Record<string, Balance> = {};
+-    Object.entries(borrowedResult.data).forEach(([token, { amount, usdValue }]) => {
+-      const canonical = canonicalMarginToken(token);
+-      const current = deduped[canonical];
+-      if (!current || parseFloat(amount) > parseFloat(current.amount)) deduped[canonical] = { amount, usdValue };
+-    });
+-    Object.entries(deduped).forEach(([token, { amount }]) => {
+-      const usd = parseFloat(amount) * tokenPrice(token);
+-      totalBorrowedValue += usd;
+-      borrowedBalances[token] = { amount, usdValue: usd.toFixed(2) };
+-    });
+-  }
++  const dedupedBorrowed: Record<string, Balance> = {};
++  Object.entries(borrowedResult.data).forEach(([token, { amount, usdValue }]) => {
++    const canonical = canonicalMarginToken(token);
++    const current = dedupedBorrowed[canonical];
++    if (!current || parseFloat(amount) > parseFloat(current.amount)) dedupedBorrowed[canonical] = { amount, usdValue };
++  });
++  Object.entries(dedupedBorrowed).forEach(([token, { amount }]) => {
++    const usd = parseFloat(amount) * tokenPrice(token);
++    totalBorrowedValue += usd;
++    borrowedBalances[token] = { amount, usdValue: usd.toFixed(2) };
++  });
+ 
+-  if (collateralResult.success && collateralResult.data) {
+-    const deduped: Record<string, string> = {};
+-    Object.entries(collateralResult.data).forEach(([token, { amount }]) => {
+-      const canonical = canonicalMarginToken(token);
+-      const current = deduped[canonical];
+-      if (!current || parseFloat(amount) > parseFloat(current)) deduped[canonical] = amount;
+-    });
+-    Object.entries(deduped).forEach(([token, amount]) => {
+-      const usd = parseFloat(amount) * tokenPrice(token);
+-      totalCollateralValue += usd;
+-      collateralBalances[token] = { amount, usdValue: usd.toFixed(2) };
+-    });
+-  }
++  const dedupedCollateral: Record<string, string> = {};
++  Object.entries(collateralResult.data).forEach(([token, { amount }]) => {
++    const canonical = canonicalMarginToken(token);
++    const current = dedupedCollateral[canonical];
++    if (!current || parseFloat(amount) > parseFloat(current)) dedupedCollateral[canonical] = amount;
++  });
++  Object.entries(dedupedCollateral).forEach(([token, amount]) => {
++    const usd = parseFloat(amount) * tokenPrice(token);
++    totalCollateralValue += usd;
++    collateralBalances[token] = { amount, usdValue: usd.toFixed(2) };
++  });
+ 
+   const effectiveDebtValue = totalBorrowedValue > USD_DUST_EPSILON ? totalBorrowedValue : 0;
+ 
+diff --git a/lib/margin-utils.ts b/lib/margin-utils.ts
+index a2cb653..73cb470 100644
+--- a/lib/margin-utils.ts
++++ b/lib/margin-utils.ts
+@@ -2169,7 +2169,11 @@ export class MarginAccountService {
+           
+           const balanceResult = await server.simulateTransaction(getBalanceTx);
+           
+-          if (!('error' in balanceResult) && 'result' in balanceResult && balanceResult.result) {
++          if ('error' in balanceResult) {
++            throw new Error(`Simulation failed for debt ${token}: ${balanceResult.error}`);
++          }
++
++          if ('result' in balanceResult && balanceResult.result) {
+             const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
+             const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18); // Convert from WAD
+ 
+@@ -2185,11 +2189,23 @@ export class MarginAccountService {
+           return null;
+       }));
+ 
+-      rows.forEach((row, index) => {
++      const rejectedRow = rows.find((row) => row.status === 'rejected') as PromiseRejectedResult | undefined;
++      if (rejectedRow) {
++        const failedIndex = rows.indexOf(rejectedRow);
++        const failedToken = borrowedTokens[failedIndex] ?? 'unknown';
++        const reason = rejectedRow.reason instanceof Error
++          ? rejectedRow.reason.message
++          : String(rejectedRow.reason || 'RPC simulation failed');
++        console.warn(`⚠️ Failed to get balance for token ${failedToken}:`, rejectedRow.reason);
++        return {
++          success: false,
++          error: `Failed to read debt balance for token ${failedToken}: ${reason}`
++        };
++      }
++
++      rows.forEach((row) => {
+         if (row.status === 'fulfilled' && row.value) {
+           borrowedBalances[row.value.token] = row.value.balance;
+-        } else if (row.status === 'rejected') {
+-          console.warn(`⚠️ Failed to get balance for token ${borrowedTokens[index]}:`, row.reason);
+         }
+       });
+       
+@@ -2406,7 +2422,11 @@ export class MarginAccountService {
+ 
+           const balSim = await server.simulateTransaction(balTx);
+ 
+-          if (!('error' in balSim) && 'result' in balSim && balSim.result) {
++          if ('error' in balSim) {
++            throw new Error(`Simulation failed for collateral ${token}: ${balSim.error}`);
++          }
++
++          if ('result' in balSim && balSim.result) {
+             const rawBal = StellarSdk.scValToNative(balSim.result.retval);
+             const balanceWad = rawBal?.toString?.() ?? String(rawBal ?? '0');
+             const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18);
+@@ -2423,11 +2443,23 @@ export class MarginAccountService {
+           return null;
+       }));
+ 
+-      rows.forEach((row, index) => {
++      const rejectedCollateral = rows.find((row) => row.status === 'rejected') as PromiseRejectedResult | undefined;
++      if (rejectedCollateral) {
++        const failedIndex = rows.indexOf(rejectedCollateral);
++        const failedToken = collateralTokens[failedIndex] ?? 'unknown';
++        const reason = rejectedCollateral.reason instanceof Error
++          ? rejectedCollateral.reason.message
++          : String(rejectedCollateral.reason || 'RPC call failed');
++        console.warn(`⚠️ Failed to read collateral balance for ${failedToken}:`, rejectedCollateral.reason);
++        return {
++          success: false,
++          error: `Failed to read collateral balance for token ${failedToken}: ${reason}`,
++        };
++      }
++
++      rows.forEach((row) => {
+         if (row.status === 'fulfilled' && row.value) {
+           balances[row.value.token] = row.value.balance;
+-        } else if (row.status === 'rejected') {
+-          console.warn(`⚠️ Failed to read collateral balance for ${collateralTokens[index]}:`, row.reason);
+         }
+       });
+ 

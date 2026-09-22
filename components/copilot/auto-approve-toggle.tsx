@@ -40,7 +40,15 @@ export function CopilotAutoApproveToggle() {
 
   return (
     <button
-      onClick={() => setAutoApprove(address, !on)}
+      onClick={() => {
+        if (on) {
+          setAutoApprove(address, false);
+          return;
+        }
+        toast.error(
+          "Turn on auto-approve from the Copilot Autonomy card so the Sign Service can enforce spend caps.",
+        );
+      }}
       className={`w-full flex items-center gap-3 px-3 py-[10px] rounded-[10px] cursor-pointer transition-colors ${
         isDark ? "text-[#C0C0C0] hover:bg-[#1E1E1E]" : "text-[#3A3A3A] hover:bg-[#F5F5F5]"
       }`}

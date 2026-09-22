@@ -12,13 +12,6 @@ import { SoroswapService, getSoroswapSwapPartner, SoroswapSwapSymbol } from "@/l
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { normalizeContractError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
-import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
-import {
-  deriveMarginHealth,
-  HEALTH_FACTOR_INFINITY_SENTINEL,
-  LIQUIDATION_THRESHOLD,
-} from "@/lib/margin-health";
-import { useShallow } from "zustand/shallow";
 import { SwapInput } from "./SwapInput";
 import { SwapDirectionButton } from "./SwapDirectionButton";
 import { SwapDetails } from "./SwapDetails";
@@ -338,117 +331,6 @@ export const SwapCard = ({
   const walletXlmBalance = useUserStore((s) => s.balance);
   const isWalletConnected = Boolean(userAddress);
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
-  const {
-    grossCollateralValue,
-    totalBorrowedValue,
-    avgHealthFactor,
-    borrowedBalances,
-  } = useMarginAccountInfoStore(
-    useShallow((s) => ({
-      grossCollateralValue: s.grossCollateralValue,
-      totalBorrowedValue: s.totalBorrowedValue,
-      avgHealthFactor: s.avgHealthFactor,
-      borrowedBalances: s.borrowedBalances,
-    })),
-  );
-
-  // Spot often lands before the margin store finishes a full refresh — use the
-  // same /api/account snapshot the Margin top bar uses so HF isn't stuck at null.
-  const { snapshot } = useAccountSnapshot(userAddress);
-  const effMarginAccountAddress =
-    marginAccountAddress || snapshot?.marginAccountAddress || null;
-  const effBorrowed =
-    (snapshot?.totalBorrowedValue ?? 0) > 0.01
-      ? (snapshot?.totalBorrowedValue as number)
-      : totalBorrowedValue > 0.01
-        ? totalBorrowedValue
-        : Object.values(borrowedBalances ?? {}).reduce(
-            (sum, b) => sum + (parseFloat(b.usdValue || "0") || 0),
-            0,
-          );
-  const effGrossCollateral =
-    (snapshot?.grossCollateralValue ?? 0) > 0.01
-      ? (snapshot?.grossCollateralValue as number)
-      : grossCollateralValue;
-  const effAvgHealthFactor =
-    (snapshot?.avgHealthFactor ?? 0) > 0
-      ? (snapshot?.avgHealthFactor as number)
-      : avgHealthFactor;
-
-  // Project post-swap health factor for margin-mode swaps. Always surfaced in
-  // Swap Details (before → after). Warning banner only when after < 1.1.
-  const futureHealthFactor = useMemo<{
-    before: number;
-    after: number;
-    showWarning: boolean;
-  } | null>(() => {
-    if (swapMode !== "margin" || !effMarginAccountAddress) return null;
-    const inAmt = parseFloat(amountIn);
-    const outAmt = parseFloat(amountOut);
-    if (!Number.isFinite(inAmt) || !Number.isFinite(outAmt) || inAmt <= 0 || outAmt <= 0) {
-      return null;
-    }
-    if (!(tokenInPrice > 0) || !(tokenOutPrice > 0)) return null;
-
-    const debt = effBorrowed > 0.01 ? effBorrowed : 0;
-    if (debt <= 0) return null; // no liquidation risk without debt
-
-    // Spot page can briefly hold a stale/zero gross while debt is real —
-    // reconstruct gross from HF × debt (same trick as margin-preview).
-    let grossBefore = effGrossCollateral > 0.01 ? effGrossCollateral : 0;
-    if (
-      grossBefore <= 0.01 &&
-      effAvgHealthFactor > 0 &&
-      effAvgHealthFactor < HEALTH_FACTOR_INFINITY_SENTINEL
-    ) {
-      grossBefore = effAvgHealthFactor * debt;
-    }
-    if (grossBefore <= 0.01) return null;
-
-    const inUsd = inAmt * tokenInPrice;
-    const outUsd = outAmt * tokenOutPrice;
-    const grossAfter = Math.max(0, grossBefore - inUsd + outUsd);
-
-    const before = deriveMarginHealth({
-      grossCollateralValue: grossBefore,
-      effectiveDebtValue: debt,
-      totalBorrowedValue: debt,
-    }).avgHealthFactor;
-    const after = deriveMarginHealth({
-      grossCollateralValue: grossAfter,
-      effectiveDebtValue: debt,
-      totalBorrowedValue: debt,
-    }).avgHealthFactor;
-
-    return {
-      before,
-      after,
-      showWarning: after > 0 && after < LIQUIDATION_THRESHOLD,
-    };
-  }, [
-    swapMode,
-    effMarginAccountAddress,
-    amountIn,
-    amountOut,
-    tokenInPrice,
-    tokenOutPrice,
-    effGrossCollateral,
-    effBorrowed,
-    effAvgHealthFactor,
-  ]);
-
-  // Auto-expand details once we have a projected HF so the before→after row
-  // is visible without hunting for a collapsed strip.
-  useEffect(() => {
-    if (futureHealthFactor) setIsDetailsExpanded(true);
-  }, [futureHealthFactor]);
-
-  const formatHfLabel = (hf: number): string => {
-    if (!Number.isFinite(hf) || hf <= 0) return "—";
-    if (hf >= HEALTH_FACTOR_INFINITY_SENTINEL) return "∞";
-    return hf.toFixed(2);
-  };
-
   const [aquariusUsdcWalletBalance, setAquariusUsdcWalletBalance] = useState("0");
   // Actual token balances held by the margin account contract (updated after
   // swap), keyed by symbol — generic over whichever tokens the active DEX's
@@ -1015,38 +897,8 @@ export const SwapCard = ({
               onRefreshRate={() => {}}
               isRefreshing={false}
               onEditSlippage={() => setIsSettingsOpen(true)}
-              healthFactorBefore={
-                futureHealthFactor ? formatHfLabel(futureHealthFactor.before) : null
-              }
-              healthFactorAfter={
-                futureHealthFactor ? formatHfLabel(futureHealthFactor.after) : null
-              }
-              healthFactorAtRisk={Boolean(futureHealthFactor?.showWarning)}
             />
           </div>
-
-          {/* Always show a compact HF preview when details are collapsed so
-              users don't miss the post-swap projection. */}
-          {hasQuote && futureHealthFactor && !isDetailsExpanded && (
-            <div
-              className={`mt-2 px-3 py-2 rounded-xl text-[12px] font-medium flex items-center justify-between ${
-                isDark ? "bg-[#1A1A1A] border border-[#2A2A2A] text-[#CCCCCC]" : "bg-[#F7F7F7] border border-[#EEEEEE] text-[#555]"
-              }`}
-            >
-              <span className={isDark ? "text-[#777]" : "text-[#A7A7A7]"}>Health Factor</span>
-              <span>
-                {formatHfLabel(futureHealthFactor.before)}
-                <span className={`mx-1.5 ${isDark ? "text-[#555]" : "text-[#CCC]"}`}>→</span>
-                <span
-                  className={`font-semibold ${
-                    futureHealthFactor.showWarning ? "text-[#FC5457]" : isDark ? "text-white" : "text-[#111]"
-                  }`}
-                >
-                  {formatHfLabel(futureHealthFactor.after)}
-                </span>
-              </span>
-            </div>
-          )}
 
           {/* High price-impact warning banner — visible when the executed
               quote diverges materially from the oracle (e.g. thin pool). */}
@@ -1065,29 +917,6 @@ export const SwapCard = ({
                 High price impact{priceImpactInfo.label ? ` (${priceImpactInfo.label})` : ""}.
                 You'll receive far less than fair value  this pool's liquidity is too thin
                 for this trade size. Reduce the amount or pick another DEX.
-              </span>
-            </div>
-          )}
-
-          {/* Future health-factor warning — margin swaps that would leave HF
-              below the 1.1 liquidation threshold. */}
-          {futureHealthFactor?.showWarning && (
-            <div
-              className={`mt-2 px-3 py-2 rounded-xl text-[12px] font-semibold flex items-start gap-2 ${
-                isDark ? "bg-[#FC5457]/10 text-[#FC5457] border border-[#FC5457]/30" : "bg-[#FFF1F1] text-[#C62525] border border-[#FFB3B3]"
-              }`}
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="shrink-0 mt-0.5">
-                <path d="M7 1.5L13 12.5H1L7 1.5Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-                <path d="M7 5.5V8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                <circle cx="7" cy="10" r="0.7" fill="currentColor" />
-              </svg>
-              <span>
-                This swap would drop your health factor from{" "}
-                {formatHfLabel(futureHealthFactor.before)} to{" "}
-                {formatHfLabel(futureHealthFactor.after)} (below {LIQUIDATION_THRESHOLD}).
-                Your margin account would become liquidatable. Reduce the amount
-                or repay debt before swapping.
               </span>
             </div>
           )}

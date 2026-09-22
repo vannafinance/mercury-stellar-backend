@@ -73,6 +73,18 @@
   --color-rose-900: var(--rose-900);
 }
 
+/* Tailwind v4's Preflight sets `cursor: default` on buttons, where v3 set
+   `pointer`. Components written before the upgrade carry an explicit
+   `cursor-pointer`; ones written after do not, so whether a control looks
+   clickable depends on when it was authored. Restore the pointer once here
+   rather than per button. Disabled controls keep the default cursor. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
 :root {
   /* Base colors */
   --color-base-dark: #111111;
@@ -216,6 +228,53 @@ html.dark body {
 
 html.dark * {
   border-color: #333333;
+}
+
+/* Copilot chat composer typography. Its box is set inline on the component so
+   the threaded layout and its controls cannot silently lose their frame. */
+.cp-composer-input {
+  font-size: 14px;
+  line-height: 21px;
+  letter-spacing: 0;
+  padding: 10px 0;
+}
+
+/* Inline sidebar glyphs inherit the button colour and expose their moving parts. */
+.cp-sidebar-icon {
+  display: block;
+  flex: none;
+}
+
+.cp-new-chat-pen {
+  transform-origin: 8px 16px;
+}
+
+.cp-recent-arc {
+  transform-origin: 12px 12px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cp-icon-button:hover .cp-new-chat-pen,
+  .cp-icon-button:focus-visible .cp-new-chat-pen {
+    animation: cp-new-chat-wiggle .65s cubic-bezier(.34,1.56,.64,1);
+  }
+
+  .cp-icon-button:hover .cp-recent-arc,
+  .cp-icon-button:focus-visible .cp-recent-arc {
+    animation: cp-recent-rewind .5s ease-in-out;
+  }
+}
+
+@keyframes cp-new-chat-wiggle {
+  0%, 100% { transform: rotate(0); }
+  20% { transform: rotate(-9deg) translate(-1px, 1px); }
+  45% { transform: rotate(5deg) translate(1px, -.5px); }
+  70% { transform: rotate(-3deg); }
+}
+
+@keyframes cp-recent-rewind {
+  0%, 100% { transform: rotate(0); }
+  50% { transform: rotate(-30deg); }
 }
 
 /* Margin page 60/40 layout — outside @layer so it beats all Tailwind utilities */
@@ -480,6 +539,9 @@ html.dark * {
    places that read it directly, `--color-violet-*` for every Tailwind `violet-*` utility —
    and because they are set on `.cp-root` the override stays scoped to the copilot. */
 .cp-root {
+  /* Match the rest of Vanna even when a Copilot surface is portalled to body. */
+  font-family: var(--font-plus-jakarta-sans), system-ui, sans-serif;
+
   /* ── canonical palette (light) ── */
   --page: #ffffff;
   --surface: #ffffff;
@@ -950,7 +1012,7 @@ html.dark .plan-card,
 .dark .plan-card,
 html.dark .run-card,
 .dark .run-card {
-  --card-surface: #16161d;
+  --card-surface: #14151d;
   --card-inset: #1e1e27;
   --card-line: #3a3a46;
   --card-line-soft: #2b2b35;

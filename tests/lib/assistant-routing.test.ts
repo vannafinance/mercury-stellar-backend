@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { isAssistantChat } from "@/lib/copilot/concept";
+import { isDiagnosisMessage } from "@/lib/assistant/packet";
 
 /**
  * Only the page agent receives the captured page, so a question about the page has to
@@ -51,5 +52,12 @@ describe("assistant routing", () => {
   it("still sends concept questions to the page agent", () => {
     expect(isAssistantChat("what is Blend?")).toBe(true);
     expect(isAssistantChat("how do I deposit XLM as collateral?")).toBe(true);
+  });
+
+  it("treats transaction failures as assistant diagnosis, not a live HF lookup", () => {
+    expect(isDiagnosisMessage("why did my transaction fail")).toBe(true);
+    expect(isDiagnosisMessage("my transaction didn't execute")).toBe(true);
+    expect(isDiagnosisMessage("what's my health factor?")).toBe(false);
+    expect(isAssistantChat("what's my health factor?")).toBe(false);
   });
 });

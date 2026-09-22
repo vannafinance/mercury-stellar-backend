@@ -1,6 +1,8 @@
 import { formatUsdValue } from "@/lib/utils/format-amount";
 import type { PreviewRow } from "@/components/margin/margin-action-preview";
 
+/** Debt below this is treated as "no debt" — matches store + positions table. */
+export const BORROW_DUST_USD = 0.01;
 export const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
 
@@ -40,7 +42,7 @@ export function computeCollateralPreviewRows({
     ? totalCollateralValue + transferUsd
     : Math.max(0, totalCollateralValue - transferUsd);
 
-  const hasDebt = totalBorrowedValue > 0;
+  const hasDebt = totalBorrowedValue > BORROW_DUST_USD;
   const hfBefore = hasDebt && avgHealthFactor > 0 ? avgHealthFactor : HF_INF_SENTINEL;
   // gross_before = avgHF × debt (works regardless of collateral type).
   const grossBefore = hasDebt && avgHealthFactor > 0
@@ -67,9 +69,9 @@ export function computeCollateralPreviewRows({
     },
     {
       label: "Liquidation Buffer",
-      before: hasDebt ? formatUsdValue(bufferBefore) : undefined,
-      after: hasDebt ? formatUsdValue(bufferAfter) : "N/A — no debt",
-      tone: !hasDebt ? "default" : bufferAfter >= bufferBefore ? "positive" : "negative",
+      before: formatUsdValue(bufferBefore),
+      after: formatUsdValue(bufferAfter),
+      tone: bufferAfter >= bufferBefore ? "positive" : "negative",
     },
   ];
 }

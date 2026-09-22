@@ -41,6 +41,40 @@ export type PageSnapshotCtx = {
   char_count?: number;
 };
 
+/**
+ * A classified in-app event the Assistant may cite. Never a signing instruction.
+ * `kind` is the failure stage; `message` is already user-facing.
+ */
+export type AssistantEventKind =
+  | "wallet_rejected"
+  | "simulation_failed"
+  | "unsigned_xdr"
+  | "submitted_unconfirmed"
+  | "horizon_failed"
+  | "horizon_success"
+  | "toast_error"
+  | "toast_success";
+
+export type AssistantSessionEvent = {
+  kind: AssistantEventKind;
+  message: string;
+  at: number;
+  tx_hash?: string | null;
+  code?: string | null;
+  path?: string | null;
+};
+
+export type AssistantImageMime = "image/png" | "image/jpeg" | "image/webp";
+
+export type AssistantImageAttachment = {
+  mime: AssistantImageMime;
+  /** Raw base64, no data: prefix. */
+  data: string;
+  source: "paste" | "drop" | "region";
+  width?: number;
+  height?: number;
+};
+
 /** Structured pageContext from the Gemini master plan (semantic reader). */
 export type SemanticPageContextCtx = {
   url?: string;
@@ -89,6 +123,17 @@ export interface ChatRequest {
   /** Gemini-plan semantic pageContext JSON (primary for page agent). */
   semantic_page_context?: SemanticPageContextCtx | null;
   /**
+   * Last client-side product events (toasts, wallet rejects, simulation failures,
+   * hashes). The page Guide uses these to answer "why did that fail" without
+   * executing anything. Bounded by the API route — never a write continuation.
+   */
+  session_events?: AssistantSessionEvent[] | null;
+  /**
+   * Optional screenshots the user attached (paste, drop, or select-from-screen).
+   * Base64 without a data: prefix. Bounded by the API route.
+   */
+  attachments?: AssistantImageAttachment[] | null;
+  /**
    * Optional prior turns so the assistant can answer follow-ups naturally.
    * Client should send only short recent history (e.g. last 8 messages).
    */
@@ -105,6 +150,13 @@ export interface ChatRequest {
       | "use_defaults"
       | "custom"
       | "disable"
+      /**
+       * Read-only: MCP `vanna_auto_sign_status` → Sign Service `GET /sessions`.
+       * Does not create a session, start a bind, or change caps. The copilot
+       * polls this on wallet connect so the Autonomy card can show "Budget
+       * active" when a session already exists (another client, or a prior visit).
+       */
+      | "status"
       | "bind_start"
       | "bind_status"
       /**
@@ -280,6 +332,11 @@ export interface CopilotAction {
    * Not an oracle USD conversion.
    */
   expected_out?: number | null;
+  /**
+   * The user approved a card that showed this swap's price impact. Copilot
+   * forwards it as `acknowledged_price_impact` so MCP may auto-sign a ≥10% fill.
+   */
+  acknowledged_price_impact?: boolean | null;
 }
 
 export interface RiskResult {
@@ -549,12 +606,21 @@ export interface BrainHealth {
    *
    * "workload_identity" is keyless (host OIDC token exchanged for an access token) and
    * "service_account" is a key in an env var; both are machine-independent and work in a
-   * deploy. "developer_login" means it is leaning on whoever ran `gcloud auth login` on this
+   * deploy. "attached_service_account" is a Google-managed runtime (Cloud Run, Cloud
+   * Functions, App Engine) authenticating through ADC on the service account the host
+   * attaches — also machine-independent, and invisible to an env-var check, which is why
+   * it needs its own name rather than being lumped in with a developer login.
+   *
+   * "developer_login" means it is leaning on whoever ran `gcloud auth login` on this
    * machine — the state that made the same prompt answer on one laptop and return the
    * capability blurb on another. Reported so that difference is visible before someone
    * hits it, since the symptom only appears once the login has already expired.
    */
-  vertex_auth?: "workload_identity" | "service_account" | "developer_login";
+  vertex_auth?:
+    | "workload_identity"
+    | "service_account"
+    | "attached_service_account"
+    | "developer_login";
 }
 
 export type RoutedIntent =

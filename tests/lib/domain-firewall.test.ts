@@ -190,6 +190,11 @@ describe("domain firewall", () => {
     expect(evaluateDomainFirewall(leetcodePrompt).allow).toBe(false);
   });
 
+  it("allows a product question that happens to use recipe or SDK language", () => {
+    expect(evaluateDomainFirewall("What's a good recipe for laddering my XLM?").allow).toBe(true);
+    expect(evaluateDomainFirewall("Is the Vanna typescript SDK on npm?").allow).toBe(true);
+  });
+
   it("allows extended natural-language DeFi and financial queries", () => {
     expect(evaluateDomainFirewall("what is my liquidation buffer right now").allow).toBe(true);
     expect(evaluateDomainFirewall("how much yield can I generate in crypto vaults").allow).toBe(true);

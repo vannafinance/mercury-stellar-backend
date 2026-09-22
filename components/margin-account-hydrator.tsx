@@ -3,9 +3,8 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUserStore } from "@/store/user";
-import { checkUserMarginAccount, useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import { checkUserMarginAccount } from "@/store/margin-account-info-store";
 import { prefetchAccountSnapshot } from "@/hooks/use-account-snapshot";
-import { getSpotHistory } from "@/lib/spot-history";
 
 /**
  * Hydrates the margin store's `marginAccountAddress` whenever the wallet
@@ -23,7 +22,6 @@ import { getSpotHistory } from "@/lib/spot-history";
 export function MarginAccountHydrator() {
   const address = useUserStore((s) => s.address);
   const isConnected = useUserStore((s) => s.isConnected);
-  const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const qc = useQueryClient();
 
   useEffect(() => {
@@ -35,17 +33,6 @@ export function MarginAccountHydrator() {
       prefetchAccountSnapshot(qc, address);
     }
   }, [address, isConnected, qc]);
-
-  // Prefetch spot history as soon as the margin account is known so Portfolio
-  // / Spot History is populated on first open (not only after a swap invalidates).
-  useEffect(() => {
-    if (!marginAccountAddress) return;
-    void qc.prefetchQuery({
-      queryKey: ['spot', 'history', marginAccountAddress],
-      queryFn: () => getSpotHistory(marginAccountAddress),
-      staleTime: 4_000,
-    });
-  }, [marginAccountAddress, qc]);
 
   return null;
 }

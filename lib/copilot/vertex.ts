@@ -40,12 +40,19 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { promisify } from "util";
 import { copilotConfig } from "./config";
+import { recordVertexUsage, withModelCall } from "./telemetry";
+import { currentTokenSubject, recordTokenUsage } from "./token-budget";
+import { assertFlashModel } from "./investigation/flash-policy";
+import { boundOnChainStrings } from "./investigation/onchain-strings";
 import type { RoutedIntent } from "./types";
+import { WORKFLOW_OPS } from "./workflow/types";
+import { decisionFromFunctionCalls } from "./investigation/decls";
 import {
   FC_ROUTE_SYSTEM,
   ROUTER_TOOL_DECLS,
   guardIntent,
   intentFromFunctionCall,
+  type FunctionDeclaration,
 } from "./vertex-tools";
 import {
   ANSWER_RESPONSE_SCHEMA,
@@ -178,7 +185,11 @@ function workloadIdentityConfig(): {
  * call throws and understanding silently drops to keyword matching, which is the failure
  * that made the same prompt answer on one laptop and not another.
  */
-export function vertexAuthMode(): "workload_identity" | "service_account" | "developer_login" {
+export function vertexAuthMode():
+  | "workload_identity"
+  | "service_account"
+  | "attached_service_account"
+  | "developer_login" {
   const wif = workloadIdentityConfig();
   if (wif && (process.env[wif.subjectTokenEnvVar] || "").trim()) return "workload_identity";
   if (
@@ -190,7 +201,32 @@ export function vertexAuthMode(): "workload_identity" | "service_account" | "dev
   ) {
     return "service_account";
   }
+  if (onGoogleManagedRuntime()) return "attached_service_account";
   return "developer_login";
+}
+
+/**
+ * Are we running on a Google-managed runtime that attaches a service account?
+ *
+ * This exists because the checks above read env vars only, and the credential Cloud Run
+ * actually uses lives behind the metadata server where no env var reveals it. With no key
+ * and no OIDC token set, the old code concluded "developer_login" and the UI showed a
+ * `gcloud login` warning on every deployed revision — on a host that has no gcloud binary
+ * and no user login, and where Vertex was in fact authenticating perfectly well through
+ * ADC on the attached service account. A warning that fires on a healthy deploy trains
+ * people to ignore the one that matters, so the two states are named differently.
+ *
+ * K_SERVICE is set by Cloud Run and Cloud Functions gen2, FUNCTION_TARGET by gen1, and
+ * GAE_ENV by App Engine. Detection is deliberately env-var based and does not probe the
+ * metadata server: this is called to render a status chip, so it must stay synchronous
+ * and free of network I/O.
+ */
+function onGoogleManagedRuntime(): boolean {
+  return Boolean(
+    (process.env.K_SERVICE || "").trim() ||
+      (process.env.FUNCTION_TARGET || "").trim() ||
+      (process.env.GAE_ENV || "").trim(),
+  );
 }
 
 /** @deprecated Prefer vertexAuthMode() — kept so callers reading a boolean still compile. */
@@ -472,12 +508,21 @@ function logUsage(tag: string, parsed: unknown): void {
         (int(meta.thoughtsTokenCount) ? ` thoughts=${int(meta.thoughtsTokenCount)}` : ""),
     );
   }
+  const subject = currentTokenSubject();
+  if (subject) {
+    recordTokenUsage(
+      subject,
+      promptTokens + int(meta.candidatesTokenCount) + int(meta.thoughtsTokenCount),
+    );
+  }
+  recordVertexUsage(parsed);
 }
 
 /** JSON-mode Vertex call — used by router + LLM strategy planner. */
 export async function generateJson(system: string, user: string): Promise<Record<string, unknown>> {
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "json" }, async () => {
+  const token = await getAccessToken();
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: user }] }],
@@ -531,6 +576,193 @@ export async function generateJson(system: string, user: string): Promise<Record
   } catch {
     throw new VertexError(`Vertex JSON parse failed: ${out.slice(0, 400)}`);
   }
+  });
+}
+
+/** Bounded research turn. Separate from the legacy router; no model fallback. */
+export async function generateInvestigationJson(
+  model: string,
+  system: string,
+  user: string,
+  signal: AbortSignal,
+  thinkingLevel: "LOW" | "MEDIUM" | "HIGH" = "MEDIUM",
+  functionDeclarations: FunctionDeclaration[] = [],
+): Promise<unknown> {
+  assertFlashModel(model);
+  const useTools = functionDeclarations.length > 0;
+  return withModelCall(model, {
+    outputType: useTools ? undefined : "json",
+    reasoningLevel: thinkingLevel,
+    maxTokens: 4096,
+  }, async () => {
+  signal.throwIfAborted();
+  const token = await getAccessToken();
+  signal.throwIfAborted();
+  const res = await fetch(modelUrl(model), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: user }] }],
+      ...(useTools ? {
+        tools: [{ functionDeclarations }],
+        // ANY forces a declared function; JSON mime type is mutually exclusive with tools.
+        toolConfig: { functionCallingConfig: { mode: "ANY" } },
+      } : {}),
+      generationConfig: {
+        ...(useTools ? {} : { responseMimeType: "application/json" }),
+        maxOutputTokens: 4096,
+        // 3.8 retires sampling knobs; reasoning level is set per turn by the caller.
+        ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel } } : { temperature: 0 }),
+      },
+    }),
+    signal,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) tokenCache = null;
+    const body = await res.text().catch(() => "");
+    // Server log only — the thrown message stays a status code so tool internals
+    // never reach the SSE payload.
+    console.error("[copilot] Vertex investigation HTTP error", {
+      status: res.status, model, body: body.slice(0, 4000),
+    });
+    throw new VertexError(`Vertex investigation HTTP ${res.status}`);
+  }
+  const raw = await res.text();
+  if (Buffer.byteLength(raw, "utf8") > 262_144) throw new VertexError("Vertex investigation response too large");
+  let parsed: {
+    candidates?: Array<{
+      finishReason?: string;
+      content?: {
+        parts?: Array<{
+          text?: string;
+          thought?: boolean;
+          functionCall?: { name?: string; args?: Record<string, unknown> };
+        }>;
+      };
+    }>;
+  };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    throw new VertexError("Vertex investigation response was not JSON");
+  }
+  logUsage("investigation", parsed);
+  const candidate = parsed.candidates?.[0];
+  const finishReason = candidate?.finishReason;
+  const parts = candidate?.content?.parts?.filter((part) => part.thought !== true) ?? [];
+  const calls = parts
+    .filter((part) => part.functionCall?.name)
+    .map((part) => ({
+      name: String(part.functionCall!.name),
+      args: (part.functionCall!.args ?? {}) as Record<string, unknown>,
+    }));
+  if (finishReason === "SAFETY" || finishReason === "BLOCKLIST" || finishReason === "PROHIBITED_CONTENT") {
+    console.error("[copilot] Vertex investigation blocked", { finishReason, model });
+    throw new VertexError("Vertex investigation did not finish a decision");
+  }
+  if (calls.length) {
+    if (finishReason && finishReason !== "STOP") {
+      console.warn("[copilot] Vertex investigation function calls with finishReason", { finishReason, model });
+    }
+    return decisionFromFunctionCalls(calls);
+  }
+  if (finishReason !== "STOP") {
+    console.error("[copilot] Vertex investigation did not finish a decision", {
+      finishReason: finishReason ?? null, model,
+    });
+    throw new VertexError("Vertex investigation did not finish a decision");
+  }
+  const out = parts.map((part) => part.text ?? "").join("");
+  if (!out.trim()) throw new VertexError("Vertex investigation returned no decision");
+  try {
+    return JSON.parse(out);
+  } catch {
+    throw new VertexError("Vertex investigation returned no decision");
+  }
+  });
+}
+
+const SOCIAL_RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    lane: { type: "string", enum: ["social", "work"] },
+    reply: { type: "string" },
+  },
+  required: ["lane"],
+} as const;
+
+/**
+ * Greeting leftover only. Uses Flash-Lite, not VERTEX_MODEL — investigation
+ * `assertFlashModel` rejects `-lite`, and 3.7/3.8 cannot take MINIMAL thinking.
+ */
+export async function generateSocialLaneJson(
+  system: string,
+  user: string,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const model = copilotConfig.vertexSocialModel;
+  return withModelCall(model, {
+    outputType: "json",
+    reasoningLevel: "MINIMAL",
+    maxTokens: 1024,
+  }, async () => {
+    signal.throwIfAborted();
+    const token = await getAccessToken();
+    signal.throwIfAborted();
+    const res = await fetch(modelUrl(model), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: SOCIAL_RESPONSE_SCHEMA,
+          maxOutputTokens: 1024,
+          thinkingConfig: { thinkingLevel: "MINIMAL" },
+        },
+      }),
+      signal,
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) tokenCache = null;
+      const body = await res.text().catch(() => "");
+      console.error("[copilot] Vertex social-lane HTTP error", {
+        status: res.status, model, body: body.slice(0, 400),
+      });
+      throw new VertexError(`Vertex social-lane HTTP ${res.status}`);
+    }
+    const raw = await res.text();
+    let parsed: {
+      candidates?: Array<{
+        finishReason?: string;
+        content?: { parts?: Array<{ text?: string; thought?: boolean }> };
+      }>;
+    };
+    try {
+      parsed = JSON.parse(raw) as typeof parsed;
+    } catch {
+      throw new VertexError("Vertex social-lane response was not JSON");
+    }
+    logUsage("social-lane", parsed);
+    const candidate = parsed.candidates?.[0];
+    if (candidate?.finishReason && candidate.finishReason !== "STOP") {
+      throw new VertexError("Vertex social-lane did not finish");
+    }
+    const out = (candidate?.content?.parts ?? [])
+      .filter((part) => part.thought !== true)
+      .map((part) => part.text ?? "")
+      .join("");
+    if (!out.trim()) throw new VertexError("Vertex social-lane returned no decision");
+    try {
+      return JSON.parse(out);
+    } catch {
+      throw new VertexError("Vertex social-lane returned no decision");
+    }
+  });
 }
 
 /** Models to try: primary first, then fallbacks (handles wrong/retired model ids). */
@@ -566,18 +798,40 @@ function isThinkingConfigRejection(msg: string): boolean {
   return /HTTP 400/.test(msg) && /thinking|thinkingLevel|thinkingBudget/i.test(msg);
 }
 
+export type VertexInlineImage = {
+  mime: string;
+  data: string;
+};
+
+function userContentParts(
+  text: string,
+  images?: VertexInlineImage[] | null,
+): Array<Record<string, unknown>> {
+  const parts: Array<Record<string, unknown>> = [];
+  for (const img of (images ?? []).slice(0, 2)) {
+    if (!img?.data || !img.mime) continue;
+    parts.push({ inlineData: { mimeType: img.mime, data: img.data } });
+  }
+  parts.push({ text });
+  return parts;
+}
+
 async function generateTextOnce(
   model: string,
   system: string,
   user: string,
   temperature: number,
-  opts?: { lowThinking?: boolean },
+  opts?: { lowThinking?: boolean; images?: VertexInlineImage[]; timeoutMs?: number },
 ): Promise<string> {
+  return withModelCall(model, {
+    outputType: "text",
+    reasoningLevel: opts?.lowThinking ? "LOW" : undefined,
+  }, async () => {
   const token = await getAccessToken();
   const thinking = opts?.lowThinking ? lowThinkingConfig(model) : null;
   const body = {
     systemInstruction: { parts: [{ text: system }] },
-    contents: [{ role: "user", parts: [{ text: user }] }],
+    contents: [{ role: "user", parts: userContentParts(user, opts?.images) }],
     generationConfig: {
       temperature,
       ...(thinking ? { thinkingConfig: thinking } : {}),
@@ -591,7 +845,7 @@ async function generateTextOnce(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(opts?.timeoutMs ?? 60_000),
     cache: "no-store",
   });
   const text = await res.text();
@@ -606,13 +860,19 @@ async function generateTextOnce(
     "";
   if (!out.trim()) throw new VertexError("Vertex returned empty explanation");
   return out.trim();
+  });
 }
 
 /** Plain-text generation used by the page assistant and vertexExplain. */
 export async function generateText(
   system: string,
   user: string,
-  opts?: { temperature?: number; lowThinking?: boolean },
+  opts?: {
+    temperature?: number;
+    lowThinking?: boolean;
+    images?: VertexInlineImage[];
+    timeoutMs?: number;
+  },
 ): Promise<string> {
   const temperature = opts?.temperature ?? 0.2;
   const errors: string[] = [];
@@ -620,6 +880,8 @@ export async function generateText(
     try {
       return await generateTextOnce(model, system, user, temperature, {
         lowThinking: opts?.lowThinking,
+        images: opts?.images,
+        timeoutMs: opts?.timeoutMs,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -627,7 +889,10 @@ export async function generateText(
       if (opts?.lowThinking && isThinkingConfigRejection(msg)) {
         console.warn(`[copilot:vertex] ${model} rejected thinkingConfig — retrying without it`);
         try {
-          return await generateTextOnce(model, system, user, temperature);
+          return await generateTextOnce(model, system, user, temperature, {
+            images: opts?.images,
+            timeoutMs: opts?.timeoutMs,
+          });
         } catch (retryErr) {
           errors.push(retryErr instanceof Error ? retryErr.message : String(retryErr));
           continue;
@@ -658,18 +923,20 @@ export async function generateWithClientTools(
   system: string,
   user: string,
   toolDecls: ClientToolDecl[],
+  images?: VertexInlineImage[] | null,
 ): Promise<{
   text: string;
   client_tools: Array<{ name: string; args: Record<string, unknown> }>;
 }> {
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "text" }, async () => {
+  const token = await getAccessToken();
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     tools: [{ functionDeclarations: toolDecls }],
     // AUTO: model may answer in text and/or call tools (Gemini side-panel style)
     toolConfig: { functionCallingConfig: { mode: "AUTO" } },
-    contents: [{ role: "user", parts: [{ text: user }] }],
+    contents: [{ role: "user", parts: userContentParts(user, images) }],
     generationConfig: { temperature: 0.35 },
   };
 
@@ -688,7 +955,7 @@ export async function generateWithClientTools(
     if (res.status === 401 || res.status === 403) tokenCache = null;
     // Fallback: plain text without tools if schema rejected
     console.warn(`[copilot:vertex] client-tools HTTP ${res.status}, falling back to generateText`);
-    const textOnly = await generateText(system, user, { temperature: 0.35 });
+    const textOnly = await generateText(system, user, { temperature: 0.35, images: images ?? undefined });
     return { text: textOnly, client_tools: [] };
   }
 
@@ -724,6 +991,7 @@ export async function generateWithClientTools(
     );
   }
   return { text, client_tools };
+  });
 }
 
 /**
@@ -740,8 +1008,9 @@ async function generateFunctionCall(
   system: string,
   user: string,
 ): Promise<{ name: string; args: Record<string, unknown> }> {
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, {}, async () => {
+  const token = await getAccessToken();
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     tools: [{ functionDeclarations: ROUTER_TOOL_DECLS }],
@@ -795,6 +1064,7 @@ async function generateFunctionCall(
     name: String(call.name),
     args: (call.args ?? {}) as Record<string, unknown>,
   };
+  });
 }
 
 // ── tool catalog for routing ────────────────────────────────────────────────
@@ -1046,14 +1316,9 @@ function normalizeRoute(data: Record<string, unknown>): RoutedIntent {
 
   if (kind === "write") {
     const op = String(data.op ?? "");
-    const allowed = new Set([
+    const allowed = new Set<string>([
+      ...WORKFLOW_OPS,
       "create_account",
-      "lend",
-      "redeem",
-      "deposit_collateral",
-      "withdraw_collateral",
-      "borrow",
-      "repay",
       "deposit_and_borrow",
       "deploy_to_blend",
       "supply_to_blend",
@@ -1147,6 +1412,10 @@ function decimalsFor(key: string): number {
  * here also shortens the payload, which keeps more of a large response inside the clip
  * limit below. Non-numeric values (symbols, addresses, notes) pass through untouched.
  */
+function toolDataForModel(data: Record<string, unknown>): Record<string, unknown> {
+  return roundForProse(boundOnChainStrings(data)) as Record<string, unknown>;
+}
+
 function roundForProse(value: unknown, key = ""): unknown {
   if (typeof value === "number" && Number.isFinite(value)) {
     return Number(value.toFixed(decimalsFor(key)));
@@ -1175,7 +1444,7 @@ export async function vertexExplain(
   data: Record<string, unknown>,
 ): Promise<string> {
   // Round first, then cap: the payload shrinks a lot once 18-decimal strings are gone.
-  const tidy = roundForProse(data) as Record<string, unknown>;
+  const tidy = toolDataForModel(data);
   const clipped = JSON.stringify(tidy).slice(0, 6000);
   const user = `QUESTION: ${question}\nTOOL: ${tool}\nDATA:\n${clipped}`;
   // Same reasoning as vertexExplainStructured: the numbers are already decided.
@@ -1194,12 +1463,13 @@ export async function vertexExplainStructured(
   tool: string,
   data: Record<string, unknown>,
 ): Promise<StructuredAnswer | null> {
-  const tidy = roundForProse(data) as Record<string, unknown>;
+  const tidy = toolDataForModel(data);
   const clipped = JSON.stringify(tidy).slice(0, 6000);
   const user = `QUESTION: ${question}\nTOOL: ${tool}\nDATA:\n${clipped}`;
 
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "json", reasoningLevel: "LOW" }, async () => {
+  const token = await getAccessToken();
   const thinking = lowThinkingConfig(model);
   const bodyFor = (withThinking: boolean) => ({
     systemInstruction: { parts: [{ text: ANSWER_SYSTEM }] },
@@ -1251,6 +1521,7 @@ export async function vertexExplainStructured(
     );
     return null;
   }
+  });
 }
 
 const RECEIPT_SYSTEM = `You write the closing summary for a multi-step DeFi strategy that has just finished running on Stellar.
@@ -1348,8 +1619,9 @@ export async function vertexSummarizeExecution(
   const clipped = JSON.stringify(roundForProse(execution)).slice(0, 5000);
   const user = `WHAT THE USER ASKED FOR: ${intent}\nWHAT RAN:\n${clipped}`;
 
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "json" }, async () => {
+  const token = await getAccessToken();
   try {
     const res = await fetch(modelUrl(model), {
       method: "POST",
@@ -1408,6 +1680,7 @@ export async function vertexSummarizeExecution(
     );
     return null;
   }
+  });
 }
 
 /**
@@ -1418,6 +1691,7 @@ export async function vertexGuideAnswer(
   question: string,
   pageContextJson: string | null,
   history?: Array<{ role: "user" | "assistant"; text: string }>,
+  images?: VertexInlineImage[] | null,
 ): Promise<GuideAnswer | null> {
   // Follow-ups are the Guide's own suggestion chips ("how is that different from Earn?"),
   // so without the preceding turns the pronoun in every one of them dangles.
@@ -1429,20 +1703,23 @@ export async function vertexGuideAnswer(
   const user = [
     priorTurns ? `EARLIER IN THIS CONVERSATION:\n${priorTurns}` : "",
     `QUESTION: ${question}`,
-    pageContextJson ? `PAGE CONTEXT:\n${pageContextJson.slice(0, 6000)}` : "PAGE CONTEXT: none",
+    pageContextJson
+      ? `PAGE CONTEXT:\n${pageContextJson.slice(0, 12_000)}`
+      : "PAGE CONTEXT: none",
   ]
     .filter(Boolean)
     .join("\n\n");
 
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "json" }, async () => {
+  const token = await getAccessToken();
   try {
     const res = await fetch(modelUrl(model), {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: GUIDE_SYSTEM }] },
-        contents: [{ role: "user", parts: [{ text: user }] }],
+        contents: [{ role: "user", parts: userContentParts(user, images) }],
         generationConfig: {
           temperature: 0.3,
           responseMimeType: "application/json",
@@ -1472,13 +1749,15 @@ export async function vertexGuideAnswer(
     );
     return null;
   }
+  });
 }
 
 /** Cheap health probe used by /api/copilot GET */
 export async function vertexPing(): Promise<{ ok: boolean; model: string; error?: string }> {
+  const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "json", maxTokens: 32 }, async () => {
   try {
     const token = await getAccessToken();
-    const model = copilotConfig.vertexModel;
     const res = await fetch(modelUrl(model), {
       method: "POST",
       headers: {
@@ -1504,4 +1783,5 @@ export async function vertexPing(): Promise<{ ok: boolean; model: string; error?
       error: e instanceof Error ? e.message : String(e),
     };
   }
+  });
 }

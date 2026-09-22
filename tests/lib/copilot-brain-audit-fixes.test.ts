@@ -1,4 +1,26 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+/**
+ * Pin the position base, offline.
+ *
+ * `evaluateWriteRisk` dynamically imports `computeMarginSnapshot` and prefers it over the
+ * MCP read. That made BRAIN-002 pass only when the live Soroban read FAILED and it fell
+ * back to the mocked MCP figures — so a risk-math assertion was decided by network luck,
+ * and it flaked across full-suite runs. Mocked to the same $1,000 / no-debt base the MCP
+ * mock below sets up, so the arithmetic under test is what is actually asserted.
+ */
+vi.mock("@/lib/account-snapshot", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/account-snapshot")>();
+  return {
+    ...actual,
+    computeMarginSnapshot: vi.fn(async () => ({
+      borrowedBalances: {}, collateralBalances: { XLM: { amount: "10000", usdValue: "1000" } },
+      totalBorrowedValue: 0, totalCollateralValue: 1000, grossCollateralValue: 1000,
+      totalValue: 1000, avgHealthFactor: 999, collateralLeftBeforeLiquidation: 1000,
+      netAvailableCollateral: 1000, borrowRate: 0, debtLimit: 909.09,
+    })),
+  };
+});
 import { verifyApprovedPlan, freezePlan } from "@/lib/copilot/plan-approval";
 import { rememberConnectOrigin, resolveConnectOrigin } from "@/lib/copilot/wallet-bind";
 import { evaluateWriteRisk } from "@/lib/copilot/risk";

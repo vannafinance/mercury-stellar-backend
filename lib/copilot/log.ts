@@ -18,6 +18,34 @@ function enabled(): boolean {
   return Boolean(process.env.COPILOT_LOG) || process.env.NODE_ENV === "production";
 }
 
+/** Always-on dev logging for the Assistant drawer (not gated by COPILOT_LOG). */
+export function logAssistantEvent(event: string, payload: Record<string, unknown> = {}): void {
+  if (process.env.NODE_ENV === "test") return;
+  console.log(
+    "[assistant]",
+    JSON.stringify({ event, ts: new Date().toISOString(), ...payload }),
+  );
+}
+
+/** Thrown value as investigate/route.ts logs it — name, message, stack. */
+export function unexpectedCause(error: unknown): { name: string; message: string; stack?: string } | string {
+  return error instanceof Error
+    ? { name: error.name, message: error.message, stack: error.stack }
+    : String(error);
+}
+
+/**
+ * Log an unexpected throw immediately before returning generic user copy.
+ * Never gated: swallowing the cause is how a funded repay looked impossible.
+ */
+export function logUnexpected(
+  label: string,
+  fields: Record<string, unknown> & { error: unknown },
+): void {
+  const { error, ...rest } = fields;
+  console.error(`[copilot] ${label}`, { ...rest, error: unexpectedCause(error) });
+}
+
 export function logCopilotEvent(
   event: string,
   payload: Record<string, unknown> = {},

@@ -1,0 +1,497 @@
+{
+  "network": "testnet",
+  "registry": "CBBQQULN3XZDWDZG7D6VYD4UQKBGYH22DOFQEISKENCMZTYUPQ5LDXUO",
+  "contract": "CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY",
+  "wasmHash": "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960",
+  "resolutionLedger": 4600611,
+  "checkedAt": "2026-09-10T07:50:38.819Z",
+  "probes": [
+    {
+      "balanceWad": "109000000000000000000",
+      "debtWad": "100000000000000000000",
+      "ledger": 4600620,
+      "result": false,
+      "error": null
+    },
+    {
+      "balanceWad": "110000000000000000000",
+      "debtWad": "100000000000000000000",
+      "ledger": 4600621,
+      "result": false,
+      "error": null
+    },
+    {
+      "balanceWad": "111000000000000000000",
+      "debtWad": "100000000000000000000",
+      "ledger": 4600621,
+      "result": true,
+      "error": null
+    },
+    {
+      "balanceWad": "0",
+      "debtWad": "0",
+      "ledger": 4600621,
+      "result": true,
+      "error": null
+    },
+    {
+      "balanceWad": "0",
+      "debtWad": "9999999999999999",
+      "ledger": 4600621,
+      "result": false,
+      "error": null
+    },
+    {
+      "balanceWad": "0",
+      "debtWad": "10000000000000000",
+      "ledger": 4600621,
+      "result": false,
+      "error": null
+    }
+  ],
+  "account": {
+    "address": "CDNGNLGLM5PK4PQ2XDA66W7JDQT3FKDLDGJ7XOBHQXEVRQR5U4PJFV3C",
+    "reads": [
+      {
+        "method": "get_all_collateral_tokens",
+        "ledger": 4600611,
+        "value": [
+          "AQUSDC",
+          "XLM",
+          "USDC",
+          "BLEND_USDC",
+          "SOUSDC"
+        ],
+        "error": null
+      },
+      {
+        "symbol": "AQUSDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4600611,
+        "value": "1205417624600000000000",
+        "error": null
+      },
+      {
+        "symbol": "XLM",
+        "method": "get_collateral_token_balance",
+        "ledger": 4600611,
+        "value": "9730177192900000000000",
+        "error": null
+      },
+      {
+        "symbol": "USDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4600611,
+        "value": "1202640000000000000000",
+        "error": null
+      },
+      {
+        "symbol": "BLEND_USDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4600611,
+        "value": "0",
+        "error": null
+      },
+      {
+        "symbol": "SOUSDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4600612,
+        "value": "40000000000000000000",
+        "error": null
+      },
+      {
+        "method": "get_all_borrowed_tokens",
+        "ledger": 4600612,
+        "value": [
+          "XLM",
+          "USDC"
+        ],
+        "error": null
+      },
+      {
+        "method": "get_current_total_balance",
+        "ledger": 4600612,
+        "value": "4230937005391812821980",
+        "error": null
+      },
+      {
+        "method": "get_current_total_borrows",
+        "ledger": 4600612,
+        "value": "2705599067969066960018",
+        "error": null
+      },
+      {
+        "method": "get_oracle_contract_address",
+        "ledger": 4600612,
+        "value": "CAYHPE4U54GDKULPRHYJZNDMBAJDQ3UNQ446KFYMJ5HABBPORERZCRWB",
+        "error": null
+      },
+      {
+        "symbol": "XLM",
+        "method": "get_price_latest",
+        "ledger": 4600612,
+        "value": [
+          "17912700946729",
+          14
+        ],
+        "error": null
+      },
+      {
+        "symbol": "USDC",
+        "method": "get_price_latest",
+        "ledger": 4600613,
+        "value": [
+          "100002946101930",
+          14
+        ],
+        "error": null
+      },
+      {
+        "method": "get_tracking_token_contract_addr",
+        "ledger": 4600613,
+        "value": "CC4P2DC4J3DTKNL7CQB42S3JSZNIVVHFJEMHZWTSDR233CT6O2KK7ZK2",
+        "error": null
+      },
+      {
+        "method": "balance",
+        "ledger": 4600613,
+        "value": "377502105",
+        "error": null
+      },
+      {
+        "method": "is_borrow_allowed",
+        "ledger": 4600613,
+        "value": true,
+        "error": null
+      },
+      {
+        "method": "is_withdraw_allowed",
+        "ledger": 4600614,
+        "value": true,
+        "error": null
+      },
+      {
+        "symbol": "XLM",
+        "method": "get_borrowed_token_debt",
+        "ledger": 4600614,
+        "value": "9406695566556758212262",
+        "error": null
+      },
+      {
+        "symbol": "USDC",
+        "method": "get_borrowed_token_debt",
+        "ledger": 4600614,
+        "value": "1020575911261768128162",
+        "error": null
+      }
+    ],
+    "valuationReads": [
+      {
+        "method": "get_current_total_balance",
+        "ledger": 4600613,
+        "value": "4230937005391812821980",
+        "error": null
+      },
+      {
+        "method": "get_current_total_borrows",
+        "ledger": 4600613,
+        "value": "2705599146121990592406",
+        "error": null
+      },
+      {
+        "symbol": "AQUSDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4600613,
+        "value": "1205417624600000000000",
+        "error": null
+      },
+      {
+        "symbol": "XLM",
+        "method": "get_collateral_token_balance",
+        "ledger": 4600613,
+        "value": "9730177192900000000000",
+        "error": null
+      },
+      {
+        "symbol": "USDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4600613,
+        "value": "1202640000000000000000",
+        "error": null
+      },
+      {
+        "symbol": "BLEND_USDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4600613,
+        "value": "0",
+        "error": null
+      },
+      {
+        "symbol": "SOUSDC",
+        "method": "get_collateral_token_balance",
+        "ledger": 4600613,
+        "value": "40000000000000000000",
+        "error": null
+      },
+      {
+        "symbol": "XLM",
+        "method": "get_price_latest",
+        "ledger": 4600613,
+        "value": [
+          "17912700946729",
+          14
+        ],
+        "error": null
+      },
+      {
+        "symbol": "USDC",
+        "method": "get_price_latest",
+        "ledger": 4600613,
+        "value": [
+          "100002946101930",
+          14
+        ],
+        "error": null
+      },
+      {
+        "method": "balance",
+        "ledger": 4600613,
+        "value": "377502105",
+        "error": null
+      },
+      {
+        "method": "get_reserve",
+        "ledger": 4600613,
+        "value": {
+          "asset": "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
+          "config": {
+            "c_factor": 9500000,
+            "decimals": 7,
+            "enabled": true,
+            "index": 3,
+            "l_factor": 9500000,
+            "max_util": 9500000,
+            "r_base": 5000,
+            "r_one": 300000,
+            "r_three": 10000000,
+            "r_two": 1000000,
+            "reactivity": 20,
+            "supply_cap": "170141183460469231731687303715884105727",
+            "util": 7000000
+          },
+          "data": {
+            "b_rate": "1056114425639",
+            "b_supply": "1224272667624",
+            "backstop_credit": "1410437311",
+            "d_rate": "1069620055015",
+            "d_supply": "927309179584",
+            "ir_mod": "1934323",
+            "last_time": "1789026652"
+          },
+          "scalar": "10000000"
+        },
+        "error": null
+      },
+      {
+        "method": "decimals",
+        "ledger": 4600613,
+        "value": 7,
+        "error": null
+      }
+    ],
+    "liquidationSnapshot": [
+      {
+        "signature": "account",
+        "method": "liquidation_snapshot",
+        "ledger": 4600614,
+        "value": [
+          "4230937005491815768082",
+          "2705599224274914224794",
+          false
+        ],
+        "error": null
+      },
+      {
+        "signature": "no_args",
+        "method": "liquidation_snapshot",
+        "ledger": 4600615,
+        "value": null,
+        "error": "HostError: Error(WasmVm, UnexpectedSize)\n\nEvent log (newest first):\n   0: [Diagnostic Event] contract:CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY, topics:[error, Error(WasmVm, UnexpectedSize)], data:[\"VM call failed: Func(MismatchingParameterLen)\", liquidation_snapshot]\n   1: [Diagnostic Event] topics:[fn_call, CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY, liquidation_snapshot], data:Void\n"
+      },
+      {
+        "signature": "get_liquidation_snapshot_account",
+        "method": "get_liquidation_snapshot",
+        "ledger": 4600615,
+        "value": null,
+        "error": "HostError: Error(WasmVm, MissingValue)\n\nEvent log (newest first):\n   0: [Diagnostic Event] contract:CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY, topics:[error, Error(WasmVm, MissingValue)], data:[\"trying to invoke non-existent contract function\", get_liquidation_snapshot]\n   1: [Diagnostic Event] topics:[fn_call, CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY, get_liquidation_snapshot], data:CDNGNLGLM5PK4PQ2XDA66W7JDQT3FKDLDGJ7XOBHQXEVRQR5U4PJFV3C\n"
+      }
+    ],
+    "appSnapshot": {
+      "http": 200,
+      "origin": "http://127.0.0.1:3000",
+      "body": {
+        "hasMarginAccount": true,
+        "marginAccountAddress": "CDNGNLGLM5PK4PQ2XDA66W7JDQT3FKDLDGJ7XOBHQXEVRQR5U4PJFV3C",
+        "borrowedBalances": {
+          "XLM": {
+            "amount": "9406.695961",
+            "usdValue": "1684.99"
+          }
+        },
+        "collateralBalances": {
+          "AQUSDC": {
+            "amount": "1205.4176246",
+            "usdValue": "1205.45"
+          },
+          "XLM": {
+            "amount": "9730.1771929",
+            "usdValue": "1742.94"
+          },
+          "BLUSDC": {
+            "amount": "1202.6400000",
+            "usdValue": "1202.68"
+          },
+          "SOUSDC": {
+            "amount": "40.0000000",
+            "usdValue": "40.00"
+          },
+          "BLEND_USDC": {
+            "amount": "39.8685409",
+            "usdValue": "39.87"
+          }
+        },
+        "totalBorrowedValue": 1684.9933164619654,
+        "totalCollateralValue": 4230.9400000000005,
+        "grossCollateralValue": 4230.937289023932,
+        "totalValue": 4230.937289023932,
+        "avgHealthFactor": 2.510951970959604,
+        "collateralLeftBeforeLiquidation": 2377.44464091577,
+        "netAvailableCollateral": 2545.943972561967,
+        "borrowRate": 3.89,
+        "debtLimit": 3846.3066263853925
+      }
+    }
+  },
+  "comparison": {
+    "account": "CDNGNLGLM5PK4PQ2XDA66W7JDQT3FKDLDGJ7XOBHQXEVRQR5U4PJFV3C",
+    "sameLedger": false,
+    "ledgers": {
+      "get_current_total_balance": 4600612,
+      "get_current_total_borrows": 4600612,
+      "liquidation_snapshot": 4600614
+    },
+    "computeMarginSnapshot": {
+      "source": "lib/account-snapshot.ts via GET /api/account",
+      "grossCollateral": 4230.937289023932,
+      "debt": 1684.9933164619654,
+      "healthFactor": 2.510951970959604
+    },
+    "liquidationSnapshot": {
+      "signature": "account",
+      "method": "liquidation_snapshot",
+      "ledger": 4600614,
+      "value": [
+        "4230937005491815768082",
+        "2705599224274914224794",
+        false
+      ],
+      "error": null
+    },
+    "snapshotDecoded": {
+      "collateralUsd": 4230.937005491816,
+      "debtUsd": 2705.599224274914,
+      "flag": false
+    },
+    "accountManager": {
+      "collateral": [
+        {
+          "method": "get_all_collateral_tokens",
+          "ledger": 4600611,
+          "value": [
+            "AQUSDC",
+            "XLM",
+            "USDC",
+            "BLEND_USDC",
+            "SOUSDC"
+          ],
+          "error": null
+        },
+        {
+          "symbol": "AQUSDC",
+          "method": "get_collateral_token_balance",
+          "ledger": 4600611,
+          "value": "1205417624600000000000",
+          "error": null
+        },
+        {
+          "symbol": "XLM",
+          "method": "get_collateral_token_balance",
+          "ledger": 4600611,
+          "value": "9730177192900000000000",
+          "error": null
+        },
+        {
+          "symbol": "USDC",
+          "method": "get_collateral_token_balance",
+          "ledger": 4600611,
+          "value": "1202640000000000000000",
+          "error": null
+        },
+        {
+          "symbol": "BLEND_USDC",
+          "method": "get_collateral_token_balance",
+          "ledger": 4600611,
+          "value": "0",
+          "error": null
+        },
+        {
+          "symbol": "SOUSDC",
+          "method": "get_collateral_token_balance",
+          "ledger": 4600612,
+          "value": "40000000000000000000",
+          "error": null
+        }
+      ],
+      "debt": [
+        {
+          "method": "get_all_borrowed_tokens",
+          "ledger": 4600612,
+          "value": [
+            "XLM",
+            "USDC"
+          ],
+          "error": null
+        },
+        {
+          "symbol": "XLM",
+          "method": "get_borrowed_token_debt",
+          "ledger": 4600614,
+          "value": "9406695566556758212262",
+          "error": null
+        },
+        {
+          "symbol": "USDC",
+          "method": "get_borrowed_token_debt",
+          "ledger": 4600614,
+          "value": "1020575911261768128162",
+          "error": null
+        }
+      ]
+    },
+    "riskEngineTotals": {
+      "get_current_total_balance": {
+        "ledger": 4600612,
+        "wad": "4230937005391812821980",
+        "usd": 4230.937005391813,
+        "error": null
+      },
+      "get_current_total_borrows": {
+        "ledger": 4600612,
+        "wad": "2705599067969066960018",
+        "usd": 2705.5990679690667,
+        "error": null
+      }
+    },
+    "recommendation": "liquidation_snapshot(account) is a 3-tuple [collateralWad, debtWad, flag]. Collateral (~$4230.94) matches get_current_total_balance and computeMarginSnapshot gross. Snapshot debt (~$2705.60) matches get_current_total_borrows, not the app snapshot's totalBorrowedValue (1684.99). Phase 3 sizing should follow this snapshot's debt basis. Do not change sizing in this phase. Ledgers were adjacent, not identical (4600612, 4600614)."
+  }
+}

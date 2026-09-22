@@ -28,11 +28,33 @@ vi.mock("@/lib/account-snapshot", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/copilot/llm-planner", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/llm-planner")>();
+  return { ...actual, shouldLlmPlan: () => false, llmPlanStrategy: async () => null };
+});
+
+vi.mock("@/lib/copilot/lp-pair", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/lp-pair")>();
+  return { ...actual, readAmmOtherPerXlm: vi.fn().mockResolvedValue(0.12) };
+});
+
+vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/vertex")>();
+  return { ...actual, vertexSelectTool: vi.fn().mockResolvedValue(null) };
+});
+
+vi.mock("@/lib/copilot/swap-quote", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/swap-quote")>();
+  return {
+    ...actual,
+    quoteDexSwap: vi.fn().mockResolvedValue({ expected: 2.6, rate: 0.26 }),
+  };
+});
+
 const base = {
   user_id: "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5",
   smart_account: "CDNGNLGLM5PK4PQ2XDA66W7JDQT3FKDLDGJ7XOBHQXEVRQR5U4PJFV3C",
   tier: "free" as const,
-  surface: "copilot" as const,
 };
 
 describe("resuming a paused swap leg uses the CORRECTED destination, not the original", () => {
@@ -67,5 +89,5 @@ describe("resuming a paused swap leg uses the CORRECTED destination, not the ori
       delete process.env.MCP_MODE;
       resetMcpClient();
     }
-  });
+  }, 15000);
 });

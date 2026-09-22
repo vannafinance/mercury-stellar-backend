@@ -14,6 +14,7 @@ import {
   findBorrowAsset,
   findCollateralAsset,
   findLeverage,
+  hasAmmLpIntent,
   isMaxYieldInvestIntent,
   matchMinHealthFactor,
   routeMessage,
@@ -240,7 +241,43 @@ function kwSpans(clause: string, re: RegExp, offset: number): Span[] {
 const SPAN_VERB_SWAP = /\bswap\b/i;
 const SPAN_VERB_FARM = /\b(?:farm|blend|deploy)\b/i;
 const SPAN_VERB_LEND = /\b(?:park|lend|earn\s+yield|for\s+yield|supply\s+to\s+earn|earn\s+pool|into\s+earn|into\s+the\s+earn\s+pool|in\s+earn)\b/i;
-const SPAN_VERB_DEPOSIT = /\bdeposit\b/i;
+/**
+ * "add" puts collateral in, exactly as "deposit" does.
+ *
+ * Live A/B on one account, 21 Sep, the verb the only difference:
+ *
+ *   "deposit 10 xlm and borrow with 6x leverage"  ->  Borrow 50 XLM, sized
+ *   "add 10 xlm and borrow with 6x leverage"      ->  "How much USDC to borrow?"
+ *
+ * The clause needs BOTH a deposit verb and a borrow verb to become
+ * `deposit_and_borrow`, and `expandLeveredWrites` gates leverage sizing on exactly
+ * that op. With "add" unrecognised there was no deposit, so no merged op, so
+ * `planLeverage` never ran -- and the user was asked to type a figure the margin
+ * page computes instantly from the same collateral, leverage and oracle price.
+ * The arithmetic and every input were present; one verb kept them apart.
+ */
+const SPAN_VERB_DEPOSIT = /\b(?:deposit|add)\b/i;
+
+/**
+ * What makes "add" mean COLLATERAL rather than the other things it means.
+ *
+ * Excluding LP was tried first and is not enough: an LP ask does not have to say
+ * "liquidity". "Can you add 10 XLM and 10 AqUSDC in Aquarius Pool in farm" names a
+ * pool and a venue and nothing else, so `hasAmmLpIntent` is false and a bare
+ * "add"-is-deposit rule swallowed it — it routed to Blend and was refused for
+ * naming AQUSDC, an asset Blend does not hold.
+ *
+ * So the test is positive, not subtractive: "add" is a deposit only when the clause
+ * itself says what the deposit is FOR — collateral, margin, or the borrow/leverage
+ * that only a margin position has. "deposit" needs no such evidence; it means this
+ * on its own.
+ */
+const MARGIN_INTENT = /\b(?:collateral|margin|borrow(?:s|ed|ing)?|leverage[ds]?|lever(?:ed)?)\b|\b\d+(?:\.\d+)?\s*x\b/i;
+
+function depositVerb(t: string): boolean {
+  if (/\bdeposit\b/i.test(t)) return true;
+  return /\badd\b/i.test(t) && !hasAmmLpIntent(t) && MARGIN_INTENT.test(t);
+}
 const SPAN_VERB_BORROW = /\bborrow\b/i;
 const SPAN_VERB_REPAY = /\brepay\b/i;
 const SPAN_VERB_REDEEM = /\b(?:redeem|withdraw)\b/i;
@@ -278,6 +315,26 @@ function clauseToStepSpanned(
   return fraction == null ? hit : { ...hit, step: { ...hit.step, fraction } };
 }
 
+/**
+ * A clause opening with an interrogative and naming no literal amount reads as a
+ * question, whatever verb it also contains.
+ *
+ * "can you tell me one thing supply to blend go through margin wallet or normal
+ * wallet" carries the write verb "supply" — live, 21 Sep, that alone was enough for
+ * this extractor to pull a `supply_blend` write with a missing amount, and the card
+ * then asked "How much BLUSDC to deploy to blend?" for a question that named no
+ * amount at all. "what is the best place to supply my USDC, earn or blend" is the
+ * same failure from the other clause: a comparison question, mined for a write
+ * because "supply" appears in it.
+ *
+ * Gated on the clause carrying no `amount asset` pair — the one signal a genuine
+ * write instruction always has and a question about that same verb never does — so
+ * "supply 25 AQUSDC to earn" is untouched; only a clause with nothing to size is
+ * deferred to `clauseToReadStep`, which already knows this phrase set.
+ */
+const QUESTION_OPENER =
+  /^\s*(?:tell me|show me|do you know|can you (?:tell|show)|what(?:'s| is| are)?|which|where|how(?:\s+much|\s+is)?|is|are|am|does|did|should|would|could)\b/i;
+
 function clauseToStepSpannedRaw(
   clause: string,
   global: { leverage: number | null; minHf: number | null },
@@ -291,6 +348,8 @@ function clauseToStepSpannedRaw(
 
   const pairSpan = (p: AmtAsset | null | undefined): Span[] =>
     p ? [{ start: p.start, end: p.end }] : [];
+
+  if (pairs.length === 0 && QUESTION_OPENER.test(clause)) return null;
 
   // Constraints only (HF) — not a write
   if (
@@ -362,7 +421,7 @@ function clauseToStepSpannedRaw(
   // Park / lend / earn pool deposit
   if (
     SPAN_VERB_LEND.test(t) ||
-    (SPAN_VERB_DEPOSIT.test(t) && /\b(?:earn|earn\s+pool|vault)\b/i.test(t) && !/\b(?:margin|collateral)\b/i.test(t))
+    (depositVerb(t) && /\b(?:earn|earn\s+pool|vault)\b/i.test(t) && !/\b(?:margin|collateral)\b/i.test(t))
   ) {
     const p = pairs.find((x) => x.asset === "XLM") || pairs[0] || first;
     return {
@@ -382,7 +441,7 @@ function clauseToStepSpannedRaw(
   }
 
   // Deposit + borrow in same clause
-  if (SPAN_VERB_DEPOSIT.test(t) && SPAN_VERB_BORROW.test(t)) {
+  if (depositVerb(t) && SPAN_VERB_BORROW.test(t)) {
     // `first` is the collateral — it carries the amount. The loan may name its own
     // asset ("deposit 500 AQUSDC … borrow XLM"); dropping it here made every levered
     // cross-asset ask come out denominated in the collateral token.
@@ -408,7 +467,7 @@ function clauseToStepSpannedRaw(
     };
   }
 
-  if (SPAN_VERB_DEPOSIT.test(t)) {
+  if (depositVerb(t)) {
     return {
       step: {
         kind: "write",

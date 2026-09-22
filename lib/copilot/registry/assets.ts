@@ -42,6 +42,11 @@ export type AssetId = (typeof ASSET_IDS)[number];
 /** The three tokens a bare "USDC" could mean. */
 export const USDC_VARIANTS = ["BLUSDC", "AQUSDC", "SOUSDC"] as const satisfies readonly AssetId[];
 
+/** Where a token can go. The two LP venues each pair XLM with their own USDC. */
+export const VENUES = ["margin", "earn", "blend", "aquarius", "soroswap"] as const;
+export type Venue = (typeof VENUES)[number];
+export type LpVenue = Extract<Venue, "aquarius" | "soroswap">;
+
 export interface AssetDef {
   id: AssetId;
   /**
@@ -57,6 +62,8 @@ export interface AssetDef {
   earnSymbol: string | null;
   /** Whether the registered Blend pool holds a reserve for it. */
   blendReserve: boolean;
+  /** The LP venue whose XLM pool pairs with this token, if any — checked against `chain-facts.json`. */
+  lpVenue: LpVenue | null;
   /** What the user is shown. Keeps BLUSDC visible even though the wire says USDC. */
   displayLabel: string;
 }
@@ -71,6 +78,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: "XLM",
     earnSymbol: "XLM",
     blendReserve: true,
+    lpVenue: null,
     displayLabel: "XLM",
   },
   BLUSDC: {
@@ -85,6 +93,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: "USDC",
     earnSymbol: "USDC",
     blendReserve: true,
+    lpVenue: null,
     displayLabel: "BLUSDC",
   },
   AQUSDC: {
@@ -94,6 +103,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: "AQUSDC",
     earnSymbol: "AQUSDC",
     blendReserve: false,
+    lpVenue: "aquarius",
     displayLabel: "AQUSDC",
   },
   SOUSDC: {
@@ -103,6 +113,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: "SOUSDC",
     earnSymbol: "SOUSDC",
     blendReserve: false,
+    lpVenue: "soroswap",
     displayLabel: "SOUSDC",
   },
   AQUA: {
@@ -112,6 +123,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: null,
     earnSymbol: null,
     blendReserve: false,
+    lpVenue: null,
     displayLabel: "AQUA",
   },
   EURC: {
@@ -124,6 +136,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: null,
     earnSymbol: null,
     blendReserve: false,
+    lpVenue: null,
     displayLabel: "EURC",
   },
   /**
@@ -143,6 +156,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: null,
     earnSymbol: null,
     blendReserve: false,
+    lpVenue: null,
     displayLabel: "USDT",
   },
 };
@@ -283,6 +297,99 @@ export function earnPoolSymbols(): string[] {
 /** Symbols the registered Blend pool holds reserves for. */
 export function blendReserveSymbols(): string[] {
   return [...new Set(allAssets().filter((d) => d.blendReserve).map((d) => d.marginSymbol ?? d.id))];
+}
+
+/** The LP pools the routers resolve: each LP venue pairs XLM with its own USDC. */
+export function lpPairs(): Array<{ venue: LpVenue; tokens: [AssetId, AssetId] }> {
+  return allAssets().filter((d) => d.lpVenue).map((d) => ({ venue: d.lpVenue!, tokens: ["XLM", d.id] }));
+}
+
+/**
+ * The DEX venues the protocol routes through, from the assets that name one — never a
+ * hand-kept list. A `vanna_swap` or an LP write takes one of these as its `venue`.
+ */
+export function lpVenues(): LpVenue[] {
+  return [...new Set(allAssets().flatMap((d) => (d.lpVenue ? [d.lpVenue] : [])))].sort();
+}
+
+/**
+ * The DEX pool that trades a pair, from the pairs the registry already declares — each LP
+ * venue pairs XLM with its own USDC. Null when no pool holds both, which is the honest
+ * answer for BLUSDC (Blend's USDC has no DEX pool) and for AQUSDC against SOUSDC (two
+ * different venues, no shared pool).
+ */
+export function poolVenueFor(a: string, b: string): LpVenue | null {
+  const pair = lpPairs().find(({ tokens }) =>
+    (tokens[0] === a && tokens[1] === b) || (tokens[0] === b && tokens[1] === a));
+  return pair?.venue ?? null;
+}
+
+/** What an asset can actually be swapped for, from the pools that exist. */
+export function swappableWith(asset: string): AssetId[] {
+  return lpPairs().flatMap(({ tokens }) =>
+    tokens[0] === asset ? [tokens[1]] : tokens[1] === asset ? [tokens[0]] : []);
+}
+
+/**
+ * The venue a swap routes through when neither asset names one (XLM for BLUSDC, say) and
+ * the user did not either. This mirrors `vanna_swap`'s own default rather than choosing
+ * for the protocol; it is stated once so no caller invents its own.
+ */
+export const DEFAULT_SWAP_VENUE: LpVenue = "soroswap";
+
+/** Every venue this asset can sit in, from its own fields — nothing is listed twice. */
+export function venuesOf(def: AssetDef): Venue[] {
+  const venues: Venue[] = [];
+  if (def.marginSymbol) venues.push("margin");
+  if (def.earnSymbol) venues.push("earn");
+  if (def.blendReserve) venues.push("blend");
+  if (def.lpVenue) venues.push(def.lpVenue);
+  if (def.id === "XLM") venues.push(...lpPairs().map((p) => p.venue));
+  return [...new Set(venues)];
+}
+
+/** venue → the assets it takes. The prompt prints this instead of a hand-written list. */
+export function venueTable(): Array<{ venue: Venue; assets: AssetId[] }> {
+  return VENUES.map((venue) => ({ venue, assets: allAssets().filter((d) => venuesOf(d).includes(venue)).map((d) => d.id) }));
+}
+
+/**
+ * The venues that settle "which USDC" by themselves: those that take exactly one variant.
+ * Naming such a venue is naming the token — there is nothing left to ask.
+ */
+export function venueUsdc(): Array<{ venue: Venue; usdc: AssetId }> {
+  return venueTable().flatMap(({ venue, assets }) => {
+    const variants = assets.filter((a) => (USDC_VARIANTS as readonly AssetId[]).includes(a));
+    return variants.length === 1 ? [{ venue, usdc: variants[0] }] : [];
+  });
+}
+
+/**
+ * The asset a venue means by a symbol: the margin account and the Earn pools spell BLUSDC
+ * as "USDC" (`marginSymbol` / `earnSymbol`). A row from those venues carrying that word is
+ * BLUSDC, and only BLUSDC — the mapping is unique or it is not used. 13 Sep: a debt row
+ * `{ symbol: "USDC" }` was read as AQUSDC by the model, and a repay was sized against a
+ * debt that did not exist.
+ */
+export function assetForVenueSpelling(venue: "margin" | "earn", symbol: string): AssetDef | null {
+  const upper = symbol.toUpperCase();
+  const field = venue === "margin" ? "marginSymbol" : "earnSymbol";
+  const direct = allAssets().find((d) => d.id === upper);
+  if (direct) return direct;
+  const matches = allAssets().filter((d) => d[field]?.toUpperCase() === upper);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/** The venue spellings that differ from the asset id, for the prompt: "BLUSDC is USDC to the margin account and Earn". */
+export function venueSpellings(): Array<{ asset: AssetId; spelling: string; venues: Array<"margin" | "earn"> }> {
+  const out: Array<{ asset: AssetId; spelling: string; venues: Array<"margin" | "earn"> }> = [];
+  for (const def of allAssets()) {
+    const bySpelling = new Map<string, Array<"margin" | "earn">>();
+    if (def.marginSymbol && def.marginSymbol !== def.id) bySpelling.set(def.marginSymbol, [...(bySpelling.get(def.marginSymbol) ?? []), "margin"]);
+    if (def.earnSymbol && def.earnSymbol !== def.id) bySpelling.set(def.earnSymbol, [...(bySpelling.get(def.earnSymbol) ?? []), "earn"]);
+    for (const [spelling, venues] of bySpelling) out.push({ asset: def.id, spelling, venues });
+  }
+  return out;
 }
 
 /** Oracle feeds worth requesting — three stables collapse to one. */

@@ -1,0 +1,41 @@
+flowchart TB
+
+P(["Prompt"])
+CLS{"In domain?"}
+OOD["OUT OF DOMAIN<br/>declined · no tokens spent beyond<br/>the classifier"]
+BUDGET{"Under the<br/>daily token cap?"}
+CAPPED["CAPPED<br/>told plainly, not silently degraded"]
+FAST{"Exact-match<br/>fast path?"}
+CACHED["Answered from cache<br/><b>under 1s</b> · skips the loop"]
+
+SCOPE["Resolve scope<br/>bindings → account<br/><i>cached 5 min</i>"]
+POS["Read authoritative position<br/>seeded as evidence"]
+LOOP["INVESTIGATION LOOP<br/>see section 4"]
+
+OUT{"Loop outcome"}
+CLARIFY["CLARIFY<br/>evidence cannot resolve it<br/><b>pre-resolved with a recommendation</b>,<br/>never a bare question"]
+BLOCKED["BLOCKED<br/>a required read failed<br/>no zero substituted"]
+DEADLINE["DEADLINE<br/>out of time · keeps partial evidence<br/>and still ranks what it has"]
+COMPLETE["RESEARCH COMPLETE"]
+
+SIZE["Deterministic sizing<br/>+ candidate ranking"]
+DRIFT{"App and contract<br/>agree within tolerance?"}
+DISAGREE["REFUSED TO SIZE<br/>explains <i>why</i> the sources differ"]
+PROPOSE["PROPOSAL<br/>legs · amounts · projected HF ·<br/>what could not be verified"]
+
+P --> CLS
+CLS -->|no| OOD
+CLS -->|yes| BUDGET
+BUDGET -->|no| CAPPED
+BUDGET -->|yes| FAST
+FAST -->|hit| CACHED
+FAST -->|miss| SCOPE --> POS --> LOOP --> OUT
+OUT --> CLARIFY
+OUT --> BLOCKED
+OUT --> DEADLINE
+OUT --> COMPLETE
+DEADLINE --> SIZE
+COMPLETE --> SIZE
+SIZE --> DRIFT
+DRIFT -->|no| DISAGREE
+DRIFT -->|yes| PROPOSE

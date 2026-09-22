@@ -13,7 +13,7 @@
  */
 import Image from "next/image";
 import { useState, useEffect, useCallback, useRef, memo } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { useTheme } from "@/contexts/theme-context";
@@ -47,8 +47,6 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
   const userAddress = useUserStore((state) => state.address);
   const selectedRow = useFarmStore((state) => state.selectedRow);
   const tabType = useFarmStore((state) => state.tabType);
-  const setFarmData = useFarmStore((state) => state.set);
-  const router = useRouter();
 
   // `selectedRow` lives in a client-side store populated only when navigating
   // here by clicking a row on the Farm list page — a hard reload starts with
@@ -133,7 +131,6 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
   }, [tokenDropdownOpen]);
   const [selectedPercentage, setSelectedPercentage] = useState<number>(0);
   const [blendBalance, setBlendBalance] = useState<string>("0");
-  const [blendBTokenBalance, setBlendBTokenBalance] = useState<string>("0");
   const [loadingBalance, setLoadingBalance] = useState<boolean>(false);
   const [lpBalance, setLpBalance] = useState<string>("0");
   const [loadingLpBalance, setLoadingLpBalance] = useState<boolean>(false);
@@ -171,25 +168,10 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
     }
     setLoadingBalance(true);
     BlendService.getUserBlendBalance(marginAccountAddress, selectedToken)
-      .then((info) => {
-        setBlendBalance(info.underlyingBalance);
-        setBlendBTokenBalance(info.bTokenBalance);
-      })
-      .catch(() => {
-        setBlendBalance("0");
-        setBlendBTokenBalance("0");
-      })
+      .then((info) => setBlendBalance(info.underlyingBalance))
+      .catch(() => setBlendBalance("0"))
       .finally(() => setLoadingBalance(false));
   }, [marginAccountAddress, selectedToken]);
-
-  // b-Rate (underlying per bToken) derived from the same balance read used
-  // for the "Available" cap — matches the Position table's own b-Rate column
-  // so the preview below stays consistent with what's actually held.
-  const blendBRate = (() => {
-    const bTok = parseFloat(blendBTokenBalance);
-    const underlying = parseFloat(blendBalance);
-    return bTok > 0 ? underlying / bTok : 1;
-  })();
 
   useEffect(() => {
     if ((!isAquariusPool && !isSoroswapPool) || !marginAccountAddress) {
@@ -221,14 +203,6 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
     setSelectedPercentage(0);
     setTxStatus("idle");
     setTxError("");
-    // Mirror the Earn page's asset dropdown (and add-liquidity.tsx's own
-    // fix): navigate so the WHOLE page — header stats, chart, position
-    // tables, all keyed off the [id] route param — reflects the newly
-    // picked pool, not just this panel's own local state. tabType:"single"
-    // guards against a stale "multi" left over from a previous
-    // Aquarius/Soroswap visit misclassifying this Blend xlm/usdc route.
-    setFarmData({ tabType: "single" });
-    router.push(`/farm/${token.toLowerCase()}`);
   };
 
   const handlePercentageSelect = (pct: number) => {
@@ -236,16 +210,12 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
     // Aquarius / Soroswap rows are LP-token positions; their balance lives in
     // `lpBalance`, not `blendBalance`. Using blendBalance here would overshoot
     // the LP cap and trigger "Insufficient LP balance" even on a clean 100%.
-    // Blend rows now enter the amount in b-Token terms (matches the Position
-    // table's "b-Tokens" column and what actually gets burned), so the
-    // percentage pills operate on blendBTokenBalance, not the underlying
-    // blendBalance.
-    const sourceBalanceStr = (isAquariusPool || isSoroswapPool) ? lpBalance : blendBTokenBalance;
+    const sourceBalanceStr = (isAquariusPool || isSoroswapPool) ? lpBalance : blendBalance;
     const balance = parseFloat(sourceBalanceStr);
     if (!isNaN(balance) && balance > 0) {
       // For 100% pin to the exact balance string so any trailing-precision
       // drift (e.g. 8.85 vs 8.8499999) doesn't push the input over the cap.
-      const next = pct === 100 ? sourceBalanceStr : ((balance * pct) / 100).toFixed(7);
+      const next = pct === 100 ? sourceBalanceStr : ((balance * pct) / 100).toFixed(2);
       setValue(next);
     }
   };
@@ -345,29 +315,22 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
 
   const handleWithdraw = async () => {
     if (!userAddress || !marginAccountAddress) return;
-    // `value` is entered in b-Token terms now — the actual on-chain Withdraw
-    // call still takes an UNDERLYING amount (Blend burns whatever b-tokens
-    // that underlying amount corresponds to), so convert via the current
-    // b-Rate before submitting.
-    const bTokenAmount = parseFloat(value);
-    if (isNaN(bTokenAmount) || bTokenAmount <= 0) return;
-    let amount = bTokenAmount * blendBRate;
+    let amount = parseFloat(value);
+    if (isNaN(amount) || amount <= 0) return;
 
-    const displayedAvailable = parseFloat(blendBTokenBalance) || 0;
+    const displayedAvailable = parseFloat(blendBalance) || 0;
     const isFullWithdrawalIntent =
-      selectedPercentage === 100 || Math.abs(bTokenAmount - displayedAvailable) < 0.0000001;
+      selectedPercentage === 100 || Math.abs(amount - displayedAvailable) < 0.0000001;
 
-    // For 100% remove, fetch the latest balance right before tx so the call
-    // targets the full accrued underlying amount (including interest
-    // updates since the last balance fetch).
+    // For 100% remove, fetch the latest underlying balance right before tx
+    // so the call targets the full accrued amount (including interest updates).
     if (isFullWithdrawalIntent) {
       try {
         const latest = await BlendService.getUserBlendBalance(marginAccountAddress, selectedToken);
-        const latestBTokens = parseFloat(latest.bTokenBalance);
         const latestUnderlying = parseFloat(latest.underlyingBalance);
         if (!isNaN(latestUnderlying) && latestUnderlying > 0) {
           amount = latestUnderlying;
-          if (!isNaN(latestBTokens)) setValue(latestBTokens.toFixed(7));
+          setValue(latestUnderlying.toFixed(7));
         }
       } catch (err) {
         console.warn("[RemoveLiquidity] Failed to refresh latest Blend balance before full withdraw:", err);
@@ -381,9 +344,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
   const iconPath = poolAsset?.iconPath ?? iconPaths[selectedToken] ?? "/icons/stellar.svg";
 
   const isInputValid = parseFloat(value) > 0 && !isNaN(parseFloat(value));
-  // `value` is entered in b-Token terms — compare against the b-Token
-  // balance, not the underlying blendBalance.
-  const isOverBalance = parseFloat(value) > parseFloat(blendBTokenBalance);
+  const isOverBalance = parseFloat(value) > parseFloat(blendBalance);
   const isSubmitDisabled =
     !userAddress ||
     !marginAccountAddress ||
@@ -539,21 +500,14 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
   const token = selectedToken;
   // Display-only — selectedToken itself stays the raw "XLM"/"USDC" used by
   // every BlendService call above.
-  const bTokenLabel = `b${token}`;
-  // Available balance and the input itself are b-Token denominated — matches
-  // what the Position table shows ("4.95 bXLM") and what Blend actually
-  // burns on withdraw, instead of asking the user to enter an underlying
-  // amount that doesn't match anything they can see their balance as.
-  const totalLiquidity = parseFloat(blendBTokenBalance);
-  const enteredBTokenAmount = parseFloat(value);
-  const enteredUnderlyingAmount =
-    !isNaN(enteredBTokenAmount) && enteredBTokenAmount > 0 ? enteredBTokenAmount * blendBRate : 0;
+  const tokenLabel = token === "USDC" ? "BLUSDC" : token;
+  const totalLiquidity = parseFloat(blendBalance);
 
   const getButtonText = () => {
     if (!userAddress) return "Connect Wallet";
     if (txStatus === "loading") return "Processing...";
     if (parseFloat(value) <= 0 || !value) return "Enter Amount";
-    if (parseFloat(value) > parseFloat(blendBTokenBalance)) return "Insufficient Balance";
+    if (parseFloat(value) > parseFloat(blendBalance)) return "Insufficient Balance";
     return "Remove Liquidity";
   };
 
@@ -583,8 +537,8 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
               onClick={() => setTokenDropdownOpen(!tokenDropdownOpen)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-full cursor-pointer transition-all ${isDark ? "bg-[#1A1A1A] border border-[#2A2A2A] hover:bg-[#222]" : "bg-[#F7F7F7] border border-[#E8E8E8] hover:bg-[#F0F0F0]"}`}
             >
-              <Image src={iconPath} alt={bTokenLabel} width={20} height={20} className="rounded-full w-5 h-5 flex-none" />
-              <span className={`text-[14px] font-semibold ${isDark ? "text-white" : "text-[#111111]"}`}>{bTokenLabel}</span>
+              <Image src={iconPath} alt={tokenLabel} width={20} height={20} className="rounded-full w-5 h-5 flex-none" />
+              <span className={`text-[14px] font-semibold ${isDark ? "text-white" : "text-[#111111]"}`}>{tokenLabel}</span>
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`w-3.5 h-3.5 transition-transform duration-200 ${isDark ? "text-[#AAA]" : "text-[#555]"} ${tokenDropdownOpen ? "rotate-180" : ""}`}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
               </svg>
@@ -596,7 +550,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
                   className={`absolute right-0 top-full mt-1 z-50 rounded-xl border shadow-lg overflow-hidden min-w-[120px] ${isDark ? "bg-[#222222] border-[#333333]" : "bg-white border-[#E8E8E8]"}`}
                 >
                   {SUPPORTED_TOKENS.map((t) => {
-                    const tLabel = `b${t}`;
+                    const tLabel = t === "USDC" ? "BLUSDC" : t;
                     return (
                     <button key={t} type="button"
                       onClick={() => { handleTokenSelect(t); setTokenDropdownOpen(false); }}
@@ -636,23 +590,10 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
             ))}
           </div>
           <span className={`text-[11px] font-medium shrink-0 ${isDark ? "text-[#555555]" : "text-[#AAAAAA]"}`}>
-            Available: {loadingBalance ? "..." : totalLiquidity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 7 })} {bTokenLabel}
+            Available: {loadingBalance ? "..." : totalLiquidity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {tokenLabel}
           </span>
         </div>
       </div>
-
-      {/* Underlying-amount preview — the input above is entered in b-Token
-          terms (matches Available + the Position table's b-Tokens column),
-          so show what that actually redeems for in the real underlying
-          asset before submitting. */}
-      {enteredUnderlyingAmount > 0 && (
-        <div className={`w-full rounded-xl p-3 border text-[12px] flex items-center justify-between ${isDark ? "bg-[#1A1A1A] border-[#2A2A2A]" : "bg-[#F7F7F7] border-[#E8E8E8]"}`}>
-          <span className={isDark ? "text-[#919191]" : "text-[#76737B]"}>You will get</span>
-          <span className={`font-semibold ${isDark ? "text-white" : "text-[#111111]"}`}>
-            {enteredUnderlyingAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 7 })} {token}
-          </span>
-        </div>
-      )}
 
       {/* Margin account warning */}
       {userAddress && !marginAccountAddress && (

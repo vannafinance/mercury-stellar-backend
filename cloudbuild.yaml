@@ -24,16 +24,27 @@ substitutions:
   # Hubble is PUBNET-only data and this environment runs against Stellar
   # testnet, so /stats stays gated off. See lib/hubble/gate.ts.
   _STATS_ENABLED: "false"
-  # Copilot ships reads-only. Writes move real money, and the auto-sign-OFF
-  # sweep has only ever been run against a Vercel preview, never against this
-  # container. A substitution rather than a hardcoded env var so flipping it
-  # is a deploy flag, not a code change:
-  #   gcloud builds submit --substitutions=...,_COPILOT_READS_ONLY=false
-  _COPILOT_READS_ONLY: "true"
   # Pinned deliberately. All of the copilot's live QA was done on this model,
   # and routing accuracy is the feature — a silent model change is a silent
   # behaviour change. Fallbacks live in lib/copilot/config.ts.
   _VERTEX_MODEL: gemini-3.7-flash
+  _WORKFLOW_PROJECT: vanna-mcp
+  _WORKFLOW_DATABASE: copilot-workflows
+  # The mcp.vanna.finance domain mapping (ghs.googlehosted.com) dropped 8 of 20
+  # connections on 11 Sep; the service's own run.app URL dropped 0. The default
+  # keeps the public name so existing environments are unchanged — deploys that
+  # want the direct URL pass it in.
+  _MCP_BASE_URL: https://mcp.vanna.finance/mcp
+  # RFC 8707 audience. Pinned to the PUBLIC name independently of _MCP_BASE_URL,
+  # so pointing the transport at a run.app URL cannot silently change the `aud`
+  # the MCP server is asked to accept. lib/copilot/config.ts falls back to
+  # mcpBaseUrl when this is empty, which is where that drift would come from.
+  _MCP_RESOURCE: https://mcp.vanna.finance/mcp
+  # Connect Gateway origin. Left empty, lib/copilot/wallet-bind.ts falls back to
+  # the MCP base URL for its host allowlist, and a connect_url the Sign Service
+  # returns on the gateway's own run.app host fails that check — the bind is
+  # then dropped with no error anywhere.
+  _SIGN_CONNECT_BASE_URL: ""
   _TAG: latest
 
 options:
@@ -95,10 +106,9 @@ steps:
       # roles/aiplatform.user there keeps a single consistent value instead of
       # splitting them. COPILOT_PUBLIC_ORIGIN/_AUTH_REDIRECT_URI derive from
       # _SITE_URL so dev and prod each get their own origin automatically.
-      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED},MCP_MODE=live,MCP_BASE_URL=https://mcp.vanna.finance/mcp,GOOGLE_CLOUD_LOCATION=global,VERTEX_MODEL=${_VERTEX_MODEL},COPILOT_READS_ONLY=${_COPILOT_READS_ONLY},COPILOT_PUBLIC_ORIGIN=${_SITE_URL},COPILOT_AUTH_REDIRECT_URI=${_SITE_URL}/api/auth/callback
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED},MCP_MODE=live,MCP_BASE_URL=${_MCP_BASE_URL},MCP_RESOURCE=${_MCP_RESOURCE},SIGN_CONNECT_BASE_URL=${_SIGN_CONNECT_BASE_URL},GOOGLE_CLOUD_LOCATION=global,VERTEX_MODEL=${_VERTEX_MODEL},COPILOT_PUBLIC_ORIGIN=${_SITE_URL},COPILOT_AUTH_REDIRECT_URI=${_SITE_URL}/api/auth/callback,COPILOT_WORKFLOW_FIRESTORE_PROJECT=${_WORKFLOW_PROJECT},COPILOT_WORKFLOW_FIRESTORE_DATABASE=${_WORKFLOW_DATABASE},NEXT_PUBLIC_PRIVY_APP_ID=${_PRIVY_APP_ID}
       # WorkOS M2M is what every copilot READ authenticates with; the Connect
-      # OAuth trio (WORKOS_CLIENT_*/ENV_CLIENT_ID) is only exercised once
-      # _COPILOT_READS_ONLY flips to false, but is mounted now so enabling
-      # writes needs no secret work. Cloud Run resolves `:latest` at deploy
-      # time, so a new secret VERSION needs a new revision to take effect.
+      # OAuth trio (WORKOS_CLIENT_*/ENV_CLIENT_ID) backs the write/auto-sign
+      # path. Cloud Run resolves `:latest` at deploy time, so a new secret
+      # VERSION needs a new revision to take effect.
       - --set-secrets=MERCURY_URL=MERCURY_URL:latest,MERCURY_KEY=MERCURY_KEY:latest,WORKOS_M2M_CLIENT_ID=WORKOS_M2M_CLIENT_ID:latest,WORKOS_M2M_CLIENT_SECRET=WORKOS_M2M_CLIENT_SECRET:latest,WORKOS_M2M_TOKEN_URL=WORKOS_M2M_TOKEN_URL:latest,COPILOT_SESSION_SECRET=COPILOT_SESSION_SECRET:latest,WORKOS_CLIENT_ID=WORKOS_CLIENT_ID:latest,WORKOS_CLIENT_SECRET=WORKOS_CLIENT_SECRET:latest,WORKOS_ENV_CLIENT_ID=WORKOS_ENV_CLIENT_ID:latest

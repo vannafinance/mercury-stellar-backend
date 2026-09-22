@@ -27,6 +27,26 @@ const SNAPSHOT_TTL_MS = 15_000;
  */
 let lastTickInvalidationAt = 0;
 
+function getCachedSnapshot(userAddress: string | null): AccountSnapshot | undefined {
+  if (typeof window === "undefined" || !userAddress) return undefined;
+  try {
+    const raw = sessionStorage.getItem(`vanna.snapshot.${userAddress}`);
+    if (raw) return JSON.parse(raw) as AccountSnapshot;
+  } catch {
+    /* ignore parse errors */
+  }
+  return undefined;
+}
+
+function setCachedSnapshot(userAddress: string | null, data: AccountSnapshot): void {
+  if (typeof window === "undefined" || !userAddress) return;
+  try {
+    sessionStorage.setItem(`vanna.snapshot.${userAddress}`, JSON.stringify(data));
+  } catch {
+    /* ignore quota errors */
+  }
+}
+
 /**
  * Warm the account snapshot into the React Query cache as soon as the wallet
  * connects, BEFORE the user navigates to the margin page — so the margin/MB
@@ -45,7 +65,9 @@ export async function prefetchAccountSnapshot(
       queryFn: async () => {
         const res = await fetch(`/api/account/${userAddress}`);
         if (!res.ok) throw new Error(`account snapshot failed (${res.status})`);
-        return (await res.json()) as AccountSnapshot;
+        const data = (await res.json()) as AccountSnapshot;
+        setCachedSnapshot(userAddress, data);
+        return data;
       },
       staleTime: 12_000,
     })
@@ -72,16 +94,35 @@ export function useAccountSnapshot(userAddress: string | null) {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
   const lastTickRef = useRef(tick);
+  /**
+   * The event that makes the current snapshot wrong, when there is one.
+   *
+   * `/api/account/[addr]` is cached for 15s, and that cache is keyed on time, not on what
+   * happened to the account — so refetching immediately after a transaction settled was
+   * served the pre-transaction body and the rail sat on the old health factor until the
+   * user reloaded. A settled hash is a different URL, which no cache in the path can
+   * answer from a response taken before it existed. Held in a ref rather than the query
+   * key so the cache is not fragmented into one entry per transaction.
+   */
+  const invalidatedBy = useRef<string | null>(null);
 
   const query = useQuery<AccountSnapshot>({
     queryKey: [...ACCOUNT_SNAPSHOT_KEY, userAddress ?? "none"],
     queryFn: async () => {
-      const res = await fetch(`/api/account/${userAddress}`);
+      const after = invalidatedBy.current;
+      const res = await fetch(
+        after ? `/api/account/${userAddress}?after=${encodeURIComponent(after)}` : `/api/account/${userAddress}`,
+        after ? { cache: "no-store" } : undefined,
+      );
       if (!res.ok) throw new Error(`account snapshot failed (${res.status})`);
-      return (await res.json()) as AccountSnapshot;
+      const data = (await res.json()) as AccountSnapshot;
+      setCachedSnapshot(userAddress, data);
+      return data;
     },
     enabled: Boolean(userAddress),
     staleTime: SNAPSHOT_TTL_MS - 3_000, // just under the route's edge TTL
+    initialData: () => getCachedSnapshot(userAddress),
+    initialDataUpdatedAt: () => 0,
   });
 
   // Revalidate on new ledgers, but at most once per TTL window.
@@ -108,6 +149,14 @@ export function useAccountSnapshot(userAddress: string | null) {
     isLoading: query.isLoading,
     isRefreshing: query.isFetching && !query.isLoading,
     error: query.error instanceof Error ? query.error.message : null,
-    refresh: () => query.refetch(),
+    /**
+     * `after` is the on-chain event this refresh must see — a settled transaction hash.
+     * Passing it guarantees the read goes past every cache; omitting it keeps the
+     * ordinary cached refresh used for polling and navigation.
+     */
+    refresh: (after?: string | null) => {
+      if (after) invalidatedBy.current = after;
+      return query.refetch();
+    },
   };
 }
