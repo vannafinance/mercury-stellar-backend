@@ -109,6 +109,26 @@ export function InvestigationCard({
    * a second plan would race it, so the buttons wait.
    */
   const planInFlight = !!workflow && !["blocked", "completed", "cancelled"].includes(workflow.status);
+  /**
+   * The thread already draws this run's progress, so drawing it again here is one run
+   * shown twice.
+   *
+   * Live, 22 Sep: "I accept the quoted loss, can you swap 100 XLM to AQUSDC" rendered
+   * the swap's EXECUTION PROGRESS stepper in the conversation AND again inside this
+   * card, one above the other, both settled, same tx. The workspace copies every
+   * `workflow.view` onto the assistant turn as a durable receipt
+   * (`executionReceiptFromWorkflowView`), which `ChatTurns` renders — so once that
+   * receipt exists, both components are painting the same steps from the same source.
+   *
+   * `workflowId` is what the receipt is keyed by, so it settles which run a receipt
+   * belongs to and the two can never disagree. The receipt wins, matching how the
+   * workspace already suppresses its own single-tx stepper when a turn carries one.
+   * Only the stepper is dropped: this section's heading, objective, message and its
+   * Sign / Check progress / Cancel buttons are not duplicated anywhere and stay.
+   */
+  const stepperDrawnInThread =
+    !!workflow &&
+    turns.some((turn) => turn.role === "assistant" && turn.executionReceipt?.workflowId === workflow.id);
   /** A transaction is on its way to a ledger; the hook asks again at every ledger close. */
   const awaitingLedger = !!workflow && ["approved", "running"].includes(workflow.status) && inFlight(workflow);
   /**
@@ -371,7 +391,7 @@ export function InvestigationCard({
                         </li>
                       ))}
                     </ol>
-                  ) : (
+                  ) : stepperDrawnInThread ? null : (
                     <div className="mt-3">
                       <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={result.scope.network} autoApprove={!!autoSign} />
                     </div>
