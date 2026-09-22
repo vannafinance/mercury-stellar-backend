@@ -249,3 +249,50 @@ block valid borrows in production.
 **Blocked pending:** the exact prompt, asset, wallet and timestamp of Sanu's failure. With
 that, the destination is identifiable from the failed transaction and a correct pre-flight is
 straightforward. Nothing was pushed to `vanna_mcp`.
+
+---
+
+## BLOCKER for investigate-first: the workflow store has no database
+
+`POST /api/copilot/workflow/propose` returns **409** for every plan. Not a conflict, and not
+the expired Google credential it first looked like — re-authing ADC did not change it.
+
+Verified 22 Sep by calling Firestore directly with a valid token:
+
+```
+GET .../projects/vanna-mcp/databases/(default)/documents/copilot_workflows  -> HTTP 404
+"The database (default) does not exist for project vanna-mcp"
+```
+
+The chain, all confirmed in code:
+
+1. `durableStore` (`lib/copilot/workflow/store.ts:137`) picks Firestore whenever a project is
+   named, and falls back to **`GOOGLE_CLOUD_PROJECT`** — which is Vertex's project,
+   `vanna-mcp`. `COPILOT_WORKFLOW_FIRESTORE_PROJECT` is not set in `.env.local`.
+2. That project has no Firestore database, so every request 404s.
+3. `store.write()` — 404 is not 409/412/400, so it falls to
+   `throw new Error("workflow_store_http_404")`.
+4. `journal.create` throws; it is not a `WorkflowConflict`, so `proposal.ts:279` re-throws.
+5. The route catches it and returns **409 `proposal_unavailable`** with a logged stack.
+
+### Why this never appeared before
+The keyword/direct lane never calls `/workflow/propose`. Only the investigation lane
+proposes. Investigate-first routes every prompt through it, so it exercises a store that has
+never actually worked.
+
+### What happens on deploy
+The deployed site runs the keyword lane today, so it does not touch this path and is
+unaffected. **Investigate-first cannot ship until a Firestore database exists** in whatever
+project the deployment names. In production ADC comes from the service account, so no
+interactive login is involved — but the database still has to exist, and the IAM grant for it
+was previously rejected (see [[copilot-workflow-store-grant-rejected]]).
+
+### Two code defects worth fixing regardless of the lane decision
+
+- **A missing database is invisible on reads.** `store.read()` treats 404 as "no record"
+  (`if (response.status === 404) return null`). A database that does not exist is
+  indistinguishable from an empty one, so the misconfiguration stays silent until the first
+  write and then surfaces as a "conflict".
+- **The workflow store inherits Vertex's project.** "One project configures them all" holds
+  only if that project has Firestore. Naming Vertex's project as the fallback for a durable
+  store couples two unrelated deployment decisions.
