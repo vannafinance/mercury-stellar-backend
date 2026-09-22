@@ -1,5 +1,7 @@
 import type { MCPClient } from "../mcp-client";
-import type { ResearchModel, InvestigationProgress, InvestigationLimits } from "./types";
+import type { ResearchModel, InvestigationProgress, InvestigationLimits, Observation } from "./types";
+import { StrKey } from "@stellar/stellar-sdk";
+import { MarginAccountService } from "@/lib/margin-utils";
 import type { ResearchView } from "./view";
 import { resolveInvestigationScope, ResearchError } from "./scope";
 import { researchCodec } from "./continuation";
@@ -21,7 +23,7 @@ import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPl
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
 import { detectAutomationGap, isConditionalWriteRequest } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
-import { anchoredLifecycleWrite } from "../workflow/lifecycle";
+import { resolveLifecycleWrite } from "../workflow/lifecycle";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
 import { ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
@@ -584,12 +586,112 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * leg already coerced `borrowing` to required above.
    */
   const lifecycleOp = outcome.kind === "research_complete"
-    ? anchoredLifecycleWrite(
-      outcome.goal.write,
-      messages,
-      Boolean(outcome.goal.actions?.length || outcome.plans?.length),
-    )
+    ? resolveLifecycleWrite({
+        modelWrite: outcome.goal.write,
+        messages,
+        hasSizedWork: Boolean(outcome.goal.actions?.length || outcome.plans?.length),
+      })
     : null;
+
+  if (lifecycleOp === "create_account") {
+    let existingAccount = scope.smartAccount;
+    if (!existingAccount && scope.trader) {
+      try {
+        const res = await dependencies.mcp.call(
+          "vanna_resolve_account",
+          { trader: scope.trader },
+          dependencies.subject,
+        );
+        if (
+          typeof res?.smart_account === "string" &&
+          StrKey.isValidContract(res.smart_account) &&
+          ["found_on_chain", "found"].includes(String(res.status))
+        ) {
+          existingAccount = res.smart_account;
+        }
+      } catch (error) {
+        console.warn("[copilot] account resolution before create_account failed", error);
+      }
+      if (!existingAccount) {
+        try {
+          const discovered = await MarginAccountService.discoverExistingAccount(scope.trader);
+          if (typeof discovered === "string" && StrKey.isValidContract(discovered)) {
+            existingAccount = discovered;
+          }
+        } catch (error) {
+          console.warn("[copilot] MarginAccountService discovery failed", error);
+        }
+      }
+    }
+
+    if (existingAccount) {
+      const replyMsg = `You already have an active margin account (${existingAccount}). You can deposit collateral, borrow, or manage positions directly.`;
+      const accountObservation: Observation = {
+        id: "e_account",
+        capability: "vanna_resolve_account",
+        args: { trader: scope.trader ?? "" },
+        observedAt: observedNow,
+        status: "ok",
+        data: { smart_account: existingAccount, status: "found" },
+      };
+      result.observations.push(accountObservation);
+      const filteredWarnings = warnings.filter(
+        (w) => !w.includes("No active margin account was discovered"),
+      );
+      const evidence = compactResearchEvidence(result.observations, null, observedNow);
+
+      return {
+        status: "researched",
+        message: replyMsg,
+        originalRequest: messages[0],
+        refinements: messages.slice(1),
+        question: null,
+        proposalCandidateId: null,
+        understanding: null,
+        facts: [
+          ...facts,
+          {
+            id: "f_account",
+            label: "smart account",
+            value: existingAccount,
+            unit: "address",
+            venue: "margin",
+            evidenceId: "e_account",
+            sourcePath: "smart_account",
+            readAt: observedNow,
+          },
+        ],
+        capacity: null,
+        candidates: null,
+        swapIntent: null,
+        rateComparisons: [],
+        checks: [
+          ...result.observations.map((o) => ({
+            id: o.id,
+            label: o.capability.replaceAll("_", " "),
+            status: o.status,
+            readAt: o.observedAt,
+          })),
+          {
+            id: "e_account",
+            label: "margin account lookup",
+            status: "ok" as const,
+            readAt: observedNow,
+          },
+        ],
+        warnings: filteredWarnings,
+        scope: {
+          wallet: scope.trader,
+          smartAccount: existingAccount,
+          network: scope.network,
+        },
+        continuation: codec.seal(scope, messages, null, evidence),
+        executionAllowed: false,
+        pendingWrite: null,
+      };
+    }
+  }
+
   let candidates = null;
   try {
     /**
@@ -852,14 +954,16 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const statedCandidate = statedId ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
   const requestedSteps = statedCandidate?.steps ?? [];
   if (statedCandidate && candidates) candidates = { ...candidates, feasible: candidates.feasible.filter((c) => c.id !== statedId) };
-  const message = strategyReply({
-    status, facts, candidates: requestedSteps.length ? null : candidates, capacity, question,
-    intent: outcome.kind === "research_complete" ? outcome.goal.intent : undefined,
-    findings: outcome.kind === "research_complete" ? outcome.findings : undefined,
-    originalRequest: messages[0],
-    statedSteps: requestedSteps,
-    stopReason: outcome.kind === "stopped" ? outcome.reason : null,
-  });
+  const message = lifecycleOp === "create_account"
+    ? "No active margin account was found for your wallet. Approve below to deploy and initialize your margin smart account."
+    : strategyReply({
+        status, facts, candidates: requestedSteps.length ? null : candidates, capacity, question,
+        intent: outcome.kind === "research_complete" ? outcome.goal.intent : undefined,
+        findings: outcome.kind === "research_complete" ? outcome.findings : undefined,
+        originalRequest: messages[0],
+        statedSteps: requestedSteps,
+        stopReason: outcome.kind === "stopped" ? outcome.reason : null,
+      });
   if (scope.unverified === "bindings") {
     warnings.push("I couldn't verify the wallet link this turn, so I did not load your margin account. Ask again in a moment.");
   } else if (scope.unverified === "claimed") {

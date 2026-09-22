@@ -300,7 +300,8 @@ interface TokenSource {
   fingerprint(): string;
 }
 
-const TIMEOUT_MS = 90_000;
+export const MCP_CALL_TIMEOUT_MS = 90_000;
+const TIMEOUT_MS = MCP_CALL_TIMEOUT_MS;
 const EXPIRY_MARGIN_MS = 60_000;
 
 class M2MTokenSource implements TokenSource {

@@ -8,6 +8,7 @@
 import { copilotConfig } from "./config";
 import { enforceGroundedFigure, explainRead, factsForUi } from "./explain";
 import { getMcpClient } from "./mcp-client";
+import { fanOutReads } from "./fan-out";
 import { RETRY, withRetry } from "./retry-policy";
 import { earnPoolSymbol, displayUsdcLabel, marginCollateralSymbol } from "./mcp-write";
 import { sameAsset } from "./leverage-plan";
@@ -2123,9 +2124,9 @@ export async function runRead(
     const { marginCollateralSymbols } = await import("./registry/assets");
     const mcp = getMcpClient();
     const symbols = marginCollateralSymbols();
-    const rows: Array<{ symbol: string; max: number | null; error: string | null }> = [];
-    for (const symbol of symbols) {
-      try {
+    const rows = await fanOutReads(
+      symbols,
+      async (symbol) => {
         const data = await mcp.call(
           "vanna_get_max_borrow",
           { smart_account: ctx.smartAccount, symbol },
@@ -2139,19 +2140,18 @@ export async function runRead(
           data.pool_headroom_human ??
           data.headroom;
         const n = Number(String(raw ?? "").replace(/,/g, ""));
-        rows.push({
+        return {
           symbol: displayUsdcLabel(symbol, symbol),
           max: Number.isFinite(n) ? n : null,
           error: data.error ? String(data.message ?? data.error).slice(0, 120) : null,
-        });
-      } catch (e) {
-        rows.push({
-          symbol: displayUsdcLabel(symbol, symbol),
-          max: null,
-          error: e instanceof Error ? e.message.slice(0, 120) : String(e).slice(0, 120),
-        });
-      }
-    }
+        };
+      },
+      (symbol, reason) => ({
+        symbol: displayUsdcLabel(symbol, symbol),
+        max: null,
+        error: reason instanceof Error ? reason.message.slice(0, 120) : String(reason).slice(0, 120),
+      }),
+    );
 
     const priced = rows.filter((r): r is { symbol: string; max: number; error: null } => r.max != null);
     if (!priced.length) {
@@ -2230,11 +2230,11 @@ export async function runRead(
       return s.length > 120 ? `${s.slice(0, 117)}…` : s;
     };
 
-    const rows: Array<Record<string, unknown>> = [];
-    for (const p of pools) {
-      try {
+    const rows = await fanOutReads<typeof pools[number], Record<string, unknown>>(
+      pools,
+      async (p) => {
         const data = await mcp.call("vanna_get_pool_stats", { symbol: p.query }, ctx.userId);
-        rows.push({
+        return {
           symbol: p.display,
           supply_apy_pct: data.supply_apy_pct ?? data.supply_apr_pct,
           borrow_apr_pct: data.borrow_apr_pct,
@@ -2242,11 +2242,13 @@ export async function runRead(
           total_liquidity_human: data.total_liquidity_human ?? data.total_liquidity,
           total_assets_human: data.total_assets_human ?? data.total_assets,
           error: data.error,
-        });
-      } catch (e) {
-        rows.push({ symbol: p.display, error: shortError(e instanceof Error ? e.message : e) });
-      }
-    }
+        };
+      },
+      (p, reason) => ({
+        symbol: p.display,
+        error: shortError(reason instanceof Error ? reason.message : reason),
+      }),
+    );
     /**
      * "Compare the XLM and BLUSDC pools" names TWO pools and asks which is better.
      *

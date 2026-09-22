@@ -90,6 +90,21 @@ export interface RunLeg {
   lpHeldLabel?: string | null;
 }
 
+export function isWriteLeg(l: RunLeg): boolean {
+  if (Boolean(l.txHash)) return true;
+  const op = String(l.op || "").toLowerCase();
+  if (
+    op.startsWith("vanna_get_") ||
+    op.startsWith("query_") ||
+    op.startsWith("get_") ||
+    op.includes("overview") ||
+    op === "read"
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export interface RunSummaryRow {
   k: string;
   v: string;
@@ -401,6 +416,7 @@ export function RunExecutionCard({
       complete,
       stopped: legs.find((l) => l.status === "stopped") ?? null,
       doneCount: legs.filter((l) => l.status === "ok").length,
+      settledOnChainCount: legs.filter((l) => l.status === "ok" && isWriteLeg(l)).length,
       failed: legs.find((l) => l.status === "failed") ?? null,
       needsInput: legs.find((l) => l.status === "needs_input") ?? null,
       gate: legs.find((l) => l.gateReason && !TERMINAL.has(l.status)) ?? null,
@@ -1177,8 +1193,8 @@ export function RunExecutionCard({
                         textWrap: "pretty",
                       }}
                     >
-                      {shape.doneCount > 0
-                        ? `${shape.doneCount === 1 ? "Leg 1 has" : `Legs 1–${shape.doneCount} have`} already settled on chain. Cancel here and you keep a half-built position.`
+                      {shape.settledOnChainCount > 0
+                        ? `${shape.settledOnChainCount === 1 ? "Leg 1 has" : `Legs 1–${shape.settledOnChainCount} have`} already settled on chain. Cancel here and you keep a half-built position.`
                         : "Nothing has settled yet, so cancelling here costs you nothing."}
                     </p>
 

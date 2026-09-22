@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { staticStepBlocker } from "@/lib/copilot/mcp-write";
+import { staticStepBlocker, mapOpToMcpStep } from "@/lib/copilot/mcp-write";
 import { handleChat } from "@/lib/copilot/handle";
 
 describe("Unsupported LP Asset Refusal (PDF L5)", () => {
@@ -37,6 +37,17 @@ describe("Unsupported LP Asset Refusal (PDF L5)", () => {
     });
     expect(res.kind).toBe("blocked");
     expect(res.message).toBe(
+      "EURC has no LP venue. Supported LP pairs are XLM/AQUSDC on aquarius and XLM/SOUSDC on soroswap.",
+    );
+  });
+
+  it("refuses add_liquidity directly in mapOpToMcpStep before asking for wallet or amounts", () => {
+    const res = mapOpToMcpStep(
+      "add_liquidity",
+      { asset: "EURC" },
+      { trader: null, smartAccount: null },
+    );
+    expect(res.blocker).toBe(
       "EURC has no LP venue. Supported LP pairs are XLM/AQUSDC on aquarius and XLM/SOUSDC on soroswap.",
     );
   });

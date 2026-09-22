@@ -220,40 +220,223 @@ function normalizeShorthandAmounts(text: string): string {
     .replace(/[×\u00d7\u2715\u2716\u2a2f](?=[a-zA-Z])/g, "X");
 }
 
-function findAmount(text: string): number | null {
-  const cleaned = stripAddresses(normalizeShorthandAmounts(text));
-  // Explicit negative amounts (Sanujit EW8) — return the signed value so
-  // validateLendParams can reject them instead of dropping the sign.
+/** `soft` marks a value the user never said (a liquidation-avoidance phrase); investigation ignores those. */
+export type MinHealthFactorMatch = { value: number; start: number; end: number; soft?: boolean };
+
+/** “keep HF above 1.5” / “health factor over 2” / “never liquidate” */
+export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null {
+  const m =
+    text.match(
+      /(?:keep|maintain|hold|stay|above|over|min(?:imum)?)\s*(?:my\s+)?(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?|of\s+)?\s*(\d+(?:\.\d+)?)/i,
+    ) ||
+    text.match(/(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i) ||
+    text.match(/(?:above|over|at\s+least)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i) ||
+    text.match(
+      /(?:hf|health\s*factor)[^.]{0,40}?(?:not|never|no|without)\s+[^.]{0,24}?(?:below|under|lower\s+than|beneath|dropping\s+below|dipping\s+below)\s*(\d+(?:\.\d+)?)/i,
+    ) ||
+    text.match(
+      /(?:not|never|no|without)\s+[^.]{0,40}?(?:hf|health\s*factor)[^.]{0,24}?(?:below|under|lower\s+than|beneath|dropping\s+below|dipping\s+below)\s*(\d+(?:\.\d+)?)/i,
+    ) ||
+    text.match(
+      /(?:not|never|no|without)\s+[^.]{0,24}?(?:below|under|lower\s+than|dropping\s+below|dipping\s+below)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i,
+    );
+  if (m && m.index != null) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n > 0 && n < 50) {
+      return { value: n, start: m.index, end: m.index + m[0].length };
+    }
+  }
+  const soft =
+    text.match(/\b(?:avoid|prevent|never|no)\s+liquidat\w*/i) ||
+    text.match(/\bdon'?t\s+(?:get\s+)?liquidat\w*/i) ||
+    text.match(/\bprotect\s+(?:me|my\s+account)\s+from\s+liquidat\w*/i);
+  if (soft && soft.index != null) {
+    return { value: 1.3, start: soft.index, end: soft.index + soft[0].length, soft: true };
+  }
+  return null;
+}
+
+export type HealthFactorCeilingMatch = { value: number; start: number; end: number };
+
+export function matchHealthFactorCeilingMatch(text: string): HealthFactorCeilingMatch | null {
+  const m =
+    text.match(/(?:hf|health\s*factor)\s*(?:below|under|less\s+than|beneath|<=?)\s*(\d+(?:\.\d+)?)/i) ||
+    text.match(/(?:below|under|less\s+than|beneath)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i);
+  if (!m || m.index == null) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 && n < 50
+    ? { value: n, start: m.index, end: m.index + m[0].length }
+    : null;
+}
+
+export function matchHealthFactorCeiling(text: string): number | null {
+  return matchHealthFactorCeilingMatch(text)?.value ?? null;
+}
+
+export function parseMinHealthFactor(text: string): number | null {
+  return matchMinHealthFactor(text)?.value ?? null;
+}
+
+export type ClaimedSpan = {
+  start: number;
+  end: number;
+  kind: "min_health_factor" | "health_factor_ceiling" | "leverage" | "percentage" | "hypothetical_price" | "amount" | string;
+};
+
+/**
+ * Character span claim registry.
+ *
+ * Numbers claimed by constraints (health factor floors, ceilings, leverage multiples,
+ * percentage fractions, or hypothetical prices) are registered with their exact character
+ * span [start, end].
+ *
+ * Before amount parsing runs, claimed spans are masked with spaces. This preserves exact
+ * string length, word boundaries, and character offsets without modifying indices, while
+ * ensuring numbers claimed by constraints are completely invisible to amount extractors.
+ */
+export class ClaimRegistry {
+  private claims: ClaimedSpan[] = [];
+
+  claim(span: ClaimedSpan | null | undefined): void {
+    if (!span) return;
+    if (span.start >= span.end) return;
+    this.claims.push(span);
+  }
+
+  claimAll(spans: readonly (ClaimedSpan | null | undefined)[]): void {
+    for (const s of spans) this.claim(s);
+  }
+
+  getClaims(): readonly ClaimedSpan[] {
+    return this.claims;
+  }
+
+  isClaimed(start: number, end: number): boolean {
+    return this.claims.some((c) => Math.max(start, c.start) < Math.min(end, c.end));
+  }
+
+  mask(text: string): string {
+    if (this.claims.length === 0) return text;
+    const chars = Array.from(text);
+    for (const { start, end } of this.claims) {
+      const s = Math.max(0, Math.min(start, chars.length));
+      const e = Math.max(0, Math.min(end, chars.length));
+      for (let i = s; i < e; i++) {
+        chars[i] = " ";
+      }
+    }
+    return chars.join("");
+  }
+}
+
+/**
+ * Collect all constraint spans in text (health factor floors, ceilings, leverage, percentages, prices).
+ */
+export function collectStandardConstraints(text: string, registry: ClaimRegistry): void {
+  // 1. Min health factor floor (e.g. "keeping HF above 1.4", "health factor over 2")
+  const minHf = matchMinHealthFactor(text);
+  if (minHf && !minHf.soft) {
+    registry.claim({ start: minHf.start, end: minHf.end, kind: "min_health_factor" });
+  }
+
+  // 2. Health factor ceiling (e.g. "HF below 1.3", "keep hf under 1.25")
+  const hfCeil = matchHealthFactorCeilingMatch(text);
+  if (hfCeil) {
+    registry.claim({ start: hfCeil.start, end: hfCeil.end, kind: "health_factor_ceiling" });
+  }
+
+  // 3. Stated leverage multiple (e.g. "3x", "leverage of 5")
+  const levWithX = text.matchAll(new RegExp(LEVERAGE_RE.source, "gi"));
+  for (const m of levWithX) {
+    if (m.index != null) {
+      registry.claim({ start: m.index, end: m.index + m[0].length, kind: "leverage" });
+    }
+  }
+  const levPhrases = text.matchAll(/\bleverage\s*(?:of\s*)?(\d+(?:\.\d+)?)\b|\b(\d+(?:\.\d+)?)\s*leverage\b/gi);
+  for (const m of levPhrases) {
+    if (m.index != null) {
+      registry.claim({ start: m.index, end: m.index + m[0].length, kind: "leverage" });
+    }
+  }
+
+  // 4. Percentage shares (e.g. "25%", "50 %")
+  const pctMatches = text.matchAll(/\b\d+(?:\.\d+)?\s*%/g);
+  for (const m of pctMatches) {
+    if (m.index != null) {
+      registry.claim({ start: m.index, end: m.index + m[0].length, kind: "percentage" });
+    }
+  }
+
+  // 5. Hypothetical price clauses ("pretend the price is $10")
+  const priceMatches = text.matchAll(
+    /\b(?:pretend|imagine|assume|suppose|say|treat it as if)\b[^.?!]*?\bprice\b[^.?!]*?\$?\s*\d+(?:\.\d+)?/gi,
+  );
+  for (const m of priceMatches) {
+    if (m.index != null) {
+      registry.claim({ start: m.index, end: m.index + m[0].length, kind: "hypothetical_price" });
+    }
+  }
+}
+
+export type AmountMatch = { value: number; start: number; end: number };
+
+export function findAmountMatch(text: string, registry?: ClaimRegistry): AmountMatch | null {
+  const reg = registry ?? new ClaimRegistry();
+  if (!registry) {
+    collectStandardConstraints(text, reg);
+  }
+
+  // Mask claimed constraint spans so amount scan only sees unclaimed text
+  const masked = reg.mask(text);
+  const cleaned = stripAddresses(normalizeShorthandAmounts(masked));
+
+  // Explicit negative amounts (Sanujit EW8)
   const negWithAsset = cleaned.match(
     new RegExp(String.raw`(-\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "i"),
   );
-  if (negWithAsset) {
+  if (negWithAsset && negWithAsset.index != null) {
     const n = Number(negWithAsset[1]);
-    return Number.isFinite(n) ? n : null;
+    if (Number.isFinite(n)) {
+      const matchStart = negWithAsset.index;
+      const matchEnd = matchStart + negWithAsset[1].length;
+      const match: AmountMatch = { value: n, start: matchStart, end: matchEnd };
+      reg.claim({ start: matchStart, end: matchEnd, kind: "amount" });
+      return match;
+    }
   }
+
   const withAsset = cleaned.match(AMOUNT_ASSET_RE);
-  if (withAsset) {
+  if (withAsset && withAsset.index != null) {
     const n = Number(withAsset[1]);
-    return Number.isFinite(n) && n > 0 ? n : null;
+    if (Number.isFinite(n) && n > 0) {
+      const matchStart = withAsset.index;
+      const matchEnd = matchStart + withAsset[1].length;
+      const match: AmountMatch = { value: n, start: matchStart, end: matchEnd };
+      reg.claim({ start: matchStart, end: matchEnd, kind: "amount" });
+      return match;
+    }
   }
-  // Avoid treating leverage "5x" or share "25%" as an absolute size — those are
-  // leverage / fraction slots. "repay 25% of my XLM" must not become amount=25.
-  //
-  // Also strip a fabricated price ("pretend the price of XLM is $10 and size my borrow
-  // off that" — J-07). No asset sits next to that $10, so it fell through to this bare
-  // fallback and became a real borrow of 10 XLM — the number was never a size the user
-  // stated, only a hypothetical price. The bare fallback has no way to tell a genuine
-  // size from any other digit in the sentence, so the fix is removing the price clause
-  // before it ever reaches this pattern.
+
   const noPretendPrice = cleaned.replace(
     /\b(?:pretend|imagine|assume|suppose|say|treat it as if)\b[^.?!]*?\bprice\b[^.?!]*?\$?\s*\d+(?:\.\d+)?/gi,
     " ",
   );
   const noLev = noPretendPrice.replace(LEVERAGE_RE, " ").replace(/\b\d+(?:\.\d+)?\s*%/g, " ");
   const m = noLev.match(BARE_AMOUNT_RE);
-  if (!m) return null;
+  if (!m || m.index == null) return null;
   const n = Number(m[1]);
-  return Number.isFinite(n) && n > 0 ? n : null;
+  if (Number.isFinite(n) && n > 0) {
+    const matchStart = m.index;
+    const matchEnd = matchStart + m[1].length;
+    const match: AmountMatch = { value: n, start: matchStart, end: matchEnd };
+    reg.claim({ start: matchStart, end: matchEnd, kind: "amount" });
+    return match;
+  }
+  return null;
+}
+
+export function findAmount(text: string, registry?: ClaimRegistry): number | null {
+  return findAmountMatch(text, registry)?.value ?? null;
 }
 
 /**
@@ -484,84 +667,7 @@ export function ammLpStable(venue: AmmVenue): "AQUSDC" | "SOUSDC" {
   return venue === "soroswap" ? "SOUSDC" : "AQUSDC";
 }
 
-/**
- * The floor with the character range it was read from.
- *
- * Span accounting (plan-ir.ts) needs to know which part of the message the floor
- * consumed, so that "keep me above 1.4" is not later reported as text no component
- * claimed. The regexes live here only — `parseMinHealthFactor` reads its value from
- * this, so the two can never disagree about what counts as a floor.
- */
-/** `soft` marks a value the user never said (a liquidation-avoidance phrase); investigation ignores those. */
-export type MinHealthFactorMatch = { value: number; start: number; end: number; soft?: boolean };
 
-/** “keep HF above 1.5” / “health factor over 2” / “never liquidate” */
-export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null {
-  const m =
-    text.match(
-      /(?:keep|maintain|hold|stay|above|over|min(?:imum)?)\s*(?:my\s+)?(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i,
-    ) ||
-    text.match(/(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i) ||
-    text.match(/(?:above|over|at\s+least)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i) ||
-    /**
-     * Stated as a floor NOT to cross, which is how the owner's own acceptance prompt
-     * phrases it: "so health factor does not go below 1.3". The patterns above only read
-     * "above / over / at least", so this phrasing parsed as NO floor at all — and a floor
-     * that does not parse is not enforced anywhere, including the write-risk gate.
-     */
-    text.match(
-      /(?:hf|health\s*factor)[^.]{0,40}?(?:not|never|no)\s+[^.]{0,24}?(?:below|under|lower\s+than|beneath)\s*(\d+(?:\.\d+)?)/i,
-    ) ||
-    // Negation stated BEFORE the noun: "do not let the health factor dip below 1.25".
-    text.match(
-      /(?:not|never|no)\s+[^.]{0,40}?(?:hf|health\s*factor)[^.]{0,24}?(?:below|under|lower\s+than|beneath)\s*(\d+(?:\.\d+)?)/i,
-    ) ||
-    text.match(
-      /(?:not|never|no)\s+[^.]{0,24}?(?:below|under|lower\s+than)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i,
-    );
-  if (m && m.index != null) {
-    const n = Number(m[1]);
-    if (Number.isFinite(n) && n > 0 && n < 50) {
-      return { value: n, start: m.index, end: m.index + m[0].length };
-    }
-  }
-  // Soft floor when user only says avoid liquidation (no number).
-  const soft =
-    text.match(/\b(?:avoid|prevent|never|no)\s+liquidat\w*/i) ||
-    text.match(/\bdon'?t\s+(?:get\s+)?liquidat\w*/i) ||
-    text.match(/\bprotect\s+(?:me|my\s+account)\s+from\s+liquidat\w*/i);
-  if (soft && soft.index != null) {
-    // A number the user did NOT say. Legacy callers keep it; the investigation flow
-    // (`statedFloorFrom`) treats a soft match as "no floor stated" and asks.
-    return { value: 1.3, start: soft.index, end: soft.index + soft[0].length, soft: true };
-  }
-  return null;
-}
-
-/**
- * A health-factor CEILING, which is the one thing `matchMinHealthFactor` cannot read.
- *
- * "keep HF < 1.3", "HF below 1.3" and "hf under 1.25" match none of the floor
- * patterns, so they parsed as NO health-factor constraint at all: a user who typed
- * `<` where they meant `>` had their stated limit silently dropped, and only the
- * liquidation line was left protecting them. Saying nothing is the failure here.
- *
- * The negated phrasings — "do NOT let hf go below 1.3" — are floors and already match
- * as such, which is why this is only consulted once the floor patterns have declined:
- * a sentence that is already a floor can never also be a ceiling.
- */
-export function matchHealthFactorCeiling(text: string): number | null {
-  const m =
-    text.match(/(?:hf|health\s*factor)\s*(?:below|under|less\s+than|beneath|<=?)\s*(\d+(?:\.\d+)?)/i) ||
-    text.match(/(?:below|under|less\s+than|beneath)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) && n > 0 && n < 50 ? n : null;
-}
-
-export function parseMinHealthFactor(text: string): number | null {
-  return matchMinHealthFactor(text)?.value ?? null;
-}
 
 /** “invest where max profit” / “best yield” / “earn me something” allocation intent */
 export function isMaxYieldInvestIntent(text: string): boolean {
@@ -961,8 +1067,12 @@ export function routeMessage(message: string): RoutedIntent {
   // the phrase lists match irregular whitespace, so it fell through to the generic
   // clarify_capabilities blurb instead of answering.
   const text = raw.toLowerCase().replace(/\s+/g, " ");
+  const registry = new ClaimRegistry();
+  collectStandardConstraints(raw, registry);
+
   const asset = findAsset(raw);
-  const amount = findAmount(raw);
+  const amountMatch = findAmountMatch(raw, registry);
+  const amount = amountMatch?.value ?? null;
   const leverage = findLeverage(raw);
 
   /**
@@ -985,6 +1095,24 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   // ── restricted ──────────────────────────────────────────────────────────
+  /**
+   * Outbound asset transfers to external addresses are not a Copilot capability.
+   * "send my funds to G..." / "send 10 XLM to G..." must be refused cleanly
+   * rather than reinterpreted as an internal margin withdrawal.
+   */
+  const isSendToExternalAddress =
+    /\b(send|transfer|pay|forward|give|wire)\b[\s\S]*?\b(?:to|towards|into)\b[\s\S]*?(?:[GC][A-Za-z0-9_.-]{3,}|[GC]…|0x[a-fA-F0-9]{6,}|(?:another|external|an\s+external|someone\s+else(?:'s)?|my\s+other)\s+(?:wallet|address|account|recipient))/i.test(raw) &&
+    !/\b(?:to|towards|into)\s+(?:my\s+)?(?:margin|smart\s+account|blend|earn|pool|vault|aquarius|soroswap)\b/i.test(raw);
+  if (isSendToExternalAddress) {
+    return {
+      kind: "restricted",
+      reason:
+        "Outbound asset transfers to external addresses are not supported. " +
+        "Copilot only manages smart accounts and protocol positions — use your wallet directly to send funds to another address.",
+      template_id: "unsupported_transfer",
+    };
+  }
+
   /**
    * "What is Collateral Left Before Liquidation of my margin account?" was refused
    * outright as a restricted keeper action — it contains "liquidation of", which the
@@ -1689,7 +1817,8 @@ export function routeMessage(message: string): RoutedIntent {
   if (
     !asksWhichAssets &&
     ((any(text, "deposit") && any(text, "collateral")) ||
-      any(text, "add collateral", "post collateral", "as collateral"))
+      any(text, "add collateral", "post collateral", "as collateral") ||
+      (/\b(?:send|transfer|deposit|move)\b[\s\S]*?\b(?:to|into)\b[\s\S]*?\b(?:margin|smart\s+account)\b/i.test(text)))
   ) {
     if (asset == null) {
       return {
@@ -1731,7 +1860,9 @@ export function routeMessage(message: string): RoutedIntent {
    */
   if (
     !any(text, "can i withdraw", "can i pull out", "withdraw allowed") &&
-    ((any(text, "withdraw", "transfer", "move", "send") && any(text, "collateral")) ||
+    !/\b(?:to|into)\b[\s\S]*?\b(?:margin|smart\s+account)\b/i.test(text) &&
+    ((any(text, "withdraw") && (any(text, "collateral") || asset != null)) ||
+      (any(text, "transfer", "move", "send") && any(text, "collateral", "to wallet", "from margin")) ||
       any(text, "take out collateral", "pull collateral"))
   ) {
     if (asset == null) {
@@ -1957,14 +2088,16 @@ export function routeMessage(message: string): RoutedIntent {
         template_id: "redeem_amount_and_asset",
       };
     }
+    const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "redeem",
       template_id: "redeem",
       asset: asset ?? null,
       amount,
+      fraction,
       requires_account: false,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
     };
   }
 
@@ -2052,7 +2185,7 @@ export function routeMessage(message: string): RoutedIntent {
    * *as a whole* — the ones no earlier branch looks for. Not `hasActionWriteIntent`: that
    * list contains "farm", which would swallow "what am I farming".
    */
-  const actsOnPosition = /\b(close|exit|unwind|reduce|increase|hedge|liquidate|rebalance)\b/i.test(
+  const actsOnPosition = /\b(close|exit|unwind|reduce|increase|hedge|liquidate|rebalance|optimize|optimise)\b/i.test(
     text,
   );
 
@@ -2270,10 +2403,12 @@ export function routeMessage(message: string): RoutedIntent {
   // "whats my helth factr" (G-06) — a loose enough match to survive the common drop of a
   // vowel in either word ("helth", "factr") without turning into a real fuzzy matcher.
   const asksHealthFactorTypo = /\bh\w*lth\s+fact\w*\b/i.test(text);
+  const isStrategyOrBuildIntent = /\b(strategy|strategize|build|create|optimize|optimise|plan|recommend|suggest)\b/i.test(text);
   if (
     (any(text, "health factor", "am i safe", "close to liquidation", "at risk", "my health", "account health") ||
       asksHealthFactorTypo) &&
-    !hasActionWriteIntent
+    !hasActionWriteIntent &&
+    !isStrategyOrBuildIntent
   ) {
     return {
       kind: "read",
@@ -2835,7 +2970,7 @@ export function routeMessage(message: string): RoutedIntent {
 
   // Standing risk preference without a write verb — still answer with guidance.
   const minHfOnly = parseMinHealthFactor(raw);
-  if (minHfOnly != null && any(text, "health", "liquidat", "safe", "risk", "hf")) {
+  if (minHfOnly != null && any(text, "health", "liquidat", "safe", "risk", "hf") && !isStrategyOrBuildIntent) {
     return {
       kind: "read",
       tool: "vanna_get_account_health",

@@ -170,6 +170,15 @@ export function InvestigationCard({
    */
   const resultIsLatest = !!result && lastTurn?.role !== "user";
   const currentStep = workflow ? Math.max(1, workflow.steps.findIndex((step) => step.status !== "settled") + 1) : 0;
+  const hasCardContent = Boolean(
+    result?.understanding ||
+    result?.capacity ||
+    result?.swapIntent ||
+    (result?.candidates && (result.candidates.feasible.length > 0 || result.candidates.rejected.length > 0)) ||
+    workflow ||
+    result?.question ||
+    (result?.warnings && result.warnings.length > 0)
+  );
 
   return (
     <div aria-label="Copilot investigation" className="min-w-0">
@@ -211,7 +220,7 @@ export function InvestigationCard({
             * thread already carries it, so during a run the answer area stays empty and the
             * spinner is the only thing under the new question.
             */}
-          {result && resultIsLatest && !(loading && !workflow) && (
+          {result && resultIsLatest && !(loading && !workflow) && hasCardContent && (
             <article aria-label="Copilot reply" className="space-y-5">
               {clock && <p className="text-[12px] tabular-nums text-vgray-400">{clock}</p>}
 
