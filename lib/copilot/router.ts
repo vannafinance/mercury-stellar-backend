@@ -53,6 +53,14 @@ const BARE_AMOUNT_RE = /(\d+(?:\.\d+)?)/;
 // `×` (U+00D7) needs no trailing \b the way ascii "x" does, but must not match when
 // directly followed by letters (e.g. "10×lm" where × is the letter X of XLM).
 const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*(?:x\b|×(?![a-zA-Z]))/i;
+/**
+ * Taking a position out — THE vocabulary, so every venue's exit branch and the guard
+ * that keeps such a sentence away from the position READS read the same words. Kept
+ * whole-word and exit-only: entry verbs like "supply" and "deposit" belong to ordinary
+ * holdings questions too ("what is my total supply in earn"), and reading those as
+ * instructions would turn a question into a write.
+ */
+const POSITION_EXIT_VERBS = /\b(remove|withdraw|take\s*out|takeout|pull\s*out|unwind|redeem|close|exit)\b/i;
 
 function stripAddresses(message: string): string {
   return message.replace(ADDR_RE, " ");
@@ -1494,7 +1502,7 @@ export function routeMessage(message: string): RoutedIntent {
    * "withdraw 20 XLM from Blend" named no supply verb at all and matched neither the
    * phrase list nor the supply-verb alternative below it, so it fell through everything.
    */
-  const blendRemoveVerb = /\b(remove|withdraw|take out|takeout|pull out|unwind|redeem)\b/i.test(text);
+  const blendRemoveVerb = POSITION_EXIT_VERBS.test(text);
   const withdrawsWholeBlendPosition =
     blendRemoveVerb &&
     (/\b(all|entire|full|whole)\b/i.test(text) ||
@@ -1514,9 +1522,17 @@ export function routeMessage(message: string): RoutedIntent {
       "blend pool",
     ) ||
     (any(text, "blend") && any(text, "add", "liquidity") && !any(text, "stats", "apy")) ||
+    /**
+     * "position" excludes a READ from being mistaken for a write — but "remove my blend
+     * position" is not a read, and this shut it out of the write too. With the guard on
+     * the read side also missing the removal verbs, the sentence had nowhere left to go
+     * and landed on the generic capabilities blurb (22 Sep, live). A removal verb
+     * settles which of the two it is, so the noun stops deciding.
+     */
     (any(text, "blend") &&
       (any(text, "farm", "deploy", "supply", "deposit", "add", "liquidity") || blendRemoveVerb) &&
-      !any(text, "position", "stats", "apy")) ||
+      (blendRemoveVerb || !any(text, "position")) &&
+      !any(text, "stats", "apy")) ||
     (any(text, "blend") && leverage != null && leverage > 1 && !any(text, "position", "stats", "apy"));
   if (isBlendFarmWrite && blendRemoveVerb && !any(text, "stats", "apy", "btoken", "which reserve")) {
     return {
@@ -2128,7 +2144,10 @@ export function routeMessage(message: string): RoutedIntent {
 
   if (
     any(text, "redeem") ||
-    (any(text, "withdraw") && any(text, "pool", "supply", "earn", "from the pool", "my supply"))
+    // "remove my earn position" is the same instruction as "redeem", and only this
+    // branch's narrower verb list kept it out — Earn's exit reads the shared vocabulary
+    // for the same reason Blend's does.
+    (POSITION_EXIT_VERBS.test(text) && any(text, "pool", "supply", "earn", "from the pool", "my supply"))
   ) {
     if (asset == null) {
       return {
@@ -2237,9 +2256,28 @@ export function routeMessage(message: string): RoutedIntent {
    * *as a whole* — the ones no earlier branch looks for. Not `hasActionWriteIntent`: that
    * list contains "farm", which would swallow "what am I farming".
    */
-  const actsOnPosition = /\b(close|exit|unwind|reduce|increase|hedge|liquidate|rebalance|optimize|optimise)\b/i.test(
-    text,
-  );
+  /**
+   * Taking a position OUT is acting on it, not asking about it.
+   *
+   * Live, 22 Sep: "remove xlm blend position" answered with the position's balances and
+   * "To remove or withdraw this position, initiate a withdrawal transaction through the
+   * Vanna interface" — a read, and a dead end, for a sentence whose first word is an
+   * instruction. "remove my earn position" and "withdraw my entire blend position" did
+   * the same. The read branches are guarded by `!actsOnPosition`, so the guard was
+   * right and its verb list was short: it held `close`, `exit` and `unwind` but not
+   * `remove` or `withdraw`, and the noun "position" then carried the sentence to a
+   * read.
+   *
+   * `remove my lp position` escaped only because the LP branch is ordered earlier —
+   * the same sentence shape working for one venue and not the others is what gave the
+   * missing vocabulary away.
+   *
+   * Shared with `blendRemoveVerb` rather than restated, so a venue's exit branch and
+   * this guard cannot disagree about which words mean "take it out".
+   */
+  const actsOnPosition =
+    POSITION_EXIT_VERBS.test(text) ||
+    /\b(reduce|increase|hedge|liquidate|rebalance|optimize|optimise)\b/i.test(text);
 
   /**
    * Named single-figure margin questions ask for ONE specific number, not the whole
