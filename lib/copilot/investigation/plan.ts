@@ -17,7 +17,7 @@
 
 import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, poolVenueFor, resolveAssetDef, swappableWith } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
-import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
+import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_FLOW, producedAsset, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
 import { candidateId } from "./candidate-id";
 import { dustWalletHoldingsFrom, freshPrices, idleWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
@@ -852,9 +852,18 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
        * for the model to fill. Claiming it consumes it, so two legs cannot both spend
        * one borrow.
        */
+      /**
+       * Matched on what the producer LEAVES BEHIND, not on what it spends.
+       *
+       * This compared `drafts[i].leg.asset`, and a swap's `asset` is the token going
+       * IN — so "swap 100 XLM to AQUSDC then add it as liquidity" could not see leg 1
+       * producing AQUSDC, and leg 2 was refused for having no preceding leg in that
+       * asset when leg 1 produced exactly it (X5, 22 Sep). The identity premise above
+       * is right; reading it off `asset` was what was wrong.
+       */
       let producerIndex = index - 1;
       while (producerIndex >= 0 &&
-        (drafts[producerIndex].leg.asset !== leg.asset || claimedProducers.has(producerIndex))) {
+        (producedAsset(drafts[producerIndex].leg) !== leg.asset || claimedProducers.has(producerIndex))) {
         producerIndex -= 1;
       }
       const prev = producerIndex >= 0 ? drafts[producerIndex] : undefined;

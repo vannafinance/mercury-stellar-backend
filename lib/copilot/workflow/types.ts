@@ -46,6 +46,30 @@ export function deploysIntoPosition(op: WorkflowOp): boolean {
   return POSITION_POCKETS.includes(to) && !POSITION_POCKETS.includes(from);
 }
 
+/**
+ * Which token a leg LEAVES BEHIND for a later leg to spend — not the one it spends.
+ *
+ * For every op but two, that is the leg's own `asset`. A swap is the exception that
+ * broke the producer scan: its `asset` is the token going IN (`tokenIn: swapStep.asset`
+ * below), and what it hands on is `assetOut`. A scan comparing `leg.asset` therefore
+ * could not see a swap producing AQUSDC at all, and the leg after it was refused for
+ * having no preceding leg in that asset when leg 1 produced exactly it (X5, 22 Sep).
+ *
+ * `add_liquidity` produces `null` deliberately, though it appears in `ASSET_OUT_OPS`
+ * beside swap. That list answers "may this leg name a second asset", which is a
+ * different question: an LP add CONSUMES both tokens and leaves an LP receipt, not a
+ * token a later leg can spend. Blanket-applying `ASSET_OUT_OPS` here would make it
+ * look like a producer of its paired token — the opposite of what it does.
+ *
+ * Each op says once what it produces, so a new op declares it here rather than in
+ * whichever scan happens to need it.
+ */
+export function producedAsset(leg: { op: WorkflowOp; asset?: string | null; assetOut?: string | null }): string | null {
+  if (leg.op === "add_liquidity") return null;
+  if (leg.op === "swap") return leg.assetOut ?? null;
+  return leg.asset ?? null;
+}
+
 export interface OpFlow {
   /**
    * The product whose write tool builds the step, and so which spelling of the asset it
