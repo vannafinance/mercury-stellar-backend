@@ -2091,7 +2091,7 @@ async function runWrite(
   // either, and asking "which USDC?" there is the copilot ignoring both answers the
   // user already gave. Only a slot that is genuinely bare USDC may prompt.
   const ambiguousSlot =
-    !usdcOps.has(action.op) || highestPickFacts ? null : ambiguousUsdcSlot(action);
+    !usdcOps.has(action.op) || highestPickFacts ? null : ambiguousUsdcSlot(action, ctx.message);
   if (ambiguousSlot) {
     const slotContext =
       ambiguousSlot === "borrow"
@@ -2123,6 +2123,19 @@ async function runWrite(
         template_id: "clarify_usdc_variant",
         slots: { op: action.op, amount: action.amount, asset: "USDC", slot: ambiguousSlot },
       },
+      request_id: ctx.request_id,
+    };
+  }
+
+  // Earn redeem: if asset was not named, clarify which asset without offering USDC variant chips
+  if (action.op === "redeem" && !action.asset) {
+    return {
+      kind: "clarification",
+      message:
+        action.amount != null
+          ? `Redeem ${action.amount} of which asset from Earn? e.g. “redeem ${action.amount} XLM” or “redeem ${action.amount} BLUSDC”.`
+          : `Which asset do you want to redeem from Earn? e.g. “redeem 10 XLM from earn” or “redeem all BLUSDC”.`,
+      intent: { template_id: "redeem", slots: { asset: null, amount: action.amount } },
       request_id: ctx.request_id,
     };
   }

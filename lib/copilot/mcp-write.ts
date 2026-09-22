@@ -127,10 +127,19 @@ export function needsUsdcVariant(asset?: string | null): boolean {
  * Returns null when nothing is ambiguous, which is the answer for every message that
  * names a concrete token: AQUSDC, BLUSDC, SOUSDC, XLM, AQUA. Only bare "USDC" prompts.
  */
-export function ambiguousUsdcSlot(action: {
-  asset?: string | null;
-  borrow_asset?: string | null;
-}): "collateral" | "borrow" | null {
+export function ambiguousUsdcSlot(
+  action: {
+    asset?: string | null;
+    borrow_asset?: string | null;
+  },
+  userMessage?: string,
+): "collateral" | "borrow" | null {
+  if (userMessage != null) {
+    // Only prompt when the user's own text contains the ambiguous bare USDC token.
+    // A default inserted by the router or downstream must not count.
+    const hasBareUsdcInText = /(?:^|[^A-Z0-9])USDC(?:[^A-Z0-9]|$)/i.test(userMessage);
+    if (!hasBareUsdcInText) return null;
+  }
   if (needsUsdcVariant(action.asset)) return "collateral";
   if (needsUsdcVariant(action.borrow_asset)) return "borrow";
   return null;
@@ -523,6 +532,11 @@ export function mapOpToMcpStep(
     case "redeem":
     case "withdraw_supply": {
       if (!trader) return { blocker: "Connect your wallet to redeem." };
+      if (!params.asset) {
+        return {
+          blocker: "Which asset do you want to redeem from Earn? e.g. “redeem 10 XLM from earn” or “redeem all BLUSDC”.",
+        };
+      }
       const args: Record<string, unknown> = { symbol, lender: trader };
       if (amount) args.amount = amount;
       else args.redeem_all = true;

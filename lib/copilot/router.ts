@@ -48,11 +48,9 @@ const EARN_POOL_ASSETS = new Set(["XLM", "BLUSDC", "AQUSDC", "SOUSDC"]);
 const ADDR_RE = /\b[GC][A-Z0-9]{55,56}\b/g;
 const AMOUNT_ASSET_RE = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "i");
 const BARE_AMOUNT_RE = /(\d+(?:\.\d+)?)/;
-// `×` (U+00D7) needs no trailing \b the way ascii "x" does — it's never a prefix of a
-// real word, and the app's OWN summaries/labels render leverage as "2×", not "2x" (see
-// step-extractor.ts's PLAN_SUMMARY and plan-approval.ts's labelFor). Matching only ascii
-// "x" meant a resent/rendered summary silently lost its leverage on the round trip.
-const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*(?:x\b|×)/i;
+// `×` (U+00D7) needs no trailing \b the way ascii "x" does, but must not match when
+// directly followed by letters (e.g. "10×lm" where × is the letter X of XLM).
+const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*(?:x\b|×(?![a-zA-Z]))/i;
 
 function stripAddresses(message: string): string {
   return message.replace(ADDR_RE, " ");
@@ -63,9 +61,10 @@ function stripAddresses(message: string): string {
  * Never treat the "USDC" inside "BLUSDC" as bare USDC.
  */
 export function findAsset(text: string): string | null {
-  const upper = text.toUpperCase();
+  const normalized = text.replace(/[×\u00d7\u2715\u2716\u2a2f]/g, "X");
+  const upper = normalized.toUpperCase();
   for (const a of ASSETS) {
-    const re = new RegExp(`(?:^|[^A-Z0-9])${a}(?:[^A-Z0-9]|$)`);
+    const re = new RegExp(`(?:^|[^A-Z])${a}(?:[^A-Z0-9]|$)`);
     if (re.test(upper)) return a;
   }
   return null;
@@ -81,9 +80,10 @@ export function findAsset(text: string): string | null {
  * the USDC inside BLUSDC never matches on its own.
  */
 export function firstAssetByPosition(text: string): string | null {
-  const m = text
+  const normalized = text.replace(/[×\u00d7\u2715\u2716\u2a2f]/g, "X");
+  const m = normalized
     .toUpperCase()
-    .match(new RegExp(`(?:^|[^A-Z0-9])(${ASSETS.join("|")})(?:[^A-Z0-9]|$)`));
+    .match(new RegExp(`(?:^|[^A-Z])(${ASSETS.join("|")})(?:[^A-Z0-9]|$)`));
   return m ? (m[1] as string) : null;
 }
 
@@ -214,7 +214,9 @@ export function findUnsupportedAsset(text: string): string | null {
 function normalizeShorthandAmounts(text: string): string {
   return text
     .replace(/(\d),(?=\d{3}\b)/g, "$1")
-    .replace(/\b(\d+(?:\.\d+)?)\s*k\b/gi, (_m, n) => String(Number(n) * 1000));
+    .replace(/\b(\d+(?:\.\d+)?)\s*k\b/gi, (_m, n) => String(Number(n) * 1000))
+    .replace(/(\d)\s*[×\u00d7\u2715\u2716\u2a2f](?=[a-zA-Z])/g, "$1 X")
+    .replace(/[×\u00d7\u2715\u2716\u2a2f](?=[a-zA-Z])/g, "X");
 }
 
 function findAmount(text: string): number | null {
@@ -667,7 +669,7 @@ function tryMultiGoalPlan(
     steps.push({
       kind: "write",
       op: "repay",
-      asset: repayM?.[2]?.toUpperCase() ?? asset ?? "USDC",
+      asset: repayM?.[2]?.toUpperCase() ?? asset ?? null,
       amount: repayM ? Number(repayM[1]) : null,
     });
   }
@@ -1292,7 +1294,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "lend",
       template_id: "invest_max_yield",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       requires_account: false,
       requires_amount: true,
@@ -1509,7 +1511,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "deposit_and_borrow",
       template_id: "deposit_and_borrow",
-      asset: findCollateralAsset(raw) ?? asset ?? "USDC",
+      asset: findCollateralAsset(raw) ?? asset ?? null,
       amount,
       borrow_asset: findBorrowAsset(raw),
       borrow_amount: leverage != null && leverage > 1 ? null : findBorrowAmount(raw),
@@ -1633,7 +1635,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "borrow",
       template_id: "borrow",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       requires_account: true,
       requires_amount: true,
@@ -1661,12 +1663,22 @@ export function routeMessage(message: string): RoutedIntent {
     ((any(text, "deposit") && any(text, "collateral")) ||
       any(text, "add collateral", "post collateral", "as collateral"))
   ) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Deposit ${amount} of which collateral asset? e.g. "deposit ${amount} XLM as collateral" or "deposit ${amount} BLUSDC".`
+            : `How much collateral do you want to deposit, and in which asset? e.g. "deposit 100 XLM as collateral".`,
+        template_id: "deposit_collateral_amount_and_asset",
+      };
+    }
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "deposit_collateral",
       template_id: "deposit_collateral",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: true,
@@ -1694,12 +1706,22 @@ export function routeMessage(message: string): RoutedIntent {
     ((any(text, "withdraw", "transfer", "move", "send") && any(text, "collateral")) ||
       any(text, "take out collateral", "pull collateral"))
   ) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Withdraw ${amount} of which collateral asset? e.g. "withdraw ${amount} XLM collateral".`
+            : `How much collateral do you want to withdraw, and in which asset? e.g. "withdraw 50 XLM collateral".`,
+        template_id: "withdraw_collateral_amount_and_asset",
+      };
+    }
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "withdraw_collateral",
       template_id: "withdraw_collateral",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: true,
@@ -1833,6 +1855,16 @@ export function routeMessage(message: string): RoutedIntent {
         !asksAboutOwnPoolDeposit &&
         any(text, "pool", "earn", "vault", "to the pool", "into the pool", "to earn")));
   if (isLendWrite) {
+    if (asset == null && !wantsHighestPool && !isMaxYieldInvestIntent(text)) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Supply ${amount} of which asset to Earn? e.g. "lend ${amount} XLM" or "lend ${amount} BLUSDC".`
+            : `How much do you want to supply to Earn, and in which asset? e.g. "lend 50 XLM" or "lend 20 BLUSDC".`,
+        template_id: "lend_amount_and_asset",
+      };
+    }
     const minHf = parseMinHealthFactor(raw);
     // "supply 50% of the XLM in my wallet" states a size. Carried as a fraction and
     // sized off the live wallet balance in handle.ts — same rungs as the Earn form.
@@ -1841,7 +1873,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "lend",
       template_id: wantsHighestPool || isMaxYieldInvestIntent(text) ? "lend_highest" : "lend",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: false,
@@ -1860,12 +1892,22 @@ export function routeMessage(message: string): RoutedIntent {
   // write clause above uses, so a possessive/question shape naming a pool/earn/vault
   // deposit never reaches a write trigger at all.
   if (any(text, "deposit") && !asksAboutOwnPoolDeposit && !/\btvl\b|\btotal\s+value\s+locked\b/i.test(text)) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Deposit ${amount} of which collateral asset? e.g. "deposit ${amount} XLM as collateral" or "deposit ${amount} BLUSDC".`
+            : `How much collateral do you want to deposit, and in which asset? e.g. "deposit 100 XLM as collateral".`,
+        template_id: "deposit_collateral_amount_and_asset",
+      };
+    }
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "deposit_collateral",
       template_id: "deposit_collateral",
-      asset: asset ?? "XLM",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: true,
@@ -1877,11 +1919,21 @@ export function routeMessage(message: string): RoutedIntent {
     any(text, "redeem") ||
     (any(text, "withdraw") && any(text, "pool", "supply", "earn", "from the pool", "my supply"))
   ) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Redeem ${amount} of which asset from Earn? e.g. "redeem ${amount} XLM" or "redeem ${amount} BLUSDC".`
+            : `How much do you want to redeem from Earn, and in which asset? e.g. "redeem 10 XLM" or "redeem all BLUSDC".`,
+        template_id: "redeem_amount_and_asset",
+      };
+    }
     return {
       kind: "write",
       op: "redeem",
       template_id: "redeem",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       requires_account: false,
       requires_amount: true,

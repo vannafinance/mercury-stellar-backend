@@ -5177,6 +5177,8 @@ export function CopilotWorkspace() {
         collapsed={railCollapsed}
         onToggleCollapsed={() => setRailCollapsed((v) => !v)}
         empty={stageEmpty}
+        justSubmitted={Boolean(pendingUser && loading)}
+        scrollKey={`${investigation.turns.length}-${pendingUser}-${liveReply}-${loading}-${response?.request_id}`}
         railTop={
           <CopilotRailTop
             onNewChat={startNewChat}
@@ -5249,8 +5251,8 @@ export function CopilotWorkspace() {
               sessionSigning={sessionSigning}
             />
             {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
-              <div className="flex items-start gap-3 max-w-[85%]">
-                <div className="w-6 shrink-0" aria-hidden="true" />
+              <div className="flex items-start gap-2.5 max-w-[85%]">
+                <div className="w-[18px] shrink-0" aria-hidden="true" />
                 <div className="min-w-0 w-full">
                   <ExecutionStepper
                     steps={[

@@ -134,13 +134,13 @@ function AssistantTurn({
 }) {
   if (/^Investigation cancelled\./i.test(text)) {
     return (
-      <div className="flex items-start gap-3 max-w-[85%]">
+      <div className="flex items-start gap-2.5 max-w-[85%]">
         <img
           src="/logos/vanna-icon.png"
           alt="Vanna"
-          width={24}
-          height={24}
-          className="h-6 w-6 shrink-0 mt-0.5 rounded-full"
+          width={18}
+          height={18}
+          className="h-[18px] w-[18px] shrink-0 mt-1 rounded-full"
         />
         <p role="alert" className="flex items-start gap-2 text-[14px] leading-6 text-vgray-700">
           <CircleAlert size={17} className="mt-1 shrink-0 text-imperial-500" aria-hidden="true" />
@@ -150,13 +150,13 @@ function AssistantTurn({
     );
   }
   return (
-    <div className="flex items-start gap-3 max-w-[85%]">
+    <div className="flex items-start gap-2.5 max-w-[85%]">
       <img
         src="/logos/vanna-icon.png"
         alt="Vanna"
-        width={24}
-        height={24}
-        className="h-6 w-6 shrink-0 mt-0.5 rounded-full"
+        width={18}
+        height={18}
+        className="h-[18px] w-[18px] shrink-0 mt-1 rounded-full"
       />
       <div className="flex flex-col gap-2 min-w-0 w-full">
         <AssistantMessage note={note} tone={tone}>{chatProseFromStored(text)}</AssistantMessage>
@@ -224,13 +224,13 @@ export function ChatTurns({
               sessionSigning={sessionSigning}
             />
           ) : working ? (
-            <div className="flex items-start gap-3 max-w-[85%]">
+            <div className="flex items-start gap-2.5 max-w-[85%]">
               <img
                 src="/logos/vanna-icon.png"
                 alt="Vanna"
-                width={24}
-                height={24}
-                className="h-6 w-6 shrink-0 mt-0.5 rounded-full"
+                width={18}
+                height={18}
+                className="h-[18px] w-[18px] shrink-0 mt-0.5 rounded-full"
               />
               <p role="status" aria-live="polite" className="text-[13px] leading-[20px] text-violet-500">Working…</p>
             </div>
