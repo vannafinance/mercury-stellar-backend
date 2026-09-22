@@ -1,4 +1,4 @@
-import { routeMessage } from "./router";
+import { parseMinHealthFactor, routeMessage } from "./router";
 
 /**
  * Decide which brain owns a fresh Copilot prompt.
@@ -35,6 +35,53 @@ export function classifyCopilotEntry(message: string): CopilotEntryLane {
   }
 
   const routed = routeMessage(text);
+
+  /**
+   * A stated health-factor floor makes any action a sizing problem.
+   *
+   * A floor is not a property of one leg; it is a property of the account AFTER the legs
+   * run. Honouring it means sizing against live collateral, debt and prices — which is
+   * what investigation does and what the deterministic path has no step for. The
+   * deterministic path does not merely size it badly, it loses the clause: routed
+   * "deploy my idle funds into blend keeping HF above 1.4" comes back as
+   * { op: "deploy_to_blend", fraction: 1, requires_amount: false } with NO min_hf field
+   * at all. Every sizing gate below is satisfied, so it goes direct and commits the whole
+   * idle balance while the floor the user wrote is simply gone.
+   *
+   * Observed live on 22 Sep from two accounts. The one with auto-approve ON executed:
+   * it deposited the entire idle XLM balance, borrowed against it, and reported a
+   * resulting health factor of 1.30 — against a prompt that said 1.4.
+   *
+   * So this is tested before the resolvability gates rather than inside them. Those gates
+   * ask "is every slot filled?", and the answer here is yes — the intent is fully formed,
+   * it is just not the request. This asks the prior question: is there a constraint whose
+   * satisfaction nothing downstream is going to check?
+   *
+   * Over-routing is the safe direction, and it is the direction `residue.ts` already
+   * argues for: "The failure mode becomes asking a question the user did not need,
+   * instead of executing a plan the user did not ask for."
+   */
+  if (parseMinHealthFactor(text) != null && routed.kind !== "read" && routed.kind !== "restricted") {
+    return "strategy";
+  }
+
+  /**
+   * A refusal is an answer, not an unanswered question.
+   *
+   * `restricted` is the router having DECIDED: this is outside what Copilot does, and
+   * it already carries the sentence that says so. Falling through to the strategy
+   * default at the bottom sent it to investigation instead, which cannot do it either
+   * and says so in vaguer words — live, 22 Sep, "send my funds to G…" answered "I
+   * couldn't complete this investigation with the available capabilities and
+   * information" while the router's own plain refusal sat unused one branch away.
+   *
+   * This is the opposite case to `clarify`, which belongs on strategy: a clarify is the
+   * router saying it does not know, and investigation may yet resolve it. A restriction
+   * is settled, so the only thing left to do is deliver it.
+   */
+  if (routed.kind === "restricted") {
+    return "direct";
+  }
 
   if (routed.kind === "read") {
     return "direct";

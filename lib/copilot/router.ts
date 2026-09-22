@@ -3060,7 +3060,27 @@ export function routeMessage(message: string): RoutedIntent {
 
   // Standing risk preference without a write verb — still answer with guidance.
   const minHfOnly = parseMinHealthFactor(raw);
-  if (minHfOnly != null && any(text, "health", "liquidat", "safe", "risk", "hf") && !isStrategyOrBuildIntent) {
+  /**
+   * A health read answers a prompt whose whole content is a health question. A stated HF
+   * floor is a CONSTRAINT on something, and the thing it constrains is the rest of the
+   * sentence — so this branch may only claim the prompt when there is no rest.
+   *
+   * Live, 22 Sep: "Deploy XLM into farm to maximize returns while maintaining health
+   * factor above 1.4." was answered with a bare account-health read. The deploy clause —
+   * the entire request — was discarded because the floor clause matched first.
+   *
+   * The sibling health branch above already gets this right: it gates on
+   * `!hasActionWriteIntent` as well as `!isStrategyOrBuildIntent`. This branch was
+   * written with only half of that pair. `hasActionWriteIntent` is the predicate that
+   * already knows an action clause when it sees one; consulting it here is what makes the
+   * two branches agree, and it is why no verb needed adding to any list to fix this.
+   */
+  if (
+    minHfOnly != null &&
+    any(text, "health", "liquidat", "safe", "risk", "hf") &&
+    !isStrategyOrBuildIntent &&
+    !hasActionWriteIntent
+  ) {
     return {
       kind: "read",
       tool: "vanna_get_account_health",

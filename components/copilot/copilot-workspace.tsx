@@ -69,6 +69,7 @@ import {
 } from "./resume-policy";
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
 import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { buildRunReceipt } from "./run-receipt";
 import { answerToText } from "@/lib/copilot/answer-schema";
 import { shortWriteLabel } from "@/lib/copilot/execution-copy";
 import { executeClientTools } from "@/lib/assistant/client-tools";
@@ -1640,6 +1641,15 @@ export function CopilotWorkspace() {
    */
   const strategyStepsRef = useRef<MultiLegStepUi[]>([]);
   const [strategySteps, setStrategySteps] = useState<MultiLegStepUi[]>([]);
+  /**
+   * One id for one run, so every leg updates the SAME receipt.
+   *
+   * The receipt was keyed by `response.request_id`, which is per REQUEST, and a multi-leg
+   * run is many requests. Leg 2 therefore wrote under a new key, failed to find the turn
+   * leg 1 had written, and fell through to "first assistant turn with no receipt" — so the
+   * run's receipt landed on an earlier turn and stayed frozen at one leg.
+   */
+  const runReceiptIdRef = useRef<string | null>(null);
   /**
    * Legs this client is holding back so each one gets its own hop.
    *
@@ -3618,20 +3628,20 @@ export function CopilotWorkspace() {
         pushActivity(summary, result.hash);
         await refreshRailStats({ force: true, after: result.hash ?? null });
         if (result.hash) {
-          const receipt: ExecutionReceiptSnapshot = {
-            workflowId: response?.request_id || `tx-${result.hash.slice(0, 8)}`,
-            status: "completed",
+          const runLegs = strategyStepsRef.current;
+          const isRun = isRealStrategyRun(runLegs, response?.data ?? null);
+          if (isRun && !runReceiptIdRef.current) {
+            runReceiptIdRef.current = `run-${result.hash.slice(0, 8)}`;
+          }
+          const receipt = buildRunReceipt({
+            legs: runLegs,
+            isRun,
+            runId: runReceiptIdRef.current,
+            requestId: response?.request_id ?? null,
             network: investigation.result?.scope.network || "testnet",
-            steps: [
-              {
-                operation: (action?.op as any) ?? "submit",
-                asset: String(action?.asset ?? action?.token_b ?? ""),
-                amount: String(action?.amount ?? action?.amount_a ?? ""),
-                status: "settled",
-                txHash: result.hash,
-              },
-            ],
-          };
+            single: action ?? null,
+            txHash: result.hash,
+          });
           void updateExecutionReceipt(receipt);
         }
         if (investigation.turns.length > 0) {
