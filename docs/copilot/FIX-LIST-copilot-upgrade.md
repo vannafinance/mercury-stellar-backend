@@ -389,3 +389,24 @@ banned — that is the verb-to-op table the guard exists to replace.
 Investigate-first is not strictly safer. It fixes the invented-asset bug (`deposit it` → XLM)
 and loses the direction guard. The conclusion is not "one lane is better" — it is that the
 direction check must apply to whichever path does the planning.
+
+---
+
+## X5 (23 Sep, live UI) — swap → LP chain, and a loss-acceptance offer at ~95% loss
+
+`swap 50 XLM to AQUSDC and add it as liquidity with XLM on aquarius`, understood correctly.
+
+1. **The quote is a ~95% loss.** 50 XLM → 0.5728154 AQUSDC on Aquarius, against an oracle of
+   ~$0.22/XLM (≈ $11.03 in, $0.57 out). The testnet pool is badly skewed (Soroswap was ~17% off
+   in X4). The risk gate did refuse — correct.
+2. **The refusal cites the wrong leg.** "The risk gate did not prepare this swap: add liquidity
+   AQUSDC: a swap fills at the pool's price…" attaches the add-liquidity leg's rejection to the
+   swap.
+3. **It offers loss acceptance at ~95%.** "To continue at this price, state in chat that you
+   accept the quoted loss." The accept-loss path (catalogue S2) exists for a modest priced-in
+   loss; offering it at 95% invites a user to destroy the position. The offer should be bounded
+   by the size of the loss, from the quote's own figures — not shown unconditionally.
+4. **"The previous leg" after a swap is refused.** "a swap fills at the pool's price, so how much
+   it buys is not known in advance — state the next leg's amount yourself." But the swap carries
+   an enforced minimum output (slippage floor); that is a known lower bound and the LP leg can be
+   sized from it. The catalogue expects X5 to chain.

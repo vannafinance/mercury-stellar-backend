@@ -147,3 +147,8 @@ message (op name, asset, rule). A user cannot tell from it whether they did some
 what to change, or whether it is the system's fault. When nothing can be prepared, the model
 says so in its own words, once, with what the user can do next. Part of item 12, called out
 because here the raw message was also WRONG (see FIX-LIST: X2 amount provenance).
+
+## 17. Raw 18-decimal WAD figures reach the user  (X3, 23 Sep)
+"only 15.175689561344202486 AQUSDC is redeemable from Earn" — 18 places, the internal fixed-
+point precision. AQUSDC has 7 on-chain decimals. Any amount shown to a user is formatted to the
+token's own decimals (the registry knows them), never the WAD it was computed in.
