@@ -47,6 +47,22 @@ export function classifyCopilotEntry(message: string): CopilotEntryLane {
    *
    * Remove this return to go back to the keyword lane.
    */
+  /**
+   * A settled refusal outranks investigation, even under investigate-first.
+   *
+   * `restricted` is the router having DECIDED, and it already carries the sentence that says
+   * so. Sending it to investigation instead produced, live on 23 Sep: "send my funds to
+   * GXXXX" answered "I couldn't complete this investigation with the available capabilities
+   * and information" on one run and the correct refusal on the next — a deterministic
+   * refusal riding a non-deterministic path. `settle my account`, a terminal action that must
+   * ask for confirmation, did the same.
+   *
+   * So the routing question is asked BEFORE the lane switch, and only for the one kind of
+   * answer that cannot improve by being investigated. Everything else still goes to
+   * investigation.
+   */
+  if (routeMessage(text).kind === "restricted") return "direct";
+
   if (INVESTIGATE_FIRST) return "strategy";
 
   // Dedicated review flows that remain on the strategy/investigation loop
