@@ -56,6 +56,8 @@ export interface ResearchEvidence {
    * gets the trade at the fresh price instead of a refusal they cannot lift.
    */
   slippageAccepted?: boolean;
+  /** Amounts the user said to keep in the wallet, anchored when sealed, so a re-propose sizes around them too. */
+  walletReserves?: { asset: string; amount: string }[];
   /** The margin position the plans were sized against (contract basis), the sources' disagreement if any, and the user's stated floor (null = none). */
   position?: import("./plan").PlanContext["capacity"];
   floor?: string | null;

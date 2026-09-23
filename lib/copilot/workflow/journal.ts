@@ -36,11 +36,14 @@ function bound(record: WorkflowRecord, identity: Identity) {
  */
 export const PROPOSAL_TTL_MS = 5 * 60_000;
 
+/** The most steps one approval may sign. Read by the planner too, so a joined plan never exceeds it. */
+export const MAX_WORKFLOW_STEPS = 8;
+
 /** Every write is conditional; neither a repeated POST nor another replica can claim a leg twice. */
 export class WorkflowJournal {
   constructor(private readonly store: RecordStore<WorkflowRecord>, private readonly now = Date.now) {}
   async create(input: Omit<WorkflowProposal, "id" | "revision" | "digest" | "createdAt" | "expiresAt">) {
-    if (!input.steps.length || input.steps.length > 8 || new Set(input.steps.map(s => s.id)).size !== input.steps.length)
+    if (!input.steps.length || input.steps.length > MAX_WORKFLOW_STEPS || new Set(input.steps.map(s => s.id)).size !== input.steps.length)
       throw new Error("invalid_proposal_steps");
     /**
      * A proposal shown for approval must already be sized. `sizing.ts` resolves "max"

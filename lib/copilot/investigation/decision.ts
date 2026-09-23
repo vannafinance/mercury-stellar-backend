@@ -72,7 +72,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return refuse(`unknown kind or keys: kind=${String(raw.kind)} keys=${Object.keys(raw).join(",")}`);
   }
   const goal = raw.goal;
-  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : [])]) ||
+  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : [])]) ||
     (goal.relation !== undefined && !["new", "refine"].includes(String(goal.relation))) ||
     (goal.intent !== undefined && !["answer", "strategy"].includes(String(goal.intent))) ||
     !text(goal.objective) || !texts(goal.constraints) ||
@@ -125,6 +125,22 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       text(goal.healthFactorFloor.sourceQuote, 400) && goal.healthFactorFloor.sourceQuote.includes(goal.healthFactorFloor.value)
       ? { value: goal.healthFactorFloor.value, sourceQuote: goal.healthFactorFloor.sourceQuote }
       : undefined;
+  /**
+   * Each reserve is kept only when it is exactly that: a registry token, a decimal, and a
+   * quote that contains the decimal. One malformed entry is dropped on its own; it does not
+   * void the goal. Whether the quote is really the user's is checked against their messages
+   * by the caller, as for the floor.
+   */
+  // Kept only when well formed; whether the quote is really the user's is checked by the caller.
+  const relation = isRecord(goal.planRelation) && exactKeys(goal.planRelation, ["kind", "sourceQuote"]) &&
+    (goal.planRelation.kind === "alternatives" || goal.planRelation.kind === "parts") && text(goal.planRelation.sourceQuote, 400)
+    ? { kind: goal.planRelation.kind as "alternatives" | "parts", sourceQuote: goal.planRelation.sourceQuote } : undefined;
+  const reserves = Array.isArray(goal.walletReserves) ? goal.walletReserves.slice(0, 8).flatMap((row) =>
+    isRecord(row) && exactKeys(row, ["asset", "amount", "sourceQuote"]) &&
+      (ASSET_IDS as readonly string[]).includes(String(row.asset)) &&
+      typeof row.amount === "string" && /^\d+(\.\d{1,18})?$/.test(row.amount) &&
+      text(row.sourceQuote, 400) && row.sourceQuote.includes(row.amount)
+      ? [{ asset: String(row.asset), amount: row.amount, sourceQuote: row.sourceQuote }] : []) : [];
   if (!Array.isArray(raw.findings) || raw.findings.length === 0 || raw.findings.length > 12 ||
     !texts(raw.openQuestions)) return refuse(`findings/openQuestions: findings=${Array.isArray(raw.findings) ? raw.findings.length : typeof raw.findings}`);
   /**
@@ -132,7 +148,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
    * rides on — the goal, findings and reads are still good — so the bad ones are dropped
    * and counted, and the service tells the user that some proposed shapes could not be read.
    */
-  const parsedPlans = raw.plans === undefined ? { plans: [], dropped: 0 } : parsePlans(raw.plans);
+  const parsedPlans = raw.plans === undefined ? { plans: [], dropped: 0, reasons: [] as string[] } : parsePlans(raw.plans);
   const findings: Array<{ summary: string; evidenceIds: string[] }> = [];
   /**
    * What the evidence rule protects is figures: a balance, a rate or a health number the
@@ -171,6 +187,8 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       ...(write ? { write } : {}),
       ...(floor ? { healthFactorFloor: floor } : {}),
       ...(slippage ? { slippageAccepted: slippage } : {}),
+      ...(reserves.length ? { walletReserves: reserves } : {}),
+      ...(relation ? { planRelation: relation } : {}),
       objective: goal.objective,
       constraints: [...goal.constraints],
       borrowing: goal.borrowing as "unspecified" | "allowed" | "required" | "forbidden",
@@ -179,6 +197,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     openQuestions: [...raw.openQuestions],
     ...(parsedPlans.plans.length ? { plans: parsedPlans.plans } : {}),
     ...(parsedPlans.dropped + droppedActions ? { droppedPlans: parsedPlans.dropped + droppedActions } : {}),
+    ...(parsedPlans.reasons.length ? { droppedPlanReasons: parsedPlans.reasons } : {}),
     ...(droppedFindings ? { droppedFindings } : {}),
   };
 }
@@ -189,26 +208,37 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
  * whole decision invalid — the loop then stops with `invalid_decision` rather than
  * letting a half-understood plan reach the sizer.
  */
-function parsePlans(raw: unknown): { plans: ProposedPlan[]; dropped: number } {
-  if (!Array.isArray(raw)) return { plans: [], dropped: 1 };
+/**
+ * Why the last plan, leg or sizing was dropped, in the validator's own terms. Recorded so a
+ * dropped plan can be diagnosed from the result (23 Sep, XS5: both unwind plans vanished as
+ * "could not be read" with nothing to say which rule fired). Never shown to the user as is.
+ */
+let lastPlanDrop = "";
+function drop(why: string): null { lastPlanDrop = why; return null; }
+
+function parsePlans(raw: unknown): { plans: ProposedPlan[]; dropped: number; reasons: string[] } {
+  if (!Array.isArray(raw)) return { plans: [], dropped: 1, reasons: [`plans is ${typeof raw}, not a list`] };
   const plans: ProposedPlan[] = [];
-  let dropped = 0;
+  const reasons: string[] = [];
   for (const plan of raw.slice(0, MAX_PLANS)) {
+    lastPlanDrop = "";
     const parsed = parsePlan(plan);
     if (parsed) plans.push(parsed);
-    else dropped += 1;
+    else reasons.push(`${isRecord(plan) && typeof plan.title === "string" ? plan.title.slice(0, 60) : "untitled"}: ${lastPlanDrop || "rejected"}`);
   }
-  return { plans, dropped: dropped + Math.max(0, raw.length - MAX_PLANS) };
+  const overflow = Math.max(0, raw.length - MAX_PLANS);
+  if (overflow) reasons.push(`${overflow} over the ${MAX_PLANS}-plan limit`);
+  return { plans, dropped: raw.slice(0, MAX_PLANS).length - plans.length + overflow, reasons };
 }
 
 function parsePlan(plan: unknown): ProposedPlan | null {
   if (!isRecord(plan) || !exactKeys(plan, ["title", "rationale", "evidenceIds", "legs"]) ||
     !text(plan.title, 120) || !text(plan.rationale, 1600) || !texts(plan.evidenceIds) ||
-    !Array.isArray(plan.legs) || plan.legs.length === 0 || plan.legs.length > MAX_LEGS) return null;
+    !Array.isArray(plan.legs) || plan.legs.length === 0 || plan.legs.length > MAX_LEGS) return drop(`plan: keys ${isRecord(plan) ? Object.keys(plan).join(",") : typeof plan}, legs ${isRecord(plan) && Array.isArray(plan.legs) ? plan.legs.length : "missing"}`);
   const legs: PlanLeg[] = [];
   for (const leg of plan.legs) {
     const parsed = parseLeg(leg);
-    if (!parsed) return null;
+    if (!parsed) return drop(`leg ${legs.length + 1}: ${lastPlanDrop}`);
     legs.push(parsed);
   }
   return { title: plan.title, rationale: plan.rationale, evidenceIds: [...plan.evidenceIds], legs };
@@ -225,7 +255,7 @@ function parsePlan(plan: unknown): ProposedPlan | null {
  * action validator add its own `sourceQuote` without restating anything else.
  */
 function parseLeg(leg: unknown, extraKeys: readonly string[] = []): PlanLeg | null {
-  if (!isRecord(leg)) return null;
+  if (!isRecord(leg)) return drop("not an object");
   /**
    * `assetOut` and the DEX `venue` belong to the ops that name a SECOND asset — a swap
    * ends in a different one, add_liquidity spends a paired token. Any other op carrying
@@ -241,17 +271,17 @@ function parseLeg(leg: unknown, extraKeys: readonly string[] = []): PlanLeg | nu
   ];
   if (!exactKeys(leg, allowed) ||
     !(PLAN_OPS as readonly string[]).includes(String(leg.op)) ||
-    !(ASSET_IDS as readonly string[]).includes(String(leg.asset))) return null;
+    !(ASSET_IDS as readonly string[]).includes(String(leg.asset))) return drop(`${String(leg.op)} ${String(leg.asset)}: keys ${Object.keys(leg).join(",")} (allowed ${allowed.join(",")}); op or asset must be known`);
   const sizing = parseSizing(leg.sizing);
-  if (!sizing) return null;
+  if (!sizing) return drop(`${String(leg.op)} ${String(leg.asset)}: ${lastPlanDrop}`);
   // `amountAsset` chooses between the leg's TWO assets, so it is meaningless — and a sign
   // the leg was misunderstood — on an op that has only one. Derived from the same
   // ASSET_OUT_OPS property as `assetOut` itself rather than naming the ops again.
-  if (!hasAssetOut && sizing.kind === "literal" && sizing.amountAsset !== undefined) return null;
+  if (!hasAssetOut && sizing.kind === "literal" && sizing.amountAsset !== undefined) return drop(`${String(leg.op)} ${String(leg.asset)}: amountAsset on an op with one asset`);
   if (!hasAssetOut) return { op: leg.op as PlanOp, asset: String(leg.asset), sizing };
   // The second asset must be a known one, and not the one the leg already spends.
-  if (!(ASSET_IDS as readonly string[]).includes(String(leg.assetOut)) || leg.assetOut === leg.asset) return null;
-  if (leg.venue !== undefined && !(lpVenues() as readonly string[]).includes(String(leg.venue))) return null;
+  if (!(ASSET_IDS as readonly string[]).includes(String(leg.assetOut)) || leg.assetOut === leg.asset) return drop(`${String(leg.op)} ${String(leg.asset)}: assetOut ${String(leg.assetOut)} is unknown or the same asset`);
+  if (leg.venue !== undefined && !(lpVenues() as readonly string[]).includes(String(leg.venue))) return drop(`${String(leg.op)} ${String(leg.asset)}: venue ${String(leg.venue)} is not an LP venue`);
   return {
     op: leg.op as PlanOp, asset: String(leg.asset), sizing, assetOut: String(leg.assetOut),
     ...(leg.venue ? { venue: leg.venue as LpVenue } : {}),
@@ -261,11 +291,11 @@ function parseLeg(leg: unknown, extraKeys: readonly string[] = []): PlanLeg | nu
 function parseSizing(raw: unknown): PlanSizing | null {
   // The declared schema sends sizing as a flat object; a bare word is accepted too.
   const value = typeof raw === "string" ? { kind: raw } : raw;
-  if (!isRecord(value) || !(PLAN_SIZINGS as readonly string[]).includes(String(value.kind))) return null;
+  if (!isRecord(value) || !(PLAN_SIZINGS as readonly string[]).includes(String(value.kind))) return drop(`sizing kind ${isRecord(value) ? String(value.kind) : typeof value} is not a sizing word`);
   if (value.kind === "fraction") {
     if (!exactKeys(value, ["kind", "percent", "of", "sourceQuote"]) || typeof value.percent !== "string" ||
       !/^\d+(\.\d{1,6})?$/.test(value.percent) || Number(value.percent) <= 0 || Number(value.percent) > 100 ||
-      (value.of !== "idle" && value.of !== "position") || !text(value.sourceQuote, 1600)) return null;
+      (value.of !== "idle" && value.of !== "position") || !text(value.sourceQuote, 1600)) return drop(`fraction sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
     return { kind: "fraction", percent: value.percent, of: value.of, sourceQuote: value.sourceQuote };
   }
   if (value.kind === "leverage") {
@@ -273,16 +303,16 @@ function parseSizing(raw: unknown): PlanSizing | null {
     // unsafe multiple — this is only proof the model did not invent an absurd digit string.
     if (!exactKeys(value, ["kind", "multiple", "sourceQuote"]) || typeof value.multiple !== "string" ||
       !/^\d+(\.\d{1,3})?$/.test(value.multiple) || Number(value.multiple) <= 1 || Number(value.multiple) > 100 ||
-      !text(value.sourceQuote, 1600)) return null;
+      !text(value.sourceQuote, 1600)) return drop(`leverage sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
     return { kind: "leverage", multiple: value.multiple, sourceQuote: value.sourceQuote };
   }
-  if (value.kind !== "literal") return exactKeys(value, ["kind"]) ? { kind: value.kind as "all_idle" | "all_position" | "to_floor" | "previous_leg" } : null;
+  if (value.kind !== "literal") return exactKeys(value, ["kind"]) ? { kind: value.kind as "all_idle" | "all_position" | "to_floor" | "previous_leg" } : drop(`sizing ${String(value.kind)} takes no other keys, got ${Object.keys(value).join(",")}`);
   // amountAsset is optional — every non-swap leg, and the ordinary "spend" swap, omit it.
   const hasAmountAsset = Object.hasOwn(value, "amountAsset");
   const literalKeys = hasAmountAsset ? ["kind", "amount", "sourceQuote", "amountAsset"] : ["kind", "amount", "sourceQuote"];
   if (!exactKeys(value, literalKeys) || typeof value.amount !== "string" ||
     value.amount.length > 60 || !/^\d+(\.\d{1,18})?$/.test(value.amount) || !text(value.sourceQuote, 1600) ||
-    (hasAmountAsset && value.amountAsset !== "asset" && value.amountAsset !== "assetOut")) return null;
+    (hasAmountAsset && value.amountAsset !== "asset" && value.amountAsset !== "assetOut")) return drop(`literal sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
   return {
     kind: "literal", amount: value.amount, sourceQuote: value.sourceQuote,
     ...(hasAmountAsset ? { amountAsset: value.amountAsset as "asset" | "assetOut" } : {}),

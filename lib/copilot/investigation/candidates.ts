@@ -29,6 +29,7 @@
  */
 
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
+import { pct, planApy, shownApyPct } from "./apy";
 import { isRecord } from "./decision";
 import type { Observation } from "./types";
 import { sizeLegs, type SizedLeg } from "./sizing";
@@ -79,6 +80,13 @@ export interface Candidate {
   netAprPct: string | null;
   /** Null when a supply leg's rate was not read — the option is still sized; the label says so. */
   supplyAprPct: string | null;
+  /**
+   * The same two figures as each venue's page shows them (`apy.ts`): what the card and the
+   * reply quote. The APR fields above stay what the sizer and the carry guard judge by.
+   * Optional so a candidate built before this field existed still renders.
+   */
+  supplyApyPct?: string | null;
+  netApyPct?: string | null;
   legs: SizedLeg[];
   finalHealthFactor: string | null;
   amountUsd: string;
@@ -304,6 +312,8 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
             label: `Supply idle ${comparison.asset} to Blend — no new borrowing`,
             netAprPct: null,
             supplyAprPct: formatWad(supply),
+            supplyApyPct: pct(shownApyPct("blend_supply", formatWad(supply))),
+            netApyPct: null,
             // Supplying idle wallet value does not touch margin collateral or debt.
             legs: [],
             finalHealthFactor: null,
@@ -328,6 +338,8 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
                 label: `Lend idle ${comparison.asset} to Earn — no new borrowing`,
                 netAprPct: null,
                 supplyAprPct: formatWad(earn),
+                supplyApyPct: pct(shownApyPct("earn_supply", formatWad(earn))),
+                netApyPct: null,
                 legs: [],
                 finalHealthFactor: null,
                 amountUsd: formatWad(idle),
@@ -404,6 +416,15 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
         : `Borrow ${comparison.asset} to the ${input.floor} floor and supply it to Blend`,
       netAprPct: formatWad(supply - borrow),
       supplyAprPct: formatWad(supply),
+      // The borrowed amount is what is supplied, so both legs carry the same USD.
+      ...(() => {
+        const usd = Number(sized.legs[0]?.amountUsd ?? "0");
+        const apy = planApy([
+          { kind: "blend_supply", usd, aprPct: formatWad(supply) },
+          { kind: "earn_borrow", usd, aprPct: formatWad(borrow) },
+        ], usd);
+        return { supplyApyPct: apy.supplyApyPct === null ? null : pct(apy.supplyApyPct), netApyPct: apy.netApyPct === null ? null : pct(apy.netApyPct) };
+      })(),
       legs: sized.legs,
       finalHealthFactor: sized.finalHealthFactor,
       amountUsd: sized.legs[0]?.amountUsd ?? "0",
@@ -500,6 +521,56 @@ export function requestedBorrowFrom(
  * fundable when it is not. Returns null when nothing could be priced at all, which the
  * caller renders as "no non-borrowing option shown" rather than "you have nothing idle".
  */
+/**
+ * What the wallet can spend once the user's stated reserves are set aside. Applied where
+ * the balance is read, not per sizing word, so "all idle", "half of it" and a stated
+ * amount are all bounded by the same figure. A reserve at or above the balance leaves
+ * nothing spendable in that token; the entry stays, at zero, so a refusal can name the
+ * reserve instead of claiming the token is not held.
+ */
+export function holdingsAfterReserves(
+  holdings: ReturnType<typeof idleWalletHoldingsFrom>,
+  reserves: readonly { asset: string; amount: string }[] | undefined,
+): ReturnType<typeof idleWalletHoldingsFrom> {
+  if (!reserves?.length) return holdings;
+  const out = { ...holdings };
+  for (const { asset, amount } of reserves) {
+    const held = out[asset as keyof typeof out];
+    if (!held) continue;
+    const tokens = decimalWad(held.tokens);
+    const left = tokens > decimalWad(amount) ? tokens - decimalWad(amount) : ZERO;
+    const usd = tokens > ZERO ? (decimalWad(held.usd) * left) / tokens : ZERO;
+    out[asset as keyof typeof out] = { tokens: formatWad(left), usd: formatWad(usd) };
+  }
+  return out;
+}
+
+/**
+ * The idle-wallet figures the fixed shapes size from, with the user's stated reserves set
+ * aside: the same subtraction the plan sizer applies, so a "supply idle XLM" option cannot
+ * offer the XLM the user said to keep.
+ */
+export function idleWalletAfterReserves(
+  observations: readonly Observation[],
+  now: number,
+  reserves: readonly { asset: string; amount: string }[] | undefined,
+): { idleWalletUsd: string | null; idleWalletByAssetUsd: Partial<Record<RateComparison["asset"], string>>; idleWalletByAssetTokens: Partial<Record<RateComparison["asset"], string>> } {
+  const before = idleWalletHoldingsFrom(observations, now);
+  const after = holdingsAfterReserves(before, reserves);
+  const idleWalletByAssetUsd: Partial<Record<RateComparison["asset"], string>> = {};
+  const idleWalletByAssetTokens: Partial<Record<RateComparison["asset"], string>> = {};
+  let setAside = ZERO;
+  for (const [asset, held] of Object.entries(after) as Array<[RateAsset, { usd: string; tokens: string }]>) {
+    idleWalletByAssetUsd[asset] = held.usd;
+    idleWalletByAssetTokens[asset] = held.tokens;
+    const was = before[asset];
+    if (was) setAside += decimalWad(was.usd) - decimalWad(held.usd);
+  }
+  const total = idleWalletUsdFrom(observations, now);
+  const idleWalletUsd = total === null ? null : formatWad(decimalWad(total) > setAside ? decimalWad(total) - setAside : ZERO);
+  return { idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens };
+}
+
 export function idleWalletByAssetUsdFrom(observations: readonly Observation[], now: number): Partial<Record<RateComparison["asset"], string>> {
   const holdings = idleWalletHoldingsFrom(observations, now);
   const result: Partial<Record<RateComparison["asset"], string>> = {};

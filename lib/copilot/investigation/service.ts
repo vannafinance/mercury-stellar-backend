@@ -5,16 +5,16 @@ import { MarginAccountService } from "@/lib/margin-utils";
 import type { ResearchView } from "./view";
 import { resolveInvestigationScope, ResearchError } from "./scope";
 import { researchCodec } from "./continuation";
-import { runInvestigation, interruptible } from "./runtime";
+import { boundedLimits, runInvestigation, interruptible } from "./runtime";
 import { strategyReply } from "./answer";
 import { normalizeResearchFacts } from "./normalize";
 import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
-import { anchoredGoalFloor, anchoredSlippageAccepted, statedCeilingFrom, statedFloorFrom } from "./floor";
+import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
-import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, rankingBorrowing, requestedBorrowFrom } from "./candidates";
+import { generateCandidates, idleWalletAfterReserves, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, rankingBorrowing, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
-import { planCandidateId, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
+import { joinPlanParts, planCandidateId, resolveJoinedOrParts, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
@@ -28,6 +28,7 @@ import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
 import { ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
 import { WORKFLOW_OPS } from "../workflow/types";
+import { MAX_WORKFLOW_STEPS } from "../workflow/journal";
 
 /**
  * The three budgets that run OUTSIDE the investigation loop's own deadline, named so
@@ -224,7 +225,15 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const prior = input.continuation ? codec.open(input.continuation, scope) : null;
   const session = prior ? null : optionalConversation(codec, input.session, scope);
   const carried = prior?.evidence ?? session?.evidence;
-  const carriedObs = reusableObservations(carried, Date.now());
+  /**
+   * Carried reads seed the investigation only if they are still fresh when it ENDS. 23 Sep,
+   * "aquarius lp": the reads were 54s old at the start, the turn took 23s, and the finish-time
+   * freshness check refused them at 71-77s, voiding the whole run ("could not be completed
+   * from the reads it made"). Checking at start + the loop's own budget re-reads instead.
+   * The instant health answer runs no loop, so it keeps the at-start check.
+   */
+  const carriedNow = reusableObservations(carried, Date.now());
+  const carriedObs = reusableObservations(carried, Date.now() + boundedLimits(dependencies.limits).maxDurationMs);
   const haveCarriedPosition = carriedObs.some(
     (observation) => observation.capability === "account_position" && observation.status === "ok",
   );
@@ -240,7 +249,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     return data;
   } };
   if (fast?.kind === "health") {
-    const fromCarry = carriedObs.filter((observation) =>
+    const fromCarry = carriedNow.filter((observation) =>
       (observation.capability === "account_position" || observation.capability === "account_health")
       && observation.status === "ok");
     if (fromCarry.length) {
@@ -692,6 +701,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
   }
 
+  // Amounts the user said to keep in the wallet, anchored to their own words; every sizer below honours them.
+  const walletReserves = outcome.kind === "research_complete" ? anchoredWalletReserves(outcome.goal, messages) : [];
+  const idleAfterReserves = idleWalletAfterReserves(result.observations, observedNow, walletReserves);
   let candidates = null;
   try {
     /**
@@ -710,9 +722,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
           debtUsd: capacity?.debtUsd ?? "0",
           floor: capacity?.floor ?? null,
-          idleWalletUsd: idleWalletUsdFrom(result.observations, observedNow),
-          idleWalletByAssetUsd: idleWalletByAssetUsdFrom(result.observations, observedNow),
-          idleWalletByAssetTokens: idleWalletByAssetTokensFrom(result.observations, observedNow),
+          ...idleAfterReserves,
           // A failed capacity (dropped-leg debt, sources disagree) must not
           // invent headroom from $0 / a default 1.30 floor.
           borrowingAllowed: Boolean(capacity) && !capacityResult.failed && borrowing !== "forbidden",
@@ -758,6 +768,20 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * the card and the sealed plan all see the same leg.
    */
   modelPlans = withSharedLiteralAmount(withBoughtAsset(modelPlans, messages), messages);
+  /**
+   * Plans the user asked for together become ONE plan (23 Sep, XS6: "use my whole wallet"
+   * came back as one option per asset, and Approve could run only one). Only when the model
+   * says they are parts, in words the user really sent, and never for the user's own stated
+   * plan. The separate parts are kept: if the joined plan does not size, or needs more steps
+   * than one approval can run, the turn falls back to them exactly as before.
+   */
+  let partsBeforeJoin: typeof modelPlans | null = null;
+  if (statedPlanIndex < 0 && modelPlans.length > 1 && outcome.kind === "research_complete" && anchoredPlanParts(outcome.goal, messages)) {
+    const joined = joinPlanParts(modelPlans);
+    if ("plan" in joined) { partsBeforeJoin = modelPlans; modelPlans = [joined.plan]; }
+    else logPhase("plans_not_joined", { reason: joined.reason });
+  }
+  if (outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length) logPhase("plans_dropped", { reasons: outcome.droppedPlanReasons });
   if (outcome.kind === "research_complete" && outcome.droppedPlans) {
     warnings.push(`${outcome.droppedPlans} proposed ${outcome.droppedPlans === 1 ? "strategy shape" : "strategy shapes"} could not be read and ${outcome.droppedPlans === 1 ? "was" : "were"} not sized.`);
   }
@@ -862,7 +886,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       observedNow = Date.now();
       planComparisons = analyseObservedRates(result.observations, observedNow).comparisons;
     }
-    const resolved = resolvePlans(modelPlans, {
+    const planContext = {
       scope, observations: result.observations, now: observedNow, messages,
       capacity: planPosition, borrowing, comparisons: planComparisons,
       /**
@@ -876,7 +900,18 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       // Only an acceptance anchored in the user's own message counts.
       goal: outcome.kind === "research_complete" && anchoredSlippageAccepted(outcome.goal, messages)
         ? outcome.goal : undefined,
-    });
+      walletReserves,
+    };
+    let resolved;
+    if (partsBeforeJoin) {
+      const choice = resolveJoinedOrParts(modelPlans[0], partsBeforeJoin, planContext, MAX_WORKFLOW_STEPS);
+      if (choice.plans.length > 1) logPhase("plans_join_fallback", { warning: choice.warning });
+      if (choice.warning) warnings.push(choice.warning);
+      modelPlans = choice.plans;
+      resolved = choice.resolved;
+    } else {
+      resolved = resolvePlans(modelPlans, planContext);
+    }
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     candidates = mergeCandidateSets(candidates, resolved, borrowing);
     /**
@@ -978,6 +1013,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (outcome.kind === "stopped") warnings.push(outcome.reason === "model_unavailable"
     ? "The language model was unavailable. No keyword plan was substituted."
     : `Research stopped: ${outcome.reason.replaceAll("_", " ")}.`);
+  // Every read that errored, with what it was asked and what came back. The card only says "unavailable".
+  const failedReads = result.observations.filter((o) => o.status === "error").slice(0, 12)
+    .map((o) => ({ capability: o.capability, args: o.args, error: (o.error ?? "no error text").slice(0, 240) }));
+  if (failedReads.length) logPhase("reads_failed", { reads: failedReads });
   const evidence = compactResearchEvidence(result.observations, capacity, observedNow);
   // Every option shown can be prepared; the sealed list is exactly the shown list.
   evidence.allowedCandidateIds = outcome.kind === "research_complete"
@@ -994,6 +1033,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       evidence.slippageAccepted = true;
     }
     evidence.floor = statedFloor;
+    if (walletReserves.length) evidence.walletReserves = walletReserves;
   }
   const swapLeg = modelPlans.flatMap((plan) => plan.legs).find((leg) => leg.op === "swap" && leg.sizing.kind === "literal" && leg.assetOut);
   const swapVenue = swapLeg?.assetOut ? poolVenueFor(swapLeg.asset, swapLeg.assetOut) : null;
@@ -1032,6 +1072,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       id: observation.id, label: observation.capability.replaceAll("_", " "), status: observation.status, readAt: observation.observedAt,
     })), warnings, scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
     continuation: codec.seal(scope, messages, question, evidence), executionAllowed: false,
+    // Not rendered. Why a run stopped, a plan was dropped or a read failed, readable from the response (23 Sep).
+    ...(outcome.kind === "stopped" || (outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length) || failedReads.length ? {
+      diagnostics: {
+        ...(failedReads.length ? { failedReads } : {}),
+        ...(outcome.kind === "stopped" ? { stopReason: outcome.reason, ...(result.stopDetail ? { stopDetail: result.stopDetail } : {}) } : {}),
+        ...(outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length ? { droppedPlanReasons: outcome.droppedPlanReasons } : {}),
+      },
+    } : {}),
     pendingWrite: lifecycleOp && scope.trader ? { op: lifecycleOp } : null,
   };
 }

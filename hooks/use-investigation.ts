@@ -225,7 +225,7 @@ export function useInvestigation(wallet: string | null) {
 
   useEffect(() => {
     const wallet = effectiveWallet;
-    abort.current?.abort();
+    abort.current?.abort("wallet changed");
     sequence.current += 1;
     const listed = wallet ? readStoredConversations(wallet) : [];
     const stored = wallet ? readStoredThread(wallet) : null;
@@ -245,7 +245,7 @@ export function useInvestigation(wallet: string | null) {
     } else {
       applyBlank(wallet);
     }
-    if (!wallet) return () => { abort.current?.abort(); sequence.current += 1; };
+    if (!wallet) return () => { abort.current?.abort("wallet cleared"); sequence.current += 1; };
     // The server holds the list and, when this tab has nothing, the open conversation.
     const restore = new AbortController();
     void (async () => {
@@ -274,11 +274,11 @@ export function useInvestigation(wallet: string | null) {
         applyThread(wallet, thread);
       } catch { /* sessionStorage remains the live thread; the list appears on the next load */ }
     })();
-    return () => { restore.abort(); abort.current?.abort(); sequence.current += 1; };
+    return () => { restore.abort("wallet effect cleanup"); abort.current?.abort(); sequence.current += 1; };
   }, [effectiveWallet, applyBlank, applyThread]);
 
   const cancel = useCallback(() => {
-    abort.current?.abort();
+    abort.current?.abort("cancel pressed");
     sequence.current += 1;
     const message = "Investigation cancelled. No transactions were requested.";
     const owner = activeWallet.current;
@@ -364,7 +364,7 @@ export function useInvestigation(wallet: string | null) {
 
   /** Start a new chat: the screen clears; the conversation stays in the list; nothing is created until the first turn. */
   const newChat = useCallback(() => {
-    abort.current?.abort();
+    abort.current?.abort("new chat");
     sequence.current += 1;
     const owner = activeWallet.current;
     if (owner) {
@@ -420,7 +420,7 @@ export function useInvestigation(wallet: string | null) {
     }
 
     if (isLocalConversationId(id)) {
-      abort.current?.abort();
+      abort.current?.abort("opened another chat");
       sequence.current += 1;
       const stored = readStoredLocalThread(owner, id);
       if (stored) {
@@ -436,7 +436,7 @@ export function useInvestigation(wallet: string | null) {
       }
       return;
     }
-    abort.current?.abort();
+    abort.current?.abort("opened another chat");
     sequence.current += 1;
     try {
       const headers = await requestHeaders(AbortSignal.timeout(8_000), owner);
@@ -461,7 +461,7 @@ export function useInvestigation(wallet: string | null) {
       return next;
     });
     if (id === conversationId.current || id === LIVE_CONVERSATION_ID && !conversationId.current) {
-      abort.current?.abort();
+      abort.current?.abort("chat deleted");
       sequence.current += 1;
       clearStoredThread(owner);
       applyBlank(owner);
@@ -579,10 +579,18 @@ export function useInvestigation(wallet: string | null) {
   const run = useCallback(async (message: string, signal?: AbortSignal) => {
     const prompt = message.trim();
     if (!prompt) return;
-    abort.current?.abort();
+    abort.current?.abort("replaced by a newer prompt");
     const controller = new AbortController();
     abort.current = controller;
     const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+    /**
+     * Name what ended the run. 23 Sep: replies were cut off (XS7 "blend" ended ERR_ABORTED,
+     * leaving a summary with no card) and "Cancelled" appeared without a press. Every abort
+     * site passes a label; this reaches the dev terminal as a [browser] line.
+     */
+    combined.addEventListener("abort", () => {
+      console.warn("[copilot] investigation aborted", { reason: String(combined.reason ?? "unlabelled"), prompt: prompt.slice(0, 60) });
+    }, { once: true });
     const id = ++sequence.current;
     const owner = wallet;
     const current = () => sequence.current === id && activeWallet.current === owner && !combined.aborted;
@@ -590,7 +598,7 @@ export function useInvestigation(wallet: string | null) {
     // is a backstop for a dead connection rather than the normal end of a slow run.
     // The composer keeps a 130s outer deadline so this 120s timer is the one that fires.
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 120_000);
+    const timer = setTimeout(() => { timedOut = true; controller.abort("120s client deadline"); }, 120_000);
     /**
      * Two different things end a run early and they must not share a sentence: the
      * deadline (time really ran out) and an abort (this request was replaced, cancelled,

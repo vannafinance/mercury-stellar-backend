@@ -15,14 +15,15 @@
  * but the combinations are the model's to find.
  */
 
-import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, poolVenueFor, resolveAssetDef, swappableWith } from "../registry/assets";
+import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef, swappableWith } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
-import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_FLOW, producedAsset, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
+import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_FLOW, POSITION_POCKETS, producedAsset, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
 import { candidateId } from "./candidate-id";
-import { dustWalletHoldingsFrom, freshPrices, idleWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
+import { dustWalletHoldingsFrom, freshPrices, holdingsAfterReserves, idleWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
 import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
+import { pct, planApy, type RateKind } from "./apy";
 import type { RateComparison } from "./rate-comparison";
 import { LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
@@ -55,6 +56,13 @@ export interface PlanContext {
    * acceptance already anchored and sealed onto the evidence.
    */
   goal?: Pick<GoalUnderstanding, "slippageAccepted">;
+  /**
+   * Amounts the user said to leave in the wallet, already anchored to their own words
+   * (`anchoredWalletReserves`). Taken off the spendable balance before any leg is sized, so
+   * every leg that draws on the wallet, whatever its sizing word, sees the same smaller
+   * figure. Sealed onto the evidence so a re-propose keeps it.
+   */
+  walletReserves?: readonly { asset: string; amount: string }[];
   /**
    * The candidate id of the plan built from what the user stated outright, when this turn
    * has one (`planCandidateId` of `planFromStatedActions`'s plan).
@@ -151,7 +159,25 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
   // covers less, and the card says what remains. 13 Sep: "Repay 14113 XLM, then 2559 BLUSDC"
   // was offered against a wallet holding 9,999 XLM and no BLUSDC; it could never have run.
   return legs.flatMap((leg, index): SizerLeg[] => {
-    if (leg.op !== "repay") return [leg];
+    if (leg.op !== "repay") {
+      /**
+       * The same two legs for any op that spends the margin account when the model sized it
+       * from the IDLE WALLET: deposit that amount, then the op takes what the deposit put in.
+       * Read off OP_FLOW (spends "account", does not return to the wallet), so supply to
+       * Blend, a swap and adding liquidity are covered without naming them. 23 Sep, XS6:
+       * "add liquidity with my idle AQUSDC on Aquarius" was refused with "deposit the idle
+       * tokens as collateral first" while a Blend supply in the same answer got its deposit.
+       * A deposit the model already wrote is used, not doubled, exactly as for a repay.
+       */
+      const flow = OP_FLOW[leg.op];
+      const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
+      if (!ofIdle || flow.from !== "account" || flow.to === "wallet") return [leg];
+      const prior = legs[index - 1];
+      if (prior && prior.op === "deposit_collateral" && prior.asset === leg.asset && drawsOnWallet(prior.sizing)) {
+        return [{ ...leg, sizing: { kind: "previous_leg" } }];
+      }
+      return [{ op: "deposit_collateral", asset: leg.asset, sizing: leg.sizing }, { ...leg, sizing: { kind: "previous_leg" } }];
+    }
     /**
      * The model may have written the funding deposit itself — "repay my debt, and if I
      * don't have the funds deposit into my margin account" is one instruction that reads
@@ -479,8 +505,15 @@ function liveCollateralAllowed(observations: readonly Observation[]): Map<string
   return allowed;
 }
 
+/** What the spendable figure has already had taken out of it: earlier legs, the user's reserve, or both. */
+function spendableAfter(asset: string, ctx: PlanContext, earlierLegs: boolean): string {
+  const kept = ctx.walletReserves?.find((row) => row.asset === asset);
+  const parts = [earlierLegs ? "the legs before it" : null, kept ? `the ${kept.amount} ${asset} you asked to keep` : null].filter(Boolean);
+  return parts.length ? ` after ${parts.join(" and ")}` : "";
+}
+
 function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
-  const holdings = idleWalletHoldingsFrom(ctx.observations, ctx.now);
+  const holdings = holdingsAfterReserves(idleWalletHoldingsFrom(ctx.observations, ctx.now), ctx.walletReserves);
   const dust = dustWalletHoldingsFrom(ctx.observations, ctx.now);
   const txFloor = transactionFloorUsdWad(ctx.observations, ctx.now);
   const prices = freshPrices(ctx.observations, ctx.now);
@@ -723,6 +756,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           const owedUsd = Number(formatWad(mulDown(decimalWad(owedTokens), price.price, WAD))).toFixed(2);
           throw new Reject(name, `you owe ${owedTokens} ${leg.asset} (~$${owedUsd}) and the wallet holds no spendable ${leg.asset} — add ${owedTokens} ${leg.asset} to the wallet, or redeem it from Earn first`);
         }
+        const kept = ctx.walletReserves?.find((row) => row.asset === leg.asset);
+        if (kept && held) throw new Reject(name, `everything spendable in ${leg.asset} is inside the ${kept.amount} ${leg.asset} you asked to keep in the wallet`, walletShortageMismatch(leg), true);
         const mismatch = lendPocketMismatch(leg, ctx);
         throw new Reject(name, mismatch
           ? `${leg.asset} is held in the margin account, not the wallet — withdraw it to the wallet before lending, or skip this leg`
@@ -776,7 +811,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
          * times their count, and the leg carries no rate, so nothing downstream reads it
          * as a real figure — it exists only so the economics pass has a decimal to parse.
          */
-        drafts.push({ leg, name, usd: "0", tokens: shares, produces: null, heldTokens: null });
+        // Valued from the pool read when there is one (lpExitUsd); otherwise "0" as described above.
+        drafts.push({ leg, name, usd: lpExitUsd(ctx.observations, leg.asset, shares, ctx.now) ?? "0", tokens: shares, produces: null, heldTokens: null });
         continue;
       }
       if (flow.positionRead === null) throw new Reject(name, `all_position applies to ${positionOps()}`);
@@ -1070,7 +1106,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           : noIdleReason(leg.asset, dust, txFloor, ctx), mismatch ?? walletShortageMismatch(leg), true);
       }
       const available = decimalWad(idle.tokens);
-      if (available < amountWad) throw new Reject(name, `only ${formatWad(available)} ${leg.asset} is spendable in the wallet${earlier.length ? " after the legs before it" : ""}`, walletShortageMismatch(leg), true);
+      if (available < amountWad) throw new Reject(name, `only ${formatWad(available)} ${leg.asset} is spendable in the wallet${spendableAfter(leg.asset, ctx, earlier.length > 0)}`, walletShortageMismatch(leg), true);
     }
     if (flow.from === "account") {
       const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
@@ -1152,10 +1188,31 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
   let finalHealthFactor: string | null = null;
   if (marginDrafts.length) {
     const capacity = ctx.capacity!;
+    /**
+     * Whether a repay fits inside that token's own debt read, less earlier repays of it in
+     * this plan. Checked here, from the read, rather than inferred from how the leg was
+     * sized: a fraction-of-idle repay with nothing owed is NOT bounded (the shape matrix).
+     */
+    const owedLeft = new Map<string, bigint>();
+    const withinOwnDebt = (d: Draft): boolean => {
+      if (OP_FLOW[d.leg.op].to !== "debt" || d.tokens === null) return false;
+      const debtDef = resolveAssetDef(d.leg.asset);
+      if (!debtDef?.marginSymbol) return false;
+      const owed = positionRowBalance(ctx.observations, "account_debt", POSITION_ROWS.account_debt, debtDef.marginSymbol, debtDef.id, ctx.now);
+      if (owed === null) return false;
+      try {
+        const left = owedLeft.get(d.leg.asset) ?? decimalWad(owed);
+        const amount = decimalWad(d.tokens);
+        if (amount > left) return false;
+        owedLeft.set(d.leg.asset, left - amount);
+        return true;
+      } catch { return false; }
+    };
     const requests: LegRequest[] = marginDrafts.map((d) => ({
       op: d.leg.op as SizedOp, label: d.name,
       amountUsd: d.usd === "max" ? "max" : typeof d.usd === "string" ? d.usd : "0",
       ...(d.capUsd !== undefined ? { capUsd: d.capUsd } : {}),
+      ...(withinOwnDebt(d) ? { withinPosition: true } : {}),
     }));
     /**
      * The floor is a stop condition for legs that can LOWER health. A sequence of deposits
@@ -1374,6 +1431,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    */
   let rateUnknown = false;
   let borrowRateUnknown = false;
+  // Each rated leg, for the APY the card shows (apy.ts); the APR sums above stay the judge.
+  const apyLegs: { kind: RateKind; usd: number; aprPct: string }[] = [];
   for (const d of drafts) {
     const usd = decimalWad(d.usd as string);
     const rate = OP_FLOW[d.leg.op].rate;
@@ -1384,6 +1443,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       continue;
     }
     const apr = legRate(d.leg.op, d.leg.asset, ctx.comparisons);
+    if (apr !== null) apyLegs.push({ kind: rate, usd: Number(formatWad(usd)), aprPct: apr });
     if (rate === "earn_borrow") {
       if (apr === null) { borrowRateUnknown = true; borrowed += usd; continue; }
       borrowed += usd;
@@ -1455,9 +1515,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       })
     : null;
   if (remainingDebt && remainingDebt.length === 0) finalHealthFactor = null;
-  // What the plan places: the supplied total, else the final leg's amount (a redeem feeding a
-  // deposit is one sum of money, not two).
-  const deployed = supplied > ZERO ? supplied : decimalWad(drafts[drafts.length - 1].usd as string);
+  // What the plan places: the supplied total, else the value its legs move, counted once.
+  const deployed = supplied > ZERO ? supplied
+    : valueMovedWad(drafts.map((d) => ({ op: d.leg.op, asset: d.leg.asset, assetOut: d.leg.assetOut, usd: d.usd as string })));
   const netApr = deployed > ZERO ? (returnWad * WAD) / deployed : ZERO;
   const borrows = borrowed > ZERO;
   const lastSupply = [...drafts].reverse().find((d) => suppliesAtRate(d.leg.op));
@@ -1474,6 +1534,14 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     // income is not this plan's net APR, and the card already renders null as "not read".
     netAprPct: borrows && supplied > ZERO && !returnUnreadable ? formatWad(netApr) : null,
     supplyAprPct: rateUnknown || supplied === ZERO ? null : formatWad(grossSupplyApr(drafts, ctx.comparisons, supplied)),
+    // Null under exactly the conditions the APR beside it is null.
+    ...(() => {
+      const apy = planApy(apyLegs, Number(formatWad(deployed)));
+      return {
+        supplyApyPct: rateUnknown || supplied === ZERO || apy.supplyApyPct === null ? null : pct(apy.supplyApyPct),
+        netApyPct: borrows && supplied > ZERO && !returnUnreadable && apy.netApyPct !== null ? pct(apy.netApyPct) : null,
+      };
+    })(),
     legs: sized,
     finalHealthFactor,
     amountUsd: formatWad(deployed),
@@ -1550,6 +1618,33 @@ function earnPositionOf(observations: readonly Observation[], asset: string, now
  * read it as-is. Matched by the same `asset` argument the catalog bound the read with, so
  * a Soroswap SOUSDC read is never mistaken for the default Aquarius AQUSDC pair.
  */
+/**
+ * What leaving an LP position is worth in USD: the shares' slice of each reserve at its
+ * oracle price. The pool is the one registry pair that holds `asset`, read from the same
+ * pool-reserves observation an LP entry sizes from. Null (and the leg stays "0", as before)
+ * when the pool is ambiguous, not read, or a price is missing. 23 Sep, X12: the Farm exit
+ * option read "Amount $0.00" because both LP legs carried no value.
+ */
+export function lpExitUsd(observations: readonly Observation[], asset: string, shares: string, now: number): string | null {
+  const pools = lpPairs().filter(({ tokens }) => tokens.includes(asset as never));
+  if (pools.length !== 1) return null;
+  const [base, quote] = pools[0].tokens;
+  // Pool reads are keyed by the pair's non-base token, as every other caller keys them.
+  const reserves = poolReservesOf(observations, quote, pools[0].venue, now);
+  if (!reserves) return null;
+  const basePrice = priceFor(base, observations, now);
+  const quotePrice = priceFor(quote, observations, now);
+  if (!basePrice.ok || !quotePrice.ok) return null;
+  try {
+    const total = decimalWad(reserves.totalShare);
+    if (total <= ZERO) return null;
+    const share = (decimalWad(shares) * WAD) / total;
+    const baseOut = mulDown(decimalWad(reserves.xlm), share, WAD);
+    const quoteOut = mulDown(decimalWad(reserves.paired), share, WAD);
+    return formatWad(mulDown(baseOut, basePrice.price, WAD) + mulDown(quoteOut, quotePrice.price, WAD));
+  } catch { return null; }
+}
+
 function farmLpPositionOf(observations: readonly Observation[], asset: string, now: number): string | null {
   const read = [...observations].reverse().find((o) =>
     o.capability === "farm_lp_position" && o.status === "ok" && o.data && o.args.asset === asset && now - o.observedAt <= 60_000);
@@ -1848,6 +1943,78 @@ function quoteStatesAmount(quote: string, messages: readonly string[], amount: s
   return messages.some((m) => m.includes(quote)) && tokenAmountsIn(quote).some((n) => sameAmount(n, amount));
 }
 
+/**
+ * The value a plan moves, counted once. A leg whose output a later leg spends again (it
+ * `feeds` that leg, in the asset it produced) is one sum of money with it — a redeem feeding
+ * a deposit is one amount, not two. Every other leg moves money of its own, so it adds.
+ *
+ * Live, 23 Sep: this took only the FINAL leg, so "withdraw all funds" — four independent
+ * Earn redeems — reported the last redeem's $52.07 as the value of the whole plan.
+ */
+export function valueMovedWad(legs: readonly { op: WorkflowOp; asset?: string | null; assetOut?: string | null; usd: string }[]): bigint {
+  return legs.reduce((sum, leg, i) => {
+    const produced = producedAsset(leg);
+    const spentLater = produced !== null && legs.slice(i + 1).some((later) => later.asset === produced && feeds(leg.op, later.op));
+    return spentLater ? sum : sum + decimalWad(leg.usd);
+  }, ZERO);
+}
+
+/**
+ * Join plans the user asked for together into ONE plan, or say why not.
+ *
+ * Each part keeps its own leg order, so its internal hand-offs (deposit → supply the same
+ * tokens) are untouched. Parts are ordered by the first stage they need, read off OP_FLOW:
+ * leaving a position first (it fills the margin account or wallet), then legs that raise
+ * health (deposit, repay), then neutral moves, then legs that lower health (withdraw,
+ * borrow). Two parts acting on the same op and asset are two ways to use the same tokens,
+ * not two parts, so they are never joined. Nothing is added: the joined legs are exactly
+ * the parts' legs. Sizing and every check still run on the result, and the caller falls
+ * back to the separate parts whenever the joined plan does not size or is too long.
+ */
+export function joinPlanParts(plans: readonly ProposedPlan[]): { plan: ProposedPlan } | { reason: string } {
+  if (plans.length < 2) return { reason: "only one plan" };
+  const touched = new Set<string>();
+  for (const plan of plans) {
+    for (const key of new Set(plan.legs.map((leg) => `${leg.op}:${leg.asset}`))) {
+      if (touched.has(key)) return { reason: `two plans both ${key.replace(":", " ")}` };
+      touched.add(key);
+    }
+  }
+  const stage = (op: WorkflowOp): number => {
+    const flow = OP_FLOW[op];
+    if (POSITION_POCKETS.includes(flow.from)) return 0;
+    return flow.health === "raises" ? 1 : flow.health === "neutral" ? 2 : 3;
+  };
+  const first = (plan: ProposedPlan) => Math.min(...plan.legs.map((leg) => stage(leg.op)));
+  const ordered = plans.map((plan, index) => ({ plan, index }))
+    .sort((a, b) => first(a.plan) - first(b.plan) || a.index - b.index).map(({ plan }) => plan);
+  return { plan: {
+    title: ordered.map((plan) => plan.title).join(" + ").slice(0, 200),
+    rationale: ordered.map((plan) => plan.rationale).join(" "),
+    evidenceIds: [...new Set(ordered.flatMap((plan) => plan.evidenceIds))],
+    legs: ordered.flatMap((plan) => plan.legs),
+  } };
+}
+
+/**
+ * Size the joined plan; keep it only if it sizes and fits one approval. Otherwise size the
+ * separate parts, exactly as the turn would have without joining. `warning` is set only when
+ * the join was dropped for length, the one case the user cannot tell from the options alone.
+ */
+export function resolveJoinedOrParts(
+  joined: ProposedPlan, parts: readonly ProposedPlan[], ctx: PlanContext, maxSteps: number,
+): { plans: ProposedPlan[]; resolved: ResolvedPlans; warning: string | null } {
+  const resolved = resolvePlans([joined], ctx);
+  const steps = resolved.candidates[0]?.steps?.length ?? 0;
+  if (steps > 0 && steps <= maxSteps) return { plans: [joined], resolved, warning: null };
+  return {
+    plans: [...parts], resolved: resolvePlans(parts, ctx),
+    warning: steps > maxSteps
+      ? `Doing all of this together takes ${steps} transactions, more than one approval can run (${maxSteps}), so the parts are shown separately.`
+      : null,
+  };
+}
+
 export function literalAmountAnchored(
   sizing: Extract<PlanSizing, { kind: "literal" }>,
   ctx: PlanContext,
@@ -2013,8 +2180,16 @@ function venueLabel(venue: string): string {
 }
 
 /** "Deposit", "Withdraw", "Supply", "Lend" … — the op's verb for labels and refusals. */
-function verbOf(op: WorkflowOp): string {
-  const verb = op === "supply_blend" ? "supply" : op.split("_")[0];
+/**
+ * The verb in an op's name: its first word that is not one of the op's own pockets.
+ * Op names put the venue first ("blend_withdraw") or last ("supply_blend"), so the first
+ * word alone labelled a Blend exit "Blend 181.9 BLUSDC" (23 Sep, X12). The pockets come
+ * from OP_FLOW, so a new op needs no entry here.
+ */
+export function verbOf(op: WorkflowOp): string {
+  const { from, to } = OP_FLOW[op];
+  const words = op.split("_");
+  const verb = words.find((word) => word !== from && word !== to) ?? words[0];
   return verb.charAt(0).toUpperCase() + verb.slice(1);
 }
 /** Where a step's label says the tokens go, from the table's destination pocket. */

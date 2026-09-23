@@ -120,6 +120,21 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           properties: { value: { type: "string" }, sourceQuote: { type: "string" } },
           required: ["value", "sourceQuote"],
         },
+        planRelation: {
+          type: "object",
+          description: "Only when you return more than one plan. kind \"parts\" when the user asked for all of them together (one request covering several assets or venues), \"alternatives\" when they are different ways to do the same thing. sourceQuote is the exact substring of the user's message that decides it.",
+          properties: { kind: { type: "string", enum: ["alternatives", "parts"] }, sourceQuote: { type: "string" } },
+          required: ["kind", "sourceQuote"],
+        },
+        walletReserves: {
+          type: "array",
+          description: "Only when the user said to leave a stated amount of a token in the wallet, untouched by the plan. asset is the token; amount is their exact decimal; sourceQuote is the exact substring of their message that contains it. Never invent one.",
+          items: {
+            type: "object",
+            properties: { asset: { type: "string" }, amount: { type: "string" }, sourceQuote: { type: "string" } },
+            required: ["asset", "amount", "sourceQuote"],
+          },
+        },
         findings: {
           type: "array",
           items: {
@@ -226,6 +241,8 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.actions !== undefined) goal.actions = source.actions;
   if (source.write !== undefined) goal.write = source.write;
   if (source.healthFactorFloor !== undefined) goal.healthFactorFloor = source.healthFactorFloor;
+  if (source.walletReserves !== undefined) goal.walletReserves = source.walletReserves;
+  if (source.planRelation !== undefined) goal.planRelation = source.planRelation;
   // Copied by name, like every field above it. A field the model answers and this does not
   // forward is a field that silently does not exist: 16 Sep, the card read "Understood as:
   // Swap 100 XLM for SOUSDC with explicit slippage acceptance" while the sizer refused the

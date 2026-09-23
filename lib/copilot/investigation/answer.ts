@@ -3,6 +3,7 @@ import type { CandidateSet } from "./candidates";
 import type { ResearchCapacity } from "./view";
 import { ASSET_IDS } from "../registry/assets";
 import { blendSupplyApyFromApr } from "../../rate-display";
+import { deploysIntoPosition } from "../workflow/types";
 
 const NAMED_ASSET = new RegExp(`\\b(${ASSET_IDS.join("|")})\\b`, "g");
 
@@ -215,6 +216,14 @@ export function formatHealthFactor(value: string): string {
   return Number.isFinite(n) ? n.toFixed(2) : value;
 }
 
+/**
+ * A plan's rate as the venue pages show it: the APY when the sizer computed one (apy.ts),
+ * otherwise the APR, labelled as the APR it is. Never an APR figure with an APY label.
+ */
+function shownRate(apyPct: string | null | undefined, aprPct: string, prefix = ""): string {
+  return apyPct != null ? `${Number(apyPct).toFixed(2)}% ${prefix}APY` : `${Number(aprPct).toFixed(2)}% ${prefix}APR`;
+}
+
 function money(usd: string): string {
   const n = Number(usd);
   return Number.isFinite(n)
@@ -261,13 +270,28 @@ export function strategyReply(input: {
       const legs = top.steps.map((step) => step.label.charAt(0).toLowerCase() + step.label.slice(1)).join(", then ");
       // A plan that only repays earns nothing; say what it repays, not an APR on it.
       const repays = top.steps.filter((step) => step.op === "repay");
+      // The step list is the structured source of truth for funding. A composed plan can
+      // borrow and then supply, so its supply leg must not be described as idle-wallet cash.
+      const includesBorrow = top.steps.some((step) => step.op === "borrow");
+      /**
+       * Whether the plan puts money INTO a position at all, read off OP_FLOW, never a verb.
+       * 23 Sep, X12: four Earn redeems were captioned "using idle funds only; the supply rate
+       * could not be read". A plan that only takes money out has no supply rate and spends
+       * no idle funds, so it gets no rate sentence; its amount is on the card.
+       */
+      const deploys = top.steps.some((step) => deploysIntoPosition(step.op));
       const rate = repays.length && repays.length === top.steps.filter((step) => step.op !== "deposit_collateral").length
         ? ` Repays ${repays.map((step) => `${step.amount} ${step.asset}`).join(" and ")} of margin debt from the wallet.`
+        : !deploys ? ""
         : top.netAprPct !== null
-          ? ` About ${Number(top.netAprPct).toFixed(2)}% net APR after borrow cost, before fees.`
+          ? ` About ${shownRate(top.netApyPct, top.netAprPct, "net ")} after borrow cost, before fees.`
           : top.supplyAprPct === null
-            ? ` ${money(top.amountUsd)} using idle funds only; the supply rate could not be read this time.`
-            : ` About ${Number(top.supplyAprPct).toFixed(2)}% APR on ${money(top.amountUsd)}, using idle funds only.`;
+            ? includesBorrow
+              ? ` ${money(top.amountUsd)}; this plan includes borrowing, and the supply rate could not be read this time.`
+              : ` ${money(top.amountUsd)} using idle funds only; the supply rate could not be read this time.`
+            : includesBorrow
+              ? ` About ${shownRate(top.supplyApyPct, top.supplyAprPct)} on ${money(top.amountUsd)}; this plan includes borrowing.`
+              : ` About ${shownRate(top.supplyApyPct, top.supplyAprPct)} on ${money(top.amountUsd)}, using idle funds only.`;
       const hf = top.finalHealthFactor
         ? ` Health factor after this would be ${Number(top.finalHealthFactor).toFixed(2)}.`
         : top.repaysAllDebt ? " No debt would remain." : "";
@@ -278,7 +302,7 @@ export function strategyReply(input: {
     }
     const rates = top.venue === "earn" ? "Earn and Blend supply rates" : "live farm rates";
     const carry = top.netAprPct
-      ? `Blend’s supply rate minus borrow cost is about ${Number(top.netAprPct).toFixed(2)}% APR before fees.`
+      ? `Blend’s supply rate minus borrow cost is about ${shownRate(top.netApyPct, top.netAprPct)} before fees.`
       : "That uses idle funds only, so health factor does not move.";
     const floor = input.capacity
       ? ` Sized so health stays at or above ${Number(input.capacity.floor).toFixed(2)}.`

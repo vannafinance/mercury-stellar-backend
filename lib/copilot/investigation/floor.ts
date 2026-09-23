@@ -24,6 +24,34 @@ export function anchoredSlippageAccepted(
   return messages.some((message) => message.includes(accepted.sourceQuote));
 }
 
+/**
+ * The wallet reserves the user stated, kept only when the quote really is in a message they
+ * sent and contains the amount. The same anchoring as the floor: the model locates the
+ * sentence, the user's own text vouches for the number. When one token is named twice the
+ * larger amount stands, since keeping more back is never the unsafe reading.
+ */
+export function anchoredWalletReserves(
+  goal: Pick<GoalUnderstanding, "walletReserves"> | null | undefined,
+  messages: readonly string[],
+): { asset: string; amount: string }[] {
+  const kept = new Map<string, string>();
+  for (const row of goal?.walletReserves ?? []) {
+    if (!row.sourceQuote.includes(row.amount) || !messages.some((message) => message.includes(row.sourceQuote))) continue;
+    const prior = kept.get(row.asset);
+    if (prior === undefined || Number(row.amount) > Number(prior)) kept.set(row.asset, row.amount);
+  }
+  return [...kept].map(([asset, amount]) => ({ asset, amount }));
+}
+
+/** True only when the model said its plans are PARTS of one request, quoting words the user really sent. */
+export function anchoredPlanParts(
+  goal: Pick<GoalUnderstanding, "planRelation"> | null | undefined,
+  messages: readonly string[],
+): boolean {
+  const relation = goal?.planRelation;
+  return relation?.kind === "parts" && messages.some((message) => message.includes(relation.sourceQuote));
+}
+
 export function anchoredGoalFloor(goal: Pick<GoalUnderstanding, "healthFactorFloor"> | null | undefined, messages: readonly string[]): string | null {
   const floor = goal?.healthFactorFloor;
   if (!floor) return null;

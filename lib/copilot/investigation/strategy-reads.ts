@@ -6,7 +6,7 @@
  */
 
 import type { MCPClient } from "../mcp-client";
-import { allAssets, ASSET_SYMBOL_PATTERN, poolVenueFor } from "../registry/assets";
+import { allAssets, ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor } from "../registry/assets";
 import { resolveRead } from "./capabilities";
 import { interruptible } from "./runtime";
 import { isRecord } from "./decision";
@@ -87,6 +87,12 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
           legVenue === "soroswap" ? "soroswap_pool_reserves" : "aquarius_pool_reserves",
           leg.asset === "XLM" ? leg.assetOut : leg.asset,
         );
+      }
+      // Leaving an LP position is valued from the same pool read (plan.ts `lpExitUsd`): the
+      // shares' slice of each reserve. Keyed off the op's source pocket, not a list of ops.
+      if (flow.from === "lp") {
+        const pools = lpPairs().filter(({ tokens }) => tokens.includes(leg.asset as never));
+        if (pools.length === 1) want(pools[0].venue === "soroswap" ? "soroswap_pool_reserves" : "aquarius_pool_reserves", pools[0].tokens[1]);
       }
       // A lend is funded from the wallet; the account read is how a wrong-pocket
       // sibling becomes a withdraw-then-lend offer instead of a silent skip.

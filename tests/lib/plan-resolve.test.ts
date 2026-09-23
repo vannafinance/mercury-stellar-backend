@@ -683,7 +683,8 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
   it.each([
     ["borrowing forbidden", { borrowing: "forbidden" as const }, [{ op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } }], "borrow XLM", "you said no new borrowing"],
     ["floor at the liquidation line", { capacity: { ...CAPACITY, floor: "1.1" } }, [{ op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } }], null, /floor at or below 1.1 is the liquidation line/],
-    ["Blend supply from the wallet directly", {}, [{ op: "supply_blend", asset: "XLM", sizing: { kind: "all_idle" } }], "supply blend XLM", /deposit the idle tokens as collateral first/],
+    // 23 Sep (owner): "supply my idle XLM to Blend" is no longer refused; it becomes deposit +
+    // supply, as a repay from idle already was. Pinned in idle-into-account-ops.test.ts.
     ["a literal Blend supply with nothing put in before it", { messages: ["supply 100 XLM to Blend"] }, [{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "supply 100 XLM" } }], "supply blend XLM", /add that leg before it/],
     ["a literal Blend supply larger than the deposit before it", { messages: ["deposit 100 XLM and supply 200 XLM to Blend"] }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } }, { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "200", sourceQuote: "supply 200 XLM" } }], "supply blend XLM", "only 100 XLM is in the margin account after the legs before it"],
     ["nothing idle", {}, [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_idle" } }], "lend AQUSDC", "AQUSDC is not in the connected wallet"],

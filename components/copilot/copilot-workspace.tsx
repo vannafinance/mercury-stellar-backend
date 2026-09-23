@@ -1687,7 +1687,7 @@ export function CopilotWorkspace() {
     setResponse(null);
     setLoading(false);
     cancelledRef.current = false;
-    abortRef.current?.abort();
+    abortRef.current?.abort("workspace reset");
     abortRef.current = null;
   }, [workflow]);
   const startNewChat = useCallback(() => { leavePlanCard(); investigation.newChat(); }, [leavePlanCard, investigation]);
@@ -2511,7 +2511,7 @@ export function CopilotWorkspace() {
       }
       const ac = new AbortController();
       if (!quiet) {
-        abortRef.current?.abort();
+        abortRef.current?.abort("workspace superseded");
         abortRef.current = ac;
       }
 
@@ -2743,7 +2743,7 @@ export function CopilotWorkspace() {
 
   const cancelInFlight = useCallback(() => {
     cancelledRef.current = true;
-    abortRef.current?.abort();
+    abortRef.current?.abort("cancel pressed");
     abortRef.current = null;
     setLoading(false);
     setSigning(false);
@@ -2978,7 +2978,7 @@ export function CopilotWorkspace() {
      */
     cancelledRef.current = false;
     if (loading) {
-      abortRef.current?.abort();
+      abortRef.current?.abort("superseded by a new send");
       abortRef.current = null;
       setLoading(false);
     }
@@ -4825,7 +4825,7 @@ export function CopilotWorkspace() {
   /** Clear current answer / staged action but keep session log. */
   const reset = () => {
     cancelledRef.current = true;
-    abortRef.current?.abort();
+    abortRef.current?.abort("composer reset");
     abortRef.current = null;
     setLoading(false);
     setSigning(false);
@@ -4846,7 +4846,7 @@ export function CopilotWorkspace() {
 
   const stopRemainingLegs = useCallback(() => {
     cancelledRef.current = true;
-    abortRef.current?.abort();
+    abortRef.current?.abort("remaining legs stopped");
     abortRef.current = null;
     setLoading(false);
     setSigning(false);

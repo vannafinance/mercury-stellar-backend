@@ -74,7 +74,9 @@ describe("investigation card / options", () => {
 
     expect(screen.getByRole("heading", { name: /^Options?$/ })).toBeTruthy();
     expect(screen.getByText(/Borrow BLUSDC to the 1.30 floor and supply it to Blend/)).toBeTruthy();
-    expect(screen.getByText("+6.00% net APR")).toBeTruthy();
+    // Quoted as APY (23 Sep, owner): the figure is the candidate's own, not a restated constant.
+    const levered = candidates.feasible.find((c) => c.borrows)!;
+    expect(screen.getByText(`+${Number(levered.netApyPct).toFixed(2)}% net APY`)).toBeTruthy();
     // The full-precision $6,541.043333… reads at the precision a person uses, and the
     // projected floor is shown next to it — a size with no health consequence beside it
     // is the number that gets approved without being understood.
@@ -103,8 +105,10 @@ describe("investigation card / options", () => {
 
     expect(screen.getByText(/Supply idle BLUSDC to Blend — no new borrowing/)).toBeTruthy();
     expect(screen.getByText(/Lend idle BLUSDC to Earn — no new borrowing/)).toBeTruthy();
-    expect(screen.getByText("25.41% APR")).toBeTruthy();
-    expect(screen.getByText("10.00% APR")).toBeTruthy();
+    for (const idle of candidates.feasible.filter((c) => !c.borrows)) {
+      expect(screen.getByText(`${Number(idle.supplyApyPct).toFixed(2)}% APY`)).toBeTruthy();
+    }
+    expect(screen.queryByText(/% APR$/)).toBeNull();
     expect(screen.getAllByText("$680.00")).toHaveLength(2);
     // Two idle options leave health untouched; the levered third is the only one with a figure.
     expect(screen.getAllByText("Health factor after").map((dt) => dt.nextElementSibling?.textContent)).toEqual(["unchanged", "unchanged", "1.30"]);
@@ -120,7 +124,7 @@ describe("investigation card / options", () => {
     expect(screen.getByText(/Supply idle BLUSDC to Blend — no new borrowing/)).toBeTruthy();
     // "Do not borrow" must not surface a borrow shape at all — not even ruled out, which
     // still reads as a suggestion the user already declined.
-    expect(screen.queryByText(/net APR/)).toBeNull();
+    expect(screen.queryByText(/net AP[RY]/)).toBeNull();
     expect(screen.queryByText(/Ruled out/)).toBeNull();
   });
 
@@ -136,8 +140,10 @@ describe("investigation card / options", () => {
 
     const order = [...container.querySelectorAll("p")]
       .map((node) => node.textContent ?? "")
-      .filter((text) => text.includes("net APR"));
-    expect(order).toEqual(["+16.00% net APR", "+2.00% net APR"]);
+      .filter((text) => text.includes("net APY"));
+    // The better carry (XLM, +16 points of APR) renders first; each figure is its candidate's APY.
+    expect(candidates.feasible.map((c) => c.asset)).toEqual(["XLM", "BLUSDC"]);
+    expect(order).toEqual(candidates.feasible.map((c) => `+${Number(c.netApyPct).toFixed(2)}% net APY`));
   });
 
   it("omits the block entirely when no floor was stated, rather than showing an empty heading", () => {

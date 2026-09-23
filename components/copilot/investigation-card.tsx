@@ -72,9 +72,15 @@ const BORROWING: Record<Borrowing, string | null> = {
 
 /** The rate is shown only when the option earns or pays one; a repay has none, and "0.00% APR" was a false figure. */
 function rateOf(candidate: NonNullable<ResearchView["candidates"]>["feasible"][number]): string | null {
-  if (candidate.netAprPct !== null) return `${Number(candidate.netAprPct) >= 0 ? "+" : ""}${Number(candidate.netAprPct).toFixed(2)}% net APR`;
+  // 23 Sep (owner-approved): quoted as APY, the way the Earn and Farm pages show it (apy.ts).
+  // A candidate without the APY figure keeps its APR, labelled as APR, never relabelled.
+  if (candidate.netAprPct !== null) {
+    const [value, unit] = candidate.netApyPct != null ? [candidate.netApyPct, "APY"] : [candidate.netAprPct, "APR"];
+    return `${Number(value) >= 0 ? "+" : ""}${Number(value).toFixed(2)}% net ${unit}`;
+  }
   if (candidate.supplyAprPct === null) return candidate.venue === "margin" ? null : "Rate not read";
-  return Number(candidate.supplyAprPct) > 0 ? `${Number(candidate.supplyAprPct).toFixed(2)}% APR` : null;
+  if (!(Number(candidate.supplyAprPct) > 0)) return null;
+  return candidate.supplyApyPct != null ? `${Number(candidate.supplyApyPct).toFixed(2)}% APY` : `${Number(candidate.supplyAprPct).toFixed(2)}% APR`;
 }
 
 /** A small heading for a section of the reply. Sentence case, no tracking, no mono. */

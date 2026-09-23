@@ -49,6 +49,11 @@ export interface ResearchCapacity {
 }
 
 export interface ResearchView {
+  /** Why a run stopped or plans were dropped, in validator terms. Never rendered; read from the response. */
+  diagnostics?: {
+    stopReason?: string; stopDetail?: string; droppedPlanReasons?: string[];
+    failedReads?: { capability: string; args: Record<string, unknown>; error: string }[];
+  };
   /**
    * `replied` is a turn answered without investigating — a greeting, or an off-domain
    * refusal. Distinct from `researched` so the record never claims reads that never ran.

@@ -44,7 +44,7 @@ const CEILINGS: Readonly<InvestigationLimits> = Object.freeze({
   maxObservationBytes: 16_384,
 });
 
-function boundedLimits(overrides: Partial<InvestigationLimits> = {}): InvestigationLimits {
+export function boundedLimits(overrides: Partial<InvestigationLimits> = {}): InvestigationLimits {
   const limits = { ...CEILINGS };
   for (const key of Object.keys(CEILINGS) as Array<keyof InvestigationLimits>) {
     const value = overrides[key] ?? CEILINGS[key];
@@ -214,8 +214,8 @@ export async function runInvestigation(
   const timer = setTimeout(() => controller.abort("deadline"), limits.maxDurationMs);
   const signal = dependencies.signal
     ? AbortSignal.any([controller.signal, dependencies.signal]) : controller.signal;
-  const finish = (outcome: InvestigationOutcome): InvestigationResult => ({
-    outcome, observations,
+  const finish = (outcome: InvestigationOutcome, stopDetail?: string): InvestigationResult => ({
+    outcome, observations, ...(stopDetail ? { stopDetail } : {}),
     usage: { modelTurns, toolCalls, elapsedMs: Math.max(0, now() - startedAt) },
     executionAllowed: false,
   });
@@ -322,7 +322,7 @@ export async function runInvestigation(
           return null;
         }
         console.warn("[copilot] investigation decision refused", { turn: modelTurns, reason: refusal, keys: isRecord(raw) ? Object.keys(raw) : typeof raw });
-        return finish({ kind: "stopped", reason: "invalid_decision" });
+        return finish({ kind: "stopped", reason: "invalid_decision" }, refusal);
       }
       span.setAttribute("vanna.investigation.decision", decision.kind);
       if (decision.kind === "research_complete") {
@@ -345,7 +345,7 @@ export async function runInvestigation(
         }
         if (!rejects.length) return finish(decision);
         console.warn("[copilot] investigation evidence refused", { turn: modelTurns, rejects: rejects.slice(0, 8) });
-        return finish({ kind: "stopped", reason: "invalid_evidence" });
+        return finish({ kind: "stopped", reason: "invalid_evidence" }, rejects.slice(0, 8).join("; "));
       }
       if (decision.kind !== "inspect") return finish(decision);
       if (toolCalls >= limits.maxToolCalls) return finish({ kind: "stopped", reason: "tool_budget" });

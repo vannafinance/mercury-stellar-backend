@@ -15,7 +15,8 @@ import { ExecutionStepper, type StepperStep } from "@/components/copilot/executi
 
 export function UserBubble({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+    // The shell pins the latest of these to the top of the view on send (copilot-shell.tsx).
+    <div data-cp-user-bubble="" style={{ display: "flex", justifyContent: "flex-end" }}>
       <p
         style={{
           maxWidth: "82%",

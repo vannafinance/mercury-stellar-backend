@@ -45,10 +45,93 @@ describe("strategyReply", () => {
       minimumFractionDigits: 2, maximumFractionDigits: 2,
     });
     expect(reply).toContain(`$${expectedMoney}`);
-    expect(reply).toMatch(/6\.00% APR/);
+    // 23 Sep: quoted as the venue pages show it (apy.ts), from the candidate's own figure.
+    expect(top.netApyPct).toBeTruthy();
+    expect(reply).toContain(`${Number(top.netApyPct).toFixed(2)}% APY`);
+    expect(reply).not.toMatch(/% APR/);
     expect(reply).toMatch(/1\.30/);
     expect(reply).not.toMatch(/1000 USDC/i);
     expect(reply).not.toMatch(/Deposit 1000/i);
+  });
+
+  it("does not describe a composed borrow plan as idle funded when its supply rate is unavailable", () => {
+    const candidate = generateCandidates({
+      grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
+      idleWalletUsd: null, comparisons: [comparison()],
+    }).feasible[0];
+    const composed = {
+      ...candidate,
+      decision: undefined,
+      netAprPct: null,
+      supplyAprPct: null,
+      supplyApyPct: null,
+      netApyPct: null,
+      amountUsd: "100",
+      steps: [
+        { id: "borrow", op: "borrow" as const, asset: "BLUSDC", amount: "100", label: "Borrow 100 BLUSDC", tool: "borrow", args: {} },
+        { id: "supply", op: "supply_blend" as const, asset: "BLUSDC", amount: "100", label: "Supply 100 BLUSDC to Blend", tool: "supply", args: {} },
+      ],
+    };
+    const reply = strategyReply({
+      status: "researched", facts: [], candidates: { feasible: [composed], rejected: [] },
+      capacity: null, question: null,
+    });
+
+    expect(reply).toMatch(/includes borrowing/);
+    expect(reply).toMatch(/supply rate could not be read/);
+    expect(reply).not.toMatch(/idle funds only/i);
+    expect(reply).not.toMatch(/% (?:APR|APY)/);
+  });
+
+  it("keeps idle-funds wording for a non-borrowing composed plan with unavailable rates", () => {
+    const candidate = generateCandidates({
+      grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
+      idleWalletUsd: null, comparisons: [comparison()],
+    }).feasible[0];
+    const composed = {
+      ...candidate,
+      decision: undefined,
+      netAprPct: null,
+      supplyAprPct: null,
+      supplyApyPct: null,
+      netApyPct: null,
+      amountUsd: "100",
+      steps: [
+        { id: "supply", op: "supply_blend" as const, asset: "BLUSDC", amount: "100", label: "Supply 100 BLUSDC to Blend", tool: "supply", args: {} },
+      ],
+    };
+    const reply = strategyReply({
+      status: "researched", facts: [], candidates: { feasible: [composed], rejected: [] },
+      capacity: null, question: null,
+    });
+
+    expect(reply).toMatch(/using idle funds only; the supply rate could not be read/);
+    expect(reply).not.toMatch(/includes borrowing/);
+  });
+
+  /**
+   * 23 Sep, X12 "withdraw all funds": four Earn redeems were captioned "using idle funds only;
+   * the supply rate could not be read". A plan that only takes money out has neither.
+   */
+  it("gives a plan that only takes money out no rate or idle-funds sentence", () => {
+    const candidate = generateCandidates({
+      grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
+      idleWalletUsd: null, comparisons: [comparison()],
+    }).feasible[0];
+    const redeems = {
+      ...candidate, decision: undefined, netAprPct: null, supplyAprPct: null, supplyApyPct: null, netApyPct: null,
+      label: "Redeem all Earn positions", amountUsd: "179.34",
+      steps: ["XLM", "BLUSDC"].map((asset) => ({
+        id: asset, op: "redeem" as const, asset, amount: "10", label: `Redeem 10 ${asset} vTokens from Earn`, tool: "vanna_redeem", args: {},
+      })),
+    };
+    const reply = strategyReply({
+      status: "researched", facts: [], candidates: { feasible: [redeems], rejected: [] }, capacity: null, question: null,
+    });
+    expect(reply).toMatch(/^Redeem all Earn positions: redeem 10 XLM/);
+    expect(reply).not.toMatch(/idle funds/);
+    expect(reply).not.toMatch(/supply rate/);
+    expect(reply).toMatch(/Approve to run those steps\.$/);
   });
 
   it("publishes conceptual findings when intent is answer and there are no sized facts", () => {
