@@ -36,7 +36,7 @@ import { sizeLegs, type SizedLeg } from "./sizing";
 import type { RateAsset, RateComparison } from "./rate-comparison";
 import { candidateId, candidateKindTraits, type CandidateKind } from "./candidate-id";
 import type { ProposalStep } from "../workflow/types";
-import { resolveAssetDef, USDC_VARIANTS } from "../registry/assets";
+import { ASSET_IDS, mentionsBareUsdc, namesAsset, resolveAssetDef, USDC_VARIANTS } from "../registry/assets";
 import { findAsset, findBorrowAmount, findBorrowAsset } from "../router";
 
 const USDC_SET = new Set<string>(USDC_VARIANTS);
@@ -441,6 +441,24 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
  * reached two ways are one option: the composed copy wins because it carries the
  * rationale the card shows. Rejections from both sides are listed with their reasons.
  */
+/**
+ * The fixed "supply idle X" options, narrowed to the assets the user actually named. Asked
+ * about one asset, the user was being offered every other asset they hold: 23 Sep, "lend my
+ * AQUA" (no Earn pool) was answered "Best path: Supply idle XLM to Blend" with five unrelated
+ * options. Names come from the registry's own aliases; a bare "USDC" names all three
+ * variants. A request that names no asset keeps every option ("use my whole wallet").
+ */
+export function onlyNamedAssets(set: CandidateSet | null, messages: readonly string[]): CandidateSet | null {
+  if (!set) return set;
+  const named = new Set<string>(ASSET_IDS.filter((id) => messages.some((message) => namesAsset(message, id))));
+  if (messages.some((message) => mentionsBareUsdc(message))) for (const id of USDC_VARIANTS) named.add(id);
+  if (!named.size) return set;
+  return {
+    feasible: set.feasible.filter((candidate) => named.has(candidate.asset)),
+    rejected: set.rejected.filter((row) => named.has(row.asset)),
+  };
+}
+
 export function mergeCandidateSets(
   fixed: CandidateSet | null,
   composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; acceptable?: true; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string } }> },

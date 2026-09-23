@@ -12,7 +12,7 @@ import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
-import { generateCandidates, idleWalletAfterReserves, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, rankingBorrowing, requestedBorrowFrom } from "./candidates";
+import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, rankingBorrowing, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { joinPlanParts, planCandidateId, resolveJoinedOrParts, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { simulateCandidates } from "./simulate";
@@ -913,7 +913,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       resolved = resolvePlans(modelPlans, planContext);
     }
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
-    candidates = mergeCandidateSets(candidates, resolved, borrowing);
+    // Fixed options only for the assets the user named; the model's composed plans are untouched.
+    candidates = mergeCandidateSets(onlyNamedAssets(candidates, messages), resolved, borrowing);
     /**
      * The sizer said what fits the facts it read; the protocol's preview says what the
      * contract will accept. An option the preview refuses is never shown; one it cannot
