@@ -171,3 +171,9 @@ model's text (item 16). Seen wrongly on X5 and on "i accept the loss", both of w
 below it, a PLAN FOR APPROVAL card for the same plan. Show one card only — the plan card — and
 approving it runs the transaction. (Same rule as item 12: an Options block only when a strategy
 produced more than one candidate.)
+
+## 19. The "Working out what to check next" status is pinned right under the user bubble  (X10)
+While a turn runs, the status line sits tight against the bottom of the user's bubble with the
+rest of the viewport empty. Its position should follow the conversation — placed where the
+assistant's reply will appear, with the same spacing a reply gets — not stuck to the bubble.
+Most visible on a long, wrapped prompt like X10.
