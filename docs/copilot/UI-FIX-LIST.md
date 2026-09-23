@@ -159,3 +159,15 @@ the user has a real choice to make between options. A plain action, a single-can
 and every refusal get no Options block and no "Ruled out" entry; a refusal is said in the
 model's text (item 16). Seen wrongly on X5 and on "i accept the loss", both of which rendered
 "Options → Ruled out: …" for a single, already-refused plan.
+
+## Item 8, restated by the owner (23 Sep) — the approval rule
+- **Single-leg** write: auto-approve ON → executes directly, no plan card. Auto-approve OFF →
+  Sign & Execute.
+- **Multi-leg** write: ALWAYS a plan card with Approve and run, in BOTH auto-approve states.
+  Never executes directly, however each leg is sized.
+
+## 18. Two cards for one plan  (X11 follow-up, 23 Sep)
+"Deposit 100 XLM and borrow XLM to HF 1.5" rendered an Options card ("Prepare this plan") AND,
+below it, a PLAN FOR APPROVAL card for the same plan. Show one card only — the plan card — and
+approving it runs the transaction. (Same rule as item 12: an Options block only when a strategy
+produced more than one candidate.)

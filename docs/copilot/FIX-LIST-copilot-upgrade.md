@@ -471,3 +471,14 @@ HF after 1.50". Correct as ONE plan (catalogue X11), but:
   put to the protocol's preview. (Also: "stand" → "stands".)
 - **Wrong answer template:** "$1,226.00 using idle funds only; the supply rate could not be read
   this time." That is the non-borrowing summary (answer.ts ~253) applied to a borrow plan.
+
+
+### Owner corrections, 23 Sep (supersede the X7 / X11 notes above where they conflict)
+- **X11:** asking the user for the floor is the INTENDED behaviour — "to the floor" requires a
+  number from the user. Inferring an XLM borrow from "deposit 100 XLM then borrow" is correct
+  intent. Neither is a defect. (The localStorage-only guardian floor falling back to 1.3 on
+  another device remains a separate concern.) Still open from X11: the borrow leg unsimulated,
+  and the "using idle funds only" summary on a borrow plan.
+- **X7:** the plan shape (LP exit → repay) is correct. The notes above are downgraded to VERIFY
+  items, not defects; the observed one to check is the "That option no longer sizes on the
+  current reads" message after Prepare.
