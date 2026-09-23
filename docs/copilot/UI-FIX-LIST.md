@@ -112,3 +112,25 @@ produced `POST /workflow/propose 404` several times a second. The effect now sto
 ## Test hygiene (not UI)
 `investigation-plans-e2e` writes real entries into `.local/copilot-audit` (`subject: "user"`).
 Tests should use a temp directory.
+
+## 14. "Done" is declared after the FIRST leg of a multi-leg run  (X1, 23 Sep)
+`deposit 100 XLM as collateral and borrow 20 BLUSDC`: mid-run the page showed the deposit
+Settled, the borrow **Queued**, and beneath them "Done — All approved transactions were
+confirmed on chain." Both legs did settle (BLUSDC debt +20 exactly), but the completion
+message was rendered while a leg was still pending. Had leg 2 failed, the user would have
+been told the run succeeded. "Done" must be derived from every leg being settled, never from
+the first confirmed transaction. This one is a correctness bug in the status, not cosmetics.
+
+## 15. One execution card, in place — no separate "Done" card  (X1, 23 Sep; supersedes 7 and 14)
+Today a run shows up to THREE things: an EXECUTION PROGRESS card (rendered above "Understood
+as"), the plan card, and afterwards a separate "Done — All approved transactions were
+confirmed on chain" card below.
+
+The design: the plan card becomes the execution card when Approve is clicked, in the SAME
+place, and it is the only card for that run. It carries the progress — each leg moving
+Queued → Submitting → Settled with its tx link — and its final state is simply every leg
+Settled (or the one that failed, and why). No "Done" card.
+
+This absorbs item 7 (card rendered in the wrong place) and removes item 14 (a "Done" card
+announcing completion while a leg was still Queued) by construction: with no Done card there
+is nothing to declare completion early, because completion is read off the legs themselves.
