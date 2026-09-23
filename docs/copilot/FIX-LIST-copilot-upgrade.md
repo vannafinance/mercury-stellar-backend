@@ -461,3 +461,13 @@ shares → Repay 339.6414649 BLUSDC".
    investigation scope, and let `to_floor` sizing use it when the user states no number. Note a
    standing concern: a risk floor that also drives auto-repay lives only in one browser's
    localStorage, so another device or a cleared profile silently falls back to 1.3.
+
+### X11 follow-up ("1.5") — a real ~$1,226 borrow with an unchosen asset, unsimulated
+After the user answered only the floor, the plan was "Deposit 100 XLM → Borrow 5563.1120041 XLM,
+HF after 1.50". Correct as ONE plan (catalogue X11), but:
+- **Asset never chosen:** XLM carried from run 2's default into a live borrow of ~$1,226.
+- **Borrow leg unsimulated:** "Deposit 100 XLM as collateral allowed (LTV 55.58% after); the other
+  step follows from it and stand on the projection." The leg that moves health most is the one not
+  put to the protocol's preview. (Also: "stand" → "stands".)
+- **Wrong answer template:** "$1,226.00 using idle funds only; the supply rate could not be read
+  this time." That is the non-borrowing summary (answer.ts ~253) applied to a borrow plan.
