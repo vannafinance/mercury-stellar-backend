@@ -410,3 +410,16 @@ direction check must apply to whichever path does the planning.
    it buys is not known in advance — state the next leg's amount yourself." But the swap carries
    an enforced minimum output (slippage floor); that is a known lower bound and the LP leg can be
    sized from it. The catalogue expects X5 to chain.
+
+### X5 follow-up — "i accept the loss" dead-ends, and must NOT be fixed alone
+Replying "i accept the loss" re-planned correctly ("Swap 50 XLM to AQUSDC and add as liquidity
+… accepting any potential loss/slippage") and was refused: "swap XLM: the amount 50 does not
+appear in your request." The anchor leans on the LATEST message (`requestText` = last message;
+`uniqueAmountsIn(request)`), and on a follow-up turn the latest message carries no number. The
+carried-amount rule added in 912afc6 also reads `request` and should read the whole
+conversation for the same reason.
+
+**Ordering constraint:** the anchor failing here is what stopped a swap at ~95% loss that the
+user had just been invited to accept. Fixing the cross-turn anchor BEFORE bounding the
+loss-acceptance offer would turn this into an executed 95% loss. Bound the offer first, then fix
+the anchor, in the same change.
