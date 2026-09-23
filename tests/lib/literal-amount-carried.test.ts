@@ -40,3 +40,31 @@ describe("an amount carried from an earlier stated leg is anchored", () => {
     expect(literalAmountAnchored(supply.sizing, ctx, plan, supply)).toBe(false);
   });
 });
+
+/**
+ * Live, 23 Sep: after a priced-loss refusal, the user replied "i accept the loss" and the
+ * re-plan was refused — "the amount 50 does not appear in your request" — because the latest
+ * turn carries no number. The deterministic extractor, reading the earlier turn on its own,
+ * finds swap / XLM / 50; that independent reading is what anchors the amount.
+ */
+describe("a follow-up turn keeps the amounts the user already stated", () => {
+  const convo = ["swap 50 XLM to AQUSDC and add it as liquidity with XLM on aquarius", "i accept the loss"];
+  const ctx2 = { messages: convo } as any;
+
+  it("anchors the swap at the 50 XLM the user typed a turn earlier", () => {
+    const swap = leg("swap", "XLM", "50", "i accept the loss");
+    expect(literalAmountAnchored(swap.sizing, ctx2, { legs: [swap] } as any, swap)).toBe(true);
+  });
+
+  it("still refuses an amount no turn of the conversation states", () => {
+    const swap = leg("swap", "XLM", "60", "i accept the loss");
+    expect(literalAmountAnchored(swap.sizing, ctx2, { legs: [swap] } as any, swap)).toBe(false);
+  });
+
+  it("does not let a figure stated for a DIFFERENT op size this leg", () => {
+    // 100 was stated for a deposit; a 100 XLM swap must not borrow it.
+    const ctx3 = { messages: ["deposit 100 XLM as collateral", "and swap some XLM to AQUSDC"] } as any;
+    const swap = leg("swap", "XLM", "100", "and swap some XLM to AQUSDC");
+    expect(literalAmountAnchored(swap.sizing, ctx3, { legs: [swap] } as any, swap)).toBe(false);
+  });
+});

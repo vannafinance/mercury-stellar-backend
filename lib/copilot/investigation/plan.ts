@@ -29,6 +29,7 @@ import { decimalsFrom, truncateToDecimals } from "./precision";
 import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
 import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan, StatedAction } from "./types";
 import type { OpFlow } from "../workflow/types";
+import { clauseToStep, splitStrategyClauses } from "../step-extractor";
 
 /**
  * The floor a swap write is sent with, in basis points below the oracle-implied amount —
@@ -1842,6 +1843,11 @@ export function shareSameOpLiteralActions(
  * A literal amount is the user's number. Per-asset quotes still win; when one number is
  * stated for several same-op Earn assets, that number is the amount for each.
  */
+/** A quote the user actually typed, somewhere in the conversation, that states this amount. */
+function quoteStatesAmount(quote: string, messages: readonly string[], amount: string): boolean {
+  return messages.some((m) => m.includes(quote)) && tokenAmountsIn(quote).some((n) => sameAmount(n, amount));
+}
+
 export function literalAmountAnchored(
   sizing: Extract<PlanSizing, { kind: "literal" }>,
   ctx: PlanContext,
@@ -1870,9 +1876,27 @@ export function literalAmountAnchored(
   const carried = plan.legs.slice(0, position < 0 ? 0 : position).some((earlier) =>
     earlier.asset === leg.asset &&
     earlier.sizing.kind === "literal" &&
-    request.includes(earlier.sizing.sourceQuote) &&
-    tokenAmountsIn(earlier.sizing.sourceQuote).some((n) => sameAmount(n, sizing.amount)));
+    quoteStatesAmount(earlier.sizing.sourceQuote, ctx.messages, sizing.amount));
   if (carried) return true;
+  /**
+   * A follow-up turn keeps the amounts the user already stated.
+   *
+   * Live, 23 Sep: "swap 50 XLM to AQUSDC and add it as liquidity…" was refused on a priced
+   * loss, copilot asked the user to accept it, the user replied "i accept the loss" — and the
+   * re-plan was refused with "the amount 50 does not appear in your request". The latest turn
+   * carries no number, and the model quoted it rather than the turn that did.
+   *
+   * This is the verifier role the deterministic extractor was kept for: it reads every turn of
+   * the conversation independently, and the amount is anchored only if it finds THIS op, THIS
+   * asset and THIS amount in the user's own words. A figure stated for a different op or token
+   * — the 100 of "deposit 100 XLM" sizing a swap — does not match and is still refused.
+   */
+  const statedIndependently = ctx.messages.some((m) => splitStrategyClauses(m).some((clause) => {
+    const step = clauseToStep(clause, { leverage: null, minHf: null });
+    return step?.kind === "write" && step.op === leg.op && step.asset === leg.asset &&
+      step.amount != null && sameAmount(String(step.amount), sizing.amount);
+  }));
+  if (statedIndependently) return true;
   const amounts = uniqueAmountsIn(request);
   if (amounts.length !== 1 || !sameAmount(amounts[0], sizing.amount)) return false;
   const siblings = plan.legs.filter((other) => other.op === leg.op && other.sizing.kind === "literal");

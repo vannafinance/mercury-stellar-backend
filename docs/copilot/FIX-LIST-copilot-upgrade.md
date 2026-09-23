@@ -419,7 +419,11 @@ appear in your request." The anchor leans on the LATEST message (`requestText` =
 carried-amount rule added in 912afc6 also reads `request` and should read the whole
 conversation for the same reason.
 
-**Ordering constraint:** the anchor failing here is what stopped a swap at ~95% loss that the
-user had just been invited to accept. Fixing the cross-turn anchor BEFORE bounding the
-loss-acceptance offer would turn this into an executed 95% loss. Bound the offer first, then fix
-the anchor, in the same change.
+**Owner decision, 23 Sep (supersedes an earlier ordering constraint):** when the user
+explicitly accepts the quoted loss, the swap executes — at any size. A ~95% loss was flagged and
+Aditya decided this is the correct behaviour: a user who states they bear the loss is not
+overridden. Do NOT add a loss-size bound to the accept path.
+
+**Fixed (next commit):** the literal-amount anchor now also accepts an amount the deterministic
+extractor independently reads, with the same op and asset, from ANY turn of the conversation — so
+"i accept the loss" keeps the 50 XLM stated a turn earlier.
