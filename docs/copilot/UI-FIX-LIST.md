@@ -177,3 +177,12 @@ While a turn runs, the status line sits tight against the bottom of the user's b
 rest of the viewport empty. Its position should follow the conversation — placed where the
 assistant's reply will appear, with the same spacing a reply gets — not stuck to the bubble.
 Most visible on a long, wrapped prompt like X10.
+
+## 20. The reason for a choice is buried in chips and small print  (X13, 23 Sep)
+`remove XLM position or USDC position from blend farm` correctly resolved the either/or — the XLM
+Blend position is zero, so only USDC could be withdrawn. But the REPLY said only "Withdraw all USDC
+from Blend farm: blend 170.9639547 BLUSDC. $170.99 using idle funds only; the supply rate could not
+be read this time." The reason appeared only as a chip ("XLM position in Blend is zero") and in the
+option card's small print. The reply's first sentence must carry it: "You have no XLM in Blend, so
+I'll withdraw your USDC position — 170.96 BLUSDC." (Items 12/16; plus the same wrong
+"using idle funds only" template as X11, here on a withdrawal.)
