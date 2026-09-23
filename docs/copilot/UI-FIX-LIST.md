@@ -152,3 +152,10 @@ because here the raw message was also WRONG (see FIX-LIST: X2 amount provenance)
 "only 15.175689561344202486 AQUSDC is redeemable from Earn" — 18 places, the internal fixed-
 point precision. AQUSDC has 7 on-chain decimals. Any amount shown to a user is formatted to the
 token's own decimals (the registry knows them), never the WAD it was computed in.
+
+### Item 12, refined (23 Sep): when an Options block may appear at all
+Only for a STRATEGY prompt that produced MORE THAN ONE candidate — that is the one case where
+the user has a real choice to make between options. A plain action, a single-candidate plan,
+and every refusal get no Options block and no "Ruled out" entry; a refusal is said in the
+model's text (item 16). Seen wrongly on X5 and on "i accept the loss", both of which rendered
+"Options → Ruled out: …" for a single, already-refused plan.
