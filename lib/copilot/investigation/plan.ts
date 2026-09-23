@@ -29,6 +29,7 @@ import { decimalsFrom, truncateToDecimals } from "./precision";
 import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
 import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan, StatedAction } from "./types";
 import type { OpFlow } from "../workflow/types";
+import { clauseToStep, splitStrategyClauses } from "../step-extractor";
 
 /**
  * The floor a swap write is sent with, in basis points below the oracle-implied amount —
@@ -1842,7 +1843,12 @@ export function shareSameOpLiteralActions(
  * A literal amount is the user's number. Per-asset quotes still win; when one number is
  * stated for several same-op Earn assets, that number is the amount for each.
  */
-function literalAmountAnchored(
+/** A quote the user actually typed, somewhere in the conversation, that states this amount. */
+function quoteStatesAmount(quote: string, messages: readonly string[], amount: string): boolean {
+  return messages.some((m) => m.includes(quote)) && tokenAmountsIn(quote).some((n) => sameAmount(n, amount));
+}
+
+export function literalAmountAnchored(
   sizing: Extract<PlanSizing, { kind: "literal" }>,
   ctx: PlanContext,
   plan: ProposedPlan,
@@ -1852,6 +1858,45 @@ function literalAmountAnchored(
   const quoteInRequest = ctx.messages.some((m) => m.includes(sizing.sourceQuote)) || request.includes(sizing.sourceQuote);
   if (!quoteInRequest) return false;
   if (tokenAmountsIn(sizing.sourceQuote).some((n) => sameAmount(n, sizing.amount))) return true;
+  /**
+   * An amount carried from an earlier leg is the user's own figure, not an invented one.
+   *
+   * Live, 23 Sep: "deposit 100 XLM, borrow 20 BLUSDC and supply it to blend" was understood
+   * correctly, sized the supply leg at 20, and was then refused — "the amount 20 does not
+   * appear in your request" — although the user typed "borrow 20 BLUSDC" in the same sentence.
+   * The supply clause says "it", so its own quote has no number; and the request holds two
+   * amounts (100 and 20), so the single-amount fallback below cannot apply either.
+   *
+   * This check exists to stop the model inventing a size. An earlier leg of the SAME plan,
+   * for the SAME asset, whose own quote states this exact amount is not invention — it is
+   * the referent of "it". Read structurally from the plan's legs, with no phrasing involved:
+   * a figure is accepted only if the user literally wrote it for that token earlier.
+   */
+  const position = plan.legs.indexOf(leg);
+  const carried = plan.legs.slice(0, position < 0 ? 0 : position).some((earlier) =>
+    earlier.asset === leg.asset &&
+    earlier.sizing.kind === "literal" &&
+    quoteStatesAmount(earlier.sizing.sourceQuote, ctx.messages, sizing.amount));
+  if (carried) return true;
+  /**
+   * A follow-up turn keeps the amounts the user already stated.
+   *
+   * Live, 23 Sep: "swap 50 XLM to AQUSDC and add it as liquidity…" was refused on a priced
+   * loss, copilot asked the user to accept it, the user replied "i accept the loss" — and the
+   * re-plan was refused with "the amount 50 does not appear in your request". The latest turn
+   * carries no number, and the model quoted it rather than the turn that did.
+   *
+   * This is the verifier role the deterministic extractor was kept for: it reads every turn of
+   * the conversation independently, and the amount is anchored only if it finds THIS op, THIS
+   * asset and THIS amount in the user's own words. A figure stated for a different op or token
+   * — the 100 of "deposit 100 XLM" sizing a swap — does not match and is still refused.
+   */
+  const statedIndependently = ctx.messages.some((m) => splitStrategyClauses(m).some((clause) => {
+    const step = clauseToStep(clause, { leverage: null, minHf: null });
+    return step?.kind === "write" && step.op === leg.op && step.asset === leg.asset &&
+      step.amount != null && sameAmount(String(step.amount), sizing.amount);
+  }));
+  if (statedIndependently) return true;
   const amounts = uniqueAmountsIn(request);
   if (amounts.length !== 1 || !sameAmount(amounts[0], sizing.amount)) return false;
   const siblings = plan.legs.filter((other) => other.op === leg.op && other.sizing.kind === "literal");

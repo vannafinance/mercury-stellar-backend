@@ -69,6 +69,7 @@ import {
 } from "./resume-policy";
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
 import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { buildRunReceipt } from "./run-receipt";
 import { answerToText } from "@/lib/copilot/answer-schema";
 import { shortWriteLabel } from "@/lib/copilot/execution-copy";
 import { executeClientTools } from "@/lib/assistant/client-tools";
@@ -1641,6 +1642,15 @@ export function CopilotWorkspace() {
   const strategyStepsRef = useRef<MultiLegStepUi[]>([]);
   const [strategySteps, setStrategySteps] = useState<MultiLegStepUi[]>([]);
   /**
+   * One id for one run, so every leg updates the SAME receipt.
+   *
+   * The receipt was keyed by `response.request_id`, which is per REQUEST, and a multi-leg
+   * run is many requests. Leg 2 therefore wrote under a new key, failed to find the turn
+   * leg 1 had written, and fell through to "first assistant turn with no receipt" — so the
+   * run's receipt landed on an earlier turn and stayed frozen at one leg.
+   */
+  const runReceiptIdRef = useRef<string | null>(null);
+  /**
    * Legs this client is holding back so each one gets its own hop.
    *
    * A resume posts only the first remaining leg (splitResumeBatch) so the card
@@ -2823,6 +2833,20 @@ export function CopilotWorkspace() {
     const view = workflow.view;
     const network = investigation.result?.scope.network;
     if (!view || !network || !investigation.conversationId) return;
+    /**
+     * A receipt records what HAPPENED to a run, so there is nothing to record until one
+     * starts.
+     *
+     * This fired on any workflow view, including `proposed` — the state a plan sits in while
+     * it waits for Approve. The turn therefore grew an EXECUTION PROGRESS card whose only leg
+     * read "Queued", and because the turn renders above the investigation card, that card sat
+     * ABOVE the approval it had not been given yet. Reported 23 Sep on "lend 50 xlm".
+     *
+     * `proposed` and `validating` are the two positions before approval in the status machine
+     * (`WorkflowRecord["status"]`); every other position describes a run that has begun or
+     * finished, and those still write their receipt as before.
+     */
+    if (view.status === "proposed" || view.status === "validating") return;
     const receipt = executionReceiptFromWorkflowView(view, network);
     const key = JSON.stringify(receipt);
     if (persistedWorkflowReceiptRef.current === key) return;
@@ -2848,6 +2872,17 @@ export function CopilotWorkspace() {
     if (view.pendingWrite?.op || !candidateId || !view.continuation) return;
     if (workflow.view || workflow.loading) return;
     /**
+     * A failed propose waits for the user; it does not try again by itself.
+     *
+     * A failure releases the dispatch claim (so the same plan CAN be retried) and resets
+     * `workflow.view`/`workflow.loading` — which are this effect's own dependencies. So the
+     * effect re-ran at once, found the claim free and proposed again, forever: live 23 Sep, a
+     * broken route answered 404 and the terminal filled with `POST /workflow/propose 404`
+     * several times a second. The error is already on screen saying "please try again"; a
+     * retry is the user resending, which is a new continuation and so a new claim anyway.
+     */
+    if (workflow.error) return;
+    /**
      * A turn this page ran carries on by itself; a turn read back from the thread does not.
      * Both arrive in the same `result`, so the two are told apart by where it came from —
      * and the claim makes the dispatch survive a remount, which the old ref could not.
@@ -2858,7 +2893,7 @@ export function CopilotWorkspace() {
     void proposePlan(view.continuation, candidateId).then((prepared) => {
       if (!prepared) releaseDispatch(address, proposeKey);
     });
-  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, address]);
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, workflow.error, address]);
   useEffect(() => {
     const view = investigation.result;
     if (!view || investigation.loading || investigation.error) return;
@@ -3618,20 +3653,20 @@ export function CopilotWorkspace() {
         pushActivity(summary, result.hash);
         await refreshRailStats({ force: true, after: result.hash ?? null });
         if (result.hash) {
-          const receipt: ExecutionReceiptSnapshot = {
-            workflowId: response?.request_id || `tx-${result.hash.slice(0, 8)}`,
-            status: "completed",
+          const runLegs = strategyStepsRef.current;
+          const isRun = isRealStrategyRun(runLegs, response?.data ?? null);
+          if (isRun && !runReceiptIdRef.current) {
+            runReceiptIdRef.current = `run-${result.hash.slice(0, 8)}`;
+          }
+          const receipt = buildRunReceipt({
+            legs: runLegs,
+            isRun,
+            runId: runReceiptIdRef.current,
+            requestId: response?.request_id ?? null,
             network: investigation.result?.scope.network || "testnet",
-            steps: [
-              {
-                operation: (action?.op as any) ?? "submit",
-                asset: String(action?.asset ?? action?.token_b ?? ""),
-                amount: String(action?.amount ?? action?.amount_a ?? ""),
-                status: "settled",
-                txHash: result.hash,
-              },
-            ],
-          };
+            single: action ?? null,
+            txHash: result.hash,
+          });
           void updateExecutionReceipt(receipt);
         }
         if (investigation.turns.length > 0) {

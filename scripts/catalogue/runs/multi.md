@@ -1,0 +1,20 @@
+# Catalogue run — 2026-09-23T05:20:24.624Z
+
+section: multi · wallet: none
+
+| id | prompt | status | understood as | borrowing | opts | ms | note |
+|---|---|---|---|---|---|---|---|
+| X1 | deposit 100 XLM as collateral and borrow 20 BLUSDC | researched | Deposit 100 XLM as collateral and borrow 20 BLUSDC. | required | — | 7766 | I checked the shape against your position and the live rates, and none could be prepared: Deposit 100 XLM, then Borrow 20 BLUSDC — deposit c |
+| X2 | deposit 100 XLM, borrow 20 BLUSDC and supply it to blend | researched | Deposit 100 XLM as collateral, borrow 20 BLUSDC, and supply it to Blend. | required | — | 5536 | I checked the shape against your position and the live rates, and none could be prepared: Deposit 100 XLM, then Borrow 20 BLUSDC, then Suppl |
+| X3 | redeem 20 AQUSDC from earn and deposit it as collateral | researched | Redeem 20 AQUSDC from Earn and deposit it as collateral. | unspecified | — | 6652 | I checked the shape against your position and the live rates, and none could be prepared: Redeem 20 AQUSDC, then Deposit the previous leg AQ |
+| X4 | borrow 20 SOUSDC and provide it with XLM as liquidity on soroswa | researched | Borrow 20 SOUSDC and provide it paired with XLM as liquidity on Soroswap. | required | — | 8930 | I checked the shape against your position and the live rates, and none could be prepared: Borrow 20 SOUSDC, then Add the previous leg SOUSDC |
+| X5 | swap 50 XLM to AQUSDC and add it as liquidity with XLM on aquari | researched | Swap 50 XLM to AQUSDC and add the resulting AQUSDC as liquidity paired with XLM on Aquariu | unspecified | — | 9287 | I checked the shape against your position and the live rates, and none could be prepared: Swap 50 XLM with AQUSDC on aquarius, then Add the  |
+| X6 | withdraw 30 XLM from blend and lend it in earn | researched | Withdraw 30 XLM from Blend and lend it in Vanna Earn. | unspecified | — | 9375 | I checked the shape against your position and the live rates, and none could be prepared: Blend 30 XLM, then Lend the previous leg XLM — ble |
+| X7 | remove my XLM/SOUSDC liquidity and repay my BLUSDC debt | researched | Remove XLM/SOUSDC LP liquidity and repay BLUSDC debt. | forbidden | — | 8842 | I checked the shape against your position and the live rates, and none could be prepared: Remove the whole position SOUSDC, then Repay the w |
+| X8 | withdraw 20 XLM collateral and lend it in earn | researched | Withdraw 20 XLM collateral and lend it into Vanna Earn. | unspecified | — | 9912 | I checked the shape against your position and the live rates, and none could be prepared: Withdraw 20 XLM, then Lend the previous leg XLM —  |
+| X9 | repay 10 BLUSDC then withdraw 20 XLM collateral | researched | Repay 10 BLUSDC debt and withdraw 20 XLM collateral. | unspecified | — | 5202 | I checked the shape against your position and the live rates, and none could be prepared: Repay 10 BLUSDC, then Withdraw 20 XLM — deposit co |
+| X10 | deposit 100 XLM into margin account and borrow 2x BLUSDC and SOU | researched | Deposit 100 XLM to margin, borrow BLUSDC and SOUSDC at 2x leverage, supply BLUSDC to Blend | required | — | 10437 | I checked the shape against your position and the live rates, and none could be prepared: Deposit 100 XLM, then Borrow 2x BLUSDC, then Borro |
+| X11 | deposit 100 XLM then borrow to the floor | needs_input | — | — | — | 10477 | Q: Which asset would you like to borrow, and what health factor floor (above 1.10) should be targeted? |
+| X12 | withdraw all funds | needs_input | — | — | — | 5591 | Q: Which venue (such as Margin collateral, Earn, Blend farm, or LP pools) and asset would you like to withdraw your funds from? |
+| X13 | remove XLM position or USDC position from blend farm | needs_input | — | — | — | 5981 | Q: Would you like to withdraw your XLM position or your USDC (BLUSDC) position from the Blend farm? |
+| X14 | close everything: remove my liquidity, exit blend, redeem from e | blocked | — | — | — | 12227 | I couldn’t complete this investigation with the available capabilities and information. |

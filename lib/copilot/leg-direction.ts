@@ -96,3 +96,40 @@ export function contradictsStatedSource(op: string, text: string): boolean {
   const sources = statedSourcePockets(text);
   return sources.has(flow.to) && !sources.has(flow.from);
 }
+
+/**
+ * Whether an op draws on borrowing capacity — read from `OP_FLOW`, never from the verb.
+ *
+ * `debt` as a SOURCE is what "this creates new debt" means, and it is already stated once,
+ * as data, for every op. An op added to `OP_FLOW` is classified here without touching this
+ * file.
+ */
+export function drawsNewDebt(op: string): boolean {
+  return flowOf(op)?.from === "debt";
+}
+
+/**
+ * True when two readings of the SAME sentence disagree about whether it creates debt.
+ *
+ * Live, 23 Sep, auto-approve on, one click from executing: "lend me 50xlm" was understood as
+ * "Borrow 50 XLM on margin". The deterministic extractor read the same sentence as `lend`.
+ * Supplying capital and taking on debt are opposite actions, and the word that flipped it was
+ * "me" — "lend me X" idiomatically means "loan me X", which is a defensible reading of the
+ * English and the wrong reading of a product whose Earn surface is called Lend.
+ *
+ * Because BOTH readings are defensible, this does not pick one. It reports that the sentence
+ * has two readings which differ on the only axis that cannot be undone by the user later.
+ * Resolving it by mapping the words "lend me" to an op would rebuild the verb-to-op table
+ * this module exists to replace, and would be wrong whenever "lend me" really did mean
+ * borrow.
+ *
+ * Narrow on purpose. Ops that differ in destination but agree about debt — `lend` versus
+ * `deposit_collateral`, both "put money in" — are NOT a disagreement worth stopping for; the
+ * cost of asking must stay below the cost of the mistake.
+ */
+export function disagreesOnNewDebt(a: string, b: string): boolean {
+  const flowA = flowOf(a);
+  const flowB = flowOf(b);
+  if (!flowA || !flowB) return false;
+  return (flowA.from === "debt") !== (flowB.from === "debt");
+}
