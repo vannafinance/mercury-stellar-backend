@@ -2037,6 +2037,19 @@ export function literalAmountAnchored(
   leg: PlanLeg,
 ): boolean {
   const request = requestText(ctx.messages);
+  /**
+   * The user's own words, read independently (see the follow-up-turn note below), anchor the
+   * amount even when the model's quote is not a verbatim substring. 23 Sep, X5 live: after "i
+   * accept the loss" the model quoted "Swap 50 XLM to AQUSDC" (capital S) for "swap 50 XLM…",
+   * so the quote check failed first and the reading that finds 50 in the user's message never
+   * ran. This reading never uses the model's quote, so it cannot be fooled by one.
+   */
+  const statedIndependently = ctx.messages.some((m) => splitStrategyClauses(m).some((clause) => {
+    const step = clauseToStep(clause, { leverage: null, minHf: null });
+    return step?.kind === "write" && step.op === leg.op && step.asset === leg.asset &&
+      step.amount != null && sameAmount(String(step.amount), sizing.amount);
+  }));
+  if (statedIndependently) return true;
   const quoteInRequest = ctx.messages.some((m) => m.includes(sizing.sourceQuote)) || request.includes(sizing.sourceQuote);
   if (!quoteInRequest) return false;
   if (tokenAmountsIn(sizing.sourceQuote).some((n) => sameAmount(n, sizing.amount))) return true;
@@ -2073,12 +2086,6 @@ export function literalAmountAnchored(
    * asset and THIS amount in the user's own words. A figure stated for a different op or token
    * — the 100 of "deposit 100 XLM" sizing a swap — does not match and is still refused.
    */
-  const statedIndependently = ctx.messages.some((m) => splitStrategyClauses(m).some((clause) => {
-    const step = clauseToStep(clause, { leverage: null, minHf: null });
-    return step?.kind === "write" && step.op === leg.op && step.asset === leg.asset &&
-      step.amount != null && sameAmount(String(step.amount), sizing.amount);
-  }));
-  if (statedIndependently) return true;
   const amounts = uniqueAmountsIn(request);
   if (amounts.length !== 1 || !sameAmount(amounts[0], sizing.amount)) return false;
   const siblings = plan.legs.filter((other) => other.op === leg.op && other.sizing.kind === "literal");
