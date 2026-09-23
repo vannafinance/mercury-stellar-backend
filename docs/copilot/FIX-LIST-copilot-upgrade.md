@@ -427,3 +427,18 @@ overridden. Do NOT add a loss-size bound to the accept path.
 **Fixed (next commit):** the literal-amount anchor now also accepts an amount the deterministic
 extractor independently reads, with the same op and asset, from ANY turn of the conversation — so
 "i accept the loss" keeps the 50 XLM stated a turn earlier.
+
+## X7 (23 Sep, live UI) — LP exit → repay
+`remove my XLM/SOUSDC liquidity and repay my BLUSDC debt` sized "Remove 11.0639364 XLM/SOUSDC LP
+shares → Repay 339.6414649 BLUSDC".
+
+1. **Wrong-token decision copy.** "Using SOUSDC — you hold 340 of it, so no swap is needed" is
+   printed on a plan that repays BLUSDC. Looks like the USDC-variant decision (`rankFeasible` →
+   `variantDecision`, which runs over `USDC_SET`) attached to a repay whose asset it did not pick.
+   BLUSDC debt cannot be repaid with SOUSDC without a swap. Verify which leg the copy belongs to.
+2. **HF projected DOWN on a repay.** "Health factor after 1.95" against a live 2.30, while
+   repaying 339.64 of debt. Either the LP exit removes more collateral value than the repay
+   frees, or the projection is wrong. Not determined — needs the simulation numbers.
+3. **Propose cannot see what research read.** "Prepare this plan" → "no SOUSDC LP position was
+   read this investigation. Start a new investigation." The option was sized from that very LP
+   read. The LP position evidence is not carried in the continuation to propose.
