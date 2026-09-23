@@ -62,3 +62,15 @@ describe("reading USDC names out of a sentence", () => {
     expect(namesAsset("swap 100 XLM to USDC", "AQUSDC")).toBe(false);
   });
 });
+
+/** An asset the venue does not support is refused for THAT reason, not for a missing price. */
+describe("an unsupported asset", () => {
+  it("names the missing Earn pool even when no price was read", () => {
+    const lendAqua: ProposedPlan = { title: "Lend AQUA", rationale: "r", evidenceIds: ["e1"], legs: [{ op: "lend", asset: "AQUA", sizing: { kind: "all_idle" } }] };
+    const { rejected } = resolvePlans([lendAqua], {
+      scope: SCOPE, observations: OBSERVATIONS, now: NOW, messages: ["lend my AQUA"],
+      capacity: null, borrowing: "forbidden", comparisons: compareObservedRates(OBSERVATIONS, NOW),
+    });
+    expect(rejected[0]?.reason).toBe("AQUA has no Earn pool");
+  });
+});

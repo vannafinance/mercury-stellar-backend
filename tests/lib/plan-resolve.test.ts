@@ -691,7 +691,9 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     ["previous_leg across assets", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }, { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } }], "supply blend BLUSDC", /preceding leg in the same asset/],
     ["margin position not read", { capacity: null }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin position was not read/],
     ["no margin account", { scope: { ...SCOPE, smartAccount: null } }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin account is needed/],
-    ["no price read", {}, [{ op: "lend", asset: "AQUA", sizing: { kind: "all_idle" } }], "lend AQUA", "no AQUA price was read this investigation"],
+    // 23 Sep: AQUA has no Earn pool, which is now the reason given for it (the registry is checked first).
+    // The missing-price path is exercised with an asset that is held and has a pool, minus its price read.
+    ["no price read", { observations: OBSERVATIONS.filter((o) => !(o.capability === "asset_price" && o.args.asset === "XLM")) }, [{ op: "lend", asset: "XLM", sizing: { kind: "all_idle" } }], "lend XLM", "no XLM price was read this investigation"],
     ["to_floor on a deposit", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "to_floor" } }], "deposit collateral XLM", /only a withdraw or a borrow can be sized to the health-factor floor/],
   ])("rejects with a readable reason: %s", (_name, over, legs, leg, reason) => {
     const { candidates, rejected } = resolvePlans([plan("Try", legs as ProposedPlan["legs"])], ctx(over as Partial<Parameters<typeof resolvePlans>[1]>));

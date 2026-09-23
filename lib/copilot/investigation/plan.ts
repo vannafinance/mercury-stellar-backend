@@ -574,12 +574,15 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         throw new Reject(name, `you said USDC without saying which one: ${USDC_VARIANTS.join(", ")}?`);
       }
     }
-    const price = priceFor(leg.asset, ctx.observations, ctx.now);
-    if (!price.ok) throw new Reject(name, price.reason === "stale_price" ? `the ${leg.asset} price read is older than a minute` : `no ${leg.asset} price was read this investigation`);
     // The venue the op acts on decides which spelling of the asset it needs (the op-flow table).
+    // Checked BEFORE the price: an asset the venue does not support is the real reason, and a
+    // missing price must not stand in for it (AQUA has no Earn pool; "lend AQUA" was refused
+    // as "no AQUA price was read").
     const walletOp = OP_FLOW[leg.op].venue === "earn";
     if (walletOp && !def.earnSymbol) throw new Reject(name, `${leg.asset} has no Earn pool`);
     if (!walletOp && !def.marginSymbol) throw new Reject(name, `${leg.asset} is not accepted by the margin account`);
+    const price = priceFor(leg.asset, ctx.observations, ctx.now);
+    if (!price.ok) throw new Reject(name, price.reason === "stale_price" ? `the ${leg.asset} price read is older than a minute` : `no ${leg.asset} price was read this investigation`);
     if (leg.op === "deposit_collateral" && collateralAllowed?.get(def.marginSymbol!) === false) {
       throw new Reject(name, `${leg.asset} is not accepted as collateral on-chain right now (collateral_config)`);
     }
