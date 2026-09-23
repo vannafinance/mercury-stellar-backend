@@ -44,6 +44,23 @@ const CEILINGS: Readonly<InvestigationLimits> = Object.freeze({
   maxObservationBytes: 16_384,
 });
 
+/**
+ * A failed read, described by facts that cannot carry a secret: whether it ran out of time,
+ * the error class, and the MCP code and HTTP status. Never the exception message, which can
+ * hold upstream credentials. 23 Sep: every failure read "MCP read failed. No value was
+ * inferred.", so a timeout, a 5xx and a refused call looked identical and could not be told
+ * apart from the diagnostics.
+ */
+export function readFailureText(error: unknown, timedOut: boolean): string {
+  if (timedOut) return "MCP read exceeded its time limit. No value was inferred.";
+  const parts = [
+    error instanceof Error ? error.name : "unknown",
+    error instanceof MCPError && error.code ? `code ${error.code}` : null,
+    error instanceof MCPError && error.httpStatus ? `HTTP ${error.httpStatus}` : null,
+  ].filter(Boolean);
+  return `MCP read failed (${parts.join(", ")}). No value was inferred.`;
+}
+
 export function boundedLimits(overrides: Partial<InvestigationLimits> = {}): InvestigationLimits {
   const limits = { ...CEILINGS };
   for (const key of Object.keys(CEILINGS) as Array<keyof InvestigationLimits>) {
@@ -477,9 +494,7 @@ export async function runInvestigation(
             code: error instanceof MCPError ? error.code : undefined,
             httpStatus: error instanceof MCPError ? error.httpStatus : undefined,
           });
-          observation.error = timeout
-            ? "MCP read exceeded its time limit. No value was inferred."
-            : "MCP read failed. No value was inferred.";
+          observation.error = readFailureText(error, timeout);
         }).finally(() => {
           finishRead("mcp");
         });

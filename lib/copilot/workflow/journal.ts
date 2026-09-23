@@ -36,8 +36,8 @@ function bound(record: WorkflowRecord, identity: Identity) {
  */
 export const PROPOSAL_TTL_MS = 5 * 60_000;
 
-/** The most steps one approval may sign. Read by the planner too, so a joined plan never exceeds it. */
-export const MAX_WORKFLOW_STEPS = 8;
+import { MAX_WORKFLOW_STEPS } from "./types";
+export { MAX_WORKFLOW_STEPS };
 
 /** Every write is conditional; neither a repeated POST nor another replica can claim a leg twice. */
 export class WorkflowJournal {

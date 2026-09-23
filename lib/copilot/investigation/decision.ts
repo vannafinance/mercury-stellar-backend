@@ -1,5 +1,5 @@
 import { lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
-import { ASSET_OUT_OPS, WORKFLOW_OPS } from "../workflow/types";
+import { ASSET_OUT_OPS, MAX_WORKFLOW_STEPS, WORKFLOW_OPS } from "../workflow/types";
 import { LIFECYCLE_WRITES, isLifecycleWriteOp } from "../workflow/lifecycle";
 import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision } from "./types";
 
@@ -7,7 +7,8 @@ export const PLAN_OPS: readonly PlanOp[] = WORKFLOW_OPS;
 /** The sizing words a leg may carry. `plan.ts` gives each one its meaning; the prompt lists them from here. */
 export const PLAN_SIZINGS = ["all_idle", "all_position", "to_floor", "previous_leg", "literal", "fraction", "leverage"] as const;
 const MAX_PLANS = 3;
-const MAX_LEGS = 6;
+/** A plan may have as many legs as one approval can run; sizing refuses one that grows past it. */
+const MAX_LEGS = MAX_WORKFLOW_STEPS;
 
 /** Bounded so one decision cannot drain the whole tool budget in a single turn. */
 export const MAX_BATCHED_READS = 8;
@@ -234,7 +235,7 @@ function parsePlans(raw: unknown): { plans: ProposedPlan[]; dropped: number; rea
 function parsePlan(plan: unknown): ProposedPlan | null {
   if (!isRecord(plan) || !exactKeys(plan, ["title", "rationale", "evidenceIds", "legs"]) ||
     !text(plan.title, 120) || !text(plan.rationale, 1600) || !texts(plan.evidenceIds) ||
-    !Array.isArray(plan.legs) || plan.legs.length === 0 || plan.legs.length > MAX_LEGS) return drop(`plan: keys ${isRecord(plan) ? Object.keys(plan).join(",") : typeof plan}, legs ${isRecord(plan) && Array.isArray(plan.legs) ? plan.legs.length : "missing"}`);
+    !Array.isArray(plan.legs) || plan.legs.length === 0 || plan.legs.length > MAX_LEGS) return drop(`plan: keys ${isRecord(plan) ? Object.keys(plan).join(",") : typeof plan}, legs ${isRecord(plan) && Array.isArray(plan.legs) ? plan.legs.length : "missing"} (limit ${MAX_LEGS})`);
   const legs: PlanLeg[] = [];
   for (const leg of plan.legs) {
     const parsed = parseLeg(leg);

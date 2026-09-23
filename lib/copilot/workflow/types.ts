@@ -101,6 +101,13 @@ export interface OpFlow {
  * venue list and the propose-time simulation all derive from these rows — one truth, so
  * the sizer and the validator cannot disagree about what a step does.
  */
+/**
+ * The most steps one approval may sign. The journal enforces it; the plan parser and sizer
+ * read it from here, so no second, stricter limit can drift in (23 Sep, XS5: the parser capped
+ * plans at 6 legs and silently dropped a legitimate 7-leg unwind).
+ */
+export const MAX_WORKFLOW_STEPS = 8;
+
 export const OP_FLOW = Object.freeze({
   lend:                { venue: "earn",   from: "wallet",  to: "earn",    positionRead: null,                 health: "neutral", rate: "earn_supply" },
   redeem:              { venue: "earn",   from: "earn",    to: "wallet",  positionRead: "earn_position",      health: "neutral", rate: null },

@@ -19,7 +19,7 @@ import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, lpPairs, mentionsBareUsdc,
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_FLOW, POSITION_POCKETS, producedAsset, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
-import { candidateId } from "./candidate-id";
+import { candidateId, isCandidateId } from "./candidate-id";
 import { dustWalletHoldingsFrom, freshPrices, holdingsAfterReserves, idleWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
 import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
@@ -339,7 +339,34 @@ const SIZER_REASONS: Record<string, string> = {
 
 /** One id per shape: two plans with the same legs are the same option. */
 export function planCandidateId(plan: ProposedPlan): string {
-  return candidateId("composed", plan.legs.map((l) => `${opCode(l.op)}.${l.asset}`).join("+"));
+  const shape = plan.legs.map((l) => `${opCode(l.op)}.${l.asset}`).join("+");
+  /**
+   * Readable whenever it fits the id bound. A plan long enough to pass it (up to
+   * MAX_WORKFLOW_STEPS legs, e.g. eight USDC exits ≈ 88 characters) gets a deterministic
+   * fingerprint of the same shape instead, because `candidateId` THROWS past the bound and
+   * one oversized id would crash the whole turn. Propose finds the plan through this same
+   * function, so both ends always agree.
+   */
+  if (isCandidateId(`composed:${shape}`)) return candidateId("composed", shape);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < shape.length; i++) { hash ^= shape.charCodeAt(i); hash = Math.imul(hash, 0x01000193) >>> 0; }
+  return candidateId("composed", `${plan.legs.length}legs.${hash.toString(16).padStart(8, "0")}`);
+}
+
+/**
+ * Sized plans that need more transactions than one approval can run are refused, with the
+ * count, instead of failing later at propose with the journal's "invalid_proposal_steps".
+ */
+export function capToOneApproval(resolved: ResolvedPlans, maxSteps: number): ResolvedPlans {
+  const over = resolved.candidates.filter((candidate) => (candidate.steps?.length ?? 0) > maxSteps);
+  if (!over.length) return resolved;
+  return {
+    candidates: resolved.candidates.filter((candidate) => !over.includes(candidate)),
+    rejected: [...resolved.rejected, ...over.map((candidate) => ({
+      title: candidate.label, leg: null,
+      reason: `this needs ${candidate.steps!.length} transactions, more than one approval can run (${maxSteps})`,
+    }))],
+  };
 }
 
 export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): ResolvedPlans {

@@ -8,7 +8,7 @@
 import type { MCPClient } from "../mcp-client";
 import { allAssets, ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor } from "../registry/assets";
 import { resolveRead } from "./capabilities";
-import { interruptible } from "./runtime";
+import { interruptible, readFailureText } from "./runtime";
 import { isRecord } from "./decision";
 import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { InvestigationScope, Observation, ProposedPlan } from "./types";
@@ -132,10 +132,11 @@ export async function collectStrategyReads(
   }));
   await Promise.all(prepared.map(async (entry, offset) => {
     const observation = observations[offset];
+    const readTimeout = AbortSignal.timeout(15_000);
     try {
       const response = await interruptible(
         () => mcp.call(entry.read.tool, entry.read.args, scope.trader ?? undefined),
-        AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+        AbortSignal.any([signal, readTimeout]),
       );
       if (!isRecord(response) || response.error || response.isError === true || response.ok === false) {
         observation.error = "MCP returned unavailable or failed data; do not use it as a financial fact.";
@@ -143,8 +144,8 @@ export async function collectStrategyReads(
       }
       observation.data = response;
       observation.status = "ok";
-    } catch {
-      observation.error = "MCP read failed. No value was inferred.";
+    } catch (error) {
+      observation.error = readFailureText(error, readTimeout.aborted && !signal.aborted);
     }
   }));
   return observations;

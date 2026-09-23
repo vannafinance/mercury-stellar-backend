@@ -186,3 +186,21 @@ be read this time." The reason appeared only as a chip ("XLM position in Blend i
 option card's small print. The reply's first sentence must carry it: "You have no XLM in Blend, so
 I'll withdraw your USDC position — 170.96 BLUSDC." (Items 12/16; plus the same wrong
 "using idle funds only" template as X11, here on a withdrawal.)
+
+## 21. Target layout (owner sketch, 23 Sep): supersedes 7, 14, 15, 18 where they differ
+
+One turn = user bubble → copilot response → ONE card. No extra jargon anywhere.
+
+- **Plan card** (or response card for a read) carries **Approve** and **Cancel**.
+- **On Approve, that same card is REPLACED in place by the Execution card**, listing leg 1, leg 2, leg 3… when there are legs. No second card, no separate "Done" card.
+- **Once the tx settles, the SAME response above updates to the completed response.** The prose is not appended below; it changes in place.
+- **Several options or strategies:** Plan A / B / C, each with its own Approve. Choosing one replaces the set with that plan's Execution card. Options appear only for genuine alternatives (item 12 refined). Parts of one request are one plan (FIX-LIST 1).
+
+## 22. Responses need structure (owner, 23 Sep)
+
+Replies are paragraphs that concatenate every leg, rate and caveat ("…then redeem…, then redeem…. $52.07 using idle funds only; the supply rate could not be read this time. 1 other option below. Approve to run those steps."). Direction, from research (generative UI and structured outputs):
+- The prose is a one-line headline. Legs, amounts, rates and HF live ONLY in the card, rendered from the result's structured fields (`candidates`, `steps`, `facts`, `rateComparisons`), never restated in prose.
+- A balances or holdings answer (XS5, X12) renders as a per-venue table from `facts`.
+- A clarifying question renders its choices as a list built from `rateComparisons`, not rates inlined in a sentence.
+- Warnings are one plain line each, in user words, or dropped (items 3, 16).
+- No regex rewriting of model text, and no prompt instructions like "use bullets". Structure comes from data the UI renders.
