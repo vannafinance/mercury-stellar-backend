@@ -1842,7 +1842,7 @@ export function shareSameOpLiteralActions(
  * A literal amount is the user's number. Per-asset quotes still win; when one number is
  * stated for several same-op Earn assets, that number is the amount for each.
  */
-function literalAmountAnchored(
+export function literalAmountAnchored(
   sizing: Extract<PlanSizing, { kind: "literal" }>,
   ctx: PlanContext,
   plan: ProposedPlan,
@@ -1852,6 +1852,27 @@ function literalAmountAnchored(
   const quoteInRequest = ctx.messages.some((m) => m.includes(sizing.sourceQuote)) || request.includes(sizing.sourceQuote);
   if (!quoteInRequest) return false;
   if (tokenAmountsIn(sizing.sourceQuote).some((n) => sameAmount(n, sizing.amount))) return true;
+  /**
+   * An amount carried from an earlier leg is the user's own figure, not an invented one.
+   *
+   * Live, 23 Sep: "deposit 100 XLM, borrow 20 BLUSDC and supply it to blend" was understood
+   * correctly, sized the supply leg at 20, and was then refused — "the amount 20 does not
+   * appear in your request" — although the user typed "borrow 20 BLUSDC" in the same sentence.
+   * The supply clause says "it", so its own quote has no number; and the request holds two
+   * amounts (100 and 20), so the single-amount fallback below cannot apply either.
+   *
+   * This check exists to stop the model inventing a size. An earlier leg of the SAME plan,
+   * for the SAME asset, whose own quote states this exact amount is not invention — it is
+   * the referent of "it". Read structurally from the plan's legs, with no phrasing involved:
+   * a figure is accepted only if the user literally wrote it for that token earlier.
+   */
+  const position = plan.legs.indexOf(leg);
+  const carried = plan.legs.slice(0, position < 0 ? 0 : position).some((earlier) =>
+    earlier.asset === leg.asset &&
+    earlier.sizing.kind === "literal" &&
+    request.includes(earlier.sizing.sourceQuote) &&
+    tokenAmountsIn(earlier.sizing.sourceQuote).some((n) => sameAmount(n, sizing.amount)));
+  if (carried) return true;
   const amounts = uniqueAmountsIn(request);
   if (amounts.length !== 1 || !sameAmount(amounts[0], sizing.amount)) return false;
   const siblings = plan.legs.filter((other) => other.op === leg.op && other.sizing.kind === "literal");

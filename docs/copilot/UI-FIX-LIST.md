@@ -134,3 +134,16 @@ Settled (or the one that failed, and why). No "Done" card.
 This absorbs item 7 (card rendered in the wrong place) and removes item 14 (a "Done" card
 announcing completion while a leg was still Queued) by construction: with no Done card there
 is nothing to declare completion early, because completion is read off the legs themselves.
+
+## 16. Refusals are internal validator strings, shown raw and twice  (X2, 23 Sep)
+`deposit 100 XLM, borrow 20 BLUSDC and supply it to blend` answered:
+"I checked the shape against your position and the live rates, and none could be prepared:
+Deposit 100 XLM, then Borrow 20 BLUSDC, then Supply 20 BLUSDC — supply blend BLUSDC: the
+amount 20 does not appear in your request. Nothing was executed."
+— and then repeated the same string in a "Ruled out" card below.
+
+"supply blend BLUSDC: the amount 20 does not appear in your request" is a check's internal
+message (op name, asset, rule). A user cannot tell from it whether they did something wrong,
+what to change, or whether it is the system's fault. When nothing can be prepared, the model
+says so in its own words, once, with what the user can do next. Part of item 12, called out
+because here the raw message was also WRONG (see FIX-LIST: X2 amount provenance).
