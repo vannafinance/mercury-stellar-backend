@@ -159,7 +159,9 @@ describe("strategyReply", () => {
       intent: "strategy",
       findings: [{ summary: "The reported supply rates are BLUSDC Earn: 29.08 % APR; AQUSDC Earn: 20.18 % APR." }],
     });
-    expect(reply).toMatch(/^Idle in the wallet: XLM 0 spendable of 3\.9737, AQUSDC 0\.0004\./);
+    // The answer first, then what is idle (owner, 23 Sep).
+    expect(reply).toMatch(/^The reported supply rates/);
+    expect(reply).toMatch(/Idle in the wallet: XLM 0 spendable of 3\.9737, AQUSDC 0\.0004\.$/);
     expect(reply).toMatch(/reported supply rates/);
   });
 

@@ -367,7 +367,9 @@ export function strategyReply(input: {
      */
     const idle = !input.candidates?.feasible.length && !input.candidates?.rejected.length ? idleSummary(input.facts) : null;
     const findings = input.findings?.length ? input.findings.map((finding) => finding.summary).join(" ") : null;
-    if (idle || findings) return [idle, findings].filter(Boolean).join(" ");
+    // The answer to what was asked comes first, then what is idle (owner, 23 Sep: "lend AQUA"
+    // opened with a wallet list before saying Earn has no AQUA pool).
+    if (idle || findings) return [findings, idle].filter(Boolean).join(" ");
     return "The plan below uses the amounts in your request. Approve to run it.";
   }
   const facts = factualAnswer(input.facts, input.originalRequest);
