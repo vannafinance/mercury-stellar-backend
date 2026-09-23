@@ -388,8 +388,13 @@ export function InvestigationCard({
               {workflow && workflow.status !== "proposed" && (
                 <section className="rounded-xl border border-violet-100 px-4 py-3.5">
                   <SectionTitle>
+                    {/* 23 Sep, X10: a run stopped at leg 5 after 4 legs settled read "Not executed".
+                        What settled is on-chain, so a stopped run says how much of it ran. */}
                     {workflow.status === "blocked" || workflow.status === "cancelled"
-                        ? "Not executed"
+                        ? (() => {
+                            const settled = workflow.steps.filter((step) => step.status === "settled").length;
+                            return settled ? `Partly executed: ${settled} of ${workflow.steps.length} steps settled` : "Not executed";
+                          })()
                         : workflow.status === "completed" ? "Done" : "Running"}
                   </SectionTitle>
                   <p className="mt-1.5 text-[15px] leading-6 text-vgray-900">{workflow.objective}</p>
