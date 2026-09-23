@@ -2872,6 +2872,17 @@ export function CopilotWorkspace() {
     if (view.pendingWrite?.op || !candidateId || !view.continuation) return;
     if (workflow.view || workflow.loading) return;
     /**
+     * A failed propose waits for the user; it does not try again by itself.
+     *
+     * A failure releases the dispatch claim (so the same plan CAN be retried) and resets
+     * `workflow.view`/`workflow.loading` — which are this effect's own dependencies. So the
+     * effect re-ran at once, found the claim free and proposed again, forever: live 23 Sep, a
+     * broken route answered 404 and the terminal filled with `POST /workflow/propose 404`
+     * several times a second. The error is already on screen saying "please try again"; a
+     * retry is the user resending, which is a new continuation and so a new claim anyway.
+     */
+    if (workflow.error) return;
+    /**
      * A turn this page ran carries on by itself; a turn read back from the thread does not.
      * Both arrive in the same `result`, so the two are told apart by where it came from —
      * and the claim makes the dispatch survive a remount, which the old ref could not.
@@ -2882,7 +2893,7 @@ export function CopilotWorkspace() {
     void proposePlan(view.continuation, candidateId).then((prepared) => {
       if (!prepared) releaseDispatch(address, proposeKey);
     });
-  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, address]);
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, workflow.error, address]);
   useEffect(() => {
     const view = investigation.result;
     if (!view || investigation.loading || investigation.error) return;

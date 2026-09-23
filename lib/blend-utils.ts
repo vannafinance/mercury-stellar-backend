@@ -15,6 +15,7 @@ import {
   describeFailedTx,
 } from './stellar-utils';
 import { markTxSubmitted } from './tx-progress';
+import { blendSupplyApyFromApr } from './rate-display';
 
 /** Blend action enum variant — must match `SmartAccExternalAction` on-chain. */
 export type BlendAction = 'Deposit' | 'Withdraw';
@@ -880,7 +881,7 @@ export class BlendService {
     const BACKSTOP_TAKE_RATE = 0.10;
     const supplyAprDecimal = borrowAprDecimal * utilization * (1 - BACKSTOP_TAKE_RATE);
     // Blend UI compounds supply APR weekly (52 periods/yr).
-    const supplyApyDecimal = Math.pow(1 + supplyAprDecimal / 52, 52) - 1;
+    const supplyApyDecimal = blendSupplyApyFromApr(supplyAprDecimal);
 
     return {
       totalSupply: totalSupplyRaw.toFixed(decimals > 4 ? 4 : decimals),

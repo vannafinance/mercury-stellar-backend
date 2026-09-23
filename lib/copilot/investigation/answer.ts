@@ -2,6 +2,7 @@ import type { ResearchFact, ResearchView } from "./view";
 import type { CandidateSet } from "./candidates";
 import type { ResearchCapacity } from "./view";
 import { ASSET_IDS } from "../registry/assets";
+import { blendSupplyApyFromApr } from "../../rate-display";
 
 const NAMED_ASSET = new RegExp(`\\b(${ASSET_IDS.join("|")})\\b`, "g");
 
@@ -160,7 +161,23 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
   }
   // One line per market: the same reserve can arrive from two reads (list + stats) and must not print twice.
   const rates = [...new Map(selected.filter(f => ["earn", "blend"].includes(f.venue) && f.unit === "% APR" && f.label.includes("supply")).map(f => [f.label, f])).values()];
-  if (rates.length) sentences.push(`The reported supply rates are ${rates.map(f => `${f.label.replace(" supply APR", "")}: ${amount(f)}`).join("; ")}.`);
+  /**
+   * Quote each venue the way its own page does, as APY.
+   *
+   * The facts stay APR — carry maths compares a supply rate with a borrow rate and must compare
+   * like with like. Only what the user READS changes, and it has to match the product, which
+   * uses two conventions: the Earn page shows its supply rate as-is (`pool-stats.ts`, verified
+   * 23 Sep: 2.759984% here, 2.76% on /earn), while Blend compounds weekly (`rate-display.ts`,
+   * the same function the Farm page now calls). Quoting Blend as 173% APR beside a Farm page
+   * showing 450% APY read as one of the two surfaces lying.
+   */
+  const shownApy = (f: ResearchFact) => {
+    const apr = Number(f.value);
+    if (!Number.isFinite(apr)) return amount(f);
+    const pct = f.venue === "blend" ? blendSupplyApyFromApr(apr / 100) * 100 : apr;
+    return `${pct.toFixed(2)}% APY`;
+  };
+  if (rates.length) sentences.push(`Supply APY: ${rates.map(f => `${f.label.replace(" supply APR", "")} ${shownApy(f)}`).join("; ")}.`);
   return sentences.length ? sentences.join(" ") : null;
 }
 

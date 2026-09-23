@@ -41,3 +41,74 @@ Requested alongside the above — reduce what a plan turn prints by default.
 ## Not a UI bug — recorded so it is not re-filed as one
 `lend me 30xlm` renders "Borrow 30 XLM" correctly; the card is faithfully showing a WRONG
 UNDERSTANDING. That is the debt-guard defect, tracked in FIX-LIST-copilot-upgrade.md.
+
+## 6. A cancelled plan still shows an EXECUTION PROGRESS card  (E2, 23 Sep)
+"Cancel remaining steps" on `supply 25 AQUSDC to earn` left an EXECUTION PROGRESS card with
+its one leg reading **Queued**, directly above "Not executed — Remaining steps cancelled."
+Nothing ran, so there is no execution to show.
+
+Cause: the receipt effect in `copilot-workspace.tsx` skips `proposed` and `validating` (fix
+`7821c0a`) but writes a receipt for every other status, `cancelled` included. A receipt should
+exist only once a leg has actually been submitted; a run cancelled before any leg started has
+nothing to record. Decide from the steps' own state (any leg past `pending`), not by adding
+`cancelled` to a list.
+
+## 7. Execution card renders in the wrong place, and the headline goes stale  (lend 20 xlm)
+After a real run settled, the EXECUTION PROGRESS card sat ABOVE "Checked in / Understood as",
+with the plan card replaced by a separate "Done" card below. It should take the plan card's
+place. The turn headline also kept reading "Approve to run this step." after the run was done.
+
+## 8. Plain actions should not need Approve under auto-approve ON  (product rule, 23 Sep)
+Catalogue §2: a plain action with auto-approve ON executes directly with no plan card; only a
+strategy shows a plan card first. Investigate-first currently puts an Approve card on every
+write, including "lend 20 xlm". This is the one real product regression the experiment
+introduced — design it after the catalogue run.
+
+## 9. vToken amounts are labelled as the underlying token  (E4, E5)
+`redeem all my AQUSDC from earn` renders one step as
+"Redeem 14.8783043 AQUSDC vTokens from Earn (≈ 15.1755174 AQUSDC) (14.8783043 AQUSDC)" —
+two parentheticals, two numbers, both labelled AQUSDC. The trailing figure is the vToken count.
+The pocket underneath repeats it: "Earn · AQUSDC 14.8783043 available — Plan spends 14.8783043".
+Label from the amount's own unit, not the leg's asset: a vToken amount should say vAQUSDC.
+
+## 10. Past turns lose their outcome once you move on  (E3, E4, E5)
+After a new prompt, or after opening another chat from Recents, a planning turn collapses to its
+headline alone — "Redeem 9.9451295 XLM vTokens from Earn (≈ 10 XLM). Approve to run this
+step." — with no card, no status and nothing to approve. The instruction is left standing for
+a plan that is no longer there.
+
+Every past turn should carry its FINAL state, from the workflow record, not from the live card:
+- executed — the settled legs with their tx links
+- cancelled — "Cancelled, nothing submitted" (distinct from item 6, which is a cancelled run
+  wrongly showing a live execution card)
+- stopped mid-way — which legs settled and which did not
+- never approved / expired — "Not approved — this plan expired"
+And the headline must stop saying "Approve to run this step" once approval is no longer possible.
+
+## 11. Multi-figure answers need structure  (E6)
+`what is my earn position?` returned four pools as one run-on sentence:
+"Earn XLM: 44.8665031 VXLM (redeemable for ~45.1140483 XLM). Earn BLUSDC: 99.056705 VUSDC …"
+Unreadable at a glance. An answer carrying several comparable figures should render as rows —
+one per pool, vToken balance and underlying in their own columns — not prose. This is a
+rendering rule for structured answers generally, not a fix for this one prompt.
+
+## 12. A turn is the model's answer, not a stack of panels  (general rule, 23 Sep)
+`lend 5 AQUA` rendered: the answer sentence, then "Understood as", an **Options** block with
+"Ruled out: Lend 5 AQUA. lend AQUA: no AQUA price was read…", a collapsible **"How these figures
+are made"**, and two warning bullets ("asset price: data was unavailable. No value was
+assumed." / "$1059.53 in your account is not posted as collateral…").
+
+The rule, for every prompt: show the model's response. Options, ruled-out lists, the figures
+explainer and the advisory bullets are removed. When the model needs to say why it did not do
+something, it says so in the response text — not in a separate card. The one card that stays
+is the plan-for-approval card on a strategy, since that is where a decision is made.
+
+## 13. FIXED 23 Sep — a failed propose retried itself forever
+A failed `/workflow/propose` released its dispatch claim and reset `workflow.view`/`loading`,
+which are the dispatching effect's own dependencies, so it re-fired instantly. A broken route
+produced `POST /workflow/propose 404` several times a second. The effect now stops while
+`workflow.error` is set; a retry is the user resending.
+
+## Test hygiene (not UI)
+`investigation-plans-e2e` writes real entries into `.local/copilot-audit` (`subject: "user"`).
+Tests should use a temp directory.
