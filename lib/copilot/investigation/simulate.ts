@@ -43,6 +43,25 @@ export interface StepSimulation {
   limitingFactor: string | null;
   /** Projected account after the step, as the RiskEngine snapshot arithmetic states it. */
   projected: { collateralUsd: string; debtUsd: string; ltvPct: string; healthy: boolean } | null;
+  /**
+   * Previewed against the account BEFORE the earlier steps (see `conservativelyPreviewable`).
+   * "Allowed" then still holds once they run; the projected LTV does not, so it is not quoted.
+   */
+  beforeEarlierSteps?: true;
+}
+
+/**
+ * A step that follows earlier ones can still be put to the protocol when the answer cannot
+ * get worse by running them first: it LOWERS health (a borrow or a withdraw) and every step
+ * before it only RAISES health (a deposit). If the protocol allows it on today's account,
+ * it allows it after the deposit too, and pool limits do not depend on the deposit at all.
+ * A refusal is inconclusive (it may pass once the deposit lands), so it stays projected.
+ * 23 Sep, X11: "deposit 100 XLM, borrow 5563 XLM" put only the deposit to the protocol, and
+ * the borrow, the leg that moves health most, stood on the projection alone.
+ */
+export function conservativelyPreviewable(steps: readonly ProposalStep[], index: number): boolean {
+  if (OP_FLOW[steps[index].op].health !== "lowers") return false;
+  return steps.slice(0, index).every((earlier) => OP_FLOW[earlier.op].health === "raises");
 }
 
 export interface PlanSimulation {
@@ -190,7 +209,7 @@ function summarise(steps: readonly ProposalStep[], results: StepSimulation[]): P
       : "Not simulated against the protocol: every step follows from the one before it, so the projection stands." };
   }
   const said = allowed.map((r) => {
-    const after = r.projected ? ` (LTV ${r.projected.ltvPct}% after)` : "";
+    const after = r.beforeEarlierSteps ? " (checked before the steps ahead of it)" : r.projected ? ` (LTV ${r.projected.ltvPct}% after)` : "";
     return `${label(r.stepId)} allowed${after}`;
   }).join("; ");
   /**
@@ -207,7 +226,7 @@ function summarise(steps: readonly ProposalStep[], results: StepSimulation[]): P
   const rest = dependent.length && unavailable.length
     ? `${dependent.length + unavailable.length} other step${dependent.length + unavailable.length === 1 ? "" : "s"} could not be simulated ahead`
     : dependent.length
-      ? `${dependent.length === 1 ? "the other step follows" : `the other ${dependent.length} steps follow`} from it and stand on the projection`
+      ? `${dependent.length === 1 ? "the other step follows from it and stands" : `the other ${dependent.length} steps follow from it and stand`} on the projection`
       : `${unavailable.length === 1 ? "one step" : `${unavailable.length} steps`} could not be simulated`;
   return { verdict: "partial", steps: results, summary: `Simulated against the protocol: ${said}; ${rest}.${fill}` };
 }
@@ -219,10 +238,14 @@ export async function simulateSteps(
   mcp: Pick<MCPClient, "call">,
   signal: AbortSignal,
 ): Promise<PlanSimulation> {
-  const results: StepSimulation[] = await Promise.all(steps.map(async (step, index) =>
-    dependsOnEarlier(steps, index)
-      ? { stepId: step.id, verdict: "dependent" as const, reason: "follows from the step before it; projected, not simulated", limitingFactor: null, projected: null }
-      : previewStep(step, scope, mcp, signal)));
+  const dependent = (step: ProposalStep): StepSimulation =>
+    ({ stepId: step.id, verdict: "dependent", reason: "follows from the step before it; projected, not simulated", limitingFactor: null, projected: null });
+  const results: StepSimulation[] = await Promise.all(steps.map(async (step, index) => {
+    if (!dependsOnEarlier(steps, index)) return previewStep(step, scope, mcp, signal);
+    if (!conservativelyPreviewable(steps, index)) return dependent(step);
+    const checked = await previewStep(step, scope, mcp, signal);
+    return checked.verdict === "allowed" ? { ...checked, beforeEarlierSteps: true } : dependent(step);
+  }));
   return summarise(steps, results);
 }
 
