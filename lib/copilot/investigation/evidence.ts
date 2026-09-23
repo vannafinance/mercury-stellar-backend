@@ -66,18 +66,29 @@ export interface ResearchEvidence {
   capacity: ResearchCapacity | null;
 }
 
+/**
+ * `required` is what the sealed plans need to be re-sized at propose (strategy-reads
+ * `readsForPlans`, derived from the plans' own legs). Those reads are kept first and are
+ * never cut by the size cap; the cap only trims the rest. 23 Sep, X12 "earn and farm": the
+ * joined plan was sized from the Aquarius LP position, but that read had no priority, fell
+ * past the 16-read cap, and propose then refused the plan it had just offered
+ * ("no AQUSDC LP position was read"), so the card never appeared.
+ */
 export function compactResearchEvidence(
   observations: readonly Observation[],
   capacity: ResearchCapacity | null,
   capturedAt: number,
+  required: readonly { capability: string; args: Record<string, unknown> }[] = [],
 ): ResearchEvidence {
+  const needed = (o: Observation) => required.some((r) => r.capability === o.capability &&
+    (r.args.asset === undefined || r.args.asset === o.args.asset));
   const ranked = observations
     .filter((observation) => KEEP.has(observation.capability))
     .slice()
-    .sort((a, b) => (PRIORITY[a.capability] ?? 99) - (PRIORITY[b.capability] ?? 99));
+    .sort((a, b) => Number(needed(b)) - Number(needed(a)) || (PRIORITY[a.capability] ?? 99) - (PRIORITY[b.capability] ?? 99));
   const kept: Observation[] = [];
   for (const observation of ranked) {
-    if (kept.length >= MAX_OBSERVATIONS) break;
+    if (kept.length >= MAX_OBSERVATIONS && !needed(observation)) break;
     kept.push(compactObservation(observation));
   }
   return {
@@ -171,6 +182,17 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
       supply_apy_pct: data.supply_apy_pct,
       borrow_apr_pct: data.borrow_apr_pct,
       utilization_pct: data.utilization_pct,
+    };
+  }
+  // The share count is what an LP exit is sized from (plan.ts farmLpPositionOf); without this
+  // branch the read was sealed as {} and propose could not re-size the exit.
+  if (capability === "farm_lp_position") {
+    return {
+      ...(data.lp_shares_human !== undefined ? { lp_shares_human: data.lp_shares_human } : {}),
+      ...(data.venue !== undefined ? { venue: data.venue } : {}),
+      ...(data.token_a !== undefined ? { token_a: data.token_a } : {}),
+      ...(data.token_b !== undefined ? { token_b: data.token_b } : {}),
+      ...(data.resolved !== undefined ? { resolved: data.resolved } : {}),
     };
   }
   if (capability === "earn_position") {

@@ -1017,7 +1017,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const failedReads = result.observations.filter((o) => o.status === "error").slice(0, 12)
     .map((o) => ({ capability: o.capability, args: o.args, error: (o.error ?? "no error text").slice(0, 240) }));
   if (failedReads.length) logPhase("reads_failed", { reads: failedReads });
-  const evidence = compactResearchEvidence(result.observations, capacity, observedNow);
+  // The reads the sealed plans need survive sealing, so propose can re-size exactly what was offered.
+  const evidence = compactResearchEvidence(result.observations, capacity, observedNow, readsForPlans(modelPlans, [], observedNow));
   // Every option shown can be prepared; the sealed list is exactly the shown list.
   evidence.allowedCandidateIds = outcome.kind === "research_complete"
     ? candidates?.feasible.map(candidate => candidate.id) ?? [] : [];
