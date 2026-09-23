@@ -277,6 +277,32 @@ export function resolveAssetDef(text?: string | null): AssetDef | null {
   return m.kind === "asset" ? m.def : null;
 }
 
+/** An alias as a literal regex fragment. */
+function aliasSource(alias: string): string {
+  return alias.replace(/[.*+?^${}()|[\]\\]/g, (ch) => `\\${ch}`);
+}
+
+/** Whether the text names this asset by one of its own registry aliases. */
+export function namesAsset(text: string | null | undefined, id: string): boolean {
+  const upper = String(text ?? "").toUpperCase();
+  return ALIAS_INDEX.some(({ alias, def }) => def.id === id &&
+    new RegExp(`(^|[^A-Z0-9])${aliasSource(alias)}([^A-Z0-9]|$)`).test(upper));
+}
+
+/**
+ * Whether the text says "USDC" somewhere WITHOUT naming which one, even beside other assets
+ * ("swap 100 XLM to USDC"). `resolveAsset` stops at the first asset it finds, so it cannot
+ * answer this for a sentence that also names XLM. Every variant alias is removed first, so
+ * "Blend USDC" or "AQUSDC" never counts as bare.
+ */
+export function mentionsBareUsdc(text: string | null | undefined): boolean {
+  let upper = String(text ?? "").toUpperCase();
+  for (const { alias } of ALIAS_INDEX) {
+    upper = upper.replace(new RegExp(`(^|[^A-Z0-9])${aliasSource(alias)}(?=[^A-Z0-9]|$)`, "g"), "$1 ");
+  }
+  return BARE_USDC.test(upper);
+}
+
 /** True when the text is an unqualified "USDC" and a variant must be chosen. */
 export function isAmbiguousUsdc(text?: string | null): boolean {
   return resolveAsset(text).kind === "ambiguous";

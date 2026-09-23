@@ -15,7 +15,7 @@
  * but the combinations are the model's to find.
  */
 
-import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef, swappableWith } from "../registry/assets";
+import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, lpPairs, mentionsBareUsdc, namesAsset, poolVenueFor, resolveAssetDef, swappableWith, USDC_VARIANTS } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_FLOW, POSITION_POCKETS, producedAsset, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
@@ -562,6 +562,18 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const name = `${leg.op.replaceAll("_", " ")} ${leg.asset}`;
     const def = resolveAssetDef(leg.asset);
     if (!def) throw new Reject(name, `${leg.asset} is not a supported asset`);
+    /**
+     * A USDC the user never chose. Bare "USDC" is three tokens (the registry header), so a
+     * leg in one variant stands only if the user named that variant somewhere, by any of its
+     * registry aliases. 23 Sep, S5: "swap 100 XLM to USDC" compiled to AQUSDC, a pick the
+     * model made. A request that never said USDC (sized from holdings) is not affected.
+     */
+    const saidBareUsdc = ctx.messages.some((message) => mentionsBareUsdc(message));
+    for (const chosen of [leg.asset, leg.assetOut].filter((a): a is string => !!a)) {
+      if (saidBareUsdc && (USDC_VARIANTS as readonly string[]).includes(chosen) && !ctx.messages.some((message) => namesAsset(message, chosen))) {
+        throw new Reject(name, `you said USDC without saying which one: ${USDC_VARIANTS.join(", ")}?`);
+      }
+    }
     const price = priceFor(leg.asset, ctx.observations, ctx.now);
     if (!price.ok) throw new Reject(name, price.reason === "stale_price" ? `the ${leg.asset} price read is older than a minute` : `no ${leg.asset} price was read this investigation`);
     // The venue the op acts on decides which spelling of the asset it needs (the op-flow table).
