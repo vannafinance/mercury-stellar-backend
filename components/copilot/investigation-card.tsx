@@ -24,6 +24,8 @@ export interface InvestigationCardProps {
   omitTranscript?: boolean;
   /** Act on what was understood — the plan card takes over from here. */
   onContinue?: () => void;
+  /** Submit a free-form answer to the current needs_input question through its continuation. */
+  onAnswerQuestion?: (answer: string) => void;
   continueLabel?: string;
   /** Prepare the journal proposal for one of the sized options. */
   onPropose?: (candidateId: string) => void;
@@ -92,10 +94,11 @@ const BTN_PRIMARY = "rounded-r2 bg-gradient px-3.5 py-2 text-[13px] font-semibol
 const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
 
 export function InvestigationCard({
-  prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, continueLabel,
+  prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, onAnswerQuestion, continueLabel,
   onPropose, workflow, planWithdrawn, planLiveFloor, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
   wallet = null, autoSign = false,
 }: InvestigationCardProps) {
+  const [questionAnswer, setQuestionAnswer] = useState("");
   const result: ResearchView | null = researchResult ?? (workflow ? {
     status: "researched", message: "Restored your recorded plan.", originalRequest: workflow.objective, refinements: [],
     understanding: null, question: null, facts: [], checks: [], warnings: [], continuation: "", executionAllowed: false,
@@ -443,6 +446,37 @@ export function InvestigationCard({
                   <p className="mt-1.5 text-[12.5px] leading-5 text-vgray-500">
                     {result.candidates?.feasible.length ? "The options above stand. Reply below to change them." : "Reply below to continue."}
                   </p>
+                  {result.status === "needs_input" && onAnswerQuestion && (
+                    <form
+                      className="mt-3 flex flex-wrap items-center gap-2"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        const answer = questionAnswer.trim();
+                        if (!answer || loading || workflowLoading) return;
+                        setQuestionAnswer("");
+                        onAnswerQuestion(answer);
+                      }}
+                    >
+                      <label className="sr-only" htmlFor="investigation-question-answer">Your answer</label>
+                      <input
+                        id="investigation-question-answer"
+                        aria-label="Your answer"
+                        value={questionAnswer}
+                        onChange={(event) => setQuestionAnswer(event.target.value)}
+                        disabled={loading || !!workflowLoading}
+                        placeholder="Type your answer"
+                        autoComplete="off"
+                        className="min-w-[180px] flex-1 rounded-r2 border border-violet-100 bg-white px-3 py-2 text-[13px] text-vgray-900 placeholder:text-vgray-400 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-100 disabled:opacity-60"
+                      />
+                      <button
+                        type="submit"
+                        disabled={loading || !!workflowLoading || !questionAnswer.trim()}
+                        className={BTN_PRIMARY}
+                      >
+                        Send answer
+                      </button>
+                    </form>
+                  )}
                 </section>
               )}
 

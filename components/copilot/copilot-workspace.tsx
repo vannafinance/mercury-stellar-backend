@@ -5554,6 +5554,7 @@ export function CopilotWorkspace() {
               <InvestigationCard
                 {...investigation}
                 omitTranscript
+                onAnswerQuestion={(answer) => { void runInvestigation(answer); }}
                 onPropose={investigation.result?.continuation
                   ? (candidateId) => {
                       const continuation = investigation.result!.continuation;
