@@ -14,7 +14,7 @@ import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchore
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, rankingBorrowing, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
-import { joinPlanParts, planCandidateId, resolveJoinedOrParts, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
+import { joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
@@ -775,6 +775,16 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * plan. The separate parts are kept: if the joined plan does not size, or needs more steps
    * than one approval can run, the turn falls back to them exactly as before.
    */
+  /**
+   * A USDC the user never chose is asked about BEFORE any plan is built (owner, 23 Sep, option
+   * b): sizing it first refused the leg inside the swap card, which then offered "accept the
+   * quoted loss" for what was really a missing choice. No plan means no card; the question is
+   * the turn. The same check plan.ts applies to every leg (`unchosenUsdcVariant`).
+   */
+  const usdcToChoose = modelPlans.some((plan) => plan.legs.some((leg) => unchosenUsdcVariant(leg, messages)));
+  // Only the plans that need the choice wait for it; the rest ("deploy my XLM and USDC") still size.
+  if (usdcToChoose) modelPlans = modelPlans.filter((plan) => !plan.legs.some((leg) => unchosenUsdcVariant(leg, messages)));
+  const onlyUsdcAsked = usdcToChoose && !modelPlans.length;
   let partsBeforeJoin: typeof modelPlans | null = null;
   if (statedPlanIndex < 0 && modelPlans.length > 1 && outcome.kind === "research_complete" && anchoredPlanParts(outcome.goal, messages)) {
     const joined = joinPlanParts(modelPlans);
@@ -952,6 +962,13 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   let question = outcome.kind === "clarify" ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
   question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
+  // The choice IS the turn: no options beside it, which would answer a question not yet settled.
+  // Asked always; the turn is ONLY the question when every plan was waiting on it.
+  if (usdcToChoose) {
+    if (onlyUsdcAsked) candidates = null;
+    // The model's own open question, when it asked one, stands (it often already names the USDC).
+    question = question ?? USDC_QUESTION.charAt(0).toUpperCase() + USDC_QUESTION.slice(1);
+  }
   /**
    * A refusal the user could lift is a question, not a verdict.
    *

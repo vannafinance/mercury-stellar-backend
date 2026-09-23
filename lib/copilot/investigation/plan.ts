@@ -568,12 +568,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * registry aliases. 23 Sep, S5: "swap 100 XLM to USDC" compiled to AQUSDC, a pick the
      * model made. A request that never said USDC (sized from holdings) is not affected.
      */
-    const saidBareUsdc = ctx.messages.some((message) => mentionsBareUsdc(message));
-    for (const chosen of [leg.asset, leg.assetOut].filter((a): a is string => !!a)) {
-      if (saidBareUsdc && (USDC_VARIANTS as readonly string[]).includes(chosen) && !ctx.messages.some((message) => namesAsset(message, chosen))) {
-        throw new Reject(name, `you said USDC without saying which one: ${USDC_VARIANTS.join(", ")}?`);
-      }
-    }
+    if (unchosenUsdcVariant(leg, ctx.messages)) throw new Reject(name, USDC_QUESTION);
     // The venue the op acts on decides which spelling of the asset it needs (the op-flow table).
     // Checked BEFORE the price: an asset the venue does not support is the real reason, and a
     // missing price must not stand in for it (AQUA has no Earn pool; "lend AQUA" was refused
@@ -2028,6 +2023,22 @@ export function resolveJoinedOrParts(
       ? `Doing all of this together takes ${steps} transactions, more than one approval can run (${maxSteps}), so the parts are shown separately.`
       : null,
   };
+}
+
+/** The question a bare "USDC" needs answered. */
+export const USDC_QUESTION = `you said USDC without saying which one: ${USDC_VARIANTS.join(", ")}?`;
+
+/**
+ * The USDC variant on this leg the user never chose, or null. Bare "USDC" is three tokens
+ * (registry header): a leg in one variant stands only if the user named that variant, by any
+ * of its registry aliases, in some turn. A request that never said USDC is not affected.
+ */
+export function unchosenUsdcVariant(leg: { asset: string; assetOut?: string }, messages: readonly string[]): string | null {
+  if (!messages.some((message) => mentionsBareUsdc(message))) return null;
+  for (const chosen of [leg.asset, leg.assetOut].filter((a): a is string => !!a)) {
+    if ((USDC_VARIANTS as readonly string[]).includes(chosen) && !messages.some((message) => namesAsset(message, chosen))) return chosen;
+  }
+  return null;
 }
 
 export function literalAmountAnchored(

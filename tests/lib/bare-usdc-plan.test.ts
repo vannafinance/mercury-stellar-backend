@@ -4,7 +4,7 @@
  * the user named that variant, by any of its registry aliases.
  */
 import { describe, expect, it } from "vitest";
-import { resolvePlans } from "@/lib/copilot/investigation/plan";
+import { resolvePlans, unchosenUsdcVariant } from "@/lib/copilot/investigation/plan";
 import { mentionsBareUsdc, namesAsset } from "@/lib/copilot/registry/assets";
 import { compareObservedRates } from "@/lib/copilot/investigation/rate-comparison";
 import type { Observation, ProposedPlan } from "@/lib/copilot/investigation/types";
@@ -72,5 +72,18 @@ describe("an unsupported asset", () => {
       capacity: null, borrowing: "forbidden", comparisons: compareObservedRates(OBSERVATIONS, NOW),
     });
     expect(rejected[0]?.reason).toBe("AQUA has no Earn pool");
+  });
+});
+
+/** The one check both the planner and the "ask first" turn use (owner, 23 Sep: option b). */
+describe("unchosenUsdcVariant", () => {
+  it("flags a swap into a USDC the user never chose", () => {
+    expect(unchosenUsdcVariant({ asset: "XLM", assetOut: "SOUSDC" }, ["swap 100 XLM to USDC"])).toBe("SOUSDC");
+  });
+  it("clears once the variant is named in any turn", () => {
+    expect(unchosenUsdcVariant({ asset: "XLM", assetOut: "SOUSDC" }, ["swap 100 XLM to USDC", "sousdc"])).toBeNull();
+  });
+  it("never fires when the user did not say USDC", () => {
+    expect(unchosenUsdcVariant({ asset: "XLM", assetOut: "SOUSDC" }, ["swap 100 XLM for the best stablecoin"])).toBeNull();
   });
 });
