@@ -314,6 +314,10 @@ export async function staleLiquidityAmounts(
   if (!tokenA || !tokenB || !approvedA || !approvedB) return unchanged;
 
   let reserves: PoolReserves | null = null;
+  // Why the refresh failed. The refusal below is unchanged; this only keeps the cause, which
+  // was swallowed: 23 Sep, X10 leg 5 said "reserves could not be refreshed" and the reason
+  // (a swapped token_0 and an empty fee in the MCP payload) had to be dug out of the MCP.
+  let why = "";
   try {
     const payload = await interruptible(
       () => mcp.call(
@@ -324,8 +328,13 @@ export async function staleLiquidityAmounts(
       AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
     );
     reserves = poolReservesFrom(payload);
-  } catch { /* handled below */ }
+    // MCP errors often arrive as a 200 with an error body, so an unreadable payload is kept too.
+    if (!reserves) why = `unusable payload: ${JSON.stringify(payload).slice(0, 400)}`;
+  } catch (error) {
+    why = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  }
   if (!reserves) {
+    console.warn("[copilot] LP reserves refresh failed", { venue, tokenA, tokenB, why });
     return { kind: "refuse", message: "The pool's live reserves could not be refreshed, so stale liquidity amounts were not submitted. Prepare the plan again." };
   }
 
