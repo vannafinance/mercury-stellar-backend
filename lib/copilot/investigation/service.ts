@@ -18,6 +18,7 @@ import { joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenUsdcVaria
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
+import { appendDiagnostics } from "./diagnostics-log";
 import type { ResearchConversation } from "./continuation";
 import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans, type StrategyRead } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
@@ -1063,6 +1064,12 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       ? { tokenIn: swapLeg.asset, tokenOut: swapLeg.assetOut, venue: swapVenue,
           amount: swapLeg.sizing.amount, amountAsset: swapLeg.sizing.amountAsset ?? "asset" }
       : null;
+  const diagnostics = outcome.kind === "stopped" || (outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length) || failedReads.length ? {
+    ...(failedReads.length ? { failedReads } : {}),
+    ...(outcome.kind === "stopped" ? { stopReason: outcome.reason, ...(result.stopDetail ? { stopDetail: result.stopDetail } : {}) } : {}),
+    ...(outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length ? { droppedPlanReasons: outcome.droppedPlanReasons } : {}),
+  } : undefined;
+  if (diagnostics) void appendDiagnostics({ message: messages[messages.length - 1] ?? "", status, diagnostics });
   return {
     status, message, originalRequest: messages[0], refinements: messages.slice(1), question,
     /**
@@ -1092,13 +1099,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     })), warnings, scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
     continuation: codec.seal(scope, messages, question, evidence), executionAllowed: false,
     // Not rendered. Why a run stopped, a plan was dropped or a read failed, readable from the response (23 Sep).
-    ...(outcome.kind === "stopped" || (outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length) || failedReads.length ? {
-      diagnostics: {
-        ...(failedReads.length ? { failedReads } : {}),
-        ...(outcome.kind === "stopped" ? { stopReason: outcome.reason, ...(result.stopDetail ? { stopDetail: result.stopDetail } : {}) } : {}),
-        ...(outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length ? { droppedPlanReasons: outcome.droppedPlanReasons } : {}),
-      },
-    } : {}),
+    ...(diagnostics ? { diagnostics } : {}),
     pendingWrite: lifecycleOp && scope.trader ? { op: lifecycleOp } : null,
   };
 }
