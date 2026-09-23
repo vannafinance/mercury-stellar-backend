@@ -442,3 +442,22 @@ shares → Repay 339.6414649 BLUSDC".
 3. **Propose cannot see what research read.** "Prepare this plan" → "no SOUSDC LP position was
    read this investigation. Start a new investigation." The option was sized from that very LP
    read. The LP position evidence is not carried in the continuation to propose.
+
+## X11 (23 Sep, live UI) — "borrow to the floor" ignores the user's floor, and invents the asset
+`deposit 100 XLM then borrow to the floor`, two runs, two behaviours:
+- run 1: asked which asset AND which floor
+- run 2: assumed **XLM** as the borrow asset (never stated), then refused: "borrowing to the floor
+  needs the health-factor floor you want kept … tell me the number"
+
+1. **Invented borrow asset.** An empty slot filled by a default — the same class as
+   `deposit it` → XLM. Run 1's behaviour (ask) is correct; run 2's is not.
+2. **The configured floor never reaches the server.** The health bar shows "1.40 your floor",
+   read from `localStorage["vanna_copilot_guardian_min_hf"]` (`readGuardianFloor`,
+   copilot-workspace.tsx:452). `/api/copilot/investigate` never receives it, and `inputFrom`
+   REJECTS any key outside {message, wallet, continuation, session, history, conversationId}.
+   So "to the floor" has nothing to resolve against.
+
+   Fix path: send the floor with the request (route accepts it), carry it into the
+   investigation scope, and let `to_floor` sizing use it when the user states no number. Note a
+   standing concern: a risk floor that also drives auto-repay lives only in one browser's
+   localStorage, so another device or a cleared profile silently falls back to 1.3.
