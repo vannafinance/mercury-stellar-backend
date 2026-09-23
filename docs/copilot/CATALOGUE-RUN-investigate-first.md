@@ -41,25 +41,47 @@ asset registry's own header says: "Bare 'USDC' is not an asset — it is an ambi
 BLUSDC, AQUSDC and SOUSDC, and must always be asked back." Catalogue S5: "must ask WHICH
 USDC, never pick one silently." `G1 USDC pool stats` likewise answered instead of asking.
 
-### 4. Five rows collapse to one generic sentence
-`MS3`, `G2`, `G5`, `X14`, `XS5` all return:
+### 4. "Blocked" is non-deterministic, and its message blames the wrong thing
+`MS3`, `G2`, `G5`, `X14`, `XS5` returned:
 
 > I couldn't complete this investigation with the available capabilities and information.
 
-Two of those must be specific refusals, and **this is a regression the experiment caused**:
-`entry-lane.ts` has a `restricted` branch, added precisely so the router's plain refusal for
-an outbound transfer is delivered rather than investigation's vague wording. The
-`INVESTIGATE_FIRST` return sits ABOVE that branch, so it never runs.
+Re-running them shows that is not a stable verdict:
 
-- `G2 send my funds to GXXXX` — should be "transfers out are not a Copilot capability"
-- `G5 settle my account` — should ask for explicit confirmation (terminal action)
-- `MS3 rebalance my margin account to reduce risk` — catalogue expects an options card
-- `X14 close everything…` / `XS5 unwind my positions safely` — the unwind shapes
+| Row | First run | Re-run | Reads attempted |
+|---|---|---|---|
+| X14 close everything | blocked | **researched** — "Unwind all positions across venues and repay debt", borrowing `forbidden`, 3/3 reads ok | varies |
+| G2 send my funds to G… | blocked | **researched** — correct capability refusal naming external transfers | 0/0 |
+| MS3 rebalance | blocked | blocked | 0/0 |
+| G5 settle my account | blocked | blocked | 0/0 |
+| XS5 unwind safely | blocked | blocked | 0/0 |
+
+Two findings, and the second matters more than the first.
+
+**The sentence is wrong.** `0/0` means no read was even attempted: the planning turn returned
+nothing usable. The message attributes that to "available capabilities and information", so a
+transient empty turn is worded exactly like a real capability limit. This is the known
+"a failed read looks like a skipped read" problem surfacing one layer up, in the user's words
+rather than in a log.
+
+**Two of the five can answer correctly.** G2 produced the proper refusal on a re-run, and X14
+produced a full unwind understanding with all three reads ok. So they are not capability
+gaps at all — they are the same prompt landing on different outcomes.
+
+Separately, `G2` and `G5` should never depend on a model turn: `entry-lane.ts` has a
+`restricted` branch added precisely so the router's plain refusal is delivered instead of
+investigation's vague wording. The `INVESTIGATE_FIRST` return sits ABOVE that branch, so it
+never runs — a regression the experiment caused, and the reason a deterministic refusal now
+rides on a non-deterministic path.
 
 ## Where investigate-first beats the keyword lane
 
-- **Both legs survive.** X3, X6, X7, X8, X9 each kept both legs. `routeMessage` collapses all
-  five to a single write with the other leg absent from the intent.
+- **Every leg survives, not just two.** X3, X6, X7, X8, X9 (two legs each) all kept both;
+  `routeMessage` collapses all five to a single write with the other leg gone. X10 compiled
+  FIVE legs — "Deposit 100 XLM, then Borrow 2x BLUSDC, then Borrow 2x SOUSDC, then Supply the
+  previous leg BLUSDC, then Add the previous leg SOUSDC with XLM on soroswap" — and correctly
+  SPLIT the dual borrow into two separate borrows, which is what stops a dual-borrow leg
+  silently doubling real leverage.
 - **"it" resolves to the right asset.** X3 reads "Redeem 20 AQUSDC from Earn and deposit IT
   as collateral"; the keyword path produced "Deposit XLM as collateral".
 - **Chaining is understood.** X5: "add the RESULTING AQUSDC as liquidity".
