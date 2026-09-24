@@ -139,8 +139,9 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
   const trigger = goal.trigger === undefined || goal.trigger === null ? undefined
     : isRecord(goal.trigger) && goal.trigger.kind === "none" && exactKeys(goal.trigger, ["kind"])
       ? { kind: "none" as const }
-      : isRecord(goal.trigger) && goal.trigger.kind === "future_condition" && exactKeys(goal.trigger, ["kind", "sourceQuote"]) && text(goal.trigger.sourceQuote, 400)
-        ? { kind: "future_condition" as const, sourceQuote: String(goal.trigger.sourceQuote) }
+      // Kept even without a usable quote: the refusal fails safe (conditional-guard.ts).
+      : isRecord(goal.trigger) && goal.trigger.kind === "future_condition"
+        ? { kind: "future_condition" as const, ...(text(goal.trigger.sourceQuote, 400) ? { sourceQuote: String(goal.trigger.sourceQuote) } : {}) }
         : undefined;
   const reserves = Array.isArray(goal.walletReserves) ? goal.walletReserves.slice(0, 8).flatMap((row) =>
     isRecord(row) && exactKeys(row, ["asset", "amount", "sourceQuote"]) &&

@@ -107,16 +107,20 @@ export const CONDITIONAL_REFUSAL =
   "Please submit a specific action for review when you are ready.";
 
 /**
- * Refuse only a future condition the model named and the user actually wrote.
+ * Refuse a future condition whenever the model names one.
  *
  * A sizing limit ("borrow until HF is 1.5") is `kind: "none"` and is not a refusal.
- * A quote that is not in the user's messages is the model speaking, and is ignored.
+ *
+ * Fails safe, on purpose (Claude's audit, 24 Sep). This gate stands between the user's
+ * words and a write that can run at once, so the two ways it can be wrong are not equal:
+ * a wrong refusal costs the user one rephrase, while a wrong pass executes now what they
+ * asked to happen later. So a future condition is refused even when its quote does not
+ * appear in the user's messages, or is missing. `messages` is kept for the caller's
+ * signature and for a quote the UI may show later.
  */
 export function futureConditionRefusal(
   trigger: { kind: "none" | "future_condition"; sourceQuote?: string } | undefined,
-  messages: readonly string[],
+  _messages: readonly string[],
 ): string | null {
-  if (trigger?.kind !== "future_condition" || !trigger.sourceQuote) return null;
-  if (!messages.some((message) => message.includes(trigger.sourceQuote!))) return null;
-  return CONDITIONAL_REFUSAL;
+  return trigger?.kind === "future_condition" ? CONDITIONAL_REFUSAL : null;
 }
