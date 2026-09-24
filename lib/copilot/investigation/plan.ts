@@ -573,15 +573,19 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     /** What the leg leaves for the next one; differs from `tokens` only for a redeem. */
     produces: string | null;
     heldTokens: string | null;
+    /** A removal's two token amounts, from the pool read. Absent when that read is missing. */
+    payouts?: ReadonlyArray<{ asset: string; amount: string }> | null;
+    /** Index of the removal whose payout this leg spends. */
+    settledFrom?: number;
     targetOut?: string;
   }
   const drafts: Draft[] = [];
   /**
-   * Producer legs already spent by a `previous_leg` handoff. One leg's output funds one
-   * leg's input: without this, two legs could each claim the same borrow and the plan
-   * would spend the same tokens twice.
+   * Producer legs already spent by a `previous_leg` handoff, per asset. One token funds
+   * one later leg: a borrow is claimed once, and each token of a removal is claimed once.
    */
-  const claimedProducers = new Set<number>();
+  const claimedProducers = new Set<string>();
+  const claimKey = (producer: number, asset: string) => `${producer}:${asset}`;
   // Materialised so a leg can look at its siblings, not just at what came before it:
   // a leveraged borrow has to know how many other borrows share its funding deposit.
   const expanded = [...expandLegs(plan.legs, ctx)];
@@ -841,15 +845,16 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         if (left.available <= ZERO) throw new Reject(name, `the legs before this one already remove the whole ${raw} ${leg.asset} LP position`);
         const shares = precise(formatWad(left.available), leg.asset, name);
         /**
-         * Removing liquidity pays back BOTH pool tokens, not one — there is no single
-         * figure to credit the account with, so `produces` is left unknown, exactly as a
-         * swap's unknown fill is. A later leg spending what came out states its own amount.
-         * `usd` is "0", not a guess: the shares' worth is not one token's oracle price
-         * times their count, and the leg carries no rate, so nothing downstream reads it
-         * as a real figure — it exists only so the economics pass has a decimal to parse.
+         * A removal pays both pool tokens, so `produces` stays null. A single-token
+         * handoff still copies one string, and one number here would credit both tokens
+         * to one asset. The two amounts sit on `payouts` when the pool was read.
+         * `usd` is that same slice priced (`lpExitUsd`), or "0" when the pool was not.
          */
-        // Valued from the pool read when there is one (lpExitUsd); otherwise "0" as described above.
-        drafts.push({ leg, name, usd: lpExitUsd(ctx.observations, leg.asset, shares, ctx.now) ?? "0", tokens: shares, produces: null, heldTokens: null });
+        drafts.push({
+          leg, name, usd: lpExitUsd(ctx.observations, leg.asset, shares, ctx.now) ?? "0",
+          tokens: shares, produces: null, heldTokens: null,
+          payouts: lpExitPayouts(ctx.observations, leg.asset, shares, ctx.now),
+        });
         continue;
       }
       if (flow.positionRead === null) throw new Reject(name, `all_position applies to ${positionOps()}`);
@@ -921,10 +926,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
        * Every pipeline that passes values between steps binds them by identity rather
        * than adjacency — Argo names the producing task and its artifact, CodePipeline
        * names the input artifact — precisely so an unrelated step in between cannot
-       * break the link. Here the asset IS the identity: a leg produces exactly one, so
-       * the nearest preceding leg in the same asset is the producer, with no new field
-       * for the model to fill. Claiming it consumes it, so two legs cannot both spend
-       * one borrow.
+       * break the link. Here the asset IS the identity: a one-token leg produces exactly
+       * one, so the nearest preceding leg in the same asset is the producer. A removal
+       * pays both tokens of its registry pair; each token is claimed on its own, so two
+       * later legs can take one each and a third cannot take a token already claimed.
        */
       /**
        * Matched on what the producer LEAVES BEHIND, not on what it spends.
@@ -935,18 +940,31 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
        * asset when leg 1 produced exactly it (X5, 22 Sep). The identity premise above
        * is right; reading it off `asset` was what was wrong.
        */
+      const paysAsset = (draft: Draft, asset: string) =>
+        draft.leg.op === "remove_liquidity" ? removalPays(draft.leg, asset) : producedAsset(draft.leg) === asset;
       let producerIndex = index - 1;
       while (producerIndex >= 0 &&
-        (producedAsset(drafts[producerIndex].leg) !== leg.asset || claimedProducers.has(producerIndex))) {
+        (!paysAsset(drafts[producerIndex], leg.asset) || claimedProducers.has(claimKey(producerIndex, leg.asset)))) {
         producerIndex -= 1;
       }
       const prev = producerIndex >= 0 ? drafts[producerIndex] : undefined;
       if (!prev) throw new Reject(name, "previous_leg needs a preceding leg in the same asset");
       // What the previous leg leaves behind must be what this one spends (the op-flow table).
       if (prev.leg.op === "swap") throw new Reject(name, "a swap fills at the pool's price, so how much it buys is not known in advance — state the next leg's amount yourself");
-      if (prev.leg.op === "remove_liquidity") throw new Reject(name, "removing liquidity pays back two tokens, not one, so how much of either is not known in advance — state the next leg's amount yourself");
+      if (prev.leg.op === "remove_liquidity" && leg.op !== "swap") {
+        const raw = prev.payouts?.find((row) => row.asset === leg.asset)?.amount ?? null;
+        if (!raw) throw new Reject(name, REMOVAL_PAYOUT_UNKNOWN);
+        if (!feeds(prev.leg.op, leg.op)) throw new Reject(name, handoffReason(prev.leg.op, leg.op));
+        const amount = precise(raw, leg.asset, name);
+        if (decimalWad(amount) <= ZERO) throw new Reject(name, `the removal's payout of ${leg.asset} rounds to nothing at its on-chain precision`);
+        claimedProducers.add(claimKey(producerIndex, leg.asset));
+        const usd = formatWad(mulDown(decimalWad(amount), price.price, WAD));
+        drafts.push({ leg, name, usd, tokens: amount, produces: amount, heldTokens: null, settledFrom: producerIndex });
+        continue;
+      }
+      if (prev.leg.op === "remove_liquidity") throw new Reject(name, REMOVAL_PAYOUT_UNKNOWN);
       if (!feeds(prev.leg.op, leg.op)) throw new Reject(name, handoffReason(prev.leg.op, leg.op));
-      claimedProducers.add(producerIndex);
+      claimedProducers.add(claimKey(producerIndex, leg.asset));
       drafts.push({ leg, name, usd: { previous: producerIndex }, tokens: prev.produces, produces: prev.produces, heldTokens: null });
       continue;
     }
@@ -1396,7 +1414,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           ? `Remove ${d.tokens} XLM/${def.displayLabel ?? def.id} LP shares on ${venueLabel(dex!)}`
           : d.leg.op === "add_liquidity" && paired && addLiquidity
             ? `Add ${d.tokens} ${def.displayLabel ?? def.id} + ${addLiquidity.amountB} ${paired.displayLabel ?? paired.id} to the ${venueLabel(dex!)} pool`
-            : `${verbOf(d.leg.op)} ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}`;
+            : d.settledFrom !== undefined
+              ? `${verbOf(d.leg.op)} an estimated ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}, the removal's payout`
+              : `${verbOf(d.leg.op)} ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}`;
     const step: ProposalStep = {
       id: `s${index}-${d.leg.op}`,
       op: d.leg.op,
@@ -1434,7 +1454,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
        * came from when it was the whole of a position — that amount is a reading, and the
        * write re-takes it rather than spending a figure the ledger has since moved past.
        */
-      sizing: wholePositionRead(d.leg) ?? { basis: "stated" },
+      sizing: d.settledFrom !== undefined
+        ? { basis: "settled_payout", fromStep: `s${d.settledFrom}-${drafts[d.settledFrom].leg.op}`, asset: d.leg.asset }
+        : wholePositionRead(d.leg) ?? { basis: "stated" },
     };
     try { allowedInvocation(step, ctx.scope); } catch { throw new Reject(d.name, "this step is not an allowed protocol write"); }
     return step;
@@ -1662,6 +1684,17 @@ function earnPositionOf(observations: readonly Observation[], asset: string, now
  * when the pool is ambiguous, not read, or a price is missing. 23 Sep, X12: the Farm exit
  * option read "Amount $0.00" because both LP legs carried no value.
  */
+/** No pool read: a later leg cannot be told how much of either token came back. */
+const REMOVAL_PAYOUT_UNKNOWN = "removing liquidity pays back two tokens, not one, so how much of either is not known in advance — state the next leg's amount yourself";
+
+/** True when `asset` is one of the two tokens in the removal's registry pair. */
+function removalPays(leg: { op: string; asset?: string | null }, asset: string): boolean {
+  if (leg.op !== "remove_liquidity" || !leg.asset) return false;
+  const pools = lpPairs().filter(({ tokens }) => tokens.includes(leg.asset as never));
+  if (pools.length !== 1) return false;
+  return (pools[0].tokens as readonly string[]).includes(asset);
+}
+
 export function lpExitUsd(observations: readonly Observation[], asset: string, shares: string, now: number): string | null {
   const pools = lpPairs().filter(({ tokens }) => tokens.includes(asset as never));
   if (pools.length !== 1) return null;
@@ -1679,6 +1712,29 @@ export function lpExitUsd(observations: readonly Observation[], asset: string, s
     const baseOut = mulDown(decimalWad(reserves.xlm), share, WAD);
     const quoteOut = mulDown(decimalWad(reserves.paired), share, WAD);
     return formatWad(mulDown(baseOut, basePrice.price, WAD) + mulDown(quoteOut, quotePrice.price, WAD));
+  } catch { return null; }
+}
+
+/**
+ * The two token amounts a removal pays: the same share of each reserve `lpExitUsd`
+ * prices, without pricing them. Null when the pool was not read.
+ */
+export function lpExitPayouts(
+  observations: readonly Observation[], asset: string, shares: string, now: number,
+): { asset: string; amount: string }[] | null {
+  const pools = lpPairs().filter(({ tokens }) => tokens.includes(asset as never));
+  if (pools.length !== 1) return null;
+  const [base, quote] = pools[0].tokens;
+  const reserves = poolReservesOf(observations, quote, pools[0].venue, now);
+  if (!reserves) return null;
+  try {
+    const total = decimalWad(reserves.totalShare);
+    if (total <= ZERO) return null;
+    const share = (decimalWad(shares) * WAD) / total;
+    return [
+      { asset: base, amount: formatWad(mulDown(decimalWad(reserves.xlm), share, WAD)) },
+      { asset: quote, amount: formatWad(mulDown(decimalWad(reserves.paired), share, WAD)) },
+    ];
   } catch { return null; }
 }
 

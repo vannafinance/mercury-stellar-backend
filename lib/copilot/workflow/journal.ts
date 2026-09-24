@@ -51,9 +51,11 @@ export class WorkflowJournal {
      * this point means the resolution was skipped — and asking someone to approve a step
      * whose real amount is decided later is not informed consent.
      *
-     * Bounded downstream sizing (leg two spending leg one's actual output) is the one case
-     * the plan permits, and it needs a declared dependency and bound that `ProposalStep`
-     * does not yet carry. Refused here rather than waved through as an unbounded "max".
+     * Bounded downstream sizing (leg two spending leg one's actual output) is carried as a
+     * real estimate plus `sizing.basis === "settled_payout"`. The number below is that
+     * estimate, so the user approves a figure. Execute may send the measured payout
+     * inside the approved band; it does not edit this proposal, and an unbounded "max"
+     * is still refused.
      */
     if (input.steps.some(s => !/^\d+(\.\d+)?$/.test(s.amount) || Number(s.amount) <= 0))
       throw new Error("unsized_proposal_step");
@@ -171,6 +173,32 @@ export class WorkflowJournal {
     current.value.message = reason ?? "This step could not be prepared. Nothing was submitted.";
     await this.save(current);
     throw new WorkflowConflict("step_not_ready");
+  }
+  /**
+   * Balances taken immediately before a removal is submitted. Stored on the step
+   * state, never on the proposal, so the approved amount and its digest stay put.
+   */
+  async noteBalancesBefore(id: string, identity: Identity, stepId: string, balances: Record<string, string>) {
+    const record = await this.read(id, identity);
+    const step = record.value.steps.find(s => s.id === stepId);
+    if (!step || !["invoking", "awaiting_signature"].includes(step.status)) throw new WorkflowConflict("step_changed");
+    step.balancesBefore = balances;
+    return this.save(record);
+  }
+  /**
+   * Stop before broadcast and ask for a new approval. The step goes back to pending
+   * and the run to blocked: nothing was submitted, so this is not an on-chain failure.
+   */
+  async pauseForReapproval(id: string, identity: Identity, stepId: string, reason: string) {
+    const record = await this.read(id, identity);
+    const step = record.value.steps.find(s => s.id === stepId);
+    if (!step || step.status !== "invoking") throw new WorkflowConflict("step_changed");
+    const message = reason.slice(0, 500);
+    step.status = "pending";
+    step.message = message;
+    record.value.status = "blocked";
+    record.value.message = message;
+    return this.save(record);
   }
   async invocationResult(id: string, identity: Identity, stepId: string,
     result: { kind: "submitted"; txHash: string; note?: string } | { kind: "unsigned"; unsignedXdr: string; note?: string }
