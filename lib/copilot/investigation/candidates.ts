@@ -234,21 +234,30 @@ function variantDecision(winner: Candidate, runnerUp: Candidate | undefined): Ca
 
 /**
  * Coerce ranking intent from the typed goal, not from re-reading prose.
- * A borrow leg on `actions` or `plans` is an instruction even when the model tagged
- * borrowing as allowed or unspecified. Forbidden stays forbidden.
+ *
+ * A borrow the USER stated (a leg on `actions`, their own words) is an instruction even
+ * when the model tagged borrowing as allowed or unspecified. A borrow the MODEL proposed
+ * (a leg on one of its `plans`) is a suggestion, not an instruction: owner, 24 Sep, "yes",
+ * permission to borrow is not an instruction to borrow. Counting model plans here made one
+ * levered suggestion hide every no-debt option (the two long-standing
+ * investigation-plans-e2e failures). Forbidden stays forbidden.
+ *
+ * Whether a live borrow capacity must be READ is a different question, answered by
+ * `plansBorrow` below: a model plan that borrows still needs it to be sized.
  */
 export function rankingBorrowing(
   borrowing: CandidateInput["borrowing"] = "unspecified",
   actions?: ReadonlyArray<{ op: string }> | null,
-  plans?: ReadonlyArray<{ legs: ReadonlyArray<{ op: string }> }> | null,
 ): NonNullable<CandidateInput["borrowing"]> {
   if (borrowing === "forbidden") return "forbidden";
-  const typedBorrow = Boolean(
-    actions?.some((action) => action.op === "borrow")
-    || plans?.some((plan) => plan.legs.some((leg) => leg.op === "borrow")),
-  );
-  if (borrowing === "required" || typedBorrow) return "required";
+  const statedBorrow = Boolean(actions?.some((action) => action.op === "borrow"));
+  if (borrowing === "required" || statedBorrow) return "required";
   return borrowing ?? "unspecified";
+}
+
+/** Any model plan with a borrow leg: its sizing needs the live borrow capacity. */
+export function plansBorrow(plans?: ReadonlyArray<{ legs: ReadonlyArray<{ op: string }> }> | null): boolean {
+  return Boolean(plans?.some((plan) => plan.legs.some((leg) => leg.op === "borrow")));
 }
 
 export function rankFeasible(

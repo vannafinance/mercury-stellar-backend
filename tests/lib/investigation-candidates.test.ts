@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateCandidates, idleWalletUsdFrom, rankingBorrowing, requestedBorrowFrom } from "@/lib/copilot/investigation/candidates";
+import { generateCandidates, idleWalletUsdFrom, plansBorrow, rankingBorrowing, requestedBorrowFrom } from "@/lib/copilot/investigation/candidates";
 import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
 
@@ -140,7 +140,11 @@ describe("candidate generation", () => {
 
   it("treats a typed borrow leg as required even when the goal said allowed", () => {
     expect(rankingBorrowing("allowed", [{ op: "borrow" }])).toBe("required");
-    expect(rankingBorrowing("unspecified", null, [{ legs: [{ op: "borrow" }] }])).toBe("required");
+    // Owner, 24 Sep: a borrow the MODEL proposed is a suggestion, not an instruction, so the
+    // no-debt options stay listed; its sizing still reads the capacity (plansBorrow).
+    expect(rankingBorrowing("unspecified", null)).toBe("unspecified");
+    expect(plansBorrow([{ legs: [{ op: "borrow" }] }])).toBe(true);
+    expect(plansBorrow([{ legs: [{ op: "lend" }] }])).toBe(false);
     expect(rankingBorrowing("forbidden", [{ op: "borrow" }])).toBe("forbidden");
     expect(rankingBorrowing("allowed", [{ op: "lend" }])).toBe("allowed");
   });

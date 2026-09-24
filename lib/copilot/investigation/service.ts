@@ -12,7 +12,7 @@ import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
-import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, rankingBorrowing, requestedBorrowFrom } from "./candidates";
+import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { actionFromAnswers, answerProblem, buildQuestionnaire, readsForQuestionnaire } from "./questionnaire";
@@ -500,9 +500,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const borrowing = rankingBorrowing(
     outcome.kind === "research_complete" ? outcome.goal.borrowing : "unspecified",
     outcome.kind === "research_complete" ? outcome.goal.actions : undefined,
-    outcome.kind === "research_complete" ? outcome.plans : undefined,
   );
-  const needsBorrowCapacity = borrowing === "required";
+  const needsBorrowCapacity = borrowing === "required" ||
+    (outcome.kind === "research_complete" && plansBorrow(outcome.plans));
   const capacityMessages = prior && outcome.kind === "research_complete" && outcome.goal.relation === "new"
     ? [input.message]
     : messages;
