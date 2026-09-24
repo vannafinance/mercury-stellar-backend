@@ -234,6 +234,44 @@ interface ChatResponse {
   } | null;
 }
 
+/** Keep the bind panel's last actionable state when a later poll is less informative. */
+export function preserveWalletBindPanelResponse(
+  previous: ChatResponse | null,
+  incoming: ChatResponse,
+): ChatResponse {
+  if (previous?.kind !== "needs_wallet_bind" || incoming.kind !== "needs_wallet_bind") {
+    return incoming;
+  }
+  const priorBind = previous.wallet_bind;
+  const nextBind = incoming.wallet_bind;
+  if (
+    !priorBind?.request_id ||
+    !nextBind?.request_id ||
+    priorBind.request_id !== nextBind.request_id
+  ) {
+    return incoming;
+  }
+
+  const keepTerminalReason =
+    nextBind.status === "pending" &&
+    (priorBind.status === "unavailable" || priorBind.status === "expired");
+  const connectUrl =
+    nextBind.status === "expired"
+      ? (nextBind.connect_url ?? null)
+      : (nextBind.connect_url ?? priorBind.connect_url);
+
+  return {
+    ...incoming,
+    ...(keepTerminalReason ? { message: previous.message } : {}),
+    wallet_bind: {
+      ...priorBind,
+      ...nextBind,
+      ...(keepTerminalReason ? { status: priorBind.status } : {}),
+      connect_url: connectUrl,
+    },
+  };
+}
+
 /**
  * Derive an actionable follow-up prompt dynamically from the rendered answer and intent.
  *
@@ -2657,7 +2695,7 @@ export function CopilotWorkspace() {
             };
           });
         } else if (!quiet || data.kind === "needs_wallet_bind") {
-          setResponse(data);
+          setResponse((previous) => preserveWalletBindPanelResponse(previous, data));
         }
         // Agent-chain hops (pending_write / explicit chain) fold into the parent log row.
         // Full multi_leg payloads create/refresh the parent strategy row.
