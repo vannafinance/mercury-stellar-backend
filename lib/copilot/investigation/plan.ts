@@ -557,6 +557,15 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     if (places === undefined) throw new Reject(name, `the on-chain precision of ${symbol} was not read this investigation`);
     return truncateToDecimals(amount, places);
   };
+  /**
+   * Cuts a WAD amount to the token's own decimals for user-facing strings, rounding down.
+   * If no decimals were read for that token, keeps today's text rather than guessing.
+   */
+  const formatUserAmount = (amount: bigint | string, symbol: string): string => {
+    const raw = typeof amount === "string" ? amount : formatWad(amount);
+    const places = decimals.get(symbol);
+    return places !== undefined ? truncateToDecimals(raw, places) : raw;
+  };
 
   /**
    * Pass 1 — resolve what each leg is sized FROM. Margin legs go to the sizer as USD (or
@@ -1161,7 +1170,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           : noIdleReason(leg.asset, dust, txFloor, ctx), mismatch ?? walletShortageMismatch(leg), true);
       }
       const available = decimalWad(idle.tokens);
-      if (available < amountWad) throw new Reject(name, `only ${formatWad(available)} ${leg.asset} is spendable in the wallet${spendableAfter(leg.asset, ctx, earlier.length > 0)}`, walletShortageMismatch(leg), true);
+      if (available < amountWad) throw new Reject(name, `only ${formatUserAmount(available, leg.asset)} ${leg.asset} is spendable in the wallet${spendableAfter(leg.asset, ctx, earlier.length > 0)}`, walletShortageMismatch(leg), true);
     }
     if (flow.from === "account") {
       const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
@@ -1170,7 +1179,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (available < amountWad) {
         throw new Reject(name, posted === null && !earlier.length
           ? `${verbOf(leg.op)} takes what a deposit or borrow put in the account — add that leg before it`
-          : `only ${formatWad(available)} ${leg.asset} is in the margin account${earlier.length ? " after the legs before it" : ""}`);
+          : `only ${formatUserAmount(available, leg.asset)} ${leg.asset} is in the margin account${earlier.length ? " after the legs before it" : ""}`);
       }
     }
     if (flow.from === "blend") {
@@ -1180,7 +1189,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (available < amountWad) {
         throw new Reject(name, available <= ZERO
           ? `you have no ${leg.asset} supplied to Blend`
-          : `only ${formatWad(available)} ${leg.asset} is supplied to Blend${earlier.length ? " after the legs before it" : ""}`);
+          : `only ${formatUserAmount(available, leg.asset)} ${leg.asset} is supplied to Blend${earlier.length ? " after the legs before it" : ""}`);
       }
     }
     if (flow.from === "lp") {
@@ -1190,7 +1199,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (available < amountWad) {
         throw new Reject(name, available <= ZERO
           ? `you hold no ${leg.asset} LP shares`
-          : `only ${formatWad(available)} ${leg.asset} LP shares are held${earlier.length ? " after the legs before it" : ""}`);
+          : `only ${formatUserAmount(available, leg.asset)} ${leg.asset} LP shares are held${earlier.length ? " after the legs before it" : ""}`);
       }
     }
     if (flow.to === "debt" || leg.fundsRepay) {
@@ -1201,7 +1210,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (available < amountWad) {
         throw new Reject(name, available <= ZERO
           ? `the legs before this one already repay the whole ${owed} ${leg.asset} debt`
-          : `you owe only ${precise(formatWad(available), leg.asset, name)} ${leg.asset}${earlier.length ? " after the legs before it" : ""}`);
+          : `you owe only ${formatUserAmount(available, leg.asset)} ${leg.asset}${earlier.length ? " after the legs before it" : ""}`);
       }
     }
     if (flow.positionRead === "earn_position") {
@@ -1212,7 +1221,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (left.available <= ZERO) throw new Reject(name, `the legs before this one already redeem the whole ${position.vtokens} ${leg.asset} position in Earn`);
       const redeemable = mulDown(decimalWad(position.underlying), (left.available * WAD) / decimalWad(position.vtokens), WAD);
       const underlying = decimalWad(sizing.amount);
-      if (underlying > redeemable) throw new Reject(name, `only ${formatWad(redeemable)} ${leg.asset} is redeemable from Earn${earlier.length ? " after the legs before it" : ""}`);
+      if (underlying > redeemable) throw new Reject(name, `only ${formatUserAmount(redeemable, leg.asset)} ${leg.asset} is redeemable from Earn${earlier.length ? " after the legs before it" : ""}`);
       const vtokens = precise(formatWad((underlying * decimalWad(position.vtokens)) / decimalWad(position.underlying)), position.vtokenSymbol ?? leg.asset, name);
       const usd = formatWad(mulDown(underlying, price.price, WAD));
       drafts.push({ leg, name, usd, tokens: vtokens, produces: sizing.amount, heldTokens: null });

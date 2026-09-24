@@ -1265,6 +1265,14 @@ describe("resolvePlans — redeem and withdraw", () => {
     expect(Number(candidates[0].steps![0].amount)).toBeCloseTo(983.50, 1);
   });
 
+  it("formats user-facing refusal amounts to the token's own decimals rather than 18-decimal WAD", () => {
+    const { rejected } = resolvePlans([plan("Redeem too much", [
+      { op: "redeem", asset: "AQUSDC", sizing: { kind: "literal", amount: "6000", sourceQuote: "redeem 6000 AQUSDC" } },
+    ])], ctx({ observations: withEarn, messages: ["redeem 6000 AQUSDC from earn"] }));
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toBe("only 5000.786863 AQUSDC is redeemable from Earn");
+  });
+
   it("withdraws the posted collateral against the stated floor, and refuses when it would breach it", () => {
     const ok = resolvePlans([plan("Take XLM out", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({ observations: withEarn, capacity: { ...CAPACITY, floor: "1.2" } }));
     expect(ok.rejected).toEqual([]);
