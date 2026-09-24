@@ -9,7 +9,7 @@ import type {
   QuestionnaireStep,
   QuestionnaireAnswers,
   QuestionnaireSection,
-  QuestionnaireAnswerSection,
+  QuestionnaireSectionAnswer,
 } from "@/lib/copilot/investigation/view";
 
 export interface ClarifyQuestionnaireProps {
@@ -43,7 +43,7 @@ export function buildQuestionnaireSummary(
   questionnaire: { title?: string },
   assetOption?: QuestionnaireOption,
   venueOption?: QuestionnaireOption | null,
-  amount?: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string }
+  amount?: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" }
 ): string {
   const verb = questionnaire.title ? questionnaire.title.split(" ")[0] : "Supply";
   const assetLabel = assetOption?.label || "asset";
@@ -52,6 +52,8 @@ export function buildQuestionnaireSummary(
   if (amount) {
     if (amount.kind === "fraction") {
       amountStr = `${amount.percent}% of my ${assetLabel}`;
+    } else if (amount.kind === "previous_leg") {
+      amountStr = `all of the ${assetLabel}`;
     } else {
       amountStr = `${amount.amount} ${assetLabel}`;
     }
@@ -72,6 +74,7 @@ interface SectionInternalState {
   venueId: string | null;
   amountRaw: string;
   activeStepIdx: number;
+  linkedOptionId?: string | null;
 }
 
 export function ClarifyQuestionnaire({
@@ -106,9 +109,19 @@ export function ClarifyQuestionnaire({
     for (const sec of sections) {
       const assetStep = sec.steps.find((s) => s.slot === "asset");
       const defaultAssetId = assetStep && assetStep.options.length === 1 ? assetStep.options[0].id : null;
+      const venueStep = sec.steps.find((s) => s.slot === "venue");
+      let defaultVenueId: string | null = null;
+      if (venueStep) {
+        const available = venueStep.options.filter(
+          (opt) => !opt.forAsset || (defaultAssetId && opt.forAsset.toLowerCase() === defaultAssetId.toLowerCase())
+        );
+        if (available.length === 1) {
+          defaultVenueId = available[0].id;
+        }
+      }
       initial[sec.id] = {
         assetId: defaultAssetId,
-        venueId: null,
+        venueId: defaultVenueId,
         amountRaw: "",
         activeStepIdx: 0,
       };
@@ -180,25 +193,24 @@ export function ClarifyQuestionnaire({
 
     // Auto-advance if this step is single-option and can be skipped
     if (isStepAutoSkipped(sec, st.activeStepIdx, st.assetId)) {
-      // If asset step, ensure asset is selected
-      if (currentStep.slot === "asset" && currentStep.options.length === 1 && !st.assetId) {
-        // Handled above
-      } else if (currentStep.slot === "venue") {
+      let resolvedVenueId = st.venueId;
+      if (currentStep.slot === "venue") {
         const available = getStepAvailableOptions(currentStep, st.assetId);
-        if (available.length === 1 && !st.venueId) {
-          setSectionStates((prev) => ({
-            ...prev,
-            [sec.id]: {
-              ...prev[sec.id],
-              venueId: available[0].id,
-            },
-          }));
+        if (available.length === 1 && !resolvedVenueId) {
+          resolvedVenueId = available[0].id;
         }
       }
 
       // Advance to next non-skipped step if available
       let nextIdx = st.activeStepIdx + 1;
       while (nextIdx < sec.steps.length && isStepAutoSkipped(sec, nextIdx, st.assetId)) {
+        const skipped = sec.steps[nextIdx];
+        if (skipped.slot === "venue" && !resolvedVenueId) {
+          const available = getStepAvailableOptions(skipped, st.assetId);
+          if (available.length === 1) {
+            resolvedVenueId = available[0].id;
+          }
+        }
         nextIdx++;
       }
       if (nextIdx < sec.steps.length && nextIdx !== st.activeStepIdx) {
@@ -206,7 +218,16 @@ export function ClarifyQuestionnaire({
           ...prev,
           [sec.id]: {
             ...prev[sec.id],
+            venueId: resolvedVenueId,
             activeStepIdx: nextIdx,
+          },
+        }));
+      } else if (resolvedVenueId !== st.venueId) {
+        setSectionStates((prev) => ({
+          ...prev,
+          [sec.id]: {
+            ...prev[sec.id],
+            venueId: resolvedVenueId,
           },
         }));
       }
@@ -239,30 +260,6 @@ export function ClarifyQuestionnaire({
   const currentMaxInfo = useMemo(() => {
     return getSectionMaxInfo(currentSection, currentState.venueId, currentState.assetId);
   }, [currentSection, currentState.venueId, currentState.assetId, getSectionMaxInfo]);
-
-  // Linked option resolver: looks up earlier section's amount if an option is linked
-  const resolveLinkedOptionAmount = useCallback(
-    (optLabel: string, currentSecIdx: number): { amount: string; asset: string } | null => {
-      if (!optLabel.toLowerCase().includes("you just")) return null;
-      // Search preceding sections for deposited or produced asset
-      for (let i = currentSecIdx - 1; i >= 0; i--) {
-        const prevSec = sections[i];
-        const prevSt = sectionStates[prevSec.id];
-        if (!prevSt || !prevSt.amountRaw) continue;
-
-        const assetStep = prevSec.steps.find((s) => s.slot === "asset");
-        const assetOpt = assetStep?.options.find((o) => o.id === prevSt.assetId);
-        const assetName = assetOpt?.label || prevSt.assetId?.toUpperCase() || "";
-
-        // Check if label mentions this asset (or generic)
-        if (!assetName || optLabel.toUpperCase().includes(assetName.toUpperCase())) {
-          return { amount: prevSt.amountRaw, asset: assetName };
-        }
-      }
-      return null;
-    },
-    [sections, sectionStates]
-  );
 
   // Amount parsing and validation
   type ParsedAmountResult =
@@ -307,6 +304,63 @@ export function ClarifyQuestionnaire({
       };
     },
     []
+  );
+
+  // Source section amount resolver using sourceSectionId
+  const getSourceSectionAmount = useCallback(
+    (sourceSecId: string, statesOverride?: Record<string, SectionInternalState>): { amount: string; asset: string } | null => {
+      const srcSec = sections.find((s) => s.id === sourceSecId);
+      if (!srcSec) return null;
+      const statesMap = statesOverride ?? sectionStates;
+      const srcSt = statesMap[sourceSecId];
+      if (!srcSt || !srcSt.amountRaw) return null;
+
+      const assetStep = srcSec.steps.find((s) => s.slot === "asset");
+      const assetOpt = assetStep?.options.find((o) => o.id === srcSt.assetId);
+      const assetName = assetOpt?.label || srcSt.assetId?.toUpperCase() || "";
+
+      const maxInfo = getSectionMaxInfo(srcSec, srcSt.venueId, srcSt.assetId);
+      const parsed = parseAmountValue(srcSt.amountRaw, maxInfo);
+      const amountVal = parsed?.kind === "fraction" && parsed.convertedLiteral
+        ? parsed.convertedLiteral
+        : parsed?.kind === "literal"
+        ? parsed.amount
+        : srcSt.amountRaw;
+
+      return { amount: amountVal, asset: assetName };
+    },
+    [sections, sectionStates, getSectionMaxInfo, parseAmountValue]
+  );
+
+  // Linked option resolver: looks up source section's amount through sourceSectionId or label
+  const resolveLinkedOptionAmount = useCallback(
+    (opt: QuestionnaireOption | string, currentSecIdx: number, statesOverride?: Record<string, SectionInternalState>): { amount: string; asset: string } | null => {
+      const optObj = typeof opt === "string" ? undefined : opt;
+      const optLabel = typeof opt === "string" ? opt : opt.label;
+      const srcId = optObj?.sourceSectionId ?? (optObj?.id.startsWith("previous:") ? optObj.id.split(":")[1] : undefined);
+      if (srcId) {
+        const direct = getSourceSectionAmount(srcId, statesOverride);
+        if (direct) return direct;
+      }
+      if (!optLabel.toLowerCase().includes("you just")) return null;
+      const statesMap = statesOverride ?? sectionStates;
+      // Search preceding sections for deposited or produced asset
+      for (let i = currentSecIdx - 1; i >= 0; i--) {
+        const prevSec = sections[i];
+        const prevSt = statesMap[prevSec.id];
+        if (!prevSt || !prevSt.amountRaw) continue;
+
+        const assetStep = prevSec.steps.find((s) => s.slot === "asset");
+        const assetOpt = assetStep?.options.find((o) => o.id === prevSt.assetId);
+        const assetName = assetOpt?.label || prevSt.assetId?.toUpperCase() || "";
+
+        if (!assetName || optLabel.toUpperCase().includes(assetName.toUpperCase())) {
+          return { amount: prevSt.amountRaw, asset: assetName };
+        }
+      }
+      return null;
+    },
+    [sections, sectionStates, getSourceSectionAmount]
   );
 
   const currentParsedAmount = useMemo(() => {
@@ -354,6 +408,7 @@ export function ClarifyQuestionnaire({
         if (available.length > 0 && !st.venueId) return false;
       }
       if (amountStep) {
+        if (st.linkedOptionId) return true;
         const maxInfo = getSectionMaxInfo(sec, st.venueId, st.assetId);
         const parsed = parseAmountValue(st.amountRaw, maxInfo);
         if (!parsed || parsed.error) return false;
@@ -387,7 +442,12 @@ export function ClarifyQuestionnaire({
         if (parsed.kind === "fraction") {
           return `${parsed.percent}% ${assetOpt?.label || ""}`.trim();
         }
-        return `${parsed.amount} ${assetOpt?.label || ""}`.trim();
+        if (parsed.kind === "literal") {
+          return `${parsed.amount} ${assetOpt?.label || ""}`.trim();
+        }
+      }
+      if (st.linkedOptionId) {
+        return `all of the ${assetOpt?.label || ""}`.trim();
       }
       if (venueOpt) return venueOpt.label;
       if (assetOpt) return assetOpt.label;
@@ -407,10 +467,12 @@ export function ClarifyQuestionnaire({
 
         // Check if section had a linked amount
         const amountStep = sec.steps.find((s) => s.slot === "amount");
-        const linkedOpt = amountStep?.options.find((o) => o.label.toLowerCase().includes("you just"));
+        const linkedOpt = amountStep?.options.find((o) =>
+          o.id === st.linkedOptionId || o.sourceSectionId || o.id.startsWith("previous:") || o.label.toLowerCase().includes("you just")
+        );
         if (linkedOpt) {
-          const linked = resolveLinkedOptionAmount(linkedOpt.label, i);
-          if (linked && st.amountRaw) {
+          const linked = resolveLinkedOptionAmount(linkedOpt, i, updated);
+          if (linked && (st.linkedOptionId || st.amountRaw)) {
             // Keep linked amount in sync with source
             st.amountRaw = linked.amount;
           }
@@ -419,7 +481,7 @@ export function ClarifyQuestionnaire({
         // Revalidate amount against max
         const maxInfo = getSectionMaxInfo(sec, st.venueId, st.assetId);
         const maxAmountNum = maxInfo ? parseFloat(maxInfo.amount) : null;
-        if (st.amountRaw && !st.amountRaw.endsWith("%") && maxAmountNum !== null) {
+        if (st.amountRaw && !st.amountRaw.endsWith("%") && maxAmountNum !== null && !st.linkedOptionId) {
           const num = parseFloat(st.amountRaw);
           if (Number.isFinite(num) && num > maxAmountNum) {
             // Amount no longer fits, clear it
@@ -584,6 +646,7 @@ export function ClarifyQuestionnaire({
         [currentSection.id]: {
           ...prev[currentSection.id],
           amountRaw: val,
+          linkedOptionId: null,
         },
       };
       return revalidateLaterSections(activeSectionIdx, updated);
@@ -603,11 +666,20 @@ export function ClarifyQuestionnaire({
   };
 
   // Select a linked option (e.g. "All of the XLM you just deposited")
-  const handleSelectLinkedOption = (optLabel: string) => {
-    const linked = resolveLinkedOptionAmount(optLabel, activeSectionIdx);
-    if (linked) {
-      handleAmountChange(linked.amount);
-    }
+  const handleSelectLinkedOption = (opt: QuestionnaireOption) => {
+    if (submitted) return;
+    const linked = resolveLinkedOptionAmount(opt, activeSectionIdx);
+    setSectionStates((prev) => {
+      const updated = {
+        ...prev,
+        [currentSection.id]: {
+          ...prev[currentSection.id],
+          linkedOptionId: opt.id,
+          amountRaw: linked ? linked.amount : prev[currentSection.id].amountRaw,
+        },
+      };
+      return revalidateLaterSections(activeSectionIdx, updated);
+    });
   };
 
   // Navigation: Back button reopens previous visible step
@@ -674,14 +746,22 @@ export function ClarifyQuestionnaire({
     setSubmitted(true);
 
     if (isMultiSection) {
-      const sectionAnswers: QuestionnaireAnswerSection[] = sections.map((sec) => {
+      const sectionAnswers: QuestionnaireSectionAnswer[] = sections.map((sec) => {
         const st = sectionStates[sec.id];
         const maxInfo = getSectionMaxInfo(sec, st.venueId, st.assetId);
         const parsed = parseAmountValue(st.amountRaw, maxInfo);
-        const amountAnswer =
-          parsed?.kind === "fraction"
-            ? { kind: "fraction" as const, percent: parsed.percent }
-            : { kind: "literal" as const, amount: parsed?.kind === "literal" ? parsed.amount : (st.amountRaw || "0") };
+
+        let amountAnswer: QuestionnaireSectionAnswer["amount"];
+        if (st.linkedOptionId) {
+          amountAnswer = { kind: "previous_leg" };
+        } else if (parsed?.kind === "fraction") {
+          amountAnswer = { kind: "fraction" as const, percent: parsed.percent };
+        } else {
+          amountAnswer = {
+            kind: "literal" as const,
+            amount: parsed?.kind === "literal" ? parsed.amount : (st.amountRaw || "0"),
+          };
+        }
 
         return {
           sectionId: sec.id,
@@ -723,10 +803,17 @@ export function ClarifyQuestionnaire({
       const assetOpt = assetStep?.options.find((o) => o.id === st.assetId);
       const venueOpt = venueStep?.options.find((o) => o.id === st.venueId) ?? null;
 
-      const amountAnswer =
-        parsed?.kind === "fraction"
-          ? { kind: "fraction" as const, percent: parsed.percent }
-          : { kind: "literal" as const, amount: parsed?.kind === "literal" ? parsed.amount : "0" };
+      let amountAnswer: QuestionnaireAnswers["amount"];
+      if (st.linkedOptionId) {
+        amountAnswer = { kind: "previous_leg" };
+      } else if (parsed?.kind === "fraction") {
+        amountAnswer = { kind: "fraction" as const, percent: parsed.percent };
+      } else {
+        amountAnswer = {
+          kind: "literal" as const,
+          amount: parsed?.kind === "literal" ? parsed.amount : (st.amountRaw || "0"),
+        };
+      }
 
       const summary = buildQuestionnaireSummary(
         questionnaire,
@@ -1048,17 +1135,21 @@ export function ClarifyQuestionnaire({
             <div className="space-y-3">
               {/* Linked option row if available (Addendum 2) */}
               {currentStep.options
-                .filter((opt) => opt.label.toLowerCase().includes("you just"))
+                .filter(
+                  (opt) =>
+                    Boolean(opt.sourceSectionId) ||
+                    opt.id.startsWith("previous:") ||
+                    opt.label.toLowerCase().includes("you just")
+                )
                 .map((linkedOpt) => {
-                  const linked = resolveLinkedOptionAmount(linkedOpt.label, activeSectionIdx);
-                  const isLinkedActive =
-                    linked && currentState.amountRaw === linked.amount;
+                  const linked = resolveLinkedOptionAmount(linkedOpt, activeSectionIdx);
+                  const isLinkedActive = currentState.linkedOptionId === linkedOpt.id;
                   return (
                     <button
                       key={linkedOpt.id}
                       type="button"
                       disabled={submitted}
-                      onClick={() => handleSelectLinkedOption(linkedOpt.label)}
+                      onClick={() => handleSelectLinkedOption(linkedOpt)}
                       className={`w-full flex items-center justify-between rounded-xl border p-3 text-left transition-all ${
                         isLinkedActive
                           ? isDark
@@ -1179,6 +1270,30 @@ export function ClarifyQuestionnaire({
                   </div>
                 </div>
               </div>
+
+              {/* Note on max (e.g. "I'll deposit the other 14 from your wallet first") */}
+              {currentMaxInfo?.note && (
+                <div
+                  className={`text-[12px] px-1 ${
+                    isDark ? "text-vgray-400" : "text-vgray-500"
+                  }`}
+                  data-testid="amount-note"
+                >
+                  {currentMaxInfo.note}
+                </div>
+              )}
+
+              {/* Note on pair */}
+              {currentLpPairInfo?.note && (
+                <div
+                  className={`text-[12px] px-1 ${
+                    isDark ? "text-vgray-400" : "text-vgray-500"
+                  }`}
+                  data-testid="pair-note"
+                >
+                  {currentLpPairInfo.note}
+                </div>
+              )}
 
               {/* Converted amount preview when a percentage is chosen */}
               {currentParsedAmount?.kind === "fraction" && currentParsedAmount.convertedLiteral && (

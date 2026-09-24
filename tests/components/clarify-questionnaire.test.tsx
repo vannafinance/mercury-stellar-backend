@@ -112,6 +112,7 @@ const mockMultiSectionQuestionnaire: Questionnaire = {
           options: [
             {
               id: "linked-xlm",
+              sourceSectionId: "sec-deposit",
               label: "All of the XLM you just deposited",
               detail: "1000 XLM",
             },
@@ -664,7 +665,7 @@ describe("ClarifyQuestionnaire Component", () => {
               sectionId: "sec-blend",
               asset: "xlm",
               venue: null,
-              amount: { kind: "literal", amount: "500" },
+              amount: { kind: "previous_leg" },
             },
           ],
         })
@@ -707,6 +708,164 @@ describe("ClarifyQuestionnaire Component", () => {
       // Linked option in Section 1 should now show 250 XLM
       const updatedLinkedOpt = screen.getByTestId("option-linked-xlm");
       expect(updatedLinkedOpt.textContent).toContain("250 XLM");
+    });
+
+    it("displays note fields on max and pair under the amount box", () => {
+      const questionnaireWithNotes: Questionnaire = {
+        id: "q-notes",
+        title: "Supply to LP Pool",
+        subtitle: "Pool supply with notes",
+        steps: [
+          {
+            slot: "asset",
+            prompt: "Which asset?",
+            options: [{ id: "aqusdc", label: "AQUSDC" }],
+          },
+          {
+            slot: "venue",
+            prompt: "Where?",
+            options: [{ id: "pool_xlm_aqusdc", label: "Pool" }],
+          },
+          {
+            slot: "amount",
+            prompt: "How much?",
+            options: [],
+            max: {
+              pool_xlm_aqusdc: {
+                amount: "24",
+                asset: "AQUSDC",
+                where: "wallet",
+                note: "Your margin account has 10 AQUSDC; I'll deposit the other 14 from your wallet first.",
+              },
+            },
+            pair: {
+              pool_xlm_aqusdc: {
+                asset: "XLM",
+                perUnit: "2.5",
+                note: "Paired with XLM at pool ratio",
+              },
+            },
+          },
+        ],
+      };
+
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={questionnaireWithNotes}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      // Both single-option steps (asset & venue) are auto-skipped, lands directly on amount step
+      const amountNote = screen.getByTestId("amount-note");
+      expect(amountNote).toBeTruthy();
+      expect(amountNote.textContent).toContain("Your margin account has 10 AQUSDC; I'll deposit the other 14 from your wallet first.");
+
+      const pairNote = screen.getByTestId("pair-note");
+      expect(pairNote).toBeTruthy();
+      expect(pairNote.textContent).toContain("Paired with XLM at pool ratio");
+    });
+
+    it("resolves linked option strictly via sourceSectionId and submits previous_leg", () => {
+      const qWithSourceSectionId: Questionnaire = {
+        id: "q-source-sec",
+        title: "Deposit and Farm",
+        subtitle: "Multi-leg strategy",
+        steps: [],
+        sections: [
+          {
+            id: "leg-1",
+            title: "Deposit USDC",
+            actionIndex: 0,
+            steps: [
+              {
+                slot: "asset",
+                prompt: "Asset",
+                options: [{ id: "usdc", label: "USDC" }],
+              },
+              {
+                slot: "amount",
+                prompt: "Amount",
+                options: [],
+                max: { usdc: { amount: "1000", asset: "USDC", where: "wallet" } },
+              },
+            ],
+          },
+          {
+            id: "leg-2",
+            title: "Supply USDC to Blend",
+            actionIndex: 1,
+            steps: [
+              {
+                slot: "asset",
+                prompt: "Asset",
+                options: [{ id: "usdc", label: "USDC" }],
+              },
+              {
+                slot: "amount",
+                prompt: "Amount",
+                options: [
+                  {
+                    id: "link-leg1",
+                    sourceSectionId: "leg-1",
+                    label: "Whatever was deposited in step 1",
+                  },
+                ],
+                max: { usdc: { amount: "1000", asset: "USDC", where: "margin account" } },
+              },
+            ],
+          },
+        ],
+      };
+
+      const handleSubmit = vi.fn();
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={qWithSourceSectionId}
+          onSubmit={handleSubmit}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      // In Leg 1: enter 420 USDC
+      const inputLeg1 = screen.getByPlaceholderText(/0.0 or 50%/i);
+      fireEvent.change(inputLeg1, { target: { value: "420" } });
+      fireEvent.click(screen.getByTestId("btn-next"));
+
+      // In Leg 2: see linked option resolved via sourceSectionId
+      const linkedOption = screen.getByTestId("option-link-leg1");
+      expect(linkedOption.textContent).toContain("Whatever was deposited in step 1");
+      expect(linkedOption.textContent).toContain("420 USDC");
+      fireEvent.click(linkedOption);
+
+      // Submit
+      const sendBtn = screen.getByTestId("btn-send");
+      expect(sendBtn.hasAttribute("disabled")).toBe(false);
+      fireEvent.click(sendBtn);
+
+      expect(handleSubmit).toHaveBeenCalledTimes(1);
+      expect(handleSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          questionnaireId: "q-source-sec",
+          sections: [
+            {
+              sectionId: "leg-1",
+              asset: "usdc",
+              venue: null,
+              amount: { kind: "literal", amount: "420" },
+            },
+            {
+              sectionId: "leg-2",
+              asset: "usdc",
+              venue: null,
+              amount: { kind: "previous_leg" },
+            },
+          ],
+        })
+      );
     });
   });
 });
