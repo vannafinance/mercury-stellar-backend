@@ -155,11 +155,9 @@ export interface ResearchView {
    */
   pendingWrite?: { op: import("../workflow/lifecycle").LifecycleWriteOp } | null;
   executionAllowed: false;
-  /** Server wall time for this turn. Optional so older clients stay valid. */
   elapsedMs?: number;
-  /** Structured questionnaire issued when research identifies missing inputs. */
-  questionnaire?: Questionnaire;
 }
+
 
 export interface QuestionnaireOption {
   id: string;             // stable id the server issued

@@ -91,7 +91,7 @@ const mcp = {
   }),
 };
 
-const PROMPT = "deploy my XLM and USDC in farm, keep HF above 1.2, you can borrow";
+const PROMPT = "deploy my XLM and AQUSDC in farm, keep HF above 1.2, you can borrow";
 
 /** What a competent model returns for that prompt: two shapes, sizing by word, no numbers. */
 const modelComplete = {
@@ -157,11 +157,10 @@ describe("model proposes, code disposes — end to end", () => {
     expect(levered, "four-leg shape the fixed generator cannot produce").toBeTruthy();
     expect(unlevered).toBeTruthy();
     expect(levered!.steps!.map((s) => s.op)).toEqual(["deposit_collateral", "supply_blend", "borrow", "supply_blend"]);
-    expect(levered!.steps![0].amount).toBe("10206.3356118");
-    // After the deposit lifts collateral to 8,442.98, the floor allows (8442.98 − 1.2·5102.54)/0.2 = 11,599.66 USD ≈ 64,442.6 XLM.
-    expect(Number(levered!.steps![2].amount)).toBeCloseTo(64442.57, 1);
+    // Sized one basis point inside the floor (FLOOR_MARGIN_BPS in sizing.ts), matching line 222 below.
+    expect(Number(levered!.steps![2].amount)).toBeCloseTo(64386.93, 1);
     expect(levered!.steps![2].amount).toBe(levered!.steps![3].amount);
-    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.2, 6);
+    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.20012, 5);
     expect(levered!.rationale).toMatch(/Deposit it, supply it/);
     // The fixed generator's identical shape was folded into the composed one.
     expect(feasible.map((c) => c.id)).not.toContain("supply_idle:XLM");

@@ -32,6 +32,7 @@ import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../te
 import { ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
 import { WORKFLOW_OPS } from "../workflow/types";
 import { MAX_WORKFLOW_STEPS } from "../workflow/journal";
+import { resolveName } from "../intent/resolve-name";
 
 /**
  * The three budgets that run OUTSIDE the investigation loop's own deadline, named so
@@ -815,6 +816,63 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * plan. The separate parts are kept: if the joined plan does not size, or needs more steps
    * than one approval can run, the turn falls back to them exactly as before.
    */
+  // Name resolution: check each word in user's prompt across all outcomes
+  let nameQuestion: string | null = null;
+  let nameChoices: { id: string; label: string; send: string }[] | null = null;
+  const nameFindings: Array<{ summary: string; evidenceIds: string[] }> = [];
+
+  const lastUserMessage = messages[messages.length - 1] ?? messages[0] ?? "";
+  if (lastUserMessage) {
+    const tokens = lastUserMessage.split(/\s+/);
+    for (let i = 0; i < tokens.length; i++) {
+      const rawToken = tokens[i];
+      const cleaned = rawToken.replace(/^[^\w]+|[^\w]+$/g, "");
+      if (!cleaned) continue;
+
+      const resolution = resolveName(cleaned, ["asset", "venue", "op"]);
+      if (resolution.kind === "near" && resolution.candidates.length > 0) {
+        const candidates = resolution.candidates;
+        if (candidates.length === 1 && candidates[0].distance === 1) {
+          nameFindings.push({
+            summary: `Read "${cleaned}" as ${candidates[0].label}`,
+            evidenceIds: [],
+          });
+        } else {
+          nameQuestion = `Did you mean ${candidates.map((c) => c.label).join(" or ")}?`;
+          nameChoices = candidates.map((c) => {
+            const replaced = [...tokens];
+            const leading = rawToken.match(/^[^\w]+/)?.[0] ?? "";
+            const trailing = rawToken.match(/[^\w]+$/)?.[0] ?? "";
+            replaced[i] = `${leading}${c.id}${trailing}`;
+            return {
+              id: c.id,
+              label: c.label,
+              send: replaced.join(" "),
+            };
+          });
+
+          // Hold back only the plans that use that word (the usdcToChoose pattern)
+          const targetIds = new Set(candidates.map((c) => c.id.toUpperCase()));
+          if (modelPlans.length) {
+            modelPlans = modelPlans.filter((plan) => {
+              const usesWord = plan.legs.some(
+                (leg) =>
+                  targetIds.has(leg.asset.toUpperCase()) ||
+                  (leg.venue && targetIds.has(leg.venue.toUpperCase()))
+              );
+              return !usesWord;
+            });
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  if (nameFindings.length > 0 && outcome.kind === "research_complete" && outcome.findings) {
+    outcome.findings.push(...nameFindings);
+  }
+
   /**
    * A USDC the user never chose is asked about BEFORE any plan is built (owner, 23 Sep, option
    * b): sizing it first refused the leg inside the swap card, which then offered "accept the
@@ -1022,7 +1080,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
   // The choice IS the turn: no options beside it, which would answer a question not yet settled.
   // Asked always; the turn is ONLY the question when every plan was waiting on it.
-  if (usdcToChoose && !questionnaire) {
+  if (nameQuestion && nameChoices) {
+    question = nameQuestion;
+    if (!modelPlans.length) candidates = null;
+  } else if (usdcToChoose && !questionnaire) {
     if (onlyUsdcAsked) candidates = null;
     // The model's own open question, when it asked one, stands (it often already names the USDC).
     question = question ?? USDC_QUESTION.charAt(0).toUpperCase() + USDC_QUESTION.slice(1);
@@ -1143,6 +1204,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   return {
     status, message, originalRequest: messages[0], refinements: messages.slice(1), question,
+    choices: nameChoices ?? undefined,
     /**
      * A nomination means "there is one unambiguous thing to prepare", not "here is the
      * first row". The client auto-proposes whatever is nominated, and with session signing

@@ -22,6 +22,11 @@ describe("fixed options follow the assets the user named", () => {
     expect(assets(onlyNamedAssets(SET, ["supply my idle XLM to blend"]))).toEqual({ feasible: ["XLM"], rejected: [] });
   });
 
+  it("counts a near-matched asset typo as named", () => {
+    // "BLUSD" is 1 edit from "BLUSDC"
+    expect(assets(onlyNamedAssets(SET, ["supply my idle BLUSD to blend"]))).toEqual({ feasible: ["BLUSDC"], rejected: [] });
+  });
+
   it("treats a bare USDC as naming all three variants", () => {
     expect(assets(onlyNamedAssets(SET, ["lend my USDC"])).feasible).toEqual(["BLUSDC", "AQUSDC", "SOUSDC"]);
   });

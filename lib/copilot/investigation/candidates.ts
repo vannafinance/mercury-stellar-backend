@@ -37,6 +37,7 @@ import type { RateAsset, RateComparison } from "./rate-comparison";
 import { candidateId, candidateKindTraits, type CandidateKind } from "./candidate-id";
 import type { ProposalStep } from "../workflow/types";
 import { ASSET_IDS, mentionsBareUsdc, namesAsset, resolveAssetDef, USDC_VARIANTS } from "../registry/assets";
+import { resolveName } from "../intent/resolve-name";
 import { findAsset, findBorrowAmount, findBorrowAsset } from "../router";
 
 const USDC_SET = new Set<string>(USDC_VARIANTS);
@@ -467,6 +468,22 @@ export function onlyNamedAssets(set: CandidateSet | null, messages: readonly str
   if (!set) return set;
   const named = new Set<string>(ASSET_IDS.filter((id) => messages.some((message) => namesAsset(message, id))));
   if (messages.some((message) => mentionsBareUsdc(message))) for (const id of USDC_VARIANTS) named.add(id);
+
+  // Near-matched assets (typos within distance threshold) also count as named
+  for (const message of messages) {
+    const tokens = message.split(/\s+/);
+    for (const token of tokens) {
+      const cleaned = token.replace(/^[^\w]+|[^\w]+$/g, "");
+      if (!cleaned) continue;
+      const res = resolveName(cleaned, ["asset"]);
+      if (res.kind === "near") {
+        for (const candidate of res.candidates) {
+          named.add(candidate.id);
+        }
+      }
+    }
+  }
+
   if (!named.size) return set;
   return {
     feasible: set.feasible.filter((candidate) => named.has(candidate.asset)),
