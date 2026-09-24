@@ -226,6 +226,19 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           },
           required: ["slots"],
         },
+        actions: {
+          type: "array",
+          description: "Fully stated actions from the user's message that do not need clarification. Same shape as a plan leg with sourceQuote.",
+          items: legSchema({
+            properties: {
+              sourceQuote: {
+                type: "string",
+                description: "Exact substring of the user's message that states this action.",
+              },
+            },
+            required: ["sourceQuote"],
+          }),
+        },
       },
       required: ["question"],
     },
@@ -308,7 +321,7 @@ export function decisionFromFunctionCalls(calls: readonly ModelFunctionCall[]): 
   const control = calls.find((call) => CONTROL_NAMES.has(call.name));
   if (!control) return { kind: "invalid_function" };
   const args = isRecord(control.args) ? control.args : {};
-  if (control.name === "clarify") return { kind: "clarify", question: args.question, ...(args.missing !== undefined ? { missing: args.missing } : {}) };
+  if (control.name === "clarify") return { kind: "clarify", question: args.question, ...(args.missing !== undefined ? { missing: args.missing } : {}), ...(args.actions !== undefined ? { actions: args.actions } : {}) };
   if (control.name === "blocked") return { kind: "blocked", reason: args.reason };
   return wrapComplete(args);
 }

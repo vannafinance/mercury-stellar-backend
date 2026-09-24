@@ -12,9 +12,10 @@ import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
-import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom } from "./candidates";
+import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, type CandidateSet } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
-import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
+import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
+import { touchesMarginAccount } from "../workflow/types";
 import { actionsFromAnswers, answerProblem, buildQuestionnaireSet, readsForQuestionnaire } from "./questionnaire";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
@@ -488,8 +489,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       result.observations.push(...batch);
     }
   }
+  const droppedMissingAccountActions = !scope.smartAccount && outcome.kind === "clarify" && outcome.missing
+    ? outcome.missing.filter((entry) => entry.op && touchesMarginAccount(entry.op))
+    : [];
   const questionnaire = outcome.kind === "clarify" && outcome.missing?.length
-    ? buildQuestionnaireSet(outcome.missing, result.observations, Date.now(), messages) ?? undefined
+    ? buildQuestionnaireSet(outcome.missing, result.observations, Date.now(), messages, outcome.actions ?? [], Boolean(scope.smartAccount)) ?? undefined
     : undefined;
   /**
    * Borrow ranking is enabled by the typed goal/plan, not by re-reading the user's
@@ -786,8 +790,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * refusal names the figure. It used to compile straight to steps (14 Sep: "lend 1 xlm"
    * from a wallet with nothing spendable, refused by the contract after Approve).
    */
-  const statedPlan = !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && !modelPlans.length && outcome.goal.actions?.length
-    ? planFromStatedActions(shareSameOpLiteralActions(outcome.goal.actions, messages), outcome.goal.objective) : null;
+  const statedActions = outcome.kind === "research_complete" ? outcome.goal.actions
+    : (outcome.kind === "clarify" && !questionnaire ? outcome.actions : undefined);
+  const statedPlan = !lifecycleOp && (outcome.kind === "research_complete" || (outcome.kind === "clarify" && !questionnaire)) && (outcome.kind === "research_complete" ? outcome.goal.intent === "strategy" : true) && !modelPlans.length && statedActions?.length
+    ? planFromStatedActions(shareSameOpLiteralActions(statedActions, messages), outcome.kind === "research_complete" ? outcome.goal.objective : messages[0]) : null;
   /**
    * Its POSITION, not its identity: `withSharedLiteralAmount` below can append a leg,
    * which would change the plan's candidate id and silently turn the user's own
@@ -971,6 +977,22 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       logPhase("simulation", { options: candidates.feasible.map((c) => `${c.id}: ${c.simulation?.verdict ?? "not simulated"}`), refused: candidates.rejected.filter((r) => /^The protocol refuses/.test(r.reason)).map((r) => r.reason) });
     }
   }
+  if (droppedMissingAccountActions.length > 0) {
+    const droppedRejections: CandidateSet["rejected"] = droppedMissingAccountActions.map((entry) => {
+      const op = entry.op!;
+      const asset = entry.asset ?? "tokens";
+      const name = `${verbOf(op)} ${asset}`;
+      return {
+        label: `${name.charAt(0).toUpperCase()}${name.slice(1)}`,
+        reason: `${name}: a margin account is needed for this step and none is connected.`,
+        asset,
+        accountRequired: { code: "accountRequired" as const, actions: [name] },
+      };
+    });
+    candidates = candidates
+      ? { ...candidates, rejected: [...candidates.rejected, ...droppedRejections] }
+      : { feasible: [], rejected: droppedRejections };
+  }
   /**
    * Checked against the FINAL observations for this turn, after `plan_reads` — not the
    * snapshot from before it ran. `requestedBorrow` above is read early because the fixed
@@ -995,7 +1017,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       : "The investigation ran out of time before it could work out a plan for this, so no options are"
         + " offered — only the reads that finished are shown. Ask again, or split it into smaller steps.");
   }
-  let question = outcome.kind === "clarify" ? outcome.question
+  let question = outcome.kind === "clarify" && questionnaire ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
   question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
   // The choice IS the turn: no options beside it, which would answer a question not yet settled.
@@ -1152,6 +1174,13 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     // Not rendered. Why a run stopped, a plan was dropped or a read failed, readable from the response (23 Sep).
     ...(diagnostics ? { diagnostics } : {}),
     pendingWrite: lifecycleOp && scope.trader ? { op: lifecycleOp } : null,
+    ...(!scope.smartAccount && (candidates?.rejected.some((r) => r.accountRequired) || droppedMissingAccountActions.length > 0)
+      ? {
+          choices: [
+            { id: "create_account", label: "Open a margin account", write: "create_account" as const },
+          ],
+        }
+      : {}),
   };
 }
 

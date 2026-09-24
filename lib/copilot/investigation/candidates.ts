@@ -135,7 +135,7 @@ export interface CandidateSet {
    * `acceptable` marks a refusal the user's own acceptance would lift, so the caller can
    * put it to them as a question instead of a verdict they cannot answer.
    */
-  rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true }>;
+  rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] } }>;
 }
 
 function signedWad(value: string): bigint {
@@ -476,7 +476,7 @@ export function onlyNamedAssets(set: CandidateSet | null, messages: readonly str
 
 export function mergeCandidateSets(
   fixed: CandidateSet | null,
-  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; acceptable?: true; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string } }> },
+  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] }; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string } }> },
   borrowing: CandidateInput["borrowing"] = "unspecified",
 ): CandidateSet {
   // The op sequence a fixed shape compiles to, so it can be matched against a composed plan's steps.
@@ -502,6 +502,7 @@ export function mergeCandidateSets(
         reason: entry.leg ? `${entry.leg}: ${entry.reason}.` : `${entry.reason}.`,
         asset: entry.leg?.split(" ").pop() ?? "",
         ...(entry.acceptable ? { acceptable: true as const } : {}),
+        ...(entry.accountRequired ? { accountRequired: entry.accountRequired } : {}),
         ...(entry.pocket ? { pocket: entry.pocket } : {}),
       })),
     ],

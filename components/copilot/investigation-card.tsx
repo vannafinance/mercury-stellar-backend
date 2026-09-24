@@ -469,7 +469,7 @@ export function InvestigationCard({
                   {!!result.choices?.length && onReply && (
                     <div className="mt-2.5 flex flex-wrap gap-2" data-testid="question-choices">
                       {result.choices.map((choice) => (
-                        <button key={choice.id} type="button" onClick={() => onReply(choice.send)} className={BTN_QUIET}>
+                        <button key={choice.id} type="button" onClick={() => choice.send && onReply(choice.send)} className={BTN_QUIET}>
                           {choice.label}
                         </button>
                       ))}

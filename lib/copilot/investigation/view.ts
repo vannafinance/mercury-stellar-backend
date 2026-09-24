@@ -54,6 +54,7 @@ export interface QuestionnaireOption {
   detail?: string;
   forAsset?: string;
   op?: string;
+  sourceSectionId?: string;
 }
 export interface QuestionnaireStep {
   slot: "asset" | "venue" | "amount";
@@ -71,6 +72,7 @@ export interface QuestionnaireSection {
   position?: number;
   steps: QuestionnaireStep[];
   sourceQuote?: string;
+  op?: string;
   /** Sealed when the section was built. A later summary cannot change it. */
   assetOut?: string;
 }
@@ -136,7 +138,7 @@ export interface ResearchView {
    * next turn through the existing continuation. Built in code from the user's own words
    * (round 2 contract, docs/copilot/AGENT-TASKS.md), never invented by the model.
    */
-  choices?: { id: string; label: string; send: string }[];
+  choices?: { id: string; label: string; send?: string; write?: "create_account" }[];
   /** Present when a direct action is missing inputs. The issued options are sealed in the continuation. */
   questionnaire?: Questionnaire;
   /**

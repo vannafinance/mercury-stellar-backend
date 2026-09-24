@@ -2,7 +2,7 @@ import { lpPairs, lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
 import { parseQuestionnaireMissingList } from "./questionnaire";
 import { ASSET_OUT_OPS, MAX_WORKFLOW_STEPS, OP_FLOW, WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { LIFECYCLE_WRITES, isLifecycleWriteOp } from "../workflow/lifecycle";
-import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision } from "./types";
+import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision, StatedAction } from "./types";
 
 export const PLAN_OPS: readonly PlanOp[] = WORKFLOW_OPS;
 /** The sizing words a leg may carry. `plan.ts` gives each one its meaning; the prompt lists them from here. */
@@ -65,12 +65,22 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return { kind: "inspect", reads };
   }
   if (raw.kind === "clarify" && text(raw.question)) {
-    const keys = ["kind", "question", ...(raw.missing !== undefined ? ["missing"] : [])];
+    const keys = ["kind", "question", ...(raw.missing !== undefined ? ["missing"] : []), ...(raw.actions !== undefined ? ["actions"] : [])];
     if (!exactKeys(raw, keys)) return refuse("clarify: unexpected keys");
-    if (raw.missing === undefined) return { kind: "clarify", question: raw.question };
-    const missing = parseQuestionnaireMissingList(raw.missing);
-    if (!missing) return refuse("clarify: missing inputs are not a known op, asset or slot");
-    return { kind: "clarify", question: raw.question, missing };
+    const missing = raw.missing !== undefined ? parseQuestionnaireMissingList(raw.missing) : undefined;
+    if (raw.missing !== undefined && !missing) return refuse("clarify: missing inputs are not a known op, asset or slot");
+    const actionRows = raw.actions === undefined ? [] : Array.isArray(raw.actions) ? raw.actions.slice(0, 8) : [];
+    const actions: StatedAction[] = actionRows.flatMap((action) => {
+      const leg = parseLeg(action, ["sourceQuote"]);
+      if (!leg || !isRecord(action) || !text(action.sourceQuote, 1600)) return [];
+      return [{ ...leg, sourceQuote: String(action.sourceQuote) }];
+    });
+    return {
+      kind: "clarify",
+      question: raw.question,
+      ...(missing ? { missing } : {}),
+      ...(actions.length ? { actions } : {}),
+    };
   }
   if (raw.kind === "blocked" && exactKeys(raw, ["kind", "reason"]) && text(raw.reason)) {
     return { kind: "blocked", reason: raw.reason };
