@@ -128,4 +128,62 @@ describe("preBroadcastRejection", () => {
     expect(preBroadcastRejection({ error: "internal_error", message: "boom" }, null)).toBeNull();
     expect(preBroadcastRejection({ unsigned_xdr: "AAAA" }, null)).toBeNull();
   });
+
+  /**
+   * (PROTOTYPE) Live: "Add 100 XLM + 1.1477024 AQUSDC to the Aquarius pool" failed with
+   * this exact HostError and the raw code was shown with no hint of which side was
+   * actually empty. Names both assets so the user knows what to check, instead of a
+   * bare Soroban error code.
+   */
+  it("names both LP sides for a zero-balance HostError on add_liquidity", () => {
+    const build = {
+      error: "simulation_failed",
+      code: "10",
+      reason: "host_error",
+      message: "Contract HostError #10: zero balance is not sufficient to spend",
+    };
+    const step = {
+      op: "add_liquidity",
+      args: { token_a: "XLM", token_b: "AQUSDC", amount_a: "100", amount_b: "1.1477024", venue: "aquarius" },
+    };
+    const result = preBroadcastRejection(build, null, step);
+    expect(result).toMatch(/rejected this step before broadcast: Contract HostError #10/);
+    expect(result).toMatch(/100 XLM and 1\.1477024 AQUSDC/);
+    expect(result).toMatch(/Posted margin collateral is not spendable balance/);
+  });
+
+  it("names both sides of a swap, not just Aquarius LP adds", () => {
+    const build = {
+      error: "simulation_failed",
+      code: "10",
+      message: "Contract HostError #10: zero balance is not sufficient to spend",
+    };
+    const step = { op: "swap", args: { token_in: "XLM", token_out: "AQUSDC", amount_in: "50", venue: "aquarius" } };
+    const result = preBroadcastRejection(build, null, step);
+    expect(result).toMatch(/needed 50 XLM and some AQUSDC/);
+  });
+
+  it("names both sides of a Soroswap LP remove the same way as an Aquarius add", () => {
+    const build = {
+      error: "simulation_failed",
+      code: "10",
+      message: "Contract HostError #10: zero balance is not sufficient to spend",
+    };
+    const step = {
+      op: "remove_liquidity",
+      args: { token_a: "XLM", token_b: "SOUSDC", amount_a: "20", amount_b: "3.4", venue: "soroswap" },
+    };
+    const result = preBroadcastRejection(build, null, step);
+    expect(result).toMatch(/needed 20 XLM and 3\.4 SOUSDC/);
+  });
+
+  it("names the single asset for a zero-balance error on a non-LP op", () => {
+    const build = {
+      error: "simulation_failed",
+      code: "10",
+      message: "Contract HostError #10: zero balance is not sufficient to spend",
+    };
+    const step = { op: "deposit_collateral", args: { asset: "AQUSDC" } };
+    expect(preBroadcastRejection(build, null, step)).toMatch(/AQUSDC had nothing spendable/);
+  });
 });
