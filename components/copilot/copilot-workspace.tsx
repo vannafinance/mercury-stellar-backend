@@ -2962,6 +2962,40 @@ export function CopilotWorkspace() {
     });
   }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.restored, workflow.stale, workflow.approve, address]);
 
+  /**
+   * A plan card's Approve (owner layout, 23 Sep): one click prepares the plan and, once it
+   * is prepared, approves it. The server still re-checks funds, prices and health at
+   * Approve, exactly as a second click would have. A swap is the exception: it keeps its
+   * own review card and Confirm (another developer's design), so it stops at prepared.
+   */
+  const approveWhenProposedRef = useRef(false);
+  const approveCandidate = useCallback((candidateId: string) => {
+    const continuation = investigation.result?.continuation;
+    if (!continuation) return;
+    const proposeKey = `propose:${continuation}:${candidateId}`;
+    if (!claimDispatch(address, proposeKey)) return;
+    approveWhenProposedRef.current = true;
+    void proposePlan(continuation, candidateId).then((prepared) => {
+      if (!prepared) {
+        approveWhenProposedRef.current = false;
+        releaseDispatch(address, proposeKey);
+      }
+    });
+  }, [investigation.result?.continuation, proposePlan, address]);
+  useEffect(() => {
+    if (!approveWhenProposedRef.current) return;
+    const view = workflow.view;
+    if (!view || workflow.loading) return;
+    approveWhenProposedRef.current = false;
+    if (workflow.error || workflow.stale || view.status !== "proposed") return;
+    if (view.swap || view.steps.some((step) => step.op === "swap")) return;
+    const approveKey = `approve:${view.id}:${view.revision}`;
+    if (!claimDispatch(address, approveKey)) return;
+    void workflow.approve().then((approved) => {
+      if (!approved) releaseDispatch(address, approveKey);
+    });
+  }, [workflow.view, workflow.loading, workflow.error, workflow.stale, workflow.approve, address]);
+
   useEffect(() => {
     if (!sessionSigning) return;
     const view = workflow.view;
@@ -5411,6 +5445,43 @@ export function CopilotWorkspace() {
     investigation.prompt &&
     lastUserTurn !== investigation.prompt
   );
+  /**
+   * Owner layout (23 Sep): the plan card becomes the execution card in the same place. While
+   * the investigation card draws this run, the thread leaves the run's receipt out, so one
+   * run is one card. Once the user moves on, the card stops drawing it and the thread's
+   * receipt keeps the run's final state on the past turn.
+   */
+  const cardDrawsRun = !isStaleInvestigation && !!workflow.view &&
+    workflow.view.status !== "proposed" && workflow.view.status !== "validating" &&
+    investigation.turns[investigation.turns.length - 1]?.role !== "user";
+  /**
+   * "Once tx is settled, the same response shows the completed response" (owner layout).
+   * The reply written before approval ended in an instruction to approve; once the run has
+   * finished, that turn's text is replaced with what happened, built from the legs
+   * themselves (localExecutionAnswer), not from any wording in the old reply.
+   */
+  const completedTextRef = useRef<string | null>(null);
+  const updateLastAssistantText = investigation.updateLastAssistantText;
+  useEffect(() => {
+    const view = workflow.view;
+    if (!view || !cardDrawsRun) return;
+    const settledCount = view.steps.filter((step) => step.status === "settled").length;
+    const finished = view.status === "completed" ||
+      ((view.status === "blocked" || view.status === "cancelled") && settledCount > 0);
+    if (!finished) return;
+    const key = `${view.id}:${view.status}:${settledCount}`;
+    if (completedTextRef.current === key) return;
+    completedTextRef.current = key;
+    const answer = localExecutionAnswer({
+      intent: view.objective,
+      legs: view.steps.map((step) => ({
+        label: step.label,
+        status: step.status === "settled" ? "done" : step.status === "failed" || step.status === "uncertain" ? "error" : step.status,
+        tx_hash: step.txHash ?? null,
+      })),
+    });
+    void updateLastAssistantText(`${view.objective}. ${answer.headline}`);
+  }, [workflow.view, cardDrawsRun, updateLastAssistantText]);
   const liveWriteUi =
     multiLeg ||
     phase === "plan" ||
@@ -5527,6 +5598,7 @@ export function CopilotWorkspace() {
               liveNote={!isError ? response?.answer?.note : null}
               liveTone={isError ? "error" : "default"}
               sessionSigning={sessionSigning}
+              hideReceiptFor={cardDrawsRun ? workflow.view?.id ?? null : null}
             />
             {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
               <div className="flex items-start gap-2.5 max-w-[85%]">
@@ -5573,6 +5645,9 @@ export function CopilotWorkspace() {
                 onSign={() => { void signJournalXdr(false); }}
                 wallet={address}
                 autoSign={sessionSigning}
+                onApproveCandidate={investigation.result?.continuation ? approveCandidate : undefined}
+                onReply={(text) => { void run(text); }}
+                threadDefersReceipt={cardDrawsRun}
               />
             )}
             <div

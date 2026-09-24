@@ -76,6 +76,12 @@ export interface ResearchView {
   rateComparisons?: import("./rate-comparison").RateComparison[];
   checks: Array<{ id: string; label: string; status: "ok" | "error"; readAt: number }>;
   warnings: string[];
+  /**
+   * Answers to `question` the user can pick with one tap. `send` is sent as the user's
+   * next turn through the existing continuation. Built in code from the user's own words
+   * (round 2 contract, docs/copilot/AGENT-TASKS.md), never invented by the model.
+   */
+  choices?: { id: string; label: string; send: string }[];
   scope: { wallet: string | null; smartAccount: string | null; network: string };
   continuation: string;
   proposalCandidateId?: string | null;

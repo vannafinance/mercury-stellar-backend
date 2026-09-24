@@ -43,6 +43,18 @@ export interface InvestigationCardProps {
   onSign?: () => void;
   wallet?: string | null;
   autoSign?: boolean;
+  /**
+   * One click on a plan's Approve: prepare it and, once it is prepared, approve it
+   * (the workspace chains the two). Falls back to `onPropose` when not given.
+   */
+  onApproveCandidate?: (candidateId: string) => void;
+  /** Send a choice's text as the user's next turn (a "did you mean" button). */
+  onReply?: (text: string) => void;
+  /**
+   * The thread has been told to hide this run's receipt so this card is the one place the
+   * run is drawn: the plan card becomes the execution card in the same spot.
+   */
+  threadDefersReceipt?: boolean;
 }
 
 const money = (value: string) =>
@@ -89,13 +101,27 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 const BTN_PRIMARY = "rounded-r2 bg-gradient px-3.5 py-2 text-[13px] font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:opacity-45";
+/** Case and spacing do not make a restatement new; only different words do. */
+function sameWords(a: string, b: string): boolean {
+  const norm = (text: string) => text.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.?!]+$/, "");
+  return norm(a) === norm(b);
+}
+
+/** Plan A, Plan B, Plan C: the owner's layout names alternatives, not "Option 1 of 3". */
+const planLetter = (index: number) => String.fromCharCode(65 + index);
+
 const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
 
 export function InvestigationCard({
   prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, continueLabel,
   onPropose, workflow, planWithdrawn, planLiveFloor, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
-  wallet = null, autoSign = false,
+  wallet = null, autoSign = false, onApproveCandidate, onReply, threadDefersReceipt = false,
 }: InvestigationCardProps) {
+  /**
+   * Cancel on a plan that was never prepared: nothing was sent, so it only closes the plans
+   * for this reply. Keyed by the reply's continuation so a new reply starts open.
+   */
+  const [dismissedFor, setDismissedFor] = useState<string | null>(null);
   const result: ResearchView | null = researchResult ?? (workflow ? {
     status: "researched", message: "Restored your recorded plan.", originalRequest: workflow.objective, refinements: [],
     understanding: null, question: null, facts: [], checks: [], warnings: [], continuation: "", executionAllowed: false,
@@ -133,7 +159,7 @@ export function InvestigationCard({
    * Sign / Check progress / Cancel buttons are not duplicated anywhere and stay.
    */
   const stepperDrawnInThread =
-    !!workflow &&
+    !!workflow && !threadDefersReceipt &&
     turns.some((turn) => turn.role === "assistant" && turn.executionReceipt?.workflowId === workflow.id);
   /** A transaction is on its way to a ledger; the hook asks again at every ledger close. */
   const awaitingLedger = !!workflow && ["approved", "running"].includes(workflow.status) && inFlight(workflow);
@@ -230,10 +256,16 @@ export function InvestigationCard({
             <article aria-label="Copilot reply" className="space-y-5">
               {clock && <p className="text-[12px] tabular-nums text-vgray-400">{clock}</p>}
 
-              {result.understanding && (
+              {result.understanding && (!sameWords(result.understanding.objective, result.originalRequest || prompt) ||
+                result.understanding.constraints.length > 0 || stance) && (
                 <section className="space-y-2">
-                  <SectionTitle>Understood as</SectionTitle>
-                  <p className="text-[14px] leading-6 text-vgray-800">{result.understanding.objective}</p>
+                  {/* UI-FIX-LIST 1: a restatement identical to what was typed tells the user nothing. */}
+                  {!sameWords(result.understanding.objective, result.originalRequest || prompt) && (
+                    <>
+                      <SectionTitle>Understood as</SectionTitle>
+                      <p className="text-[14px] leading-6 text-vgray-800">{result.understanding.objective}</p>
+                    </>
+                  )}
                   {(result.understanding.constraints.length > 0 || stance) && (
                     <ul className="flex flex-wrap gap-1.5" aria-label="Constraints">
                       {result.understanding.constraints.filter((constraint) => constraint.trim().toLowerCase() !== stance?.toLowerCase()).map((constraint, index) => (
@@ -263,15 +295,19 @@ export function InvestigationCard({
               )}
 
               {/*
-                Options, computed rather than suggested. The non-borrowing choice is shown
-                beside the leveraged one on purpose — permission to borrow is not an
-                instruction to borrow — and a ruled-out shape states why.
+                The owner's layout (23 Sep sketch): one plan card per real alternative, each with
+                its own Approve and Cancel. Plan A / B / C only when there is more than one. Once a
+                plan is prepared, the journal's card takes this place, then the execution card:
+                the set of plans goes, so the chosen plan is the only card left. Refusals are not
+                a second card; the reply above already says why (UI-FIX-LIST 12, 16).
               */}
-              {!!result.candidates && (result.candidates.feasible.length > 0 || result.candidates.rejected.length > 0) && (
-                <section className="space-y-2.5">
-                  <SectionTitle>{result.candidates.feasible.length === 1 ? "Option" : "Options"}</SectionTitle>
+              {!!result.candidates && result.candidates.feasible.length > 0 && !workflow &&
+                dismissedFor !== (result.continuation || result.originalRequest) && (
+                <section className="space-y-2.5" aria-label={result.candidates.feasible.length > 1 ? "Plans" : "Plan"}>
                   {result.candidates.feasible.map((candidate, index) => {
                     const rate = rateOf(candidate);
+                    const several = result.candidates!.feasible.length > 1;
+                    const approve = onApproveCandidate ?? onPropose;
                     return (
                       <div
                         key={candidate.id}
@@ -279,7 +315,10 @@ export function InvestigationCard({
                         style={{ borderColor: index === 0 ? "var(--cp-violet-soft-border)" : "var(--cp-g100)" }}
                       >
                         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                          <p className="min-w-0 break-words text-[15px] leading-6 text-vgray-900">{candidate.label}</p>
+                          <p className="min-w-0 break-words text-[15px] leading-6 text-vgray-900">
+                            {several && <span className="mr-1.5 font-semibold text-violet-500">Plan {planLetter(index)}</span>}
+                            {candidate.label}
+                          </p>
                           {rate && <p className="shrink-0 text-[14px] font-semibold tabular-nums text-violet-500">{rate}</p>}
                         </div>
                         <dl className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1 text-[12.5px] leading-5 text-vgray-500">
@@ -305,38 +344,23 @@ export function InvestigationCard({
                           <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-5 text-vgray-500" data-testid="plan-simulation">{candidate.simulation.summary}</p>
                         )}
                         {index === 0 && candidate.decision?.reason && <p className="mt-2 max-w-[68ch] text-[13px] leading-5 text-vgray-700">{candidate.decision.reason}</p>}
-                        {onPropose && (
+                        {approve && (
                           <div className="mt-3 flex flex-wrap gap-2">
-                            <button type="button" onClick={() => onPropose(candidate.id)} disabled={workflowLoading || planInFlight} className={BTN_PRIMARY}>
-                              Prepare this plan
+                            <button type="button" onClick={() => approve(candidate.id)} disabled={workflowLoading || planInFlight} className={BTN_PRIMARY}>
+                              Approve
                             </button>
-                            {index === 0 && candidate.decision?.runnerUpId && (
-                              <button type="button" onClick={() => onPropose(candidate.decision!.runnerUpId!)} disabled={workflowLoading || planInFlight} className={BTN_QUIET}>
-                                Use the other option
-                              </button>
-                            )}
+                            <button type="button" onClick={() => setDismissedFor(result.continuation || result.originalRequest)} disabled={workflowLoading} className={BTN_QUIET}>
+                              Cancel
+                            </button>
                           </div>
                         )}
                       </div>
                     );
                   })}
-                  {result.candidates.rejected.length > 0 && (
-                    <ul className="space-y-1.5" aria-label="Ruled out">
-                      {result.candidates.rejected.map((entry, index) => (
-                        <li key={`${entry.asset}-${index}`} className="rounded-xl border border-dashed border-vgray-100 px-4 py-3 text-[13px] leading-5 text-vgray-500">
-                          <span className="text-vgray-800">Ruled out: {entry.label}.</span> {entry.reason}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  <details className="text-[12.5px] leading-5 text-vgray-500">
-                    <summary className="cursor-pointer select-none text-vgray-500 hover:text-vgray-800">How these figures are made</summary>
-                    <p className="mt-1 max-w-[68ch]">
-                      Every amount comes from a live read of your wallet, your position and the markets, cut to the token&apos;s on-chain precision.
-                      Health factors are projected at your stated floor, before fees and price movement. Rates are the ones read, not a projected return.
-                    </p>
-                  </details>
                 </section>
+              )}
+              {!!result.candidates?.feasible.length && !workflow && dismissedFor === (result.continuation || result.originalRequest) && (
+                <p className="text-[13px] leading-5 text-vgray-500" data-testid="plans-cancelled">Cancelled. Nothing was submitted.</p>
               )}
 
               {/* Between a click and its result the user must see the state, not a frozen card. */}
@@ -440,13 +464,24 @@ export function InvestigationCard({
                 <section className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3.5">
                   <SectionTitle>{result.candidates?.feasible.length ? "Open point" : "Needs your answer"}</SectionTitle>
                   <p className="mt-1.5 whitespace-pre-wrap break-words text-[14px] leading-6 text-vgray-900">{result.question}</p>
+                  {/* Choices the server built from the user's own words ("did you mean"): one tap answers. */}
+                  {!!result.choices?.length && onReply && (
+                    <div className="mt-2.5 flex flex-wrap gap-2" data-testid="question-choices">
+                      {result.choices.map((choice) => (
+                        <button key={choice.id} type="button" onClick={() => onReply(choice.send)} className={BTN_QUIET}>
+                          {choice.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <p className="mt-1.5 text-[12.5px] leading-5 text-vgray-500">
-                    {result.candidates?.feasible.length ? "The options above stand. Reply below to change them." : "Reply below to continue."}
+                    {result.candidates?.feasible.length ? "The plans above stand. Reply below to change them." : "Reply below to continue."}
                   </p>
                 </section>
               )}
 
-              {result.warnings.length > 0 && (
+              {/* Notes explain a partial answer. With a plan or a run on screen they are noise (UI-FIX-LIST 3). */}
+              {result.warnings.length > 0 && !result.candidates?.feasible.length && !workflow && (
                 <ul className="space-y-1.5 text-[12.5px] leading-5 text-vgray-500" aria-label="Notes">
                   {result.warnings.map((warning, index) => (
                     <li key={index} className="flex gap-2">

@@ -6,6 +6,7 @@ import { generateCandidates } from "@/lib/copilot/investigation/candidates";
 import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
+import { strategyReply } from "@/lib/copilot/investigation/answer";
 
 /**
  * The Options block, rendered.
@@ -72,7 +73,8 @@ describe("investigation card / options", () => {
     });
     card(view({ candidates }));
 
-    expect(screen.getByRole("heading", { name: /^Options?$/ })).toBeTruthy();
+    // Owner layout (23 Sep): plan cards, named Plan A / B when there are several; no "Options" heading.
+    expect(screen.getByRole("region", { name: /^Plans?$/ })).toBeTruthy();
     expect(screen.getByText(/Borrow BLUSDC to the 1.30 floor and supply it to Blend/)).toBeTruthy();
     // Quoted as APY (23 Sep, owner): the figure is the candidate's own, not a restated constant.
     const levered = candidates.feasible.find((c) => c.borrows)!;
@@ -84,15 +86,17 @@ describe("investigation card / options", () => {
     expect(screen.getAllByText("Health factor after")[0].nextElementSibling?.textContent).toBe("1.30");
   });
 
-  it("shows a ruled-out shape WITH its reason, never as a silent omission", () => {
+  it("says a ruled-out shape WITH its reason in the reply, never as a silent omission", () => {
     const candidates = generateCandidates({
       grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", idleWalletUsd: null,
       comparisons: [comparison({ blendSupplyApr: "3", marginBorrowApr: "7", spreadApr: "-4", verdict: "cost_exceeds_supply" })],
     });
     card(view({ candidates }));
-
-    expect(screen.getByText(/Ruled out: Borrow BLUSDC to supply to Blend/)).toBeTruthy();
-    expect(screen.getByText(/loses money before any fees/)).toBeTruthy();
+    // UI-FIX-LIST 12/16 (owner): no "Ruled out" card; the reply states it once.
+    expect(screen.queryByText(/Ruled out: Borrow BLUSDC to supply to Blend/)).toBeNull();
+    const reply = strategyReply({ status: "researched", facts: [], candidates, capacity: null, question: null });
+    expect(reply).toMatch(/Borrow BLUSDC to supply to Blend/);
+    expect(reply).toMatch(/loses money before any fees/);
   });
 
   it("renders the non-borrowing alternative without inventing a health-factor change", () => {
@@ -185,7 +189,8 @@ describe("investigation card / options", () => {
         }}
       />,
     );
-    expect(screen.getByRole("heading", { name: /^Options?$/ })).toBeTruthy();
+    // The chosen plan has become its execution card: the set of plans is gone (owner layout).
+    expect(screen.queryByRole("region", { name: /^Plans?$/ })).toBeNull();
     expect(screen.getByRole("heading", { name: "Running" })).toBeTruthy();
   });
 
@@ -261,7 +266,7 @@ describe("investigation card / options", () => {
     expect(screen.getByRole("status").textContent).toMatch(/Reading can withdraw/);
   });
 
-  it("offers Switch as one action when a runner-up decided the ranking", () => {
+  it("gives each plan its own Approve when a runner-up decided the ranking", () => {
     const onPropose = vi.fn();
     const candidates = generateCandidates({
       grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", borrowingAllowed: false,
@@ -290,7 +295,9 @@ describe("investigation card / options", () => {
       />,
     );
     expect(screen.getByText(/Using SOUSDC/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Use the other option" }));
+    expect(screen.getByText("Plan A")).toBeTruthy();
+    expect(screen.getByText("Plan B")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "Approve" })[1]);
     expect(onPropose).toHaveBeenCalledWith(candidateId("lend_idle", "AQUSDC"));
   });
 

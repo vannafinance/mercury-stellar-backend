@@ -249,10 +249,18 @@ export function strategyReply(input: {
   stopReason?: string | null;
 }): string {
   const top = input.candidates?.feasible[0];
+  /**
+   * A shape that could not be prepared is said here, once, in the reply: the card no longer
+   * draws a "Ruled out" entry (owner, UI-FIX-LIST 12/16). Without this, a refusal beside a
+   * workable plan would have vanished. Same form as the all-refused sentence below.
+   */
+  const ruledOut = top && input.candidates?.rejected.length
+    ? ` Ruled out: ${input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} — ${entry.reason.replace(/\.$/, "")}`).join("; ")}.`
+    : "";
   if (top) {
     if (top.decision?.runnerUpId && top.decision.reason) {
       const alt = input.candidates && input.candidates.feasible.length > 1
-        ? " Switch → to use the next option instead."
+        ? " The other plan is below."
         : "";
       const floor = input.capacity
         ? ` Sized so health stays at or above ${Number(input.capacity.floor).toFixed(2)}.`
@@ -260,7 +268,7 @@ export function strategyReply(input: {
       const hf = top.finalHealthFactor
         ? ` Health factor after this would be ${Number(top.finalHealthFactor).toFixed(2)}.`
         : "";
-      return `${top.decision.reason}${floor}${hf} Approve to run those steps.${alt}`;
+      return `${top.decision.reason}${floor}${hf} Approve to run those steps.${alt}${ruledOut}`;
     }
     /**
      * A composed plan's headline is its own title and rationale, with the numbers the
@@ -298,7 +306,7 @@ export function strategyReply(input: {
       const others = input.candidates && input.candidates.feasible.length > 1
         ? ` ${input.candidates.feasible.length - 1} other option${input.candidates.feasible.length > 2 ? "s" : ""} below.`
         : "";
-      return `${top.label}: ${legs}.${rate}${hf}${others} Approve to run those steps.`;
+      return `${top.label}: ${legs}.${rate}${hf}${others} Approve to run those steps.${ruledOut}`;
     }
     const rates = top.venue === "earn" ? "Earn and Blend supply rates" : "live farm rates";
     const carry = top.netAprPct
@@ -313,7 +321,7 @@ export function strategyReply(input: {
     const alt = input.candidates && input.candidates.feasible.length > 1
       ? " A no-borrow alternative is listed if you want to stay out of new debt."
       : "";
-    return `I compared ${rates} against your position. Best path: ${top.label} for ${money(top.amountUsd)}. ${carry}${floor}${hf}${alt} Approve to run those steps.`;
+    return `I compared ${rates} against your position. Best path: ${top.label} for ${money(top.amountUsd)}. ${carry}${floor}${hf}${alt} Approve to run those steps.${ruledOut}`;
   }
   if (input.candidates?.rejected.length) {
     // Say why each shape was ruled out — the reasons are the analysis; there is no stock verdict.

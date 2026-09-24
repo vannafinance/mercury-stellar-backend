@@ -366,7 +366,10 @@ export function ChatTurns({
   liveNote,
   liveTone = "default",
   sessionSigning,
+  hideReceiptFor,
 }: {
+  /** A run the investigation card is drawing in place; the thread leaves its receipt out. */
+  hideReceiptFor?: string | null;
   turns: ThreadTurn[];
   hideAssistantText?: string | null;
   pendingUser?: string | null;
@@ -387,7 +390,9 @@ export function ChatTurns({
             {group.assistant && !hideStaleAssistant ? (
               <AssistantTurn
                 text={group.assistant.text}
-                receipt={group.assistant.executionReceipt}
+                receipt={hideReceiptFor && group.assistant.executionReceipt?.workflowId === hideReceiptFor
+                  ? undefined
+                  : group.assistant.executionReceipt}
                 sessionSigning={sessionSigning}
               />
             ) : null}
