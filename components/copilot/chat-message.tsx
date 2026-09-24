@@ -13,6 +13,13 @@ import { ExecutionStepper, type StepperStep } from "@/components/copilot/executi
  * lines; those stay in storage and are stripped here for display.
  */
 
+
+/**
+ * Where an assistant turn's TEXT starts: the 18px mark plus the 10px gap beside it. Lines that
+ * belong to the reply but sit outside it (the "Checked in" clock, the progress line) use this
+ * so they line up under the words, not under the logo.
+ */
+export const ASSISTANT_TEXT_INDENT = "pl-7";
 export function UserBubble({ children }: { children: React.ReactNode }) {
   return (
     // The shell pins the latest of these to the top of the view on send (copilot-shell.tsx).

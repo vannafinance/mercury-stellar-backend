@@ -1485,6 +1485,9 @@ function ImpactPanel({ sim: served }: { sim: Simulation }) {
   );
 }
 
+
+/** How long switching auto-approve on or off may take before the toggle is released again. */
+const AUTO_SIGN_SWITCH_TIMEOUT_MS = 30_000;
 export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
   // Lives in the root layout, not here: an in-flight run must survive leaving this page.
@@ -3333,7 +3336,9 @@ export function CopilotWorkspace() {
             : null,
         },
         label,
-        opts?.quiet ? { background: true } : undefined,
+        // A background switch gets a deadline, so a request that never answers releases the
+        // toggle instead of holding `autoApprovePending` forever.
+        opts?.quiet ? { background: true, signal: AbortSignal.timeout(AUTO_SIGN_SWITCH_TIMEOUT_MS) } : undefined,
       );
       // Sync local auto-approve with the Sign Service session. Caps that only
       // live in this browser are not a policy — applyAutoSignOutcome refuses to
@@ -3350,6 +3355,11 @@ export function CopilotWorkspace() {
       } else if (address && !data && action !== "disable") {
         setAutoApprove(address, false);
       }
+      // No answer at all (the deadline passed, or the request failed): say so, rather than
+      // leaving the toggle looking switched while nothing changed on the server.
+      if (!data && opts?.quiet) {
+        toast.error(action === "disable" ? "Auto-approve did not switch off. Try again." : "Auto-approve did not switch on. Try again.");
+      }
     },
     [
       postCopilot,
@@ -3364,7 +3374,19 @@ export function CopilotWorkspace() {
   );
 
   const handleAutoApproveToggle = useCallback(() => {
-    if (loading || autoApprovePending) return;
+    /**
+     * A click while the previous switch is still in flight used to vanish without a word,
+     * and that request had no deadline — one that hung left the toggle dead until a server
+     * restart (24 Sep, live: turned off, could not turn back on). Say why nothing happened.
+     */
+    if (autoApprovePending) {
+      toast("Still switching auto-approve. One moment.");
+      return;
+    }
+    if (loading) {
+      toast("Wait for the current reply to finish, then switch auto-approve.");
+      return;
+    }
     if (!address) {
       toast.error("Connect a wallet first.");
       return;

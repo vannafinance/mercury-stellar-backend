@@ -31,8 +31,18 @@ describe("the heading of a stopped run", () => {
     expect(screen.getByText("Not executed")).toBeTruthy();
   });
 
-  it("leaves a completed run as Done", () => {
+  it("draws a completed run as the execution card alone, saying Completed", () => {
     card(run("completed", 5));
-    expect(screen.getByText("Done")).toBeTruthy();
+    expect(screen.getByText("Completed")).toBeTruthy();
+    // No outer "Done" box around the card (owner, 24 Sep).
+    expect(screen.queryByText("Done")).toBeNull();
+  });
+
+  it("says Cancelled, and how much went through, for a cancelled run", () => {
+    const cancelled = run("cancelled", 2);
+    cancelled.steps[2].status = "pending";
+    card(cancelled);
+    expect(screen.getByText("Cancelled")).toBeTruthy();
+    expect(screen.getByText("2 of 5 went through")).toBeTruthy();
   });
 });

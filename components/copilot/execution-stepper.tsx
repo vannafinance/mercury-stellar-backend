@@ -25,7 +25,12 @@ export interface ExecutionStepperProps {
   /** Ends the run after the step in flight. Hidden once the run is over. */
   onStop?: () => void;
   busy?: boolean;
+  /** The user cancelled the remaining steps: the header says so rather than "Executing". */
+  cancelled?: boolean;
 }
+
+/** Settled steps fill and pop one after another, so a finished run still reads in order. */
+const STAGGER_MS = 140;
 
 const IN_FLIGHT: ReadonlySet<StepperStep["status"]> = new Set(["claiming", "signing", "submitting"]);
 
@@ -46,18 +51,20 @@ export function ExecutionStepper({
   onSign,
   onStop,
   busy = false,
+  cancelled = false,
 }: ExecutionStepperProps) {
   const total = steps.length;
   const settled = steps.filter((step) => step.status === "settled").length;
   const failedIndex = steps.findIndex((step) => step.status === "failed");
   const complete = total > 0 && settled === total;
-  const stopped = failedIndex !== -1;
+  const stopped = failedIndex !== -1 || cancelled;
   const awaitingWallet = !autoApprove && steps.some((step) => step.status === "signing");
   const explorer = network === "mainnet" || network === "public" ? "public" : "testnet";
   const nextIndex = stopped ? -1 : steps.findIndex((step, index) => index > currentStepIndex && step.status === "pending");
 
   const headline = complete ? "Completed"
-    : stopped ? `Stopped at step ${failedIndex + 1}`
+    : failedIndex !== -1 ? `Stopped at step ${failedIndex + 1}`
+      : cancelled ? "Cancelled"
       : awaitingWallet ? "Your signature needed"
         : "Executing";
   const subline = complete ? null
@@ -73,7 +80,8 @@ export function ExecutionStepper({
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2.5">
           {complete && (
-            <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--cp-emerald)] text-white" aria-hidden="true">
+            <span className="cp-exec-pop flex h-4 w-4 items-center justify-center rounded-full bg-[var(--cp-emerald)] text-white" aria-hidden="true"
+              style={{ animationDelay: `${total * STAGGER_MS}ms` }}>
               <Check size={11} strokeWidth={3} />
             </span>
           )}
@@ -82,15 +90,13 @@ export function ExecutionStepper({
         </div>
         <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, total)}, minmax(0, 1fr))` }} aria-hidden="true">
           {steps.map((step, index) => (
-            <div
-              key={step.id || index}
-              className={`h-1 rounded-full ${
-                step.status === "settled" ? "bg-[var(--cp-emerald)]"
-                  : step.status === "failed" ? "bg-[var(--cp-danger-fg)]"
-                    : IN_FLIGHT.has(step.status) ? "animate-pulse bg-[image:var(--cp-gradient)]"
-                      : "bg-[var(--bar-track)]"
-              }`}
-            />
+            <div key={step.id || index} className="h-1 overflow-hidden rounded-full bg-[var(--bar-track)]">
+              {step.status === "settled" && (
+                <div className="cp-exec-fill h-full w-full rounded-full bg-[var(--cp-emerald)]" style={{ animationDelay: `${index * STAGGER_MS}ms` }} />
+              )}
+              {step.status === "failed" && <div className="h-full w-full rounded-full bg-[var(--cp-danger-fg)]" />}
+              {IN_FLIGHT.has(step.status) && <div className="cp-exec-live h-full w-full rounded-full" />}
+            </div>
           ))}
         </div>
       </div>
@@ -105,7 +111,7 @@ export function ExecutionStepper({
           const last = index === steps.length - 1;
           return (
             <li key={step.id || index} className={`flex gap-3.5 py-3 ${last ? "" : "border-b border-vgray-50"}`}>
-              <StepMark status={step.status} />
+              <StepMark status={step.status} delayMs={index * STAGGER_MS} />
               <div className="flex min-w-0 grow flex-col gap-1">
                 <div className="flex items-baseline justify-between gap-3">
                   <span className={`text-[14px] leading-5 ${isSettled || isInFlight || isFailed ? "font-semibold text-vgray-900" : "font-medium text-vgray-400"}`}>
@@ -120,7 +126,7 @@ export function ExecutionStepper({
                 </div>
 
                 {isSettled && (
-                  <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 font-mono text-[11.5px] text-vgray-400">
+                  <div className="cp-exec-rise flex flex-wrap gap-x-2.5 gap-y-0.5 font-mono text-[11.5px] text-vgray-400" style={{ animationDelay: `${index * STAGGER_MS}ms` }}>
                     {step.txHash && (
                       <a
                         href={`https://stellar.expert/explorer/${explorer}/tx/${step.txHash}`}
@@ -138,7 +144,7 @@ export function ExecutionStepper({
                 )}
 
                 {isInFlight && !waitsHere && (
-                  <p role="status" aria-live="polite" className="animate-pulse font-mono text-[11.5px] text-violet-500">
+                  <p role="status" aria-live="polite" className="cp-exec-breathe font-mono text-[11.5px] text-violet-500">
                     {step.status === "claiming" ? "Checking it before it is sent…"
                       : step.status === "signing" ? "Signing…"
                         : "Waiting for the ledger to close…"}
@@ -188,10 +194,10 @@ export function ExecutionStepper({
   );
 }
 
-function StepMark({ status }: { status: StepperStep["status"] }) {
+function StepMark({ status, delayMs }: { status: StepperStep["status"]; delayMs: number }) {
   if (status === "settled") {
     return (
-      <span className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-[var(--cp-ok-bg)] text-[var(--cp-ok-fg)]" aria-label="Settled">
+      <span style={{ animationDelay: `${delayMs}ms` }} className="cp-exec-pop mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-[var(--cp-ok-bg)] text-[var(--cp-ok-fg)]" aria-label="Settled">
         <Check size={13} strokeWidth={2.5} />
       </span>
     );

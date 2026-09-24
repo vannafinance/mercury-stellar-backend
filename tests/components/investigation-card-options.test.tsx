@@ -194,7 +194,8 @@ describe("investigation card / options", () => {
     );
     // The chosen plan has become its execution card: the set of plans is gone (owner layout).
     expect(screen.queryByRole("region", { name: /^Plans?$/ })).toBeNull();
-    expect(screen.getByRole("heading", { name: "Running" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: /execution progress/i })).toBeTruthy();
+    expect(screen.getByText("Executing")).toBeTruthy();
   });
 
   it("offers Approve and run on a proposed plan, and Sign in wallet when an XDR is waiting", () => {

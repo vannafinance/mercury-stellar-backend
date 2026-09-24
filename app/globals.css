@@ -1215,3 +1215,38 @@ html.dark .run-card,
   }
 }
 
+
+/* ── Execution card motion (mockup boards 1–2) ─────────────────────────────
+   Running: the live segment's gradient travels, and the waiting line breathes.
+   Done: each settled segment fills left to right and its check pops in, staggered by
+   step (the delay is set inline per step), so a run that finished before the card
+   mounted still reads as having happened in order. Colours stay tokens. */
+@keyframes cp-exec-travel {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+@keyframes cp-exec-fill {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@keyframes cp-exec-pop {
+  0% { transform: scale(0.4); opacity: 0; }
+  70% { transform: scale(1.12); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes cp-exec-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.cp-exec-live {
+  background-image: linear-gradient(90deg, var(--violet-500) 0%, var(--imperial-500) 50%, var(--violet-500) 100%);
+  background-size: 200% 100%;
+  animation: cp-exec-travel 1.6s linear infinite;
+}
+.cp-exec-fill { transform-origin: left center; animation: cp-exec-fill 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.cp-exec-pop { animation: cp-exec-pop 380ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.cp-exec-rise { animation: cp-in 320ms ease-out both; }
+.cp-exec-breathe { animation: cp-exec-breathe 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .cp-exec-live, .cp-exec-fill, .cp-exec-pop, .cp-exec-rise, .cp-exec-breathe { animation: none; }
+}

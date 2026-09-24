@@ -11,7 +11,7 @@ import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap
 import { PlanReviewCard } from "@/components/copilot/plan-review-card";
 import { inFlight } from "@/hooks/use-workflow";
 import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
-import { ChatTurns } from "@/components/copilot/chat-message";
+import { ASSISTANT_TEXT_INDENT, ChatTurns } from "@/components/copilot/chat-message";
 
 export interface InvestigationCardProps {
   prompt: string;
@@ -376,8 +376,9 @@ export function InvestigationCard({
           )}
 
           {loading && (
-            <p role="status" aria-live="polite" className="flex items-center gap-2 text-[13px] text-violet-500">
-              <Loader2 size={15} className="shrink-0 animate-spin" aria-hidden="true" />
+            <p role="status" aria-live="polite" className="flex items-center gap-2.5 text-[13px] text-violet-500">
+              {/* The spinner takes the reply mark's slot (18px, same gap), so the words land where the reply's words will. */}
+              <Loader2 size={18} className="shrink-0 animate-spin" aria-hidden="true" />
               {progressLabel}{deviceClock ? ` (${deviceClock})` : ""}
             </p>
           )}
@@ -398,7 +399,7 @@ export function InvestigationCard({
             */}
           {result && resultIsLatest && !(loading && !workflow) && hasCardContent && (
             <article aria-label="Copilot reply" className="space-y-5">
-              {clock && <p className="text-[12px] tabular-nums text-vgray-400">{clock}</p>}
+              {clock && <p className={`${ASSISTANT_TEXT_INDENT} -mt-3 text-[12px] tabular-nums text-vgray-400`}>{clock}</p>}
 
               {/*
                 No "Understood as" block and no constraint chips (owner, 24 Sep, live): the plan card
@@ -513,7 +514,28 @@ export function InvestigationCard({
                 <PlanReviewCard workflow={workflow} wallet={wallet ?? null} busy={!!workflowLoading}
                   autoSign={!!autoSign} onConfirm={onApprove} onCancel={onCancelPlan} />
               )}
-              {workflow && workflow.status !== "proposed" && (
+              {/*
+                The execution card stands on its own (owner, 24 Sep, live): no outer box, no "Done"
+                heading or objective above it, since its own header already says Completed / Stopped
+                / Executing. The boxed section stays only where the card is NOT drawn here: a run
+                blocked before it started (a plain step list), or one whose receipt the thread draws.
+              */}
+              {workflow && workflow.status !== "proposed" && workflow.status !== "blocked" && !stepperDrawnInThread && (
+                <div className="flex flex-col gap-2.5">
+                  <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={result.scope.network} autoApprove={!!autoSign}
+                    busy={!!workflowLoading}
+                    cancelled={workflow.status === "cancelled"}
+                    onSign={workflow.status === "awaiting_signature" ? onSign : undefined}
+                    onStop={["approved", "awaiting_signature"].includes(workflow.status) ? onCancelPlan : undefined} />
+                  {!["completed", "running", "approved", "awaiting_signature"].includes(workflow.status) && workflow.message && (
+                    <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-500">{workflow.message}</p>
+                  )}
+                  {["running", "approved"].includes(workflow.status) && onResume && (
+                    <button type="button" disabled={workflowLoading} onClick={onResume} className={`${BTN_QUIET} self-start`}>Check progress</button>
+                  )}
+                </div>
+              )}
+              {workflow && workflow.status !== "proposed" && (workflow.status === "blocked" || stepperDrawnInThread) && (
                 <section className="rounded-xl border border-violet-100 px-4 py-3.5">
                   <SectionTitle>
                     {/* 23 Sep, X10: a run stopped at leg 5 after 4 legs settled read "Not executed".
@@ -539,14 +561,7 @@ export function InvestigationCard({
                         </li>
                       ))}
                     </ol>
-                  ) : stepperDrawnInThread ? null : (
-                    <div className="mt-3">
-                      <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={result.scope.network} autoApprove={!!autoSign}
-                        busy={!!workflowLoading}
-                        onSign={workflow.status === "awaiting_signature" ? onSign : undefined}
-                        onStop={["approved", "awaiting_signature"].includes(workflow.status) ? onCancelPlan : undefined} />
-                    </div>
-                  )}
+                  ) : null}
                   <div className="mt-3 flex flex-wrap gap-2">
                     {/* Sign and Stop live on the execution card itself; the blocked list has neither. */}
                     {workflow.status === "awaiting_signature" && onSign && stepperDrawnInThread && (
