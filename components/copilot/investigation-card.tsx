@@ -323,10 +323,35 @@ export function InvestigationCard({
                         </div>
                         <dl className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1 text-[12.5px] leading-5 text-vgray-500">
                           <div className="flex gap-1.5"><dt>Amount</dt><dd className="tabular-nums text-vgray-800">{money(candidate.amountUsd)}</dd></div>
-                          <div className="flex gap-1.5">
-                            <dt>Health factor after</dt>
-                            <dd className="tabular-nums text-vgray-800">{candidate.finalHealthFactor ? Number(candidate.finalHealthFactor).toFixed(2) : "unchanged"}</dd>
-                          </div>
+                          {(() => {
+                            if (candidate.repaysAllDebt) {
+                              return (
+                                <div className="flex gap-1.5">
+                                  <dt>Health factor after</dt>
+                                  <dd className="tabular-nums text-vgray-800">No debt after</dd>
+                                </div>
+                              );
+                            }
+                            const before = candidate.initialHealthFactor ?? candidate.healthFactorBefore ?? result.capacity?.healthFactor ?? null;
+                            const beforeFormatted = before && Number.isFinite(Number(before)) ? Number(before).toFixed(2) : null;
+                            const afterFormatted = candidate.finalHealthFactor && Number.isFinite(Number(candidate.finalHealthFactor))
+                              ? Number(candidate.finalHealthFactor).toFixed(2)
+                              : null;
+                            if (beforeFormatted !== null && afterFormatted !== null) {
+                              return (
+                                <div className="flex gap-1.5">
+                                  <dt>Health factor</dt>
+                                  <dd className="tabular-nums text-vgray-800">{beforeFormatted} → {afterFormatted}</dd>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div className="flex gap-1.5">
+                                <dt>Health factor after</dt>
+                                <dd className="tabular-nums text-vgray-800">{afterFormatted ?? "unchanged"}</dd>
+                              </div>
+                            );
+                          })()}
                         </dl>
                         {/* A composed plan shows its legs in order — every amount here was sized in code. */}
                         {!!candidate.steps?.length && (
