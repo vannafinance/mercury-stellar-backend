@@ -63,18 +63,34 @@ export interface QuestionnaireStep {
   presets?: { id: string; label: string; percent: string }[];
   pair?: Record<string, { asset: string; perUnit: string | null; note?: string }>;
 }
+export interface QuestionnaireSection {
+  id: string;
+  title: string;
+  actionIndex: number;
+  steps: QuestionnaireStep[];
+  sourceQuote?: string;
+}
 export interface Questionnaire {
   id: string;
   title: string;
   subtitle: string;
   steps: QuestionnaireStep[];
+  /** One entry per action that was missing something, in the order the user said them. */
+  sections?: QuestionnaireSection[];
+}
+export interface QuestionnaireSectionAnswer {
+  sectionId: string;
+  asset: string;
+  venue: string | null;
+  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" };
 }
 export interface QuestionnaireAnswers {
   questionnaireId: string;
   asset: string;
   venue: string | null;
-  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string };
+  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" };
   summary: string;
+  sections?: QuestionnaireSectionAnswer[];
 }
 
 export interface ResearchView {

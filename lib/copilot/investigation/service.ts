@@ -15,7 +15,7 @@ import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizin
 import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
-import { actionFromAnswers, answerProblem, buildQuestionnaire, readsForQuestionnaire } from "./questionnaire";
+import { actionsFromAnswers, answerProblem, buildQuestionnaireSet, readsForQuestionnaire } from "./questionnaire";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
@@ -436,10 +436,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   const loopStarted = Date.now();
   const answered = input.answers && prior?.evidence?.questionnaire
-    ? actionFromAnswers(prior.evidence.questionnaire, input.answers) : null;
+    ? actionsFromAnswers(prior.evidence.questionnaire, input.answers) : null;
   const result = answered
     ? await (async () => {
-        const draft = planFromStatedActions([answered], input.answers!.summary);
+        const draft = planFromStatedActions(answered, input.answers!.summary);
         const now = Date.now();
         const needed = readsForPlans(draft ? [draft] : [], seed, now);
         const fresh = needed.length
@@ -452,7 +452,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
               objective: input.answers!.summary,
               constraints: [] as string[],
               borrowing: "unspecified" as const,
-              actions: [answered],
+              actions: answered,
             },
             findings: [{ summary: input.answers!.summary, evidenceIds: [] as string[] }],
             openQuestions: [] as string[],
@@ -480,16 +480,16 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     loopElapsedMs: result.usage.elapsedMs,
   });
   const outcome = result.outcome;
-  if (outcome.kind === "clarify" && outcome.missing) {
+  if (outcome.kind === "clarify" && outcome.missing?.length) {
     const questionnaireNow = Date.now();
-    const needed = readsForQuestionnaire(outcome.missing, result.observations, questionnaireNow, messages);
+    const needed = outcome.missing.flatMap((entry) => readsForQuestionnaire(entry, result.observations, questionnaireNow, messages));
     if (needed.length) {
       const batch = await collectStrategyReads(scope, scopedMcp, dependencies.signal, questionnaireNow, needed, "qn");
       result.observations.push(...batch);
     }
   }
-  const questionnaire = outcome.kind === "clarify" && outcome.missing
-    ? buildQuestionnaire(outcome.missing, result.observations, Date.now(), messages) ?? undefined
+  const questionnaire = outcome.kind === "clarify" && outcome.missing?.length
+    ? buildQuestionnaireSet(outcome.missing, result.observations, Date.now(), messages) ?? undefined
     : undefined;
   /**
    * Borrow ranking is enabled by the typed goal/plan, not by re-reading the user's

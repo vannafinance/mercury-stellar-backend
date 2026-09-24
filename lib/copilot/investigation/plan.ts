@@ -2409,6 +2409,40 @@ export function verbOf(op: WorkflowOp): string {
   const verb = words.find((word) => word !== from && word !== to) ?? words[0];
   return verb.charAt(0).toUpperCase() + verb.slice(1);
 }
+
+/** The same verb in the past tense, for "you just deposited". Conjugates the op's own verb. */
+export function pastOf(op: WorkflowOp): string {
+  const verb = verbOf(op).toLowerCase();
+  if (verb === "lend") return "lent";
+  if (verb === "repay") return "repaid";
+  if (verb === "withdraw") return "withdrew";
+  if (verb.endsWith("e")) return `${verb}d`;
+  if (verb.endsWith("y")) return `${verb.slice(0, -1)}ied`;
+  return `${verb}ed`;
+}
+
+/**
+ * What a pocket holds after earlier legs, using the sizer's own running balance.
+ * `amount` is what that leg moves. A null amount is skipped.
+ */
+export function pocketAfterMoves(
+  pocket: Pocket,
+  starting: bigint,
+  moves: ReadonlyArray<{ op: WorkflowOp; asset: string; assetOut?: string; amount: string }>,
+  asset: string,
+): bigint {
+  const drafts = moves.map((move) => ({
+    leg: {
+      op: move.op,
+      asset: move.asset,
+      ...(move.assetOut ? { assetOut: move.assetOut } : {}),
+      sizing: { kind: "literal" as const, amount: move.amount, sourceQuote: move.amount },
+    },
+    tokens: move.amount,
+    produces: producedAsset(move) ? move.amount : null,
+  }));
+  return pocketBalance(pocket, starting, drafts, asset).available;
+}
 /** Where a step's label says the tokens go, from the table's destination pocket. */
 const WHERE: Record<WorkflowOp, string> = Object.fromEntries(WORKFLOW_OPS.map((op) => {
   const { from, to } = OP_FLOW[op];

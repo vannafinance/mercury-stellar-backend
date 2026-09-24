@@ -1,5 +1,5 @@
 import { lpPairs, lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
-import { parseQuestionnaireMissing } from "./questionnaire";
+import { parseQuestionnaireMissingList } from "./questionnaire";
 import { ASSET_OUT_OPS, MAX_WORKFLOW_STEPS, OP_FLOW, WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { LIFECYCLE_WRITES, isLifecycleWriteOp } from "../workflow/lifecycle";
 import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision } from "./types";
@@ -68,7 +68,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     const keys = ["kind", "question", ...(raw.missing !== undefined ? ["missing"] : [])];
     if (!exactKeys(raw, keys)) return refuse("clarify: unexpected keys");
     if (raw.missing === undefined) return { kind: "clarify", question: raw.question };
-    const missing = parseQuestionnaireMissing(raw.missing);
+    const missing = parseQuestionnaireMissingList(raw.missing);
     if (!missing) return refuse("clarify: missing inputs are not a known op, asset or slot");
     return { kind: "clarify", question: raw.question, missing };
   }

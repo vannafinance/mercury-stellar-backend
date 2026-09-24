@@ -7,8 +7,8 @@ import { BALANCE_FRACTION_OPTIONS } from "../amount-intent";
 import { resolveName } from "../intent/resolve-name";
 import { allAssets, lpPairs, mentionsBareUsdc, resolveAssetDef, USDC_VARIANTS, type AssetId } from "../registry/assets";
 import { normalizeVenue } from "../registry/intent";
-import { deploysIntoPosition, OP_FLOW, WORKFLOW_OPS, type Pocket, type WorkflowOp } from "../workflow/types";
-import { verbOf } from "./plan";
+import { deploysIntoPosition, feeds, OP_FLOW, producedAsset, WORKFLOW_OPS, type Pocket, type WorkflowOp } from "../workflow/types";
+import { pastOf, pocketAfterMoves, verbOf } from "./plan";
 import { decimalWad, formatWad, WAD, ZERO } from "./fixed";
 import { poolReservesFrom } from "./pool-quote";
 
@@ -16,7 +16,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 import type { Observation, PlanLeg, StatedAction } from "./types";
-import type { Questionnaire, QuestionnaireAnswers, QuestionnaireOption, QuestionnaireStep } from "./view";
+import type { Questionnaire, QuestionnaireAnswers, QuestionnaireOption, QuestionnaireSection, QuestionnaireStep } from "./view";
 import type { StrategyRead } from "./strategy-reads";
 
 export interface QuestionnaireMissing {
@@ -24,6 +24,8 @@ export interface QuestionnaireMissing {
   /** A registry id, or a bare family the user said ("USDC"). */
   asset?: string;
   slots: Array<"asset" | "venue" | "amount">;
+  /** Exact substring of the user's message for this action. Anchored before the section is built. */
+  sourceQuote?: string;
 }
 
 const SLOTS = ["asset", "venue", "amount"] as const;
@@ -54,7 +56,19 @@ export function parseQuestionnaireMissing(value: unknown): QuestionnaireMissing 
     if (typeof value.asset !== "string" || !value.asset.trim()) return null;
     asset = value.asset.trim();
   }
-  return { ...(op ? { op } : {}), ...(asset ? { asset } : {}), slots };
+  const sourceQuote = typeof value.sourceQuote === "string" && value.sourceQuote.trim() ? value.sourceQuote : undefined;
+  return { ...(op ? { op } : {}), ...(asset ? { asset } : {}), slots, ...(sourceQuote ? { sourceQuote } : {}) };
+}
+
+/** One object is a one-entry list. A list is one entry per action, in the user's order. */
+export function parseQuestionnaireMissingList(value: unknown): QuestionnaireMissing[] | null {
+  if (Array.isArray(value)) {
+    if (!value.length) return null;
+    const items = value.map((item) => parseQuestionnaireMissing(item));
+    return items.every((item): item is QuestionnaireMissing => !!item) ? items : null;
+  }
+  const one = parseQuestionnaireMissing(value);
+  return one ? [one] : null;
 }
 
 function namedAsset(asset: string | undefined): AssetId | null {
@@ -494,7 +508,7 @@ export function buildQuestionnaire(
   return { id, title: titleFor(missing, ops), subtitle: "Choose which, where and how much", steps };
 }
 
-export function answerProblem(issued: Questionnaire | undefined, answers: QuestionnaireAnswers): string | null {
+function checkAnswers(issued: Questionnaire | undefined, answers: QuestionnaireAnswers): string | null {
   if (!issued) return "No questionnaire was issued for this conversation.";
   if (answers.questionnaireId !== issued.id) return "That questionnaire is no longer the one that was asked.";
   if (!answers.summary.trim()) return "The answer needs a summary of what was chosen.";
@@ -517,6 +531,10 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
   }
   const amountStep = issued.steps.find((step) => step.slot === "amount");
   const cap = amountStep?.max?.[answers.venue ?? ""] ?? amountStep?.max?.[answers.asset];
+  if (answers.amount.kind === "previous_leg") {
+    const link = amountStep?.options.find((option) => option.id.startsWith("previous:") && (!option.forAsset || option.forAsset === answers.asset));
+    return link ? null : "That amount was not one of the options.";
+  }
   if (answers.amount.kind === "fraction") {
     const percent = Number(answers.amount.percent);
     if (!Number.isFinite(percent) || percent <= 0 || percent > 100) return "The share has to be between 0 and 100.";
@@ -542,15 +560,177 @@ export function actionFromAnswers(issued: Questionnaire, answers: QuestionnaireA
   const flow = OP_FLOW[op];
   const pool = venue?.id.startsWith("add_liquidity:") ? lpPairs().find((pair) => venue.id.split(":")[1] === pair.venue && pair.tokens.includes(answers.asset as AssetId)) : undefined;
   const other = pool ? (pool.tokens[0] === answers.asset ? pool.tokens[1] : pool.tokens[0]) : undefined;
-  const sizing: PlanLeg["sizing"] = answers.amount.kind === "fraction"
-    ? { kind: "fraction", percent: answers.amount.percent, of: flow.from === "wallet" ? "idle" : "position", sourceQuote: answers.summary }
-    : { kind: "literal", amount: answers.amount.amount, sourceQuote: answers.summary };
+  const namedOut = op === "swap" ? messageWords(answers.summary).map((word) => resolveAssetDef(word)?.id).find((id) => id && id !== answers.asset) : undefined;
+  const sizing: PlanLeg["sizing"] = answers.amount.kind === "previous_leg"
+    ? { kind: "previous_leg" }
+    : answers.amount.kind === "fraction"
+      ? { kind: "fraction", percent: answers.amount.percent, of: flow.from === "wallet" ? "idle" : "position", sourceQuote: answers.summary }
+      : { kind: "literal", amount: answers.amount.amount, sourceQuote: answers.summary };
   return {
     op,
     asset: answers.asset,
-    ...(other ? { assetOut: other } : {}),
+    ...(other || namedOut ? { assetOut: other ?? namedOut } : {}),
     ...(pool ? { venue: pool.venue } : {}),
     sizing,
     sourceQuote: answers.summary,
   };
+}
+
+function quoteAt(quote: string | undefined, messages: readonly string[]): number {
+  if (!quote) return Number.MAX_SAFE_INTEGER;
+  for (const message of messages) {
+    const at = message.indexOf(quote);
+    if (at >= 0) return at;
+  }
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function anchoredEntries(entries: readonly QuestionnaireMissing[], messages: readonly string[]): QuestionnaireMissing[] {
+  return entries.filter((entry) => !entry.sourceQuote || messages.some((message) => message.includes(entry.sourceQuote!)));
+}
+
+function writeBalance(observations: readonly Observation[], pocket: Pocket, asset: string, amount: string): Observation[] {
+  const next = observations.map((observation) => ({
+    ...observation,
+    data: observation.data ? structuredClone(observation.data) : observation.data,
+  }));
+  const target = next.find((observation) => observation.status === "ok" && observation.data && (
+    pocket === "wallet" ? observation.capability === "wallet_balances" : observation.capability === "account_collateral"));
+  if (!target?.data) return next;
+  if (pocket === "wallet") {
+    const assets = Array.isArray(target.data.assets) ? target.data.assets : [];
+    const row = assets.find((item) => isRecord(item) && item.symbol === asset);
+    if (isRecord(row)) row.balance = amount;
+    else assets.push({ symbol: asset, balance: amount, decimals: 7, status: "ok" });
+    target.data.assets = assets;
+  } else {
+    const rows = Array.isArray(target.data.collateral) ? target.data.collateral : [];
+    const row = rows.find((item) => isRecord(item) && (item.symbol === asset || item.asset === asset));
+    if (isRecord(row)) row.balance = amount;
+    else rows.push({ symbol: asset, balance: amount });
+    target.data.collateral = rows;
+  }
+  return next;
+}
+
+function projectMoves(
+  observations: readonly Observation[],
+  moves: ReadonlyArray<{ op: WorkflowOp; asset: string; assetOut?: string; amount: string }>,
+): Observation[] {
+  let next: Observation[] = [...observations];
+  const touched = new Set<string>();
+  for (const move of moves) touched.add(`${move.asset}`);
+  for (const asset of touched) {
+    for (const pocket of ["wallet", "account"] as const) {
+      const starting = amountInPocket(next, pocket, asset as AssetId);
+      if (starting === null) continue;
+      const after = pocketAfterMoves(pocket, wadOf(starting), moves, asset);
+      next = writeBalance(next, pocket, asset, formatWad(after < ZERO ? ZERO : after));
+    }
+  }
+  for (const move of moves) {
+    const produced = producedAsset(move);
+    if (!produced || touched.has(produced)) continue;
+    const starting = amountInPocket(next, "account", produced as AssetId) ?? "0";
+    const after = pocketAfterMoves("account", wadOf(starting), moves, produced);
+    next = writeBalance(next, "account", produced, formatWad(after < ZERO ? ZERO : after));
+  }
+  return next;
+}
+
+interface BuiltSection {
+  missing: QuestionnaireMissing;
+  section: QuestionnaireSection;
+}
+
+/**
+ * One questionnaire for every action that is still missing something, in the
+ * user's order. A single object is one section and keeps today's steps.
+ */
+export function buildQuestionnaireSet(
+  missing: QuestionnaireMissing | readonly QuestionnaireMissing[],
+  observations: readonly Observation[],
+  now: number,
+  messages: readonly string[] = [],
+): Questionnaire | null {
+  const entries = anchoredEntries(Array.isArray(missing) ? [...missing] : [missing], messages)
+    .sort((a, b) => quoteAt(a.sourceQuote, messages) - quoteAt(b.sourceQuote, messages));
+  if (!entries.length) return null;
+  let view = observations;
+  const moves: Array<{ op: WorkflowOp; asset: string; assetOut?: string; amount: string }> = [];
+  const built: BuiltSection[] = [];
+  for (const entry of entries) {
+    const one = buildQuestionnaire(entry, view, now, entry.sourceQuote ? [entry.sourceQuote] : messages);
+    if (!one) continue;
+    const links = moves.flatMap((move, index) => {
+      if (!entry.op || !feeds(move.op, entry.op)) return [];
+      const produced = producedAsset(move);
+      if (!produced || !assetsAccepted(entry.op).includes(produced as AssetId)) return [];
+      return [{
+        id: `previous:${index}:${produced}`,
+        label: `All of the ${produced} you just ${pastOf(move.op)}`,
+        forAsset: produced,
+        detail: `${move.amount} ${produced}`,
+      }];
+    });
+    if (links.length) {
+      const amount = one.steps.find((step) => step.slot === "amount");
+      if (amount) amount.options = [...links, ...amount.options];
+    }
+    built.push({
+      missing: entry,
+      section: { id: one.id, title: one.title, actionIndex: built.length, steps: one.steps, ...(entry.sourceQuote ? { sourceQuote: entry.sourceQuote } : {}) },
+    });
+    if (entry.op && entry.asset && namedAsset(entry.asset)) {
+      const flow = OP_FLOW[entry.op];
+      const ceiling = amountInPocket(view, flow.from, namedAsset(entry.asset)!);
+      if (ceiling && ceiling !== "0") {
+        moves.push({ op: entry.op, asset: namedAsset(entry.asset)!, amount: ceiling });
+        view = projectMoves(observations, moves);
+      }
+    }
+  }
+  if (!built.length) return null;
+  const sections = built.map((item) => item.section);
+  const steps = sections.length === 1 ? sections[0].steps : sections.flatMap((section) => section.steps);
+  const id = createHash("sha256").update(JSON.stringify(sections.map((section) => [section.title, section.steps.map((step) => [step.slot, step.options.map((option) => option.id)])]))).digest("hex").slice(0, 16);
+  return {
+    id,
+    title: sections.length === 1 ? sections[0].title : "A few things to fill in",
+    subtitle: sections.length === 1 ? "Choose which, where and how much" : "One section for each action",
+    steps,
+    sections,
+  };
+}
+
+export function answerProblem(issued: Questionnaire | undefined, answers: QuestionnaireAnswers): string | null {
+  if (answers.sections?.length) {
+    if (!issued) return "No questionnaire was issued for this conversation.";
+    if (answers.questionnaireId !== issued.id) return "That questionnaire is no longer the one that was asked.";
+    if (!answers.summary.trim()) return "The answer needs a summary of what was chosen.";
+    for (const sectionAnswer of answers.sections) {
+      const section = issued.sections?.find((item) => item.id === sectionAnswer.sectionId);
+      if (!section) return "That section was not one of the ones asked.";
+      const problem = checkAnswers({ ...issued, steps: section.steps, sections: undefined }, {
+        ...answers, asset: sectionAnswer.asset, venue: sectionAnswer.venue, amount: sectionAnswer.amount, sections: undefined,
+      });
+      if (problem) return problem;
+    }
+    return null;
+  }
+  return checkAnswers(issued, answers);
+}
+
+export function actionsFromAnswers(issued: Questionnaire, answers: QuestionnaireAnswers): StatedAction[] {
+  if (!answers.sections?.length) return [actionFromAnswers(issued, answers)];
+  return answers.sections.map((sectionAnswer) => {
+    const section = issued.sections?.find((item) => item.id === sectionAnswer.sectionId);
+    const action = actionFromAnswers(
+      { ...issued, steps: section?.steps ?? issued.steps },
+      { ...answers, asset: sectionAnswer.asset, venue: sectionAnswer.venue, amount: sectionAnswer.amount, sections: undefined },
+    );
+    if (action.op !== "swap" || !section?.sourceQuote) return action;
+    const named = messageWords(section.sourceQuote).map((word) => resolveAssetDef(word)?.id).find((id) => id && id !== action.asset);
+    return named ? { ...action, assetOut: named } : action;
+  });
 }
