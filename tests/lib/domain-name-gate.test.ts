@@ -66,7 +66,7 @@ describe("a resolved domain word reaches investigation", () => {
   });
 
   it("still refuses a poem when no word is a domain name and the classifier says no", async () => {
-    mocks.generateInvestigationJson.mockResolvedValue({ in_domain: false, reason: "chat" });
+    mocks.generateInvestigationJson.mockResolvedValue({ kind: "off_domain", sourceQuote: null });
     const verdict = await guardUserPrompt("write me a poem", opts);
     expect(verdict.allow).toBe(false);
     if (!verdict.allow) expect(verdict.message).toMatch(/Vanna Finance/);

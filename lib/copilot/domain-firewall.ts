@@ -13,7 +13,7 @@
  */
 
 import { ASSET_DOMAIN_WORDS } from "./registry/assets";
-import { classifyOrFallback } from "./domain-classifier";
+import { classifyOrFallback, type ClassifierResult } from "./domain-classifier";
 import { resolveName } from "./intent/resolve-name";
 import { wouldExceedTokenCap, tokenCapMessage } from "./token-budget";
 
@@ -27,6 +27,70 @@ const BLOCK_MESSAGE =
   "I can’t help with general coding, homework, or unrelated chat. " +
   "Try something like “what’s my health factor?”, “lend 10 XLM”, or " +
   "“park 20 XLM then farm 10 BLUSDC at 2x”.";
+
+/** A paste is not an ask. Same refusal kind as an off-domain block: no reads and no loop. */
+export const PASTE_REPLY = "That looks like pasted text. What would you like me to do with it?";
+
+/**
+ * When a word-list allow is not enough to skip the classifier.
+ *
+ * Chosen from every backtick span in the `docs/copilot/PROMPT-LIBRARY.md` headings
+ * on 24 Sep 2026. Those prompts are one line. The longest is 125 characters. The
+ * highest share of characters outside letters, digits, spaces and ordinary
+ * punctuation is 11.1% (`MCP_TOOL_SURFACE=composites`); a real ask stays under 4%.
+ * Each threshold sits above that catalogue. A pasted report clears length and
+ * line count. A drawn table clears the share while it is still short.
+ */
+export const PASTE_SHAPE = {
+  minChars: {
+    value: 280,
+    reason: "More than twice the longest catalogue prompt (125 characters), so a typed catalogue sentence stays a cheap allow and a multi-sentence ask does not.",
+  },
+  minLines: {
+    value: 4,
+    reason: "Every catalogue prompt is one line. Four lines is a block of text, which none of those prompts are.",
+  },
+  minUnusualShare: {
+    value: 0.12,
+    reason: "Above the catalogue's highest non-letter share (11.1%). Box-drawing and table characters are outside the ordinary set, so a drawn table clears this while it is still short.",
+  },
+  ordinaryPunctuation: {
+    value: ".,;:!?'\"()-/",
+    reason: "The marks catalogue prompts actually use: sentence punctuation, apostrophes, parentheses, hyphens and slashes. Pipes, backticks, underscores and box-drawing are outside, so they raise the share.",
+  },
+} as const;
+
+const ORDINARY_PUNCTUATION = new Set(PASTE_SHAPE.ordinaryPunctuation.value);
+
+function isOrdinaryCharacter(ch: string): boolean {
+  if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") return true;
+  const code = ch.codePointAt(0) ?? 0;
+  if ((code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122)) return true;
+  if (ORDINARY_PUNCTUATION.has(ch)) return true;
+  // A non-ASCII letter (é) is still a letter. A box-drawing mark is not.
+  return ch.toLowerCase() !== ch.toUpperCase();
+}
+
+/** True when the message's shape, not its words, is too large for a word-list allow. */
+export function isStructurallyLarge(message: string): boolean {
+  const text = message.trim();
+  if (!text) return false;
+  if (text.length >= PASTE_SHAPE.minChars.value) return true;
+  if (text.split(/\r?\n/).length >= PASTE_SHAPE.minLines.value) return true;
+  let unusual = 0;
+  let count = 0;
+  for (const ch of text) {
+    count += 1;
+    if (!isOrdinaryCharacter(ch)) unusual += 1;
+  }
+  return count > 0 && unusual / count >= PASTE_SHAPE.minUnusualShare.value;
+}
+
+/** A known in-domain message. A structurally large one still has to be classified. */
+function finishAllow(message: string, reason: string): FirewallResult {
+  if (isStructurallyLarge(message)) return { allow: true, reason: "allow:needs_classifier" };
+  return { allow: true, reason };
+}
 
 /** Narrow abuse tripwire — cost backstop, not the primary domain gate. */
 const ABUSE_TRIPWIRE: RegExp[] = [
@@ -290,7 +354,7 @@ export function messageNamesDomain(message: string): boolean {
 }
 
 function refuseOffDomain(message: string, reason: string): FirewallResult {
-  if (messageNamesDomain(message)) return { allow: true, reason: "allow:resolved_name" };
+  if (messageNamesDomain(message)) return finishAllow(message, "allow:resolved_name");
   return { allow: false, reason, message: BLOCK_MESSAGE };
 }
 
@@ -314,30 +378,23 @@ export function evaluateDomainFirewall(
     }
   }
 
-  // 2) Explicit product allow (exact domain vocabulary, assets, actions, protocol addresses)
+  // 2) Explicit product allow (exact domain vocabulary, assets, actions, protocol addresses).
+  // A structurally large message is not finished here: a report about Vanna matches
+  // the same words, and the classifier still has to decide whether it is an ask.
   for (const re of ALLOW_PATTERNS) {
-    if (re.test(m)) {
-      return { allow: true, reason: `allow:${re.source.slice(0, 40)}` };
-    }
+    if (re.test(m)) return finishAllow(m, `allow:${re.source.slice(0, 40)}`);
   }
 
   // 2b) Asked in front of a page, about something on it.
-  if (opts?.hasPageContext && DEICTIC.test(m)) {
-    return { allow: true, reason: "allow:page_context" };
-  }
+  if (opts?.hasPageContext && DEICTIC.test(m)) return finishAllow(m, "allow:page_context");
 
   // 3) Very short product-ish tokens / greetings
   if (m.length <= 40 && /^(hi|hello|hey|help|thanks|thank you|ok|yes|no)\.?$/i.test(m)) {
-    return {
-      allow: true,
-      reason: "allow:greeting",
-    };
+    return finishAllow(m, "allow:greeting");
   }
 
   // 4) Semantic financial/DeFi query check
-  if (FINANCIAL_SEMANTIC_RE.test(m)) {
-    return { allow: true, reason: "allow:financial_semantic" };
-  }
+  if (FINANCIAL_SEMANTIC_RE.test(m)) return finishAllow(m, "allow:financial_semantic");
 
   // 5) Ambiguous long text with no domain signal → refuse (saves billing)
   if (m.length > 80) {
@@ -353,7 +410,7 @@ export function evaluateDomainFirewall(
   // not an English sentence — "give me a lasagna recipe" is 24 characters and used
   // to sneak through this gate once the recipe tripwire was narrowed.
   if (m.length <= 24 && /^[A-Za-z0-9._-]+\??$/.test(m)) {
-    return { allow: true, reason: "allow:short_token" };
+    return finishAllow(m, "allow:short_token");
   }
 
   return refuseOffDomain(m, "block:default");
@@ -364,7 +421,7 @@ export function hasCheapDomainSignal(
   opts?: { hasPageContext?: boolean },
 ): boolean {
   const verdict = evaluateDomainFirewall(message, opts);
-  return verdict.allow;
+  return verdict.allow && verdict.reason !== "allow:needs_classifier";
 }
 
 export function abuseTripwire(message: string): Extract<FirewallResult, { allow: false }> | null {
@@ -374,6 +431,25 @@ export function abuseTripwire(message: string): Extract<FirewallResult, { allow:
     if (re.test(m)) return { allow: false, reason: `block:${re.source.slice(0, 40)}`, message: BLOCK_MESSAGE };
   }
   return null;
+}
+
+function verdictFromClassifier(classified: ClassifierResult, large: boolean): FirewallResult {
+  if (classified.kind === "token_cap") {
+    return { allow: false, reason: "token_cap", message: tokenCapMessage() };
+  }
+  if (classified.kind === "cheap_allow" || classified.kind === "request") {
+    return { allow: true, reason: classified.kind === "request" ? "request" : "cheap_allow" };
+  }
+  if (classified.kind === "invalid_classifier" || classified.kind === "classifier_unavailable") {
+    // A short message still fail-opens into investigation. A large one does not:
+    // the costly mistake is starting a read loop on a paste.
+    if (large) return { allow: false, reason: classified.kind, message: PASTE_REPLY };
+    return { allow: true, reason: classified.kind };
+  }
+  if (classified.kind === "not_a_request") {
+    return { allow: false, reason: "not_a_request", message: PASTE_REPLY };
+  }
+  return { allow: false, reason: "off_domain", message: BLOCK_MESSAGE };
 }
 
 export async function guardUserPrompt(
@@ -389,12 +465,7 @@ export async function guardUserPrompt(
     return { allow: true, reason: "cheap_allow" };
   }
   const classified = await classifyOrFallback(message, opts.signal, opts.subject, false);
-  if (classified.in_domain) return { allow: true, reason: classified.reason };
-  return {
-    allow: false,
-    reason: classified.reason,
-    message: classified.reason === "token_cap" ? tokenCapMessage() : BLOCK_MESSAGE,
-  };
+  return verdictFromClassifier(classified, isStructurallyLarge(message));
 }
 
 export const DOMAIN_FIREWALL_SYSTEM = `

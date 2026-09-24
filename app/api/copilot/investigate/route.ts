@@ -8,6 +8,7 @@ import { createFlashResearchModel } from "@/lib/copilot/investigation/flash";
 import { researchTurn, type ResearchInput } from "@/lib/copilot/investigation/service";
 import "@/lib/copilot/investigation/proposal";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
+import { INVESTIGATION_MESSAGE_LIMIT } from "@/lib/copilot/domain-classifier";
 import { isRecord } from "@/lib/copilot/investigation/decision";
 import { logUnexpected } from "@/lib/copilot/log";
 import { appendSessionTurn } from "@/lib/copilot/session-store";
@@ -43,7 +44,7 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
     ? body.message.trim()
     : isRecord(answers) && typeof answers.summary === "string" ? answers.summary.trim() : "";
   if (!isRecord(body) || Object.keys(body).some((key) => !["message", "wallet", "continuation", "session", "history", "conversationId", "answers"].includes(key)) ||
-    !message || message.length > 8000 ||
+    !message || message.length > INVESTIGATION_MESSAGE_LIMIT ||
     (answers != null && (typeof body.continuation !== "string" || !body.continuation.trim())) ||
     !(body.wallet == null || typeof body.wallet === "string" && body.wallet.length <= 56) ||
     !(body.continuation == null || typeof body.continuation === "string" && body.continuation.length <= 65_536) ||
