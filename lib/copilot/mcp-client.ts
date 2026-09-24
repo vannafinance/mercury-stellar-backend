@@ -581,7 +581,7 @@ class LiveMCPClient implements MCPClient {
     const startedAt = Date.now();
     let callRes: Response;
     try {
-      callRes = await withRetry(needsUser ? RETRY.mcpWrite : RETRY.mcpRead, () =>
+      const send = () => withRetry(needsUser ? RETRY.mcpWrite : RETRY.mcpRead, () =>
         fetch(copilotConfig.mcpBaseUrl, {
           method: "POST",
           headers: sessionHeaders,
@@ -595,6 +595,7 @@ class LiveMCPClient implements MCPClient {
           cache: "no-store",
         }),
       );
+      callRes = await retryRateLimited(send);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/abort|timeout/i.test(msg)) {
@@ -671,6 +672,52 @@ class LiveMCPClient implements MCPClient {
       tool, ms: Date.now() - startedAt, keys: Object.keys(shaped),
     });
     return shaped;
+  }
+}
+
+// ── Rate-limit retry ────────────────────────────────────────────────────────
+
+/** Retries after the first refusal; with full jitter the worst case is ~7.5s, inside every read budget. */
+const RATE_LIMIT_RETRIES = 4;
+const RATE_LIMIT_BASE_MS = 500;
+const RATE_LIMIT_CAP_MS = 4_000;
+
+/** Test seam: the wait between attempts. */
+export const rateLimitTiming = {
+  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  random: () => Math.random(),
+};
+
+/**
+ * Retry the MCP's own "rate_limited" refusal, which `withRetry` never saw.
+ *
+ * `withRetry` wraps `fetch`, and fetch RESOLVES on a 429; only a throw is retried, so the
+ * "429" in RETRY.mcpRead never fired for a tool call. 24 Sep, #12/#13: every failed read
+ * was `rate_limited` (HTTP 429). The MCP keys its token bucket by the calling client, so
+ * one investigation's parallel reads plus the page's own polling share one bucket and
+ * drain it, and each refused read was reported as missing data.
+ *
+ * Safe for writes too: the MCP's RateLimitMiddleware refuses BEFORE the tool runs
+ * (rate_limit.py `dispatch` consumes the token before `call_next`), so a refused call
+ * did nothing and cannot be doubled. Only that refusal is retried, identified by its
+ * payload code; `tool_circuit_open` (also a 429, meaning degraded) and every other
+ * status pass through untouched. The server's Retry-After wins when it sends one;
+ * otherwise exponential backoff with full jitter, so parallel reads do not retry in step.
+ */
+export async function retryRateLimited(send: () => Promise<Response>): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await send();
+    if (res.status !== 429) return res;
+    const text = await res.text().catch(() => "");
+    const refusedBeforeRun = errorCode(parseErrorObject(text)) === "rate_limited";
+    const rebuilt = new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers });
+    if (!refusedBeforeRun || attempt >= RATE_LIMIT_RETRIES) return rebuilt;
+    const retryAfterSec = Number(res.headers.get("retry-after"));
+    const wait = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+      ? Math.min(retryAfterSec * 1000, RATE_LIMIT_CAP_MS)
+      : Math.floor(rateLimitTiming.random() * Math.min(RATE_LIMIT_CAP_MS, RATE_LIMIT_BASE_MS * 2 ** attempt));
+    console.info("[mcp-client] rate limited, retrying", { attempt: attempt + 1, waitMs: wait });
+    await rateLimitTiming.sleep(wait);
   }
 }
 

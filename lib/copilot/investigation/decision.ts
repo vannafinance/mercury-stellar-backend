@@ -1,5 +1,5 @@
-import { lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
-import { ASSET_OUT_OPS, MAX_WORKFLOW_STEPS, WORKFLOW_OPS } from "../workflow/types";
+import { lpPairs, lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
+import { ASSET_OUT_OPS, MAX_WORKFLOW_STEPS, OP_FLOW, WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { LIFECYCLE_WRITES, isLifecycleWriteOp } from "../workflow/lifecycle";
 import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision } from "./types";
 
@@ -263,11 +263,18 @@ function parseLeg(leg: unknown, extraKeys: readonly string[] = []): PlanLeg | nu
    * them is malformed, not tolerated: the leg is rejected, as with every unknown key.
    */
   const hasAssetOut = (ASSET_OUT_OPS as readonly string[]).includes(String(leg.op));
+  /**
+   * An op that leaves or enters an LP pool also names a DEX, even with one asset: 24 Sep,
+   * X14, the model wrote `remove_liquidity AQUSDC venue aquarius` and the whole plan was
+   * dropped for the extra key. Read off the op's own pocket (OP_FLOW), not a list of ops.
+   */
+  const flow = Object.hasOwn(OP_FLOW, String(leg.op)) ? OP_FLOW[leg.op as WorkflowOp] : null;
+  const touchesLp = flow !== null && (flow.from === "lp" || flow.to === "lp");
   // `venue` is the one optional key on a leg: absent means the registry picks the DEX.
   const allowed = [
     "op", "asset", "sizing",
     ...(hasAssetOut ? ["assetOut"] : []),
-    ...(hasAssetOut && Object.hasOwn(leg, "venue") ? ["venue"] : []),
+    ...((hasAssetOut || touchesLp) && Object.hasOwn(leg, "venue") ? ["venue"] : []),
     ...extraKeys,
   ];
   if (!exactKeys(leg, allowed) ||
@@ -279,7 +286,19 @@ function parseLeg(leg: unknown, extraKeys: readonly string[] = []): PlanLeg | nu
   // the leg was misunderstood — on an op that has only one. Derived from the same
   // ASSET_OUT_OPS property as `assetOut` itself rather than naming the ops again.
   if (!hasAssetOut && sizing.kind === "literal" && sizing.amountAsset !== undefined) return drop(`${String(leg.op)} ${String(leg.asset)}: amountAsset on an op with one asset`);
-  if (!hasAssetOut) return { op: leg.op as PlanOp, asset: String(leg.asset), sizing };
+  if (!hasAssetOut) {
+    /**
+     * With one asset the pool is the registry's, not the model's: the venue stands only
+     * when it names the one pool that holds that asset, and is then redundant. A venue
+     * that disagrees, or an asset in several pools, is refused rather than ignored, since
+     * ignoring it could act on a different pool than the user meant.
+     */
+    if (leg.venue !== undefined) {
+      const pools = lpPairs().filter(({ tokens }) => tokens.includes(String(leg.asset) as never));
+      if (pools.length !== 1 || pools[0].venue !== leg.venue) return drop(`${String(leg.op)} ${String(leg.asset)}: venue ${String(leg.venue)} is not the one pool that holds ${String(leg.asset)}`);
+    }
+    return { op: leg.op as PlanOp, asset: String(leg.asset), sizing };
+  }
   // The second asset must be a known one, and not the one the leg already spends.
   if (!(ASSET_IDS as readonly string[]).includes(String(leg.assetOut)) || leg.assetOut === leg.asset) return drop(`${String(leg.op)} ${String(leg.asset)}: assetOut ${String(leg.assetOut)} is unknown or the same asset`);
   if (leg.venue !== undefined && !(lpVenues() as readonly string[]).includes(String(leg.venue))) return drop(`${String(leg.op)} ${String(leg.asset)}: venue ${String(leg.venue)} is not an LP venue`);
