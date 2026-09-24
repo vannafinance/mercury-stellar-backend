@@ -69,6 +69,8 @@ import {
 } from "./resume-policy";
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
 import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { completionReply } from "@/lib/copilot/investigation/completion";
+import { REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { buildRunReceipt } from "./run-receipt";
 import { answerToText } from "@/lib/copilot/answer-schema";
 import { shortWriteLabel } from "@/lib/copilot/execution-copy";
@@ -2866,6 +2868,10 @@ export function CopilotWorkspace() {
    */
   const proposePlan = workflow.propose;
   const confirmWorkflow = workflow.confirm;
+  /** Set when a prepared plan should be approved as soon as it arrives (see approveCandidate). */
+  const approveWhenProposedRef = useRef(false);
+  /** Which candidate the running plan came from, so the finished reply can quote its rate and health. */
+  const approvedCandidateRef = useRef<string | null>(null);
   const updateExecutionReceipt = investigation.updateExecutionReceipt;
   useEffect(() => {
     const view = workflow.view;
@@ -2928,8 +2934,22 @@ export function CopilotWorkspace() {
     if (investigation.resultOrigin !== "live") return;
     const proposeKey = `propose:${view.continuation}:${candidateId}`;
     if (!claimDispatch(address, proposeKey)) return;
+    /**
+     * Owner rule (24 Sep, via Sanujit): an action the user STATED (single or multi-leg) gets
+     * no plan card. It is prepared and approved here, and the execution card shows it running.
+     * With auto-approve ON the session signer submits each leg; with it OFF every leg still
+     * waits for the user's own wallet signature, so nothing is signed without them. A strategy
+     * the model chose is nominated by its own candidate id, never REQUESTED_ACTIONS_ID, and
+     * keeps its plan card. A swap still stops at its review card (the approve effect below).
+     */
+    const direct = candidateId === REQUESTED_ACTIONS_ID;
+    approveWhenProposedRef.current = direct;
+    approvedCandidateRef.current = candidateId;
     void proposePlan(view.continuation, candidateId).then((prepared) => {
-      if (!prepared) releaseDispatch(address, proposeKey);
+      if (!prepared) {
+        approveWhenProposedRef.current = false;
+        releaseDispatch(address, proposeKey);
+      }
     });
   }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, workflow.error, address]);
   useEffect(() => {
@@ -3006,13 +3026,13 @@ export function CopilotWorkspace() {
    * Approve, exactly as a second click would have. A swap is the exception: it keeps its
    * own review card and Confirm (another developer's design), so it stops at prepared.
    */
-  const approveWhenProposedRef = useRef(false);
   const approveCandidate = useCallback((candidateId: string) => {
     const continuation = investigation.result?.continuation;
     if (!continuation) return;
     const proposeKey = `propose:${continuation}:${candidateId}`;
     if (!claimDispatch(address, proposeKey)) return;
     approveWhenProposedRef.current = true;
+    approvedCandidateRef.current = candidateId;
     void proposePlan(continuation, candidateId).then((prepared) => {
       if (!prepared) {
         approveWhenProposedRef.current = false;
@@ -5510,16 +5530,16 @@ export function CopilotWorkspace() {
     const key = `${view.id}:${view.status}:${settledCount}`;
     if (completedTextRef.current === key) return;
     completedTextRef.current = key;
-    const answer = localExecutionAnswer({
-      intent: view.objective,
-      legs: view.steps.map((step) => ({
-        label: step.label,
-        status: step.status === "settled" ? "done" : step.status === "failed" || step.status === "uncertain" ? "error" : step.status,
-        tx_hash: step.txHash ?? null,
-      })),
+    const result = investigation.result;
+    const candidate = result?.candidates?.feasible.find((entry) => entry.id === approvedCandidateRef.current);
+    const reply = completionReply(view, {
+      title: candidate?.label ?? null,
+      comparisons: result?.rateComparisons ?? [],
+      healthFactorAfter: candidate?.finalHealthFactor ?? null,
+      repaysAllDebt: !!candidate?.repaysAllDebt,
     });
-    void updateLastAssistantText(`${view.objective}. ${answer.headline}`);
-  }, [workflow.view, cardDrawsRun, updateLastAssistantText]);
+    if (reply) void updateLastAssistantText(reply);
+  }, [workflow.view, cardDrawsRun, updateLastAssistantText, investigation.result]);
   const liveWriteUi =
     multiLeg ||
     phase === "plan" ||
