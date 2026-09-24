@@ -1,11 +1,16 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { ThemeProvider } from "@/contexts/theme-context";
 import {
   ClarifyQuestionnaire,
   buildQuestionnaireSummary,
 } from "@/components/copilot/clarify-questionnaire";
 import type { Questionnaire } from "@/lib/copilot/investigation/view";
+
+function renderWithTheme(ui: React.ReactElement) {
+  return render(<ThemeProvider>{ui}</ThemeProvider>);
+}
 
 const mockQuestionnaire: Questionnaire = {
   id: "q-test-1",
@@ -57,9 +62,77 @@ const mockQuestionnaire: Questionnaire = {
   ],
 };
 
+const mockMultiSectionQuestionnaire: Questionnaire = {
+  id: "q-multi-1",
+  title: "Deposit XLM and Supply to Blend",
+  subtitle: "Multiple actions in your request",
+  steps: [],
+  sections: [
+    {
+      id: "sec-deposit",
+      title: "Deposit XLM",
+      actionIndex: 0,
+      steps: [
+        {
+          slot: "asset",
+          prompt: "Which asset?",
+          options: [{ id: "xlm", label: "XLM", detail: "1000 in wallet" }],
+        },
+        {
+          slot: "amount",
+          prompt: "How much XLM?",
+          options: [],
+          max: {
+            xlm: { amount: "1000", asset: "XLM", where: "wallet" },
+          },
+          presets: [
+            { id: "25", label: "25%", percent: "25" },
+            { id: "50", label: "50%", percent: "50" },
+            { id: "100", label: "Max", percent: "100" },
+          ],
+        },
+      ],
+    },
+    {
+      id: "sec-blend",
+      title: "Supply to Blend",
+      actionIndex: 1,
+      steps: [
+        {
+          slot: "asset",
+          prompt: "Which asset?",
+          options: [
+            { id: "xlm", label: "XLM", detail: "Blend takes XLM" },
+            { id: "blusdc", label: "BLUSDC", detail: "Blend takes BLUSDC" },
+          ],
+        },
+        {
+          slot: "amount",
+          prompt: "How much to supply?",
+          options: [
+            {
+              id: "linked-xlm",
+              label: "All of the XLM you just deposited",
+              detail: "1000 XLM",
+            },
+          ],
+          max: {
+            xlm: { amount: "1000", asset: "XLM", where: "margin account" },
+            blusdc: { amount: "680", asset: "BLUSDC", where: "margin account" },
+          },
+          presets: [
+            { id: "50", label: "50%", percent: "50" },
+            { id: "100", label: "Max", percent: "100" },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 describe("ClarifyQuestionnaire Component", () => {
   it("renders title, subtitle, and step counter", () => {
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
@@ -74,7 +147,7 @@ describe("ClarifyQuestionnaire Component", () => {
   });
 
   it("filters the venue step by the selected asset", () => {
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
@@ -96,7 +169,7 @@ describe("ClarifyQuestionnaire Component", () => {
   });
 
   it("skips single-option steps automatically (counted, not shown)", () => {
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
@@ -142,7 +215,7 @@ describe("ClarifyQuestionnaire Component", () => {
       ],
     };
 
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={singleAssetQuestionnaire}
         onSubmit={vi.fn()}
@@ -155,11 +228,11 @@ describe("ClarifyQuestionnaire Component", () => {
     expect(screen.getByTestId("step-counter").textContent).toContain("2 of 3");
     expect(screen.getByTestId("option-blend")).toBeTruthy();
     expect(screen.getByTestId("option-earn")).toBeTruthy();
-    expect(screen.getByText(/Q1 Asset/i)).toBeTruthy();
+    expect(screen.getByText(/Which asset\?|Asset/i)).toBeTruthy();
   });
 
   it("max blocks an over-amount and keeps Send disabled", () => {
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
@@ -190,7 +263,7 @@ describe("ClarifyQuestionnaire Component", () => {
   });
 
   it("a percent converts and displays calculated amount", () => {
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
@@ -218,7 +291,7 @@ describe("ClarifyQuestionnaire Component", () => {
 
   it("Send stays disabled until complete, then submits exact answers and summary", () => {
     const handleSubmit = vi.fn();
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={handleSubmit}
@@ -258,7 +331,7 @@ describe("ClarifyQuestionnaire Component", () => {
 
   it("submits literal amount answers and summary correctly", () => {
     const handleSubmit = vi.fn();
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={handleSubmit}
@@ -288,7 +361,7 @@ describe("ClarifyQuestionnaire Component", () => {
   });
 
   it("displays LP pair ratio and matches pool ratio when perUnit is known", () => {
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
@@ -311,7 +384,7 @@ describe("ClarifyQuestionnaire Component", () => {
 
   it("X calls onCancel", () => {
     const handleCancel = vi.fn();
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
@@ -328,7 +401,7 @@ describe("ClarifyQuestionnaire Component", () => {
 
   it("Something else calls onSomethingElse", () => {
     const handleSomethingElse = vi.fn();
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
@@ -348,7 +421,7 @@ describe("ClarifyQuestionnaire Component", () => {
   });
 
   it("keyboard navigation moves with ArrowDown/ArrowUp and selects with Enter", () => {
-    render(
+    renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
@@ -385,5 +458,255 @@ describe("ClarifyQuestionnaire Component", () => {
       { kind: "literal", amount: "500" }
     );
     expect(sum2).toBe("Supply 500 BLUSDC");
+  });
+
+  // ADDENDUM 1: Editing before Send tests
+  describe("Addendum 1: Editing before Send", () => {
+    it("clicking an answered row reopens that step with its current answer selected", () => {
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={mockQuestionnaire}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      // Select BLUSDC -> arrives at Venue
+      fireEvent.click(screen.getByTestId("option-blusdc"));
+      expect(screen.getByTestId("step-counter").textContent).toContain("2 of 3");
+
+      // Click answered Step 0 (Asset)
+      const answeredAsset = screen.getByTestId("answered-step-0");
+      expect(answeredAsset.textContent).toContain("BLUSDC");
+      fireEvent.click(answeredAsset);
+
+      // Should be back on Step 1 (Asset)
+      expect(screen.getByTestId("step-counter").textContent).toContain("1 of 3");
+      const blusdcRadio = screen.getByTestId("option-blusdc");
+      expect(blusdcRadio.getAttribute("aria-checked")).toBe("true");
+    });
+
+    it("clicking the back arrow reopens previous step with current answer selected", () => {
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={mockQuestionnaire}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      fireEvent.click(screen.getByTestId("option-blusdc"));
+      expect(screen.getByTestId("step-counter").textContent).toContain("2 of 3");
+
+      const backBtn = screen.getByTestId("btn-back");
+      fireEvent.click(backBtn);
+
+      expect(screen.getByTestId("step-counter").textContent).toContain("1 of 3");
+      expect(screen.getByTestId("option-blusdc").getAttribute("aria-checked")).toBe("true");
+    });
+
+    it("changing an earlier answer keeps later answers ONLY if still valid; clears invalid venue", () => {
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={mockQuestionnaire}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      // Select BLUSDC -> Earn -> Amount 100
+      fireEvent.click(screen.getByTestId("option-blusdc"));
+      fireEvent.click(screen.getByTestId("option-earn"));
+      const input = screen.getByPlaceholderText(/0.0 or 50%/i);
+      fireEvent.change(input, { target: { value: "100" } });
+
+      // Click answered Step 0 to change Asset from BLUSDC to AQUSDC
+      fireEvent.click(screen.getByTestId("answered-step-0"));
+      // AQUSDC does NOT support Earn (only pool_xlm_aqusdc)
+      fireEvent.click(screen.getByTestId("option-aqusdc"));
+
+      // Venue 'earn' was invalid for AQUSDC, so it was cleared.
+      // AQUSDC auto-selects its only valid venue (pool_xlm_aqusdc) and amount 100 <= 200 (max) is kept!
+      expect(screen.getByTestId("step-counter").textContent).toContain("3 of 3");
+      const amountInput = screen.getByPlaceholderText(/0.0 or 50%/i) as HTMLInputElement;
+      expect(amountInput.value).toBe("100");
+    });
+
+    it("changing an earlier answer clears amount if it exceeds the new max", () => {
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={mockQuestionnaire}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      // Select BLUSDC (max 680) -> Blend (max 680) -> Amount 600
+      fireEvent.click(screen.getByTestId("option-blusdc"));
+      fireEvent.click(screen.getByTestId("option-blend"));
+      const input = screen.getByPlaceholderText(/0.0 or 50%/i);
+      fireEvent.change(input, { target: { value: "600" } });
+
+      // Reopen Step 0 (Asset) and change to AQUSDC (pool max is 200)
+      fireEvent.click(screen.getByTestId("answered-step-0"));
+      fireEvent.click(screen.getByTestId("option-aqusdc"));
+
+      // 600 > 200 (new max for AQUSDC pool), so amount was cleared and Amount step is shown again
+      expect(screen.getByTestId("step-counter").textContent).toContain("3 of 3");
+      const amountInput = screen.getByPlaceholderText(/0.0 or 50%/i) as HTMLInputElement;
+      expect(amountInput.value).toBe("");
+      // Send button must be disabled because amount is empty
+      expect(screen.getByTestId("btn-send").hasAttribute("disabled")).toBe(true);
+    });
+
+    it("after Send, nothing is editable", () => {
+      const handleSubmit = vi.fn();
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={mockQuestionnaire}
+          onSubmit={handleSubmit}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      fireEvent.click(screen.getByTestId("option-blusdc"));
+      fireEvent.click(screen.getByTestId("option-earn"));
+      fireEvent.click(screen.getByTestId("preset-50"));
+
+      const sendBtn = screen.getByTestId("btn-send");
+      fireEvent.click(sendBtn);
+
+      expect(handleSubmit).toHaveBeenCalledTimes(1);
+
+      // Inputs and buttons must be disabled after Send
+      expect(sendBtn.hasAttribute("disabled")).toBe(true);
+      const amountInput = screen.getByPlaceholderText(/0.0 or 50%/i);
+      expect(amountInput.hasAttribute("disabled")).toBe(true);
+      const somethingElseInput = screen.getByTestId("input-something-else");
+      expect(somethingElseInput.hasAttribute("disabled")).toBe(true);
+    });
+  });
+
+  // ADDENDUM 2: Multi-Action Sections tests
+  describe("Addendum 2: Multi-Action Sections", () => {
+    it("renders section checklist at top when questionnaire.sections > 1", () => {
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={mockMultiSectionQuestionnaire}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      // Section checklist must be rendered
+      const checklist = screen.getByTestId("section-checklist");
+      expect(checklist).toBeTruthy();
+      expect(screen.getByTestId("section-item-0")).toBeTruthy();
+      expect(screen.getByTestId("section-item-1")).toBeTruthy();
+    });
+
+    it("advances through sections and enables Send only when all sections are complete", () => {
+      const handleSubmit = vi.fn();
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={mockMultiSectionQuestionnaire}
+          onSubmit={handleSubmit}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      const sendBtn = screen.getByTestId("btn-send");
+      expect(sendBtn.hasAttribute("disabled")).toBe(true);
+
+      // Section 0: Deposit XLM (Asset auto-skipped, on Amount)
+      const inputSec0 = screen.getByPlaceholderText(/0.0 or 50%/i);
+      fireEvent.change(inputSec0, { target: { value: "500" } });
+
+      // Click Next to advance to Section 1
+      const nextBtn = screen.getByTestId("btn-next");
+      fireEvent.click(nextBtn);
+
+      // In Section 1: Supply to Blend. Pick XLM
+      expect(sendBtn.hasAttribute("disabled")).toBe(true);
+      fireEvent.click(screen.getByTestId("option-xlm"));
+
+      // Section 1 amount step: Click linked option "All of the XLM you just deposited"
+      const linkedOpt = screen.getByTestId("option-linked-xlm");
+      expect(linkedOpt.textContent).toContain("All of the XLM you just deposited");
+      // Its detail should dynamically reflect Section 0 amount (500)
+      expect(linkedOpt.textContent).toContain("500 XLM");
+      fireEvent.click(linkedOpt);
+
+      // Both sections complete! Send should now be enabled
+      expect(sendBtn.hasAttribute("disabled")).toBe(false);
+
+      fireEvent.click(sendBtn);
+
+      expect(handleSubmit).toHaveBeenCalledTimes(1);
+      expect(handleSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          questionnaireId: "q-multi-1",
+          sections: [
+            {
+              sectionId: "sec-deposit",
+              asset: "xlm",
+              venue: null,
+              amount: { kind: "literal", amount: "500" },
+            },
+            {
+              sectionId: "sec-blend",
+              asset: "xlm",
+              venue: null,
+              amount: { kind: "literal", amount: "500" },
+            },
+          ],
+        })
+      );
+    });
+
+    it("linked option dynamically follows earlier section amount changes", () => {
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={mockMultiSectionQuestionnaire}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      // Section 0: enter 500 XLM
+      const inputSec0 = screen.getByPlaceholderText(/0.0 or 50%/i);
+      fireEvent.change(inputSec0, { target: { value: "500" } });
+      fireEvent.click(screen.getByTestId("btn-next"));
+
+      // Section 1: pick XLM -> see linked option
+      fireEvent.click(screen.getByTestId("option-xlm"));
+      const linkedOpt = screen.getByTestId("option-linked-xlm");
+      expect(linkedOpt.textContent).toContain("500 XLM");
+      fireEvent.click(linkedOpt);
+
+      // Reopen Section 0 from the top checklist
+      const sec0Item = screen.getByTestId("section-item-0");
+      fireEvent.click(sec0Item);
+
+      // Change Section 0 amount to 250
+      const inputSec0Reopened = screen.getByPlaceholderText(/0.0 or 50%/i);
+      fireEvent.change(inputSec0Reopened, { target: { value: "250" } });
+
+      // Navigate back to Section 1 by clicking section-item-1, then Next to Amount step
+      fireEvent.click(screen.getByTestId("section-item-1"));
+      fireEvent.click(screen.getByTestId("btn-next"));
+
+      // Linked option in Section 1 should now show 250 XLM
+      const updatedLinkedOpt = screen.getByTestId("option-linked-xlm");
+      expect(updatedLinkedOpt.textContent).toContain("250 XLM");
+    });
   });
 });

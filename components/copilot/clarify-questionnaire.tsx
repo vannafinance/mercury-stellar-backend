@@ -2,13 +2,15 @@
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { Check, X, ArrowLeft, ArrowRight, CornerDownLeft } from "lucide-react";
+import { useTheme } from "@/contexts/theme-context";
 import type {
   Questionnaire,
   QuestionnaireOption,
   QuestionnaireStep,
   QuestionnaireAnswers,
+  QuestionnaireSection,
+  QuestionnaireAnswerSection,
 } from "@/lib/copilot/investigation/view";
-import { InputWithUnit } from "@/components/ui/InputWithUnit";
 
 export interface ClarifyQuestionnaireProps {
   questionnaire: Questionnaire;
@@ -21,17 +23,24 @@ export interface ClarifyQuestionnaireProps {
 const BTN_PRIMARY =
   "rounded-lg bg-gradient px-4 py-2 text-[13px] font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:opacity-45";
 const BTN_QUIET =
-  "rounded-lg border border-vgray-200 px-3.5 py-2 text-[13px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
+  "rounded-lg border border-vgray-200 dark:border-[#2A2A2A] px-3.5 py-2 text-[13px] font-semibold text-vgray-800 dark:text-vgray-200 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300 dark:disabled:text-vgray-600";
+
+const PRESET_COLORS: Record<string, string> = {
+  "25": "bg-[#703AE6] text-white",
+  "50": "bg-[#FC5457] text-white",
+  "75": "bg-[#E63ABB] text-white",
+  "100": "bg-[#FF007A] text-white",
+};
 
 const DEFAULT_PRESETS = [
-  { id: "10", label: "10%", percent: "10" },
   { id: "25", label: "25%", percent: "25" },
   { id: "50", label: "50%", percent: "50" },
-  { id: "100", label: "100% / max", percent: "100" },
+  { id: "75", label: "75%", percent: "75" },
+  { id: "100", label: "Max", percent: "100" },
 ];
 
 export function buildQuestionnaireSummary(
-  questionnaire: Questionnaire,
+  questionnaire: { title?: string },
   assetOption?: QuestionnaireOption,
   venueOption?: QuestionnaireOption | null,
   amount?: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string }
@@ -58,6 +67,13 @@ export function buildQuestionnaireSummary(
   return [verb, amountStr, venueStr].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 }
 
+interface SectionInternalState {
+  assetId: string | null;
+  venueId: string | null;
+  amountRaw: string;
+  activeStepIdx: number;
+}
+
 export function ClarifyQuestionnaire({
   questionnaire,
   onSubmit,
@@ -65,16 +81,57 @@ export function ClarifyQuestionnaire({
   onSomethingElse,
   busy = false,
 }: ClarifyQuestionnaireProps) {
-  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
-  const [selectedVenueId, setSelectedVenueId] = useState<string | null>(null);
-  const [amountRaw, setAmountRaw] = useState<string>("");
-  const [activeStepIndex, setActiveStepIndex] = useState<number>(0);
+  const { isDark } = useTheme();
+
+  // Normalize sections: multi-section or single-section wrapped
+  const sections: QuestionnaireSection[] = useMemo(() => {
+    if (questionnaire.sections && questionnaire.sections.length > 0) {
+      return questionnaire.sections;
+    }
+    return [
+      {
+        id: questionnaire.id || "default",
+        title: questionnaire.title,
+        actionIndex: 0,
+        steps: questionnaire.steps,
+      },
+    ];
+  }, [questionnaire]);
+
+  const isMultiSection = Boolean(questionnaire.sections && questionnaire.sections.length > 1);
+
+  // Per-section state
+  const [sectionStates, setSectionStates] = useState<Record<string, SectionInternalState>>(() => {
+    const initial: Record<string, SectionInternalState> = {};
+    for (const sec of sections) {
+      const assetStep = sec.steps.find((s) => s.slot === "asset");
+      const defaultAssetId = assetStep && assetStep.options.length === 1 ? assetStep.options[0].id : null;
+      initial[sec.id] = {
+        assetId: defaultAssetId,
+        venueId: null,
+        amountRaw: "",
+        activeStepIdx: 0,
+      };
+    }
+    return initial;
+  });
+
+  const [activeSectionIdx, setActiveSectionIdx] = useState<number>(0);
   const [somethingElseText, setSomethingElseText] = useState<string>("");
   const [focusedOptionIdx, setFocusedOptionIdx] = useState<number>(0);
+  const [submitted, setSubmitted] = useState<boolean>(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Helper to get options for a step given current selections
+  const currentSection = sections[activeSectionIdx] || sections[0];
+  const currentState = sectionStates[currentSection.id] || {
+    assetId: null,
+    venueId: null,
+    amountRaw: "",
+    activeStepIdx: 0,
+  };
+
+  // Helper: Filter step options based on chosen asset
   const getStepAvailableOptions = useCallback(
     (step: QuestionnaireStep, currentAssetId: string | null): QuestionnaireOption[] => {
       if (step.slot === "venue") {
@@ -88,138 +145,192 @@ export function ClarifyQuestionnaire({
     []
   );
 
-  // Find asset step and auto-select if single option
-  const assetStep = questionnaire.steps.find((s) => s.slot === "asset");
-  const venueStep = questionnaire.steps.find((s) => s.slot === "venue");
-  const amountStep = questionnaire.steps.find((s) => s.slot === "amount");
-
-  // Initial auto-selection of single-option asset
-  useEffect(() => {
-    if (assetStep && assetStep.options.length === 1 && !selectedAssetId) {
-      setSelectedAssetId(assetStep.options[0].id);
-    }
-  }, [assetStep, selectedAssetId]);
-
-  // Venue auto-selection or reset when asset changes
-  const availableVenueOptions = useMemo(() => {
-    if (!venueStep) return [];
-    return getStepAvailableOptions(venueStep, selectedAssetId);
-  }, [venueStep, selectedAssetId, getStepAvailableOptions]);
-
-  useEffect(() => {
-    if (!venueStep) return;
-    if (availableVenueOptions.length === 1) {
-      setSelectedVenueId(availableVenueOptions[0].id);
-    } else if (
-      selectedVenueId &&
-      !availableVenueOptions.some((opt) => opt.id === selectedVenueId)
-    ) {
-      setSelectedVenueId(null);
-    }
-  }, [venueStep, availableVenueOptions, selectedVenueId]);
-
-  // Determine which steps are skipped (have only 1 available option)
+  // Check if a step should be auto-skipped (single available option, non-amount)
   const isStepAutoSkipped = useCallback(
-    (stepIndex: number): boolean => {
-      const step = questionnaire.steps[stepIndex];
+    (section: QuestionnaireSection, stepIdx: number, assetId: string | null): boolean => {
+      const step = section.steps[stepIdx];
       if (!step) return false;
       if (step.slot === "amount") return false;
-      const opts = getStepAvailableOptions(step, selectedAssetId);
+      const opts = getStepAvailableOptions(step, assetId);
       return opts.length <= 1;
     },
-    [questionnaire.steps, selectedAssetId, getStepAvailableOptions]
+    [getStepAvailableOptions]
   );
 
-  // Advance initial activeStepIndex if first step is skipped
+  // Auto-skip or advance if current step is single-option
   useEffect(() => {
-    if (activeStepIndex === 0 && isStepAutoSkipped(0)) {
-      // Find the first non-skipped step
-      const nextIdx = questionnaire.steps.findIndex((_, idx) => !isStepAutoSkipped(idx));
-      if (nextIdx !== -1) {
-        setActiveStepIndex(nextIdx);
+    const sec = currentSection;
+    const st = sectionStates[sec.id];
+    if (!st) return;
+
+    const currentStep = sec.steps[st.activeStepIdx];
+    if (!currentStep) return;
+
+    // Auto-select single asset if not selected
+    if (currentStep.slot === "asset" && currentStep.options.length === 1 && !st.assetId) {
+      const singleId = currentStep.options[0].id;
+      setSectionStates((prev) => ({
+        ...prev,
+        [sec.id]: {
+          ...prev[sec.id],
+          assetId: singleId,
+        },
+      }));
+    }
+
+    // Auto-advance if this step is single-option and can be skipped
+    if (isStepAutoSkipped(sec, st.activeStepIdx, st.assetId)) {
+      // If asset step, ensure asset is selected
+      if (currentStep.slot === "asset" && currentStep.options.length === 1 && !st.assetId) {
+        // Handled above
+      } else if (currentStep.slot === "venue") {
+        const available = getStepAvailableOptions(currentStep, st.assetId);
+        if (available.length === 1 && !st.venueId) {
+          setSectionStates((prev) => ({
+            ...prev,
+            [sec.id]: {
+              ...prev[sec.id],
+              venueId: available[0].id,
+            },
+          }));
+        }
+      }
+
+      // Advance to next non-skipped step if available
+      let nextIdx = st.activeStepIdx + 1;
+      while (nextIdx < sec.steps.length && isStepAutoSkipped(sec, nextIdx, st.assetId)) {
+        nextIdx++;
+      }
+      if (nextIdx < sec.steps.length && nextIdx !== st.activeStepIdx) {
+        setSectionStates((prev) => ({
+          ...prev,
+          [sec.id]: {
+            ...prev[sec.id],
+            activeStepIdx: nextIdx,
+          },
+        }));
       }
     }
-  }, [activeStepIndex, isStepAutoSkipped, questionnaire.steps]);
+  }, [currentSection, sectionStates, isStepAutoSkipped, getStepAvailableOptions]);
+
+  // Max info calculation for a section
+  const getSectionMaxInfo = useCallback(
+    (sec: QuestionnaireSection, venueId: string | null, assetId: string | null) => {
+      const amountStep = sec.steps.find((s) => s.slot === "amount");
+      if (!amountStep?.max) return null;
+      if (venueId && amountStep.max[venueId]) {
+        return amountStep.max[venueId];
+      }
+      if (assetId && amountStep.max[assetId]) {
+        return amountStep.max[assetId];
+      }
+      const entry = Object.entries(amountStep.max).find(([k]) =>
+        venueId
+          ? k.toLowerCase() === venueId.toLowerCase()
+          : assetId
+          ? k.toLowerCase() === assetId.toLowerCase()
+          : false
+      );
+      return entry ? entry[1] : null;
+    },
+    []
+  );
+
+  const currentMaxInfo = useMemo(() => {
+    return getSectionMaxInfo(currentSection, currentState.venueId, currentState.assetId);
+  }, [currentSection, currentState.venueId, currentState.assetId, getSectionMaxInfo]);
+
+  // Linked option resolver: looks up earlier section's amount if an option is linked
+  const resolveLinkedOptionAmount = useCallback(
+    (optLabel: string, currentSecIdx: number): { amount: string; asset: string } | null => {
+      if (!optLabel.toLowerCase().includes("you just")) return null;
+      // Search preceding sections for deposited or produced asset
+      for (let i = currentSecIdx - 1; i >= 0; i--) {
+        const prevSec = sections[i];
+        const prevSt = sectionStates[prevSec.id];
+        if (!prevSt || !prevSt.amountRaw) continue;
+
+        const assetStep = prevSec.steps.find((s) => s.slot === "asset");
+        const assetOpt = assetStep?.options.find((o) => o.id === prevSt.assetId);
+        const assetName = assetOpt?.label || prevSt.assetId?.toUpperCase() || "";
+
+        // Check if label mentions this asset (or generic)
+        if (!assetName || optLabel.toUpperCase().includes(assetName.toUpperCase())) {
+          return { amount: prevSt.amountRaw, asset: assetName };
+        }
+      }
+      return null;
+    },
+    [sections, sectionStates]
+  );
 
   // Amount parsing and validation
-  const maxInfo = useMemo(() => {
-    if (!amountStep?.max) return null;
-    if (selectedVenueId && amountStep.max[selectedVenueId]) {
-      return amountStep.max[selectedVenueId];
-    }
-    if (selectedAssetId && amountStep.max[selectedAssetId]) {
-      return amountStep.max[selectedAssetId];
-    }
-    // Also try matching case-insensitively
-    const entry = Object.entries(amountStep.max).find(([k]) =>
-      selectedVenueId
-        ? k.toLowerCase() === selectedVenueId.toLowerCase()
-        : selectedAssetId
-        ? k.toLowerCase() === selectedAssetId.toLowerCase()
-        : false
-    );
-    return entry ? entry[1] : null;
-  }, [amountStep, selectedVenueId, selectedAssetId]);
+  type ParsedAmountResult =
+    | { kind: "fraction"; percent: string; convertedLiteral: string | null; error: null }
+    | { kind: "literal"; amount: string; convertedLiteral?: null; error: null }
+    | { kind: "error"; error: string; convertedLiteral?: null };
 
-  const maxAmountNum = maxInfo ? parseFloat(maxInfo.amount) : null;
+  const parseAmountValue = useCallback(
+    (raw: string, maxInfo: ReturnType<typeof getSectionMaxInfo>): ParsedAmountResult | null => {
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
 
-type ParsedAmountResult =
-  | { kind: "fraction"; percent: string; convertedLiteral: string | null; error: null }
-  | { kind: "literal"; amount: string; convertedLiteral?: null; error: null }
-  | { kind: "error"; error: string; convertedLiteral?: null };
+      const maxAmountNum = maxInfo ? parseFloat(maxInfo.amount) : null;
 
-  const parsedAmount = useMemo<ParsedAmountResult | null>(() => {
-    const trimmed = amountRaw.trim();
-    if (!trimmed) return null;
+      if (trimmed.endsWith("%")) {
+        const pct = parseFloat(trimmed.slice(0, -1));
+        if (!Number.isFinite(pct) || pct <= 0) return { kind: "error", error: "Invalid percentage" };
+        if (pct > 100) return { kind: "error", error: "Percentage cannot exceed 100%" };
+        const convertedLiteral =
+          maxAmountNum !== null ? ((maxAmountNum * pct) / 100).toString() : null;
+        return {
+          kind: "fraction",
+          percent: pct.toString(),
+          convertedLiteral,
+          error: null,
+        };
+      }
 
-    if (trimmed.endsWith("%")) {
-      const pct = parseFloat(trimmed.slice(0, -1));
-      if (!Number.isFinite(pct) || pct <= 0) return { kind: "error", error: "Invalid percentage" };
-      if (pct > 100) return { kind: "error", error: "Percentage cannot exceed 100%" };
-      const convertedLiteral =
-        maxAmountNum !== null ? ((maxAmountNum * pct) / 100).toString() : null;
+      const num = parseFloat(trimmed);
+      if (!Number.isFinite(num) || num <= 0) return { kind: "error", error: "Invalid amount" };
+      if (maxAmountNum !== null && num > maxAmountNum) {
+        return {
+          kind: "error",
+          error: `Amount exceeds available ${maxInfo?.amount} ${maxInfo?.asset || ""}`.trim(),
+        };
+      }
       return {
-        kind: "fraction",
-        percent: pct.toString(),
-        convertedLiteral,
+        kind: "literal",
+        amount: trimmed,
+        convertedLiteral: null,
         error: null,
       };
-    }
+    },
+    []
+  );
 
-    const num = parseFloat(trimmed);
-    if (!Number.isFinite(num) || num <= 0) return { kind: "error", error: "Invalid amount" };
-    if (maxAmountNum !== null && num > maxAmountNum) {
-      return {
-        kind: "error",
-        error: `Amount exceeds available ${maxInfo?.amount} ${maxInfo?.asset || ""}`.trim(),
-      };
-    }
-    return {
-      kind: "literal",
-      amount: trimmed,
-      convertedLiteral: null,
-      error: null,
-    };
-  }, [amountRaw, maxAmountNum, maxInfo]);
-
+  const currentParsedAmount = useMemo(() => {
+    return parseAmountValue(currentState.amountRaw, currentMaxInfo);
+  }, [currentState.amountRaw, currentMaxInfo, parseAmountValue]);
 
   // LP Pair info
-  const lpPairInfo = useMemo(() => {
-    if (!amountStep?.pair || !selectedVenueId) return null;
-    return amountStep.pair[selectedVenueId] ?? null;
-  }, [amountStep, selectedVenueId]);
+  const currentLpPairInfo = useMemo(() => {
+    const amountStep = currentSection.steps.find((s) => s.slot === "amount");
+    if (!amountStep?.pair || !currentState.venueId) return null;
+    return amountStep.pair[currentState.venueId] ?? null;
+  }, [currentSection, currentState.venueId]);
 
-  const lpMatchedAmount = useMemo(() => {
-    if (!lpPairInfo || !lpPairInfo.perUnit) return null;
-    const ratio = parseFloat(lpPairInfo.perUnit);
+  const currentLpMatchedAmount = useMemo(() => {
+    if (!currentLpPairInfo || !currentLpPairInfo.perUnit) return null;
+    const ratio = parseFloat(currentLpPairInfo.perUnit);
     if (!Number.isFinite(ratio)) return null;
 
     let baseAmount: number | null = null;
-    if (parsedAmount && !parsedAmount.error) {
-      if (parsedAmount.kind === "literal") {
-        baseAmount = parseFloat(parsedAmount.amount);
-      } else if (parsedAmount.convertedLiteral) {
-        baseAmount = parseFloat(parsedAmount.convertedLiteral);
+    if (currentParsedAmount && !currentParsedAmount.error) {
+      if (currentParsedAmount.kind === "literal") {
+        baseAmount = parseFloat(currentParsedAmount.amount);
+      } else if (currentParsedAmount.convertedLiteral) {
+        baseAmount = parseFloat(currentParsedAmount.convertedLiteral);
       }
     }
     if (baseAmount !== null && baseAmount > 0) {
@@ -227,160 +338,425 @@ type ParsedAmountResult =
       return matched.replace(/\.?0+$/, "");
     }
     return null;
-  }, [lpPairInfo, parsedAmount]);
+  }, [currentLpPairInfo, currentParsedAmount]);
 
-  // Overall completeness check
-  const isComplete = useMemo(() => {
-    if (busy) return false;
-    if (assetStep && !selectedAssetId) return false;
-    if (venueStep && availableVenueOptions.length > 0 && !selectedVenueId) return false;
-    if (amountStep) {
-      if (!parsedAmount || parsedAmount.error) return false;
-    }
-    return true;
-  }, [
-    busy,
-    assetStep,
-    selectedAssetId,
-    venueStep,
-    availableVenueOptions,
-    selectedVenueId,
-    amountStep,
-    parsedAmount,
-  ]);
+  // Section completeness check
+  const isSectionComplete = useCallback(
+    (sec: QuestionnaireSection, st: SectionInternalState | undefined): boolean => {
+      if (!st) return false;
+      const assetStep = sec.steps.find((s) => s.slot === "asset");
+      const venueStep = sec.steps.find((s) => s.slot === "venue");
+      const amountStep = sec.steps.find((s) => s.slot === "amount");
 
-  // Current active step definition
-  const currentStep = questionnaire.steps[activeStepIndex];
-  const currentStepOptions = useMemo(() => {
-    if (!currentStep) return [];
-    return getStepAvailableOptions(currentStep, selectedAssetId);
-  }, [currentStep, selectedAssetId, getStepAvailableOptions]);
+      if (assetStep && !st.assetId) return false;
+      if (venueStep) {
+        const available = getStepAvailableOptions(venueStep, st.assetId);
+        if (available.length > 0 && !st.venueId) return false;
+      }
+      if (amountStep) {
+        const maxInfo = getSectionMaxInfo(sec, st.venueId, st.assetId);
+        const parsed = parseAmountValue(st.amountRaw, maxInfo);
+        if (!parsed || parsed.error) return false;
+      }
+      return true;
+    },
+    [getStepAvailableOptions, getSectionMaxInfo, parseAmountValue]
+  );
 
-  // Find step answer for collapsed view
-  const getStepAnswerSummary = (step: QuestionnaireStep): string | null => {
+  // Overall completeness: every section must be complete
+  const isAllComplete = useMemo(() => {
+    if (busy || submitted) return false;
+    return sections.every((sec) => isSectionComplete(sec, sectionStates[sec.id]));
+  }, [busy, submitted, sections, sectionStates, isSectionComplete]);
+
+  // Summary helper for a section
+  const getSectionChosenSummary = useCallback(
+    (sec: QuestionnaireSection, st: SectionInternalState | undefined): string | null => {
+      if (!st) return null;
+      const assetStep = sec.steps.find((s) => s.slot === "asset");
+      const venueStep = sec.steps.find((s) => s.slot === "venue");
+      const amountStep = sec.steps.find((s) => s.slot === "amount");
+
+      const assetOpt = assetStep?.options.find((o) => o.id === st.assetId);
+      const venueOpt = venueStep?.options.find((o) => o.id === st.venueId);
+
+      const maxInfo = getSectionMaxInfo(sec, st.venueId, st.assetId);
+      const parsed = parseAmountValue(st.amountRaw, maxInfo);
+
+      if (amountStep && parsed && !parsed.error) {
+        if (parsed.kind === "fraction") {
+          return `${parsed.percent}% ${assetOpt?.label || ""}`.trim();
+        }
+        return `${parsed.amount} ${assetOpt?.label || ""}`.trim();
+      }
+      if (venueOpt) return venueOpt.label;
+      if (assetOpt) return assetOpt.label;
+      return null;
+    },
+    [getSectionMaxInfo, parseAmountValue]
+  );
+
+  // Re-validation helper: cascades changes in section `secIdx` to later sections
+  const revalidateLaterSections = useCallback(
+    (changedSecIdx: number, newStates: Record<string, SectionInternalState>) => {
+      const updated = { ...newStates };
+      for (let i = changedSecIdx + 1; i < sections.length; i++) {
+        const sec = sections[i];
+        const st = updated[sec.id];
+        if (!st) continue;
+
+        // Check if section had a linked amount
+        const amountStep = sec.steps.find((s) => s.slot === "amount");
+        const linkedOpt = amountStep?.options.find((o) => o.label.toLowerCase().includes("you just"));
+        if (linkedOpt) {
+          const linked = resolveLinkedOptionAmount(linkedOpt.label, i);
+          if (linked && st.amountRaw) {
+            // Keep linked amount in sync with source
+            st.amountRaw = linked.amount;
+          }
+        }
+
+        // Revalidate amount against max
+        const maxInfo = getSectionMaxInfo(sec, st.venueId, st.assetId);
+        const maxAmountNum = maxInfo ? parseFloat(maxInfo.amount) : null;
+        if (st.amountRaw && !st.amountRaw.endsWith("%") && maxAmountNum !== null) {
+          const num = parseFloat(st.amountRaw);
+          if (Number.isFinite(num) && num > maxAmountNum) {
+            // Amount no longer fits, clear it
+            st.amountRaw = "";
+          }
+        }
+        updated[sec.id] = { ...st };
+      }
+      return updated;
+    },
+    [sections, resolveLinkedOptionAmount, getSectionMaxInfo]
+  );
+
+  // Step Answer Summary for compact done rows
+  const getStepAnswerSummary = (sec: QuestionnaireSection, step: QuestionnaireStep, st: SectionInternalState): string | null => {
     if (step.slot === "asset") {
-      const opt = step.options.find((o) => o.id === selectedAssetId);
+      const opt = step.options.find((o) => o.id === st.assetId);
       return opt ? opt.label : null;
     }
     if (step.slot === "venue") {
-      const opt = step.options.find((o) => o.id === selectedVenueId);
+      const opt = step.options.find((o) => o.id === st.venueId);
       return opt ? opt.label : null;
     }
     if (step.slot === "amount") {
-      if (parsedAmount) {
-        if (parsedAmount.kind === "fraction") {
-          return `${parsedAmount.percent}%`;
-        }
-        if (parsedAmount.kind === "literal") {
-          return `${parsedAmount.amount} ${maxInfo?.asset || ""}`.trim();
-        }
+      const maxInfo = getSectionMaxInfo(sec, st.venueId, st.assetId);
+      const parsed = parseAmountValue(st.amountRaw, maxInfo);
+      if (parsed && !parsed.error) {
+        if (parsed.kind === "fraction") return `${parsed.percent}%`;
+        if (parsed.kind === "literal") return `${parsed.amount} ${maxInfo?.asset || ""}`.trim();
       }
       return null;
     }
     return null;
   };
 
-  // Navigation: Go forward to next visible step
-  const handleNext = () => {
-    let nextIdx = activeStepIndex + 1;
-    while (nextIdx < questionnaire.steps.length && isStepAutoSkipped(nextIdx)) {
-      nextIdx++;
-    }
-    if (nextIdx < questionnaire.steps.length) {
-      setActiveStepIndex(nextIdx);
-      setFocusedOptionIdx(0);
-    }
+  // Pre-send editing: Clicking an answered row reopens that step with its current answer selected
+  const handleReopenStep = (stepIdx: number) => {
+    if (submitted) return;
+    setSectionStates((prev) => ({
+      ...prev,
+      [currentSection.id]: {
+        ...prev[currentSection.id],
+        activeStepIdx: stepIdx,
+      },
+    }));
+    setFocusedOptionIdx(0);
   };
 
-  // Navigation: Go back to previous visible step
-  const handleBack = () => {
-    let prevIdx = activeStepIndex - 1;
-    while (prevIdx >= 0 && isStepAutoSkipped(prevIdx)) {
-      prevIdx--;
-    }
-    if (prevIdx >= 0) {
-      setActiveStepIndex(prevIdx);
-      setFocusedOptionIdx(0);
-    }
+  // Reopen a completed section
+  const handleReopenSection = (secIdx: number) => {
+    if (submitted) return;
+    setActiveSectionIdx(secIdx);
+    setSectionStates((prev) => {
+      const targetSec = sections[secIdx];
+      const targetSt = prev[targetSec.id];
+      return {
+        ...prev,
+        [targetSec.id]: {
+          ...targetSt,
+          activeStepIdx: 0,
+        },
+      };
+    });
+    setFocusedOptionIdx(0);
   };
 
-  // Select an option on the current step
+  // Option selection on current step
   const handleSelectOption = (optId: string) => {
-    if (!currentStep) return;
-    if (currentStep.slot === "asset") {
-      setSelectedAssetId(optId);
-      // Auto-advance if not on final step
-      if (activeStepIndex < questionnaire.steps.length - 1) {
-        let nextIdx = activeStepIndex + 1;
-        // Venue might have 1 option for this asset -> skip
-        const nextStep = questionnaire.steps[nextIdx];
-        if (
-          nextStep &&
-          nextStep.slot === "venue" &&
-          getStepAvailableOptions(nextStep, optId).length <= 1
-        ) {
-          nextIdx++;
+    if (submitted) return;
+    const sec = currentSection;
+    const st = currentState;
+    const step = sec.steps[st.activeStepIdx];
+    if (!step) return;
+
+    if (step.slot === "asset") {
+      const newAssetId = optId;
+      // Re-validate venue for this asset
+      const venueStep = sec.steps.find((s) => s.slot === "venue");
+      let nextVenueId = st.venueId;
+      if (venueStep) {
+        const availableVenues = getStepAvailableOptions(venueStep, newAssetId);
+        if (nextVenueId && !availableVenues.some((o) => o.id.toLowerCase() === nextVenueId?.toLowerCase())) {
+          nextVenueId = null;
         }
-        if (nextIdx < questionnaire.steps.length) {
-          setActiveStepIndex(nextIdx);
-          setFocusedOptionIdx(0);
+        if (!nextVenueId && availableVenues.length === 1) {
+          nextVenueId = availableVenues[0].id;
         }
       }
-    } else if (currentStep.slot === "venue") {
-      setSelectedVenueId(optId);
-      if (activeStepIndex < questionnaire.steps.length - 1) {
-        setActiveStepIndex(activeStepIndex + 1);
-        setFocusedOptionIdx(0);
+
+      // Re-validate amount for this asset & venue
+      let nextAmountRaw = st.amountRaw;
+      const nextMax = getSectionMaxInfo(sec, nextVenueId, newAssetId);
+      const nextMaxNum = nextMax ? parseFloat(nextMax.amount) : null;
+      if (nextAmountRaw && !nextAmountRaw.endsWith("%") && nextMaxNum !== null) {
+        const num = parseFloat(nextAmountRaw);
+        if (Number.isFinite(num) && num > nextMaxNum) {
+          nextAmountRaw = "";
+        }
       }
+
+      // Determine next active step: show cleared step again
+      let nextStepIdx = st.activeStepIdx + 1;
+      if (venueStep && !nextVenueId && getStepAvailableOptions(venueStep, newAssetId).length > 1) {
+        nextStepIdx = sec.steps.findIndex((s) => s.slot === "venue");
+      } else if (!nextAmountRaw && sec.steps.some((s) => s.slot === "amount")) {
+        nextStepIdx = sec.steps.findIndex((s) => s.slot === "amount");
+      }
+
+      // Bound step index
+      nextStepIdx = Math.min(nextStepIdx, sec.steps.length - 1);
+
+      setSectionStates((prev) => {
+        const updated = {
+          ...prev,
+          [sec.id]: {
+            ...prev[sec.id],
+            assetId: newAssetId,
+            venueId: nextVenueId,
+            amountRaw: nextAmountRaw,
+            activeStepIdx: nextStepIdx,
+          },
+        };
+        return revalidateLaterSections(activeSectionIdx, updated);
+      });
+      setFocusedOptionIdx(0);
+    } else if (step.slot === "venue") {
+      const newVenueId = optId;
+      // Re-validate amount against new venue max
+      let nextAmountRaw = st.amountRaw;
+      const nextMax = getSectionMaxInfo(sec, newVenueId, st.assetId);
+      const nextMaxNum = nextMax ? parseFloat(nextMax.amount) : null;
+      if (nextAmountRaw && !nextAmountRaw.endsWith("%") && nextMaxNum !== null) {
+        const num = parseFloat(nextAmountRaw);
+        if (Number.isFinite(num) && num > nextMaxNum) {
+          nextAmountRaw = "";
+        }
+      }
+
+      const nextStepIdx = Math.min(st.activeStepIdx + 1, sec.steps.length - 1);
+      setSectionStates((prev) => {
+        const updated = {
+          ...prev,
+          [sec.id]: {
+            ...prev[sec.id],
+            venueId: newVenueId,
+            amountRaw: nextAmountRaw,
+            activeStepIdx: nextStepIdx,
+          },
+        };
+        return revalidateLaterSections(activeSectionIdx, updated);
+      });
+      setFocusedOptionIdx(0);
     }
   };
 
-  // Preset click on amount step
+  // Amount change handler
+  const handleAmountChange = (val: string) => {
+    if (submitted) return;
+    setSectionStates((prev) => {
+      const updated = {
+        ...prev,
+        [currentSection.id]: {
+          ...prev[currentSection.id],
+          amountRaw: val,
+        },
+      };
+      return revalidateLaterSections(activeSectionIdx, updated);
+    });
+  };
+
+  // Amount preset click
   const handlePresetClick = (percentStr: string) => {
-    setAmountRaw(`${percentStr}%`);
+    handleAmountChange(`${percentStr}%`);
   };
 
   // Max click
   const handleMaxClick = () => {
-    if (maxInfo?.amount) {
-      setAmountRaw("100%");
+    if (currentMaxInfo?.amount) {
+      handleAmountChange("100%");
+    }
+  };
+
+  // Select a linked option (e.g. "All of the XLM you just deposited")
+  const handleSelectLinkedOption = (optLabel: string) => {
+    const linked = resolveLinkedOptionAmount(optLabel, activeSectionIdx);
+    if (linked) {
+      handleAmountChange(linked.amount);
+    }
+  };
+
+  // Navigation: Back button reopens previous visible step
+  const handleBack = () => {
+    if (submitted) return;
+    const sec = currentSection;
+    const st = currentState;
+    let prevIdx = st.activeStepIdx - 1;
+    while (prevIdx >= 0 && isStepAutoSkipped(sec, prevIdx, st.assetId)) {
+      prevIdx--;
+    }
+    if (prevIdx >= 0) {
+      setSectionStates((prev) => ({
+        ...prev,
+        [sec.id]: {
+          ...prev[sec.id],
+          activeStepIdx: prevIdx,
+        },
+      }));
+      setFocusedOptionIdx(0);
+    } else if (activeSectionIdx > 0) {
+      // Reopen previous section at its last step
+      const prevSec = sections[activeSectionIdx - 1];
+      setActiveSectionIdx(activeSectionIdx - 1);
+      setSectionStates((prev) => ({
+        ...prev,
+        [prevSec.id]: {
+          ...prev[prevSec.id],
+          activeStepIdx: prevSec.steps.length - 1,
+        },
+      }));
+      setFocusedOptionIdx(0);
+    }
+  };
+
+  // Navigation: Next button
+  const handleNext = () => {
+    if (submitted) return;
+    const sec = currentSection;
+    const st = currentState;
+    let nextIdx = st.activeStepIdx + 1;
+    while (nextIdx < sec.steps.length && isStepAutoSkipped(sec, nextIdx, st.assetId)) {
+      nextIdx++;
+    }
+    if (nextIdx < sec.steps.length) {
+      setSectionStates((prev) => ({
+        ...prev,
+        [sec.id]: {
+          ...prev[sec.id],
+          activeStepIdx: nextIdx,
+        },
+      }));
+      setFocusedOptionIdx(0);
+    } else if (activeSectionIdx < sections.length - 1) {
+      // Advance to next section
+      setActiveSectionIdx(activeSectionIdx + 1);
+      setFocusedOptionIdx(0);
     }
   };
 
   // Submit questionnaire
   const handleSubmit = () => {
-    if (!isComplete || !selectedAssetId || !parsedAmount || parsedAmount.error) return;
+    if (!isAllComplete || submitted) return;
+    setSubmitted(true);
 
-    const chosenAssetOption = assetStep?.options.find((o) => o.id === selectedAssetId);
-    const chosenVenueOption = venueStep?.options.find((o) => o.id === selectedVenueId) ?? null;
+    if (isMultiSection) {
+      const sectionAnswers: QuestionnaireAnswerSection[] = sections.map((sec) => {
+        const st = sectionStates[sec.id];
+        const maxInfo = getSectionMaxInfo(sec, st.venueId, st.assetId);
+        const parsed = parseAmountValue(st.amountRaw, maxInfo);
+        const amountAnswer =
+          parsed?.kind === "fraction"
+            ? { kind: "fraction" as const, percent: parsed.percent }
+            : { kind: "literal" as const, amount: parsed?.kind === "literal" ? parsed.amount : (st.amountRaw || "0") };
 
-    const amountAnswer: QuestionnaireAnswers["amount"] =
-      parsedAmount.kind === "fraction"
-        ? { kind: "fraction", percent: parsedAmount.percent }
-        : parsedAmount.kind === "literal"
-        ? { kind: "literal", amount: parsedAmount.amount }
-        : { kind: "literal", amount: "0" };
+        return {
+          sectionId: sec.id,
+          asset: st.assetId || "",
+          venue: st.venueId,
+          amount: amountAnswer,
+        };
+      });
 
-    const summary = buildQuestionnaireSummary(
-      questionnaire,
-      chosenAssetOption,
-      chosenVenueOption,
-      amountAnswer
-    );
+      // Overall multi-section summary
+      const summaryParts = sections.map((sec, i) => {
+        const ans = sectionAnswers[i];
+        const assetStep = sec.steps.find((s) => s.slot === "asset");
+        const venueStep = sec.steps.find((s) => s.slot === "venue");
+        const assetOpt = assetStep?.options.find((o) => o.id === ans.asset);
+        const venueOpt = venueStep?.options.find((o) => o.id === ans.venue);
+        return buildQuestionnaireSummary({ title: sec.title }, assetOpt, venueOpt, ans.amount);
+      });
+      const summary = summaryParts.join(", ");
 
-    const answers: QuestionnaireAnswers = {
-      questionnaireId: questionnaire.id,
-      asset: selectedAssetId,
-      venue: selectedVenueId,
-      amount: amountAnswer,
-      summary,
-    };
+      const answers: QuestionnaireAnswers = {
+        questionnaireId: questionnaire.id,
+        asset: sectionAnswers[0]?.asset || "",
+        venue: sectionAnswers[0]?.venue ?? null,
+        amount: sectionAnswers[0]?.amount ?? { kind: "literal", amount: "0" },
+        summary,
+        sections: sectionAnswers,
+      };
 
-    onSubmit(answers);
+      onSubmit(answers);
+    } else {
+      const sec = sections[0];
+      const st = sectionStates[sec.id];
+      const maxInfo = getSectionMaxInfo(sec, st.venueId, st.assetId);
+      const parsed = parseAmountValue(st.amountRaw, maxInfo);
+
+      const assetStep = sec.steps.find((s) => s.slot === "asset");
+      const venueStep = sec.steps.find((s) => s.slot === "venue");
+      const assetOpt = assetStep?.options.find((o) => o.id === st.assetId);
+      const venueOpt = venueStep?.options.find((o) => o.id === st.venueId) ?? null;
+
+      const amountAnswer =
+        parsed?.kind === "fraction"
+          ? { kind: "fraction" as const, percent: parsed.percent }
+          : { kind: "literal" as const, amount: parsed?.kind === "literal" ? parsed.amount : "0" };
+
+      const summary = buildQuestionnaireSummary(
+        questionnaire,
+        assetOpt,
+        venueOpt,
+        amountAnswer
+      );
+
+      const answers: QuestionnaireAnswers = {
+        questionnaireId: questionnaire.id,
+        asset: st.assetId || "",
+        venue: st.venueId,
+        amount: amountAnswer,
+        summary,
+      };
+
+      onSubmit(answers);
+    }
   };
 
   // Keyboard navigation
+  const currentStep = currentSection.steps[currentState.activeStepIdx];
+  const currentStepOptions = useMemo(() => {
+    if (!currentStep) return [];
+    return getStepAvailableOptions(currentStep, currentState.assetId);
+  }, [currentStep, currentState.assetId, getStepAvailableOptions]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (submitted) return;
+
     if (e.target instanceof HTMLInputElement && e.target.id === "something-else-input") {
       if (e.key === "Enter" && somethingElseText.trim()) {
         e.preventDefault();
@@ -389,12 +765,28 @@ type ParsedAmountResult =
       return;
     }
 
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+      return;
+    }
+
     if (e.target instanceof HTMLInputElement && currentStep?.slot === "amount") {
-      if (e.key === "Enter" && isComplete) {
+      if (e.key === "Enter" && isAllComplete) {
         e.preventDefault();
         handleSubmit();
       }
       return;
+    }
+
+    // Number keys 1-9 to select options directly
+    if (currentStepOptions.length > 0 && e.key >= "1" && e.key <= "9") {
+      const idx = parseInt(e.key, 10) - 1;
+      if (idx < currentStepOptions.length) {
+        e.preventDefault();
+        handleSelectOption(currentStepOptions[idx].id);
+        return;
+      }
     }
 
     if (currentStepOptions.length > 0) {
@@ -403,9 +795,7 @@ type ParsedAmountResult =
         setFocusedOptionIdx((prev) => (prev + 1) % currentStepOptions.length);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        setFocusedOptionIdx((prev) =>
-          prev - 1 < 0 ? currentStepOptions.length - 1 : prev - 1
-        );
+        setFocusedOptionIdx((prev) => (prev - 1 < 0 ? currentStepOptions.length - 1 : prev - 1));
       } else if (e.key === "Enter") {
         e.preventDefault();
         const opt = currentStepOptions[focusedOptionIdx];
@@ -413,25 +803,30 @@ type ParsedAmountResult =
           handleSelectOption(opt.id);
         }
       }
-    } else if (e.key === "Enter" && isComplete) {
+    } else if (e.key === "Enter" && isAllComplete) {
       e.preventDefault();
       handleSubmit();
     }
   };
 
   const isFirstVisibleStep = useMemo(() => {
-    for (let i = 0; i < activeStepIndex; i++) {
-      if (!isStepAutoSkipped(i)) return false;
+    if (activeSectionIdx > 0) return false;
+    for (let i = 0; i < currentState.activeStepIdx; i++) {
+      if (!isStepAutoSkipped(currentSection, i, currentState.assetId)) return false;
     }
     return true;
-  }, [activeStepIndex, isStepAutoSkipped]);
+  }, [activeSectionIdx, currentState.activeStepIdx, currentSection, currentState.assetId, isStepAutoSkipped]);
 
   const isLastVisibleStep = useMemo(() => {
-    for (let i = activeStepIndex + 1; i < questionnaire.steps.length; i++) {
-      if (!isStepAutoSkipped(i)) return false;
+    if (activeSectionIdx < sections.length - 1) return false;
+    for (let i = currentState.activeStepIdx + 1; i < currentSection.steps.length; i++) {
+      if (!isStepAutoSkipped(currentSection, i, currentState.assetId)) return false;
     }
     return true;
-  }, [activeStepIndex, isStepAutoSkipped, questionnaire.steps.length]);
+  }, [activeSectionIdx, sections.length, currentState.activeStepIdx, currentSection, currentState.assetId, isStepAutoSkipped]);
+
+  const presetsToRender = currentStep?.presets || DEFAULT_PRESETS;
+  const activePercentNum = currentParsedAmount?.kind === "fraction" ? currentParsedAmount.percent : null;
 
   return (
     <div
@@ -439,24 +834,28 @@ type ParsedAmountResult =
       role="region"
       aria-label="Clarify request"
       onKeyDown={handleKeyDown}
-      className="rounded-xl border border-vgray-100 bg-surface p-4 sm:p-5 text-vgray-900 shadow-none transition-colors"
+      className={`rounded-xl border p-4 sm:p-5 transition-colors ${
+        isDark
+          ? "border-[#2A2A2A] bg-[#141414] text-white"
+          : "border-vgray-100 bg-surface text-vgray-900"
+      }`}
     >
       {/* Header: Title, Subtitle, Step count, and Cancel (X) */}
-      <div className="flex items-start justify-between gap-3 border-b border-vgray-100 pb-3">
+      <div className="flex items-start justify-between gap-3 border-b border-vgray-100 dark:border-[#2A2A2A] pb-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h2 className="text-[15px] font-semibold text-vgray-900 leading-tight">
-              {questionnaire.title}
+            <h2 className="text-[15px] font-semibold leading-tight">
+              {currentSection.title || questionnaire.title}
             </h2>
             <span
               className="text-[12px] font-medium text-vgray-400 tabular-nums"
               data-testid="step-counter"
             >
-              {activeStepIndex + 1} of {questionnaire.steps.length}
+              {currentState.activeStepIdx + 1} of {currentSection.steps.length}
             </span>
           </div>
           {questionnaire.subtitle && (
-            <p className="mt-0.5 text-[13px] text-vgray-500 leading-normal">
+            <p className="mt-0.5 text-[13px] text-vgray-500 dark:text-vgray-400 leading-normal">
               {questionnaire.subtitle}
             </p>
           )}
@@ -466,17 +865,74 @@ type ParsedAmountResult =
           onClick={onCancel}
           aria-label="Close questionnaire"
           data-testid="questionnaire-cancel-btn"
-          className="rounded p-1 text-vgray-400 hover:text-vgray-700 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
+          className="rounded p-1 text-vgray-400 hover:text-vgray-700 dark:hover:text-vgray-200 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
         >
           <X size={17} aria-hidden="true" />
         </button>
       </div>
 
-      {/* Answered / Collapsed Steps */}
+      {/* Addendum 2: Multi-Action Section Checklist at the Top */}
+      {isMultiSection && (
+        <div className="pt-3 pb-2 border-b border-vgray-100 dark:border-[#2A2A2A] space-y-1.5" data-testid="section-checklist">
+          {sections.map((sec, sIdx) => {
+            const isDone = isSectionComplete(sec, sectionStates[sec.id]);
+            const isActive = sIdx === activeSectionIdx;
+            const chosenSummary = getSectionChosenSummary(sec, sectionStates[sec.id]);
+
+            return (
+              <button
+                key={sec.id}
+                type="button"
+                disabled={submitted || (!isDone && !isActive)}
+                onClick={() => isDone && handleReopenSection(sIdx)}
+                data-testid={`section-item-${sIdx}`}
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-[12px] text-left transition-all ${
+                  isActive
+                    ? isDark
+                      ? "border border-violet-500 bg-[#1E1E22] text-white font-semibold"
+                      : "border border-violet-500 bg-violet-50/50 text-vgray-900 font-semibold"
+                    : isDone
+                    ? isDark
+                      ? "border border-[#2A2A2A] bg-[#1A1A1A] text-vgray-300 hover:border-[#3A3A3A] cursor-pointer"
+                      : "border border-vgray-200 bg-vgray-50 text-vgray-700 hover:border-vgray-300 cursor-pointer"
+                    : isDark
+                    ? "border border-dashed border-[#333333] text-vgray-500 opacity-60 cursor-not-allowed"
+                    : "border border-dashed border-vgray-200 text-vgray-400 opacity-60 cursor-not-allowed"
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {isDone ? (
+                    <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center text-[10px] font-bold">
+                      ✓
+                    </span>
+                  ) : isActive ? (
+                    <span className="w-4 h-4 rounded-full border-2 border-violet-500 flex items-center justify-center">
+                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
+                    </span>
+                  ) : (
+                    <span className="w-4 h-4 rounded-full border border-dashed border-vgray-400 dark:border-vgray-600 flex items-center justify-center text-[10px] text-vgray-400">
+                      ○
+                    </span>
+                  )}
+                  <span className="truncate">{sec.title}</span>
+                  {isDone && chosenSummary && (
+                    <span className="font-semibold text-violet-500 truncate">&rarr; {chosenSummary}</span>
+                  )}
+                </div>
+                {isDone && !isActive && (
+                  <span className="text-[11px] font-medium text-vgray-400 hover:text-violet-500">Edit</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Answered / Collapsed Steps as compact done rows ("Which USDC → AQUSDC ✓") */}
       <div className="space-y-1.5 py-3">
-        {questionnaire.steps.map((step, idx) => {
-          if (idx >= activeStepIndex) return null;
-          const answerText = getStepAnswerSummary(step);
+        {currentSection.steps.map((step, idx) => {
+          if (idx >= currentState.activeStepIdx) return null;
+          const answerText = getStepAnswerSummary(currentSection, step, currentState);
           if (!answerText) return null;
 
           const slotLabel =
@@ -490,16 +946,22 @@ type ParsedAmountResult =
             <button
               key={step.slot + idx}
               type="button"
-              onClick={() => setActiveStepIndex(idx)}
-              className="w-full flex items-center justify-between rounded-lg border border-vgray-100 bg-vgray-50/60 px-3 py-1.5 text-left text-[12px] transition-colors hover:border-vgray-200"
+              disabled={submitted}
+              onClick={() => handleReopenStep(idx)}
+              className={`w-full flex items-center justify-between rounded-lg border px-3 py-1.5 text-left text-[12px] transition-colors ${
+                isDark
+                  ? "border-[#2A2A2A] bg-[#1A1A1A] text-vgray-200 hover:border-[#3A3A3A]"
+                  : "border-vgray-100 bg-vgray-50/60 text-vgray-700 hover:border-vgray-200"
+              }`}
               data-testid={`answered-step-${idx}`}
             >
               <div className="flex items-center gap-1.5 min-w-0">
                 <Check size={13} className="shrink-0 text-emerald-500" aria-hidden="true" />
-                <span className="font-medium text-vgray-700">
-                  Q{idx + 1} {slotLabel} &rarr;
+                <span className="font-medium">
+                  {step.prompt ? step.prompt : `Q${idx + 1} ${slotLabel}`} &rarr;
                 </span>
-                <span className="font-semibold text-violet-600 truncate">{answerText}</span>
+                <span className="font-semibold text-violet-500 truncate">{answerText}</span>
+                <span className="text-emerald-500 font-bold ml-1">✓</span>
               </div>
               <span className="text-[11px] font-medium text-vgray-400 hover:text-violet-500">
                 Change
@@ -512,18 +974,18 @@ type ParsedAmountResult =
       {/* Active Step Content */}
       {currentStep && (
         <div className="py-2">
-          <h3 className="text-[13px] font-semibold text-vgray-800 mb-2.5">
+          <h3 className="text-[13px] font-semibold mb-2.5 text-vgray-800 dark:text-vgray-100">
             {currentStep.prompt}
           </h3>
 
-          {/* Options for Asset or Venue */}
+          {/* Options for Asset or Venue (Radio rows with label on left, rate/balance on right, LP note second line) */}
           {currentStep.slot !== "amount" && (
             <div className="space-y-2" role="radiogroup" aria-label={currentStep.prompt}>
               {currentStepOptions.map((opt, oIdx) => {
                 const isSelected =
                   currentStep.slot === "asset"
-                    ? selectedAssetId === opt.id
-                    : selectedVenueId === opt.id;
+                    ? currentState.assetId === opt.id
+                    : currentState.venueId === opt.id;
                 const isFocused = focusedOptionIdx === oIdx;
 
                 return (
@@ -532,12 +994,19 @@ type ParsedAmountResult =
                     type="button"
                     role="radio"
                     aria-checked={isSelected}
+                    disabled={submitted}
                     onClick={() => handleSelectOption(opt.id)}
                     className={`w-full flex items-center justify-between rounded-lg border p-3 text-left transition-all ${
                       isSelected
-                        ? "border-violet-500 bg-violet-50/40 text-vgray-900"
+                        ? isDark
+                          ? "border-violet-500 bg-violet-950/20 text-white"
+                          : "border-violet-500 bg-violet-50/40 text-vgray-900"
                         : isFocused
-                        ? "border-violet-300 bg-vgray-50 text-vgray-800"
+                        ? isDark
+                          ? "border-violet-400/50 bg-[#1E1E1E] text-white"
+                          : "border-violet-300 bg-vgray-50 text-vgray-800"
+                        : isDark
+                        ? "border-[#2A2A2A] bg-[#1A1A1A] hover:border-[#3A3A3A] hover:bg-[#202020] text-vgray-200"
                         : "border-vgray-100 bg-white hover:border-vgray-200 hover:bg-vgray-50 text-vgray-800"
                     }`}
                     data-testid={`option-${opt.id}`}
@@ -546,7 +1015,11 @@ type ParsedAmountResult =
                       {/* Radio dot indicator */}
                       <span
                         className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${
-                          isSelected ? "border-violet-500" : "border-vgray-300"
+                          isSelected
+                            ? "border-violet-500"
+                            : isDark
+                            ? "border-vgray-600"
+                            : "border-vgray-300"
                         }`}
                       >
                         {isSelected && (
@@ -554,11 +1027,11 @@ type ParsedAmountResult =
                         )}
                       </span>
                       <div className="min-w-0">
-                        <div className="text-[13px] font-semibold text-vgray-900">
+                        <div className="text-[13px] font-semibold">
                           {opt.label}
                         </div>
                         {opt.detail && (
-                          <div className="text-[11px] text-vgray-500 mt-0.5 truncate">
+                          <div className="text-[11px] text-vgray-400 dark:text-vgray-400 mt-0.5 truncate">
                             {opt.detail}
                           </div>
                         )}
@@ -570,96 +1043,187 @@ type ParsedAmountResult =
             </div>
           )}
 
-          {/* Amount Step */}
+          {/* Amount Step: SwapInput.tsx styling (#1A1A1A panel, #2A2A2A border, 25/50/75/Max buttons, right-aligned amount, balance underneath) */}
           {currentStep.slot === "amount" && (
             <div className="space-y-3">
-              {/* Max available banner */}
-              {maxInfo && (
-                <div className="text-[12px] font-medium text-vgray-600">
-                  You have{" "}
-                  <span className="font-semibold text-vgray-900 tabular-nums">
-                    {maxInfo.amount} {maxInfo.asset}
-                  </span>{" "}
-                  available{maxInfo.where ? ` in ${maxInfo.where}` : ""}
-                </div>
-              )}
-
-              {/* Preset percentage buttons */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                {(currentStep.presets || DEFAULT_PRESETS).map((p) => {
-                  const isSelected = parsedAmount?.kind === "fraction" && parsedAmount.percent === p.percent;
+              {/* Linked option row if available (Addendum 2) */}
+              {currentStep.options
+                .filter((opt) => opt.label.toLowerCase().includes("you just"))
+                .map((linkedOpt) => {
+                  const linked = resolveLinkedOptionAmount(linkedOpt.label, activeSectionIdx);
+                  const isLinkedActive =
+                    linked && currentState.amountRaw === linked.amount;
                   return (
                     <button
-                      key={p.id}
+                      key={linkedOpt.id}
                       type="button"
-                      onClick={() => handlePresetClick(p.percent)}
-                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all ${
-                        isSelected
-                          ? "bg-violet-500 text-white border-transparent"
-                          : "bg-vgray-50 text-vgray-700 border-vgray-200 hover:text-vgray-900 hover:bg-vgray-100"
+                      disabled={submitted}
+                      onClick={() => handleSelectLinkedOption(linkedOpt.label)}
+                      className={`w-full flex items-center justify-between rounded-xl border p-3 text-left transition-all ${
+                        isLinkedActive
+                          ? isDark
+                            ? "border-violet-500 bg-violet-950/20 text-white"
+                            : "border-violet-500 bg-violet-50/40 text-vgray-900"
+                          : isDark
+                          ? "border-[#2A2A2A] bg-[#1A1A1A] hover:border-[#3A3A3A] text-vgray-200"
+                          : "border-vgray-200 bg-white hover:border-vgray-300 text-vgray-800"
                       }`}
-                      data-testid={`preset-${p.id}`}
+                      data-testid={`option-${linkedOpt.id}`}
                     >
-                      {p.label}
+                      <div className="flex items-center gap-2.5">
+                        <span
+                          className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                            isLinkedActive ? "border-violet-500" : "border-vgray-400"
+                          }`}
+                        >
+                          {isLinkedActive && <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />}
+                        </span>
+                        <div>
+                          <div className="text-[13px] font-semibold">{linkedOpt.label}</div>
+                          <div className="text-[11px] text-vgray-400">
+                            {linked ? `${linked.amount} ${linked.asset}` : linkedOpt.detail}
+                          </div>
+                        </div>
+                      </div>
                     </button>
                   );
                 })}
-              </div>
 
-              {/* Input with unit and Max button */}
-              <div className="space-y-1">
-                <InputWithUnit
-                  placeholder="0.0 or 50%"
-                  type="text"
-                  name="amount"
-                  value={amountRaw}
-                  onChange={(e) => setAmountRaw(e.target.value)}
-                  showMax={!!maxInfo}
-                  onMax={handleMaxClick}
-                  selectedSuffix={maxInfo?.asset || assetStep?.options.find((o) => o.id === selectedAssetId)?.label}
-                />
-
-                {/* Converted amount preview when a percentage is chosen */}
-                {parsedAmount?.kind === "fraction" && parsedAmount.convertedLiteral && (
-                  <p className="text-[11px] text-vgray-500 tabular-nums" data-testid="percent-converted">
-                    &asymp; {parsedAmount.convertedLiteral} {maxInfo?.asset || ""}
-                  </p>
-                )}
-
-                {/* Validation error message */}
-                {parsedAmount?.error && (
-                  <p
-                    role="alert"
-                    className="text-[12px] text-imperial-500 font-medium"
-                    data-testid="amount-error"
+              {/* SwapInput card */}
+              <div
+                className={`rounded-2xl p-3 sm:p-4 flex flex-col gap-1.5 sm:gap-2 transition-colors ${
+                  isDark
+                    ? "bg-[#1A1A1A] border border-[#2A2A2A] hover:border-[#333333]"
+                    : "bg-[#F7F7F7] border border-[#EEEEEE] hover:border-[#E2E2E2]"
+                }`}
+              >
+                {/* Label row + presets */}
+                <div className="flex items-center justify-between">
+                  <span
+                    className={`text-[12px] font-medium leading-[18px] ${
+                      isDark ? "text-[#A7A7A7]" : "text-[#777777]"
+                    }`}
                   >
-                    {parsedAmount.error}
-                  </p>
-                )}
+                    Amount
+                  </span>
+                  <div className="flex items-center gap-1 sm:gap-1.5">
+                    {presetsToRender.map((p) => {
+                      const isActive = activePercentNum === p.percent;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          disabled={submitted}
+                          onClick={() => handlePresetClick(p.percent)}
+                          className={`px-1.5 sm:px-2.5 py-0.5 sm:py-1 rounded-md sm:rounded-lg text-[9px] sm:text-[10px] font-semibold leading-[14px] cursor-pointer transition-all ${
+                            isActive
+                              ? `${PRESET_COLORS[p.percent] || "bg-[#703AE6] text-white"}`
+                              : isDark
+                              ? "bg-[#2A2A2A] text-[#A7A7A7] hover:text-white border border-[#333333]"
+                              : "bg-[#F0F0F0] text-[#888888] hover:text-[#555555] border border-[#E2E2E2]"
+                          }`}
+                          data-testid={`preset-${p.id}`}
+                        >
+                          {p.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Asset Label + Right-aligned Amount row */}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-[14px] font-semibold ${isDark ? "text-white" : "text-[#111111]"}`}>
+                      {currentMaxInfo?.asset ||
+                        currentSection.steps
+                          .find((s) => s.slot === "asset")
+                          ?.options.find((o) => o.id === currentState.assetId)?.label ||
+                        ""}
+                    </span>
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="0.0 or 50%"
+                      value={currentState.amountRaw}
+                      disabled={submitted}
+                      onChange={(e) => handleAmountChange(e.target.value)}
+                      className={`w-full text-right text-[22px] sm:text-[28px] md:text-[32px] font-semibold leading-none bg-transparent outline-none placeholder:opacity-30 ${
+                        isDark
+                          ? "text-white placeholder:text-[#555555]"
+                          : "text-[#111111] placeholder:text-[#CCCCCC]"
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                {/* Balance underneath (Server detail & max.where, never relabeled) */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {currentMaxInfo && (
+                      <span
+                        className={`text-[12px] font-medium leading-[18px] ${
+                          isDark ? "text-[#777777]" : "text-[#A7A7A7]"
+                        }`}
+                      >
+                        You have{" "}
+                        <span className="font-semibold tabular-nums text-vgray-900 dark:text-white">
+                          {currentMaxInfo.amount} {currentMaxInfo.asset}
+                        </span>{" "}
+                        available{currentMaxInfo.where ? ` in ${currentMaxInfo.where}` : ""}
+                      </span>
+                    )}
+                  </div>
+                </div>
               </div>
+
+              {/* Converted amount preview when a percentage is chosen */}
+              {currentParsedAmount?.kind === "fraction" && currentParsedAmount.convertedLiteral && (
+                <p className="text-[11px] text-vgray-500 dark:text-vgray-400 tabular-nums px-1" data-testid="percent-converted">
+                  &asymp; {currentParsedAmount.convertedLiteral} {currentMaxInfo?.asset || ""}
+                </p>
+              )}
+
+              {/* Validation error message */}
+              {currentParsedAmount?.error && (
+                <p
+                  role="alert"
+                  className="text-[12px] text-red-500 font-medium px-1"
+                  data-testid="amount-error"
+                >
+                  {currentParsedAmount.error}
+                </p>
+              )}
 
               {/* LP Pool pair match note */}
-              {lpPairInfo && (
+              {currentLpPairInfo && (
                 <div
-                  className="rounded-lg border border-vgray-100 bg-vgray-50/70 p-2.5 text-[12px] text-vgray-600"
+                  className={`rounded-lg border p-2.5 text-[12px] ${
+                    isDark
+                      ? "border-[#2A2A2A] bg-[#1A1A1A] text-vgray-300"
+                      : "border-vgray-100 bg-vgray-50/70 text-vgray-600"
+                  }`}
                   data-testid="lp-pair-ratio"
                 >
-                  {lpMatchedAmount ? (
+                  {currentLpMatchedAmount ? (
                     <span>
-                      {lpPairInfo.asset} is matched at the pool ratio (~
-                      <span className="font-semibold text-vgray-900 tabular-nums">
-                        {lpMatchedAmount} {lpPairInfo.asset}
+                      {currentLpPairInfo.asset} is matched at the pool ratio (~
+                      <span className="font-semibold text-vgray-900 dark:text-white tabular-nums">
+                        {currentLpMatchedAmount} {currentLpPairInfo.asset}
                       </span>
                       )
                     </span>
-                  ) : lpPairInfo.perUnit ? (
+                  ) : currentLpPairInfo.perUnit ? (
                     <span>
-                      The other token ({lpPairInfo.asset}) is matched at the pool ratio (
-                      {lpPairInfo.perUnit} {lpPairInfo.asset} per unit)
+                      The other token ({currentLpPairInfo.asset}) is matched at the pool ratio (
+                      {currentLpPairInfo.perUnit} {currentLpPairInfo.asset} per unit)
                     </span>
                   ) : (
                     <span>
-                      The other token ({lpPairInfo.asset}) is matched at the pool ratio
+                      The other token ({currentLpPairInfo.asset}) is matched at the pool ratio
                     </span>
                   )}
                 </div>
@@ -670,13 +1234,13 @@ type ParsedAmountResult =
       )}
 
       {/* Navigation Buttons: Back, Next, Send */}
-      <div className="flex items-center justify-between gap-2 border-t border-vgray-100 pt-3.5 mt-3">
+      <div className="flex items-center justify-between gap-2 border-t border-vgray-100 dark:border-[#2A2A2A] pt-3.5 mt-3">
         <div>
           {!isFirstVisibleStep && (
             <button
               type="button"
               onClick={handleBack}
-              disabled={busy}
+              disabled={busy || submitted}
               className={`${BTN_QUIET} flex items-center gap-1.5`}
               data-testid="btn-back"
             >
@@ -691,7 +1255,7 @@ type ParsedAmountResult =
             <button
               type="button"
               onClick={handleNext}
-              disabled={busy}
+              disabled={busy || submitted}
               className={`${BTN_QUIET} flex items-center gap-1.5`}
               data-testid="btn-next"
             >
@@ -703,7 +1267,7 @@ type ParsedAmountResult =
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={!isComplete || busy}
+            disabled={!isAllComplete || busy || submitted}
             className={BTN_PRIMARY}
             data-testid="btn-send"
           >
@@ -713,15 +1277,15 @@ type ParsedAmountResult =
       </div>
 
       {/* "Something else" input escape hatch */}
-      <div className="flex items-center gap-2 border-t border-vgray-100 pt-3 mt-3">
+      <div className="flex items-center gap-2 border-t border-vgray-100 dark:border-[#2A2A2A] pt-3 mt-3">
         <input
           id="something-else-input"
           type="text"
           placeholder="Something else..."
           value={somethingElseText}
           onChange={(e) => setSomethingElseText(e.target.value)}
-          disabled={busy}
-          className="flex-1 rounded-lg border border-vgray-200 bg-transparent px-3 py-1.5 text-[12px] placeholder:text-vgray-400 outline-none focus:border-violet-500 transition-colors"
+          disabled={busy || submitted}
+          className="flex-1 rounded-lg border border-vgray-200 dark:border-[#2A2A2A] bg-transparent px-3 py-1.5 text-[12px] placeholder:text-vgray-400 outline-none focus:border-violet-500 transition-colors"
           data-testid="input-something-else"
         />
         <button
@@ -731,12 +1295,17 @@ type ParsedAmountResult =
               onSomethingElse(somethingElseText.trim());
             }
           }}
-          disabled={!somethingElseText.trim() || busy}
-          className="rounded-lg border border-vgray-200 px-2.5 py-1.5 text-[12px] font-semibold text-vgray-700 hover:border-violet-400 hover:text-violet-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          disabled={!somethingElseText.trim() || busy || submitted}
+          className="rounded-lg border border-vgray-200 dark:border-[#2A2A2A] px-2.5 py-1.5 text-[12px] font-semibold text-vgray-700 dark:text-vgray-300 hover:border-violet-400 hover:text-violet-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           data-testid="btn-something-else"
         >
           <CornerDownLeft size={13} aria-hidden="true" />
         </button>
+      </div>
+
+      {/* Keyboard hint */}
+      <div className="flex items-center justify-between text-[11px] text-vgray-400 dark:text-vgray-500 mt-2 px-0.5">
+        <span>Press 1-9 to select &middot; &crarr; to submit &middot; Esc to close</span>
       </div>
     </div>
   );
