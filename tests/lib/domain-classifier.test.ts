@@ -95,4 +95,22 @@ describe("guardUserPrompt", () => {
     expect(verdict.reason).toBe("token_cap");
     expect(mocks.generateInvestigationJson).not.toHaveBeenCalled();
   });
+
+  /**
+   * (PROTOTYPE) hasCheapDomainSignal used to be called here, which only returned a
+   * boolean — evaluateDomainFirewall's specific unsupported-asset message never
+   * reached the caller, so this refusal fell through to the LLM classifier and came
+   * back as the fully generic BLOCK_MESSAGE instead.
+   */
+  it("names the unsupported asset without paying for classification", async () => {
+    const verdict = await guardUserPrompt("what is the value of 8000 BLA BLA in dollar or usd", {
+      subject: "user",
+      signal: new AbortController().signal,
+    });
+    expect(verdict.allow).toBe(false);
+    if (!verdict.allow) {
+      expect(verdict.message).toMatch(/don't recognize "BLA"/);
+    }
+    expect(mocks.generateInvestigationJson).not.toHaveBeenCalled();
+  });
 });

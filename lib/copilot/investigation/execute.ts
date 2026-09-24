@@ -25,6 +25,7 @@ import { resolveAssetDef } from "../registry/assets";
 import { workflowJournal } from "./proposal";
 import { TOOLS } from "../workflow/allowlist";
 import { WALLET_OPS } from "../workflow/types";
+import { preflightAssetReadiness } from "../asset-readiness";
 
 /** Every tool the vocabulary maps to. Derived, so a new op cannot be allowlisted yet unexecutable. */
 const WRITE_TOOLS = new Set(Object.values(TOOLS));
@@ -522,6 +523,48 @@ export async function advanceWorkflow(input: {
     position.kind === "adjusted" ? position.note : null,
   ].filter((value): value is string => !!value).join(" ") || null;
 
+  /**
+   * (PROTOTYPE — try/clarify-options-card) Real balance preflight before the MCP call,
+   * not just after a raw HostError. This is the actual live write path for the copilot
+   * page (investigate-first routes everything here), and until now it called
+   * asset-readiness checks for NO op at all — that system already existed
+   * (multi-leg-agent's older path used it), it just was never reached from here.
+   * Live case this closes: "Add 100 XLM + 1.1477024 AQUSDC to the Aquarius pool"
+   * simulated fine and reverted on-chain with a bare HostError, because the AQUSDC on
+   * the account was posted margin collateral, not wallet-spendable — this now catches
+   * that before ever calling MCP and states the real spendable number.
+   */
+  const numeric = (v: unknown): number | null => {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
+    return null;
+  };
+  const readiness = await preflightAssetReadiness({
+    op: step.op,
+    asset: typeof invocationArgs.asset === "string" ? invocationArgs.asset : null,
+    amount: numeric(invocationArgs.amount),
+    token_out: typeof invocationArgs.token_out === "string" ? invocationArgs.token_out : null,
+    token_a: typeof invocationArgs.token_a === "string" ? invocationArgs.token_a : null,
+    amount_a: numeric(invocationArgs.amount_a),
+    token_b: typeof invocationArgs.token_b === "string" ? invocationArgs.token_b : null,
+    amount_b: numeric(invocationArgs.amount_b),
+    trader: scope.trader,
+  });
+  if (readiness.status === "blocked") {
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, {
+      kind: "failed", message: readiness.message,
+    }));
+  }
+  if (readiness.status === "needs_setup") {
+    // A new signable step (trustline/faucet) is not spliced into this journal in this
+    // pass — that needs its own step-insertion design. Telling the user to complete
+    // it via Faucet and resend is a safe, honest stop, not a silent skip.
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, {
+      kind: "failed",
+      message: `${readiness.message} Complete that one-time setup (Faucet), then send this request again.`,
+    }));
+  }
+
   let build: Record<string, unknown>;
   try {
     const raw = await interruptible(() => input.mcp.call(invocation.tool, invocationArgs, scope.trader!),
@@ -648,8 +691,60 @@ export function preBroadcastRejection(
   const classified = typeof build.contract_diagnostic === "string" || typeof build.reason === "string" || typeof build.code === "string" || build.simulation_success === false;
   if (!classified) return null;
   const message = typeof build.message === "string" && build.message.trim() ? build.message.trim() : `${build.error}${build.reason ? ` (${String(build.reason).replaceAll("_", " ")})` : ""}`;
-  const note = swapFloorNote(step, message);
+  const note = swapFloorNote(step, message) ?? zeroBalanceNote(step, message);
   return `Not submitted — the protocol rejected this step before broadcast: ${message}${note ? ` ${note}` : ""}`;
+}
+
+/**
+ * (PROTOTYPE — try/clarify-options-card) "Contract HostError #10: zero balance is not
+ * sufficient to spend" told the user nothing about which side of the step it was —
+ * live, an add_liquidity step on Aquarius sized 100 XLM + 1.1477024 AQUSDC
+ * (auto-derived from the pool's live ratio) failed this way because the wallet
+ * actually held 0 AQUSDC, and the raw code gave no hint of that.
+ *
+ * Not specific to Aquarius, or even to add_liquidity: every two-sided write — the
+ * same LP add/remove on Soroswap, a swap's spend/receive pair — can fail for the
+ * same reason on either side, and every single-sided write (deposit_collateral,
+ * borrow, repay, lend, redeem, supply_blend, blend_withdraw, ...) carries its own
+ * asset under `args.asset`. Field names differ by op (`token_a`/`token_b` for LP,
+ * `token_in`/`token_out` for swap, `asset` for everything else), so each pair is
+ * tried in turn rather than assuming one op's shape.
+ *
+ * Sizing does not currently verify either side's spendable balance before building
+ * the transaction — this note is the second line of defence, same relationship
+ * `swapFloorNote` has to `staleSwapFloor`'s pre-check, not a replacement for adding
+ * one. The reading is offered as a reading, not a diagnosis, for the same reason
+ * `swapFloorNote` does: the error code belongs to the underlying contract, not ours.
+ */
+function zeroBalanceNote(step: { op?: string; args?: Record<string, unknown> } | undefined, message: string): string | null {
+  if (!/zero balance is not sufficient to spend/i.test(message)) return null;
+  const args = step?.args;
+  const str = (key: string): string | null => (typeof args?.[key] === "string" ? (args[key] as string) : null);
+
+  const twoSided = (
+    tokenA: string | null,
+    tokenB: string | null,
+    amountA: string | null,
+    amountB: string | null,
+    verb: string,
+  ): string | null =>
+    tokenA && tokenB
+      ? `This step needed ${amountA ?? "some"} ${tokenA} and ${amountB ?? "some"} ${tokenB} — the likeliest ` +
+        `reading is that one of those two had nothing spendable at broadcast time. Posted margin collateral is ` +
+        `not spendable balance: a position showing plenty of an asset can still fail here if that asset is ` +
+        `locked in as collateral rather than sitting free in the margin account. Check the spendable (not posted) ` +
+        `balance for both sides before retrying — ${verb}.`
+      : null;
+
+  const lp = twoSided(str("token_a"), str("token_b"), str("amount_a"), str("amount_b"), "a pool add/remove needs both sides");
+  if (lp) return lp;
+  const swap = twoSided(str("token_in"), str("token_out"), str("amount_in"), null, "a swap needs the spent side funded");
+  if (swap) return swap;
+
+  const asset = str("asset");
+  return asset
+    ? `The likeliest reading is that ${asset} had nothing spendable at broadcast time — check its balance before retrying.`
+    : "The likeliest reading is that one of this step's assets had nothing spendable at broadcast time — check balances before retrying.";
 }
 
 /**

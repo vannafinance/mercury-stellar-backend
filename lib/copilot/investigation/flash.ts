@@ -197,6 +197,22 @@ When the user gives no amount and asks to be asked, ask — one closed question 
 Never reach for a sizing word to stand in for an amount they said they would give you. Never state an amount
 for both sides or compute the paired amount yourself — the server derives it from the pool's live reserves. "Add 100
 XLM to the AQUSDC pool" is exactly {"op":"add_liquidity","asset":"XLM","assetOut":"AQUSDC","sizing":{"kind":"literal","amount":"100","sourceQuote":"Add 100 XLM to the AQUSDC pool"}}.
+Two assets named together are add_liquidity ONLY when the message also names a pool, farm, LP, or a DEX venue
+(aquarius, soroswap, "pool", "lp", "liquidity"). Naming XLM and AQUSDC — or any two collateral assets — with NO such
+word, e.g. "into the margin account" or with no venue at all, is two SEPARATE deposit_collateral actions, not a pair:
+each named asset that has its own stated amount is its own action; an asset named with NO stated amount is not an
+action you may invent or default a ratio for. Do NOT compile a research_complete that carries the sized leg alone
+and parks the missing one in openQuestions — an openQuestion is descriptive, not a stop, and the user never gets
+asked; they see a plan for only the leg you could size and the other one silently vanishes. Return
+{"kind":"clarify","question":"..."} instead, naming the specific missing asset and amount, and wait for the answer —
+conversation history carries the already-stated leg (e.g. the 100 XLM) forward, so the next turn, once the user
+answers, compiles both as separate deposit_collateral actions together. "Add 100 XLM and AQUSDC to the margin
+account" is exactly {"kind":"clarify","question":"How much AQUSDC do you want to deposit as collateral?"} on this
+turn — never assetOut, never a derived pool ratio (no pool was named), and never a plan for the XLM leg alone while
+the AQUSDC leg goes unasked. When the user's next message is a bare number answering that clarify (e.g. "10"), it
+fills ONLY the slot the question named — here, the AQUSDC amount. It is not a restatement of the earlier XLM amount
+and never overwrites it: reuse the XLM amount exactly as the user originally stated it (100, not 10) alongside the
+newly-answered AQUSDC leg. A short numeric reply answers the most recent question and nothing upstream of it.
 Tokens sitting in Earn come back to the wallet with redeem (all_position) and can then be deposited
 (deposit_collateral, previous_leg). all_position on a withdraw is the posted collateral; on a repay, the debt.
 Use borrow only when the user allowed or required it. A borrow sized to_floor still needs a stated floor above 1.1; a literal or leverage borrow is sized from the user's amount or multiple and is checked against the liquidation line when no floor was stated. A borrow-to-supply shape only pays
@@ -233,15 +249,25 @@ export function createFlashResearchModel(): ResearchModel {
   // Snapshot one explicit deployment for the whole run; no silent fallback on failure.
   const model = process.env.VERTEX_RESEARCH_MODEL?.trim() || copilotConfig.vertexModel;
   assertFlashModel(model);
-  return (turn, signal) =>
-    generateInvestigationJson(
+
+  return (turn, signal) => {
+    // The declarations below already carry every capability's name, description,
+    // cost and argument enums — readDecl() rebuilds them from the catalog and
+    // reads only `name` from this list. Repeating the same list as text in the
+    // user turn costs ~1.6k tokens per turn and tells the model nothing new.
+    const { capabilities, ...turnForModel } = turn;
+    return generateInvestigationJson(
       model,
       RESEARCH_SYSTEM,
-      JSON.stringify(turn),
+      JSON.stringify(turnForModel),
       signal,
       researchThinkingLevel(turn),
-      investigationFunctionDeclarations(turn.capabilities),
+      investigationFunctionDeclarations(capabilities),
     );
+  };
+
+
+
 }
 
 /**

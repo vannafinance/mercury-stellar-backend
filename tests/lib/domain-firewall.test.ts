@@ -202,3 +202,20 @@ describe("domain firewall", () => {
     expect(evaluateDomainFirewall("explain my borrow capacity and headroom").allow).toBe(true);
   });
 });
+
+describe("(PROTOTYPE) a price question naming an unsupported asset", () => {
+  it("names the supported assets instead of the fully generic off-topic refusal", () => {
+    const result = evaluateDomainFirewall("what is the value of 8000 BLA BLA in dollar or usd");
+    expect(result.allow).toBe(false);
+    if (!result.allow) {
+      expect(result.message).toMatch(/don't recognize "BLA"/);
+      expect(result.message).toMatch(/XLM, BLUSDC, AQUSDC, SOUSDC/);
+      expect(result.message).not.toMatch(/AQUA|EURC|USDT/);
+    }
+  });
+
+  it("still allows the same shape when the asset is real", () => {
+    expect(evaluateDomainFirewall("what is the value of 8000 xlm in usd").allow).toBe(true);
+    expect(evaluateDomainFirewall("what is the price of 10 AQUSDC in dollar").allow).toBe(true);
+  });
+});

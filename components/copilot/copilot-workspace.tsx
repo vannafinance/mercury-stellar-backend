@@ -1492,6 +1492,8 @@ export function CopilotWorkspace() {
   const [health, setHealth] = useState<BrainHealth | null>(null);
   const [customTx, setCustomTx] = useState("500");
   const [customDay, setCustomDay] = useState("2000");
+  /** (PROTOTYPE — try/clarify-options-card) "Something else" free text under clarify chips. */
+  const [clarifyFreeText, setClarifyFreeText] = useState("");
   const [showCustom, setShowCustom] = useState(false);
   const [railCapsMode, setRailCapsMode] = useState<"defaults" | "custom">("defaults");
   const [savedCaps, setSavedCaps] = useState<{ tx: number; day: number } | null>(null);
@@ -3483,6 +3485,19 @@ export function CopilotWorkspace() {
             ? submitted.replace(/\bpool\b/i, `${opt.id} pool`)
             : `${submitted} ${opt.id}`;
           await run(withVenue);
+          return;
+        }
+        /**
+         * (PROTOTYPE — try/clarify-options-card) A leverage preset chip (2x/3x/5x).
+         * Same substitute-into-the-original-message pattern as USDC variant / pool
+         * venue above, so the amount and asset the user already stated survive —
+         * a bare `run("2")` would lose them and answer something unrelated.
+         */
+        if (response?.intent?.template_id === "clarify_leverage" && submitted) {
+          const withLeverage = /\d+(?:\.\d+)?x\b/i.test(submitted)
+            ? submitted.replace(/\d+(?:\.\d+)?x\b/i, `${opt.id}x`)
+            : `${submitted} at ${opt.id}x leverage`;
+          await run(withLeverage);
           return;
         }
         // Fallback: rephrase as a full message
@@ -5730,6 +5745,40 @@ export function CopilotWorkspace() {
                                 </button>
                               ))}
                             </div>
+                            {/*
+                             * (PROTOTYPE — try/clarify-options-card) "Something else" —
+                             * CoinFello shows a free-text fallback alongside its preset
+                             * chips so a value outside the presets never dead-ends the
+                             * user into typing a whole new message from scratch. Feeds
+                             * the SAME substitution logic a chip click uses (pickClarifyOption
+                             * keys off opt.id), just with the typed text standing in for id.
+                             */}
+                            <form
+                              className="mt-1 flex items-center gap-2"
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                const text = clarifyFreeText.trim();
+                                if (!text || loading) return;
+                                setClarifyFreeText("");
+                                void pickClarifyOption({ id: text, label: text });
+                              }}
+                            >
+                              <input
+                                type="text"
+                                value={clarifyFreeText}
+                                onChange={(e) => setClarifyFreeText(e.target.value)}
+                                disabled={loading}
+                                placeholder="Something else"
+                                className="flex-1 rounded-r3 border border-vgray-200 bg-white px-3.5 py-2.5 text-[13px] text-vgray-800 outline-none transition-colors focus:border-violet-400 disabled:opacity-50"
+                              />
+                              <button
+                                type="submit"
+                                disabled={loading || !clarifyFreeText.trim()}
+                                className="rounded-r3 px-4 py-2.5 text-[13px] font-semibold text-violet-600 transition-colors hover:bg-violet-50 disabled:opacity-40"
+                              >
+                                Send
+                              </button>
+                            </form>
                           </div>
                         )}
 

@@ -35,7 +35,7 @@ function view(input: {
   server: string;
 }): ResearchView {
   const { facts, warnings } = normalizeResearchFacts(input.observations);
-  const reply = factualAnswer(facts) ?? "I could not read a live figure for that just now.";
+  const reply = factualAnswer(facts, input.message) ?? "I could not read a live figure for that just now.";
   const evidence = compactResearchEvidence(input.observations, null, Date.now());
   evidence.allowedCandidateIds = [];
   return {

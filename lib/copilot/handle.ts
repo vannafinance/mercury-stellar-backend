@@ -48,6 +48,7 @@ import {
   findAmountFraction,
   findBalanceFraction,
   REPAY_FRACTION_OPTIONS,
+  LEVERAGE_OPTIONS,
 } from "./amount-intent";
 import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
@@ -3902,6 +3903,16 @@ async function runPlan(
           ? `What leverage do you want on ${w.amount != null ? String(w.amount) : ""} ${uiC}? e.g. “2x” or “3x” — ` +
             `or tell me the ${uiB} amount to borrow directly.`
           : `How much ${uiC} to deposit for the leveraged position?`,
+      ...(materialized.gap === "missing_leverage"
+        ? {
+            clarify_options: LEVERAGE_OPTIONS.map((o) => ({
+              id: o.id,
+              label: o.label,
+              description: o.description,
+            })),
+            intent: { template_id: "clarify_leverage" },
+          }
+        : {}),
       request_id: ctx.request_id,
     };
   }

@@ -465,6 +465,11 @@ export async function preflightAssetReadiness(params: {
   amount?: number | null;
   token_out?: string | null;
   trader?: string | null;
+  /** (PROTOTYPE) add_liquidity's two sides — both must be wallet-spendable. */
+  token_a?: string | null;
+  amount_a?: number | null;
+  token_b?: string | null;
+  amount_b?: number | null;
 }): Promise<AssetReadiness> {
   const op = String(params.op || "");
   const trader = params.trader ?? null;
@@ -483,7 +488,50 @@ export async function preflightAssetReadiness(params: {
     return ensureWalletAssetReady(trader, display, amount);
   }
 
+  /**
+   * (PROTOTYPE — try/clarify-options-card) add_liquidity spends BOTH sides of the
+   * pool from the wallet in one call, and had no readiness check at all — the live
+   * failure this covers: "Add 100 XLM + 1.1477024 AQUSDC to the Aquarius pool" built
+   * and simulated fine, then reverted on-chain with a bare "zero balance is not
+   * sufficient to spend", because the 110 AQUSDC shown on the account was posted
+   * margin collateral, not wallet-spendable balance — the raw HostError never said so.
+   * Each side is checked in turn; the first insufficient/needs-setup side is reported,
+   * naming the real spendable balance instead of a contract error code.
+   */
+  if (op === "add_liquidity") {
+    if (!looksG(trader)) {
+      return {
+        status: "blocked",
+        reason: "missing_wallet",
+        message: "Connect your wallet before adding liquidity.",
+      };
+    }
+    for (const [token, amount] of [
+      [params.token_a, params.amount_a],
+      [params.token_b, params.amount_b],
+    ] as const) {
+      if (!token) continue;
+      const display = readinessDisplayAsset(token);
+      const need = amount != null && Number.isFinite(amount) ? Number(amount) : 0;
+      const ready = await ensureWalletAssetReady(trader, display, need);
+      if (ready.status !== "ready") return ready;
+    }
+    return { status: "ready" };
+  }
+
   if (SWAP_OPS.has(op) && looksG(trader)) {
+    /**
+     * (PROTOTYPE) The asset being SPENT needed its own balance check — this branch
+     * previously only verified a trustline existed on the RECEIVING side, never
+     * whether the wallet could actually cover the amount sold.
+     */
+    const spent = readinessDisplayAsset(params.asset);
+    const spendAmount =
+      params.amount != null && Number.isFinite(params.amount) ? Number(params.amount) : 0;
+    if (spendAmount > 0 && (spent === "XLM" || spent === "BLUSDC" || spent === "AQUSDC" || spent === "SOUSDC")) {
+      const ready = await ensureWalletAssetReady(trader, spent, spendAmount);
+      if (ready.status !== "ready") return ready;
+    }
     const out = readinessDisplayAsset(params.token_out || params.asset);
     // Aquarius classic USDC out requires trustline
     if (out === "AQUSDC" || out === "USDC" || out === "BLUSDC") {
