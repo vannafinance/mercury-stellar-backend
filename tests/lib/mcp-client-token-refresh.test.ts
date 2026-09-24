@@ -29,6 +29,7 @@ interface Recorded {
   url: string;
   authorization: string | null;
   assertion: string | null;
+  rateLimitSubject: string | null;
   method: string;
   sessionId: string | null;
   body: string;
@@ -63,6 +64,7 @@ function installFakeMcp() {
       url,
       authorization: headers.get("authorization"),
       assertion: headers.get("x-vanna-user-assertion"),
+      rateLimitSubject: headers.get("x-vanna-rate-limit-subject"),
       method: init?.method ?? "GET",
       sessionId: headers.get("mcp-session-id"),
       body,
@@ -179,6 +181,7 @@ describe("bearer and assertion are separate credentials", () => {
     const [call] = toolCalls();
     expect(call.authorization).toBe("Bearer m2m_token");
     expect(call.assertion).toBe("privy_tok_alice");
+    expect(call.rateLimitSubject).toBe("user:did:privy:alice");
   });
 
   it("a WorkOS session is forwarded the same way — one mechanism, two anchors", async () => {
@@ -199,12 +202,13 @@ describe("bearer and assertion are separate credentials", () => {
 
     await withBoundUser(
       { sub: `stellar:${wallet}`, accessToken: "", kind: "stellar", wallet },
-      () => getMcpClient().call("vanna_lend", {}),
+      () => getMcpClient().call("vanna_lend", {}, wallet),
     );
 
     const [call] = toolCalls();
     expect(call.authorization).toBe("Bearer m2m_token");
     expect(call.assertion).toBeNull();
+    expect(call.rateLimitSubject).toBe(`wallet:${wallet}`);
   });
 
   it("the user token NEVER becomes the bearer", async () => {
@@ -222,6 +226,7 @@ describe("bearer and assertion are separate credentials", () => {
     );
     expect(initializes()).toHaveLength(1);
     expect(initializes()[0].assertion).toBeNull();
+    expect(initializes()[0].rateLimitSubject).toBeNull();
   });
 });
 
@@ -267,14 +272,34 @@ describe("the assertion always comes from the current request", () => {
 describe("reads and signed-out writes", () => {
   it("a read sends no assertion even while a user is bound", async () => {
     const { getMcpClient, withBoundUser } = await libs();
+    const wallet = "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5";
 
     await withBoundUser(privy("did:privy:alice", "tok_a"), () =>
-      getMcpClient().call("vanna_get_price", { symbol: "XLM" }),
+      getMcpClient().call("vanna_get_price", { symbol: "XLM" }, wallet),
     );
 
     expect(recorded.some((r) => r.url === TOKEN_URL)).toBe(true);
     expect(toolCalls()[0].authorization).toBe("Bearer m2m_token");
     expect(toolCalls()[0].assertion).toBeNull();
+    expect(toolCalls()[0].rateLimitSubject).toBe("user:did:privy:alice");
+  });
+
+  it("a read without an end-user session uses its validated trader wallet", async () => {
+    const { getMcpClient } = await libs();
+    const wallet = "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5";
+
+    await getMcpClient().call("vanna_get_price", { symbol: "XLM" }, wallet);
+
+    expect(toolCalls()[0].assertion).toBeNull();
+    expect(toolCalls()[0].rateLimitSubject).toBe(`wallet:${wallet}`);
+  });
+
+  it("does not turn an arbitrary third argument into a wallet rate-limit key", async () => {
+    const { getMcpClient } = await libs();
+
+    await getMcpClient().call("vanna_get_price", { symbol: "XLM" }, "not-a-wallet");
+
+    expect(toolCalls()[0].rateLimitSubject).toBeNull();
   });
 
   it("signed out, a write still goes out — it just cannot auto-sign", async () => {

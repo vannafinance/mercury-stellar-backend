@@ -47,6 +47,14 @@ describe("the MCP's rate-limit refusal", () => {
     expect(waits).toEqual([2000]);
   });
 
+  it("returns the refusal when Retry-After exceeds the bounded retry window", async () => {
+    const send = vi.fn().mockResolvedValue(refused("rate_limited", { "retry-after": "5" }));
+    const res = await retryRateLimited(send);
+    expect(res.status).toBe(429);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(waits).toEqual([]);
+  });
+
   it("passes every other status through untouched", async () => {
     const send = vi.fn().mockResolvedValue(new Response("x", { status: 503 }));
     expect((await retryRateLimited(send)).status).toBe(503);

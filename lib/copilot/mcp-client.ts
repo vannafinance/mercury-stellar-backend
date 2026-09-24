@@ -15,6 +15,8 @@
  * Mock mode returns canned numbers so the copilot works offline.
  */
 
+import { StrKey } from "@stellar/stellar-sdk";
+
 import { copilotConfig } from "./config";
 import { withMcpCall } from "./telemetry";
 import { callNeedsUserToken, currentUser } from "./user-context";
@@ -531,6 +533,21 @@ class LiveMCPClient implements MCPClient {
       "mcp-session-id": sessionId,
     };
 
+    // Rate-limit identity is not an authorization assertion. The MCP accepts it only
+    // when the verified bearer belongs to an env-configured first-party client. A
+    // verified app session gets the stable user subject; Freighter and signed-out
+    // wallet reads fall back to the validated trader address already passed to call().
+    const boundUser = currentUser();
+    const rateLimitSubject =
+      boundUser?.accessToken && boundUser.kind !== "stellar"
+        ? `user:${boundUser.sub}`
+        : typeof _userId === "string" && StrKey.isValidEd25519PublicKey(_userId)
+          ? `wallet:${_userId}`
+          : null;
+    if (rateLimitSubject) {
+      sessionHeaders["X-Vanna-Rate-Limit-Subject"] = rateLimitSubject;
+    }
+
     // Who is asking, when anyone is. Sent ALONGSIDE the bearer, never instead of
     // it: the bearer says which application is calling (M2M, verified by the MCP)
     // and this says which person it is calling for (verified by the Sign Service,
@@ -538,7 +555,7 @@ class LiveMCPClient implements MCPClient {
     // is what made the MCP forward its own machine token as a user assertion and
     // earn a 401 on every auto-sign.
     const needsUser = callNeedsUserToken(tool);
-    const user = needsUser ? currentUser() : null;
+    const user = needsUser ? boundUser : null;
     // Freighter proofs are bound users with no Sign Service token. Attaching an
     // empty assertion would look identical to a dropped Privy header downstream.
     if (user?.accessToken) {
@@ -714,8 +731,17 @@ export async function retryRateLimited(send: () => Promise<Response>): Promise<R
     const rebuilt = new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers });
     if (!refusedBeforeRun || attempt >= RATE_LIMIT_RETRIES) return rebuilt;
     const retryAfterSec = Number(res.headers.get("retry-after"));
+    const serverWaitMs = retryAfterSec * 1000;
+    // Investigation reads have tighter outer deadlines than the transport's 90s
+    // timeout. If the server asks for longer than this bounded retry window, return
+    // the structured 429 now instead of silently truncating the delay and stampeding
+    // the same bucket again.
+    if (Number.isFinite(serverWaitMs) && serverWaitMs > RATE_LIMIT_CAP_MS) {
+      console.info("[mcp-client] rate limit exceeds retry window", { waitMs: serverWaitMs });
+      return rebuilt;
+    }
     const wait = Number.isFinite(retryAfterSec) && retryAfterSec > 0
-      ? Math.min(retryAfterSec * 1000, RATE_LIMIT_CAP_MS)
+      ? serverWaitMs
       : Math.floor(rateLimitTiming.random() * Math.min(RATE_LIMIT_CAP_MS, RATE_LIMIT_BASE_MS * 2 ** attempt));
     console.info("[mcp-client] rate limited, retrying", { attempt: attempt + 1, waitMs: wait });
     await rateLimitTiming.sleep(wait);
