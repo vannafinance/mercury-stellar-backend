@@ -1454,6 +1454,51 @@ describe("previous_leg follows the asset, not the line above", () => {
 });
 
 /**
+ * One "2x" written once covers every borrow the same deposit funds.
+ *
+ * "borrow 2x BLUSDC and SOUSDC" was refused on dev for the second asset: the model quoted
+ * only "SOUSDC" for that leg, and the quote had no "2". The owner's reading (24 Sep) is one
+ * 2x in total, split between the assets, so the multiple is anchored once per group of
+ * siblings. A sibling can lend its anchor only for the SAME multiple.
+ */
+describe("a leverage multiple is anchored once for the borrows one deposit funds", () => {
+  const messages = ["deposit 100 XLM and borrow 2x BLUSDC and XLM"];
+  const legs = (second: { multiple: string; sourceQuote: string }): ProposedPlan["legs"] => [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x BLUSDC" } },
+    { op: "borrow", asset: "XLM", sizing: { kind: "leverage", ...second } },
+  ];
+
+  it("sizes the second borrow from the multiple the first one quoted, split between them", () => {
+    const { candidates, rejected } = resolvePlans([plan("Dual borrow", legs({ multiple: "2", sourceQuote: "XLM" }))], ctx({ messages }));
+    expect(rejected[0]?.reason ?? "").not.toMatch(/leverage does not appear/);
+    expect(candidates).toHaveLength(1);
+    // One ceiling of deposit x (2 - 1), shared: the BLUSDC borrow is half of what the same
+    // 2x buys alone, and the XLM borrow is half the deposit (a 1x ceiling, in XLM).
+    const alone = resolvePlans([plan("Single borrow", legs({ multiple: "2", sourceQuote: "XLM" }).slice(0, 2))], ctx({ messages }));
+    const single = Number(alone.candidates[0].steps![1].amount);
+    const steps = candidates[0].steps!;
+    expect(Number(steps[1].amount)).toBeCloseTo(single / 2, 5);
+    expect(Number(steps[2].amount)).toBeCloseTo(50, 5);
+  });
+
+  it("does not let a sibling's quote anchor a different multiple", () => {
+    const { candidates, rejected } = resolvePlans([plan("Dual borrow", legs({ multiple: "3", sourceQuote: "XLM" }))], ctx({ messages }));
+    expect(candidates).toHaveLength(0);
+    expect(rejected[0]?.reason).toMatch(/the 3x leverage does not appear in your request/);
+  });
+
+  it("still refuses a lone borrow whose quote states no multiple", () => {
+    const lone: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+      { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "BLUSDC" } },
+    ];
+    const { rejected } = resolvePlans([plan("Lone borrow", lone)], ctx({ messages: ["deposit 100 XLM and borrow BLUSDC"] }));
+    expect(rejected[0]?.reason).toMatch(/the 2x leverage does not appear in your request/);
+  });
+});
+
+/**
  * An unreadable return is an unknown, not a loss.
  *
  * The carry guard sums supplied × supply APR against borrowed × borrow APR, and skipped

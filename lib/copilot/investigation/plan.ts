@@ -247,12 +247,25 @@ function anchoredShare(sizing: PlanSizing & { kind: "fraction" }, messages: read
   if (!byNumber && !byWord) throw new Reject(name, `the share ${sizing.percent}% does not appear in your request`);
   return decimalWad(percent.toFixed(9)) / BigInt(100);
 }
-/** The leverage multiple itself, anchored to the user's own words — never a number the model only implied. */
-function anchoredMultiple(sizing: PlanSizing & { kind: "leverage" }, messages: readonly string[], name: string): bigint {
+/**
+ * The leverage multiple itself, anchored to the user's own words — never a number the model only implied.
+ *
+ * `group` is the other borrows funded by the same deposit. "borrow 2x BLUSDC and SOUSDC" writes
+ * the multiple once for both, and the owner's reading (24 Sep) is one 2x in total, split
+ * between them — which is what the sizer does with the group. Each leg's quote is the model's
+ * choice, so the second one often quotes only "SOUSDC" and was refused for a multiple the user
+ * did write. The multiple is therefore anchored once per group: a leg may lean on a sibling's
+ * quote, but only for the SAME multiple, and its own quote must still be the user's words.
+ */
+function anchoredMultiple(sizing: PlanSizing & { kind: "leverage" }, messages: readonly string[], name: string, group: readonly PlanLeg[] = []): bigint {
   if (!messages.some((m) => m.includes(sizing.sourceQuote))) throw new Reject(name, `the leverage "${sizing.sourceQuote}" does not appear in your request`);
   const multiple = Number(sizing.multiple);
-  const numbers = (sizing.sourceQuote.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
-  if (!numbers.some((n) => Math.abs(n - multiple) < 1e-9)) throw new Reject(name, `the ${sizing.multiple}x leverage does not appear in your request`);
+  const states = (quote: string) =>
+    messages.some((m) => m.includes(quote)) &&
+    (quote.match(/\d+(?:\.\d+)?/g) ?? []).map(Number).some((n) => Math.abs(n - multiple) < 1e-9);
+  const bySibling = group.some((leg) =>
+    leg.sizing.kind === "leverage" && Math.abs(Number(leg.sizing.multiple) - multiple) < 1e-9 && states(leg.sizing.sourceQuote));
+  if (!states(sizing.sourceQuote) && !bySibling) throw new Reject(name, `the ${sizing.multiple}x leverage does not appear in your request`);
   return decimalWad(sizing.multiple);
 }
 /**
@@ -1041,7 +1054,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       let siblings = 0;
       for (let i = fundingIndex + 1; i < expanded.length && sharesFunding(expanded[i]); i += 1) siblings += 1;
       const equityUsd = decimalWad(funding.usd);
-      const multiple = anchoredMultiple(sizing, ctx.messages, name);
+      const group = expanded.slice(fundingIndex + 1, fundingIndex + 1 + siblings);
+      const multiple = anchoredMultiple(sizing, ctx.messages, name, group);
       const ceilingUsd = mulDown(equityUsd, multiple - WAD, WAD);
       const borrowUsd = formatWad(siblings > 1 ? ceilingUsd / BigInt(siblings) : ceilingUsd);
       const converted = tokensFromUsd(borrowUsd, price.price, decimals.get(leg.asset) ?? 7);
