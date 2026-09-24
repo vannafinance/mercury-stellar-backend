@@ -199,10 +199,11 @@ describe("bearer and assertion are separate credentials", () => {
   it("a Freighter proof is signed in but does not invent a Sign Service assertion", async () => {
     const { getMcpClient, withBoundUser } = await libs();
     const wallet = "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5";
+    const otherWallet = "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH";
 
     await withBoundUser(
       { sub: `stellar:${wallet}`, accessToken: "", kind: "stellar", wallet },
-      () => getMcpClient().call("vanna_lend", {}, wallet),
+      () => getMcpClient().call("vanna_lend", {}, otherWallet),
     );
 
     const [call] = toolCalls();

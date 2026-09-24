@@ -535,15 +535,26 @@ class LiveMCPClient implements MCPClient {
 
     // Rate-limit identity is not an authorization assertion. The MCP accepts it only
     // when the verified bearer belongs to an env-configured first-party client. A
-    // verified app session gets the stable user subject; Freighter and signed-out
-    // wallet reads fall back to the validated trader address already passed to call().
+    // verified app session gets the stable user subject; a Freighter proof is keyed
+    // by its proven wallet. Only a genuinely signed-out call may fall back to the
+    // validated trader address passed to call().
     const boundUser = currentUser();
-    const rateLimitSubject =
-      boundUser?.accessToken && boundUser.kind !== "stellar"
-        ? `user:${boundUser.sub}`
-        : typeof _userId === "string" && StrKey.isValidEd25519PublicKey(_userId)
-          ? `wallet:${_userId}`
-          : null;
+    let rateLimitSubject: string | null = null;
+    if (boundUser?.accessToken && boundUser.kind !== "stellar") {
+      rateLimitSubject = `user:${boundUser.sub}`;
+    } else if (
+      boundUser?.kind === "stellar" &&
+      typeof boundUser.wallet === "string" &&
+      StrKey.isValidEd25519PublicKey(boundUser.wallet)
+    ) {
+      rateLimitSubject = `wallet:${boundUser.wallet}`;
+    } else if (
+      !boundUser &&
+      typeof _userId === "string" &&
+      StrKey.isValidEd25519PublicKey(_userId)
+    ) {
+      rateLimitSubject = `wallet:${_userId}`;
+    }
     if (rateLimitSubject) {
       sessionHeaders["X-Vanna-Rate-Limit-Subject"] = rateLimitSubject;
     }
@@ -695,7 +706,7 @@ class LiveMCPClient implements MCPClient {
 
 // ── Rate-limit retry ────────────────────────────────────────────────────────
 
-/** Retries after the first refusal; with full jitter the worst case is ~7.5s, inside every read budget. */
+/** Retries after the first refusal; every individual wait is bounded by the existing cap. */
 const RATE_LIMIT_RETRIES = 4;
 const RATE_LIMIT_BASE_MS = 500;
 const RATE_LIMIT_CAP_MS = 4_000;
@@ -719,8 +730,8 @@ export const rateLimitTiming = {
  * (rate_limit.py `dispatch` consumes the token before `call_next`), so a refused call
  * did nothing and cannot be doubled. Only that refusal is retried, identified by its
  * payload code; `tool_circuit_open` (also a 429, meaning degraded) and every other
- * status pass through untouched. The server's Retry-After wins when it sends one;
- * otherwise exponential backoff with full jitter, so parallel reads do not retry in step.
+ * status pass through untouched. The server's Retry-After is the minimum delay;
+ * full jitter fills the remaining capped window so parallel reads do not retry in step.
  */
 export async function retryRateLimited(send: () => Promise<Response>): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
@@ -741,7 +752,7 @@ export async function retryRateLimited(send: () => Promise<Response>): Promise<R
       return rebuilt;
     }
     const wait = Number.isFinite(retryAfterSec) && retryAfterSec > 0
-      ? serverWaitMs
+      ? serverWaitMs + Math.floor(rateLimitTiming.random() * (RATE_LIMIT_CAP_MS - serverWaitMs))
       : Math.floor(rateLimitTiming.random() * Math.min(RATE_LIMIT_CAP_MS, RATE_LIMIT_BASE_MS * 2 ** attempt));
     console.info("[mcp-client] rate limited, retrying", { attempt: attempt + 1, waitMs: wait });
     await rateLimitTiming.sleep(wait);
