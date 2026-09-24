@@ -73,7 +73,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return refuse(`unknown kind or keys: kind=${String(raw.kind)} keys=${Object.keys(raw).join(",")}`);
   }
   const goal = raw.goal;
-  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : [])]) ||
+  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
     (goal.relation !== undefined && !["new", "refine"].includes(String(goal.relation))) ||
     (goal.intent !== undefined && !["answer", "strategy"].includes(String(goal.intent))) ||
     !text(goal.objective) || !texts(goal.constraints) ||
@@ -136,6 +136,12 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
   const relation = isRecord(goal.planRelation) && exactKeys(goal.planRelation, ["kind", "sourceQuote"]) &&
     (goal.planRelation.kind === "alternatives" || goal.planRelation.kind === "parts") && text(goal.planRelation.sourceQuote, 400)
     ? { kind: goal.planRelation.kind as "alternatives" | "parts", sourceQuote: goal.planRelation.sourceQuote } : undefined;
+  const trigger = goal.trigger === undefined || goal.trigger === null ? undefined
+    : isRecord(goal.trigger) && goal.trigger.kind === "none" && exactKeys(goal.trigger, ["kind"])
+      ? { kind: "none" as const }
+      : isRecord(goal.trigger) && goal.trigger.kind === "future_condition" && exactKeys(goal.trigger, ["kind", "sourceQuote"]) && text(goal.trigger.sourceQuote, 400)
+        ? { kind: "future_condition" as const, sourceQuote: String(goal.trigger.sourceQuote) }
+        : undefined;
   const reserves = Array.isArray(goal.walletReserves) ? goal.walletReserves.slice(0, 8).flatMap((row) =>
     isRecord(row) && exactKeys(row, ["asset", "amount", "sourceQuote"]) &&
       (ASSET_IDS as readonly string[]).includes(String(row.asset)) &&
@@ -190,6 +196,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       ...(slippage ? { slippageAccepted: slippage } : {}),
       ...(reserves.length ? { walletReserves: reserves } : {}),
       ...(relation ? { planRelation: relation } : {}),
+      ...(trigger ? { trigger } : {}),
       objective: goal.objective,
       constraints: [...goal.constraints],
       borrowing: goal.borrowing as "unspecified" | "allowed" | "required" | "forbidden",

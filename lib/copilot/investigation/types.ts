@@ -83,6 +83,12 @@ export interface GoalUnderstanding {
    * only run one of them.
    */
   planRelation?: { kind: "alternatives" | "parts"; sourceQuote: string };
+  /**
+   * Whether the user asked to act when something happens later. `none` is a sizing
+   * limit ("borrow until HF is 1.5"). `future_condition` is an action held for a
+   * later event, and only that is refused — after the quote is found in their words.
+   */
+  trigger?: { kind: "none" | "future_condition"; sourceQuote?: string };
 }
 
 /** The write operations a plan may be composed from: exactly the ones the workflow can execute. */

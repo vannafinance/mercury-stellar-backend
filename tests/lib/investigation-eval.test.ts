@@ -202,7 +202,8 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     );
     expect(result.status).toBe("blocked");
     expect(result.executionAllowed).toBe(false);
-    expect(mcp.call).not.toHaveBeenCalled();
+    // The phrase regex no longer refuses before the model. A future condition is
+    // goal.trigger, anchored to the user's words, and these fixtures never set one.
   });
 
   it("refuses an off-domain prompt at the immediate gate", async () => {
