@@ -198,44 +198,20 @@ async function handleBindRegister(
   }
 
   const origin = resolveConnectOrigin(requestId);
-  if (!origin) {
-    // The start hop's origin is gone (different instance, or expired). The link
-    // fallback still completes the same consent, so offer that rather than fail.
-    return {
-      kind: "needs_wallet_bind",
-      message:
-        "The authorization could not be completed automatically. Finish it with the " +
-        "link below and auto-sign will be applied as soon as you do.",
-      wallet_bind: {
-        status: "expired",
-        wallet_address: walletAddress,
-        retry_action: retryAction,
-        max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
-        max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
-      },
-      request_id,
-    };
-  }
-
-  const registered = await registerWalletBind({ requestId, walletAddress, origin });
+  const registered = await registerWalletBind(
+    mcp,
+    { requestId, walletAddress, origin },
+    userId,
+  );
   if (!registered.ok) {
     // `already_used` means a concurrent poll or a second click already consumed the
     // request — the binding may well exist, so fall through to the status check
     // rather than reporting a failure the user would not recognise.
     if (registered.code !== "already_used") {
-      // `origin_not_allowed` is the one failure here that is pure deployment config:
-      // the Connect Gateway's CONNECT_ORIGIN_ALLOWLIST is set and does not include
-      // this app. Naming it saves the next person the trace, because from the browser
-      // it is indistinguishable from the consent itself having failed.
-      const hint =
-        registered.code === "origin_not_allowed"
-          ? " (the wallet-authorization service is not configured to accept requests " +
-            "from this app — CONNECT_ORIGIN_ALLOWLIST)"
-          : "";
       return {
         kind: "needs_wallet_bind",
         message:
-          `Vanna could not finish authorizing this wallet (${registered.message})${hint}. ` +
+          `Vanna could not finish authorizing this wallet. ` +
           `Nothing changed — writes still ask for your signature each time.` +
           (registered.expired ? " The authorization request expired; start it again." : ""),
         wallet_bind: {
