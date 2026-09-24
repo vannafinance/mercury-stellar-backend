@@ -64,6 +64,8 @@ export interface CandidateInput {
    */
   requestedBorrowUsd?: string | null;
   comparisons: readonly RateComparison[];
+  /** Contract-basis health factor before this plan is executed, when known. */
+  initialHealthFactor?: string | null;
 }
 
 export interface Candidate {
@@ -89,6 +91,9 @@ export interface Candidate {
   netApyPct?: string | null;
   legs: SizedLeg[];
   finalHealthFactor: string | null;
+  /** The contract-basis health factor before this plan, when known. */
+  initialHealthFactor?: string | null;
+  healthFactorBefore?: string | null;
   amountUsd: string;
   evidenceIds: string[];
   /**
@@ -427,6 +432,7 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
       })(),
       legs: sized.legs,
       finalHealthFactor: sized.finalHealthFactor,
+      ...(input.initialHealthFactor ? { initialHealthFactor: input.initialHealthFactor, healthFactorBefore: input.initialHealthFactor } : {}),
       amountUsd: sized.legs[0]?.amountUsd ?? "0",
       evidenceIds: [...comparison.evidenceIds],
       amountBasis: requested ? "stated" : "derived_max_at_floor",

@@ -1593,6 +1593,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
   const borrows = borrowed > ZERO;
   const lastSupply = [...drafts].reverse().find((d) => suppliesAtRate(d.leg.op));
   const first = drafts[0];
+  const initialHealthFactor = ctx.capacity && decimalWad(ctx.capacity.debtUsd) > ZERO
+    ? formatWad((decimalWad(ctx.capacity.grossCollateralUsd) * WAD) / decimalWad(ctx.capacity.debtUsd))
+    : null;
 
   return {
     id: planCandidateId(plan),
@@ -1615,6 +1618,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     })(),
     legs: sized,
     finalHealthFactor,
+    ...(initialHealthFactor ? { initialHealthFactor, healthFactorBefore: initialHealthFactor } : {}),
     amountUsd: formatWad(deployed),
     evidenceIds: plan.evidenceIds.filter((id) => evidence.has(id)),
     amountBasis: drafts.some((d) => d.leg.sizing.kind === "literal" || d.leg.sizing.kind === "fraction") ? "stated" : drafts.some((d) => d.leg.sizing.kind === "to_floor") ? "derived_max_at_floor" : "stated",

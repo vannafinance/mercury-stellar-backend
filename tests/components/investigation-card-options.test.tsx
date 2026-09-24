@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { InvestigationCard } from "@/components/copilot/investigation-card";
-import { generateCandidates } from "@/lib/copilot/investigation/candidates";
+import { generateCandidates, type Candidate } from "@/lib/copilot/investigation/candidates";
 import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
@@ -348,5 +348,61 @@ describe("investigation card / in-flight state", () => {
         workflow={{ id: "w", revision: 1, digest: "d", status: "proposed", objective: "o", expiresAt: 0, assumptions: [], constraints: [], slippageAccepted: false, message: "m", steps: [] }} />,
     );
     expect(screen.getByTestId("workflow-progress").textContent).toMatch(/Checking funds, prices and projected health/);
+  });
+});
+
+describe("investigation card / plan health factor before and after", () => {
+  const baseCandidate = (over: Partial<Candidate> = {}): Candidate => ({
+    id: "plan-1",
+    kind: "borrow_supply",
+    label: "Borrow BLUSDC and supply to Blend",
+    borrows: true,
+    asset: "BLUSDC",
+    venue: "blend",
+    netAprPct: "6.00",
+    supplyAprPct: "10.00",
+    legs: [],
+    finalHealthFactor: "2.02",
+    amountUsd: "5000",
+    evidenceIds: [],
+    amountBasis: "stated",
+    ...over,
+  });
+
+  it("renders '1.80 → 2.02' for a candidate with before and after", () => {
+    const candidate = baseCandidate({ initialHealthFactor: "1.80", finalHealthFactor: "2.02" });
+    card(view({ candidates: { feasible: [candidate], rejected: [] } }));
+    expect(screen.getByText("Health factor")).toBeTruthy();
+    expect(screen.getByText("1.80 → 2.02")).toBeTruthy();
+  });
+
+  it("renders 'No debt after' when candidate repays all debt", () => {
+    const candidate = baseCandidate({ repaysAllDebt: true, finalHealthFactor: null });
+    card(view({ candidates: { feasible: [candidate], rejected: [] } }));
+    expect(screen.getByText("Health factor after")).toBeTruthy();
+    expect(screen.getByText("No debt after")).toBeTruthy();
+  });
+
+  it("keeps 'after' only when candidate has no before figure", () => {
+    const candidate = baseCandidate({ finalHealthFactor: "2.02" });
+    card(view({ candidates: { feasible: [candidate], rejected: [] }, capacity: null }));
+    expect(screen.getByText("Health factor after")).toBeTruthy();
+    expect(screen.getByText("2.02")).toBeTruthy();
+  });
+
+  it("uses result.capacity.healthFactor as before when candidate does not carry it directly", () => {
+    const candidate = baseCandidate({ finalHealthFactor: "2.02" });
+    card(view({
+      candidates: { feasible: [candidate], rejected: [] },
+      capacity: {
+        floor: "1.30",
+        grossCollateralUsd: "4000",
+        debtUsd: "2222.22",
+        healthFactor: "1.80",
+        maxBorrowUsd: "1000",
+      },
+    }));
+    expect(screen.getByText("Health factor")).toBeTruthy();
+    expect(screen.getByText("1.80 → 2.02")).toBeTruthy();
   });
 });
