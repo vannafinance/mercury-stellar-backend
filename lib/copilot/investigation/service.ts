@@ -1215,8 +1215,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
      * strategy. With more than one option the choice stays the user's.
      */
     proposalCandidateId: lifecycleOp ? null
-      : requestedSteps.length ? REQUESTED_ACTIONS_ID
-      : candidates?.feasible.length === 1 ? candidates.feasible[0].id : null,
+      : (requestedSteps.length && !nameFindings.length) ? REQUESTED_ACTIONS_ID
+      : (candidates?.feasible.length === 1 && !nameFindings.length) ? candidates.feasible[0].id : null,
     // The goal restatement is the user's own request echoed back, not a financial claim,
     // so it is publishable while findings prose is not.
     understanding: outcome.kind === "research_complete" ? outcome.goal

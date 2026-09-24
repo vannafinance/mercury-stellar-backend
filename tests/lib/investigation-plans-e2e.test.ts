@@ -91,7 +91,7 @@ const mcp = {
   }),
 };
 
-const PROMPT = "deploy my XLM and AQUSDC in farm, keep HF above 1.2, you can borrow";
+const PROMPT = "deploy my XLM and USDC in farm, keep HF above 1.2, you can borrow";
 
 /** What a competent model returns for that prompt: two shapes, sizing by word, no numbers. */
 const modelComplete = {
@@ -157,6 +157,7 @@ describe("model proposes, code disposes — end to end", () => {
     expect(levered, "four-leg shape the fixed generator cannot produce").toBeTruthy();
     expect(unlevered).toBeTruthy();
     expect(levered!.steps!.map((s) => s.op)).toEqual(["deposit_collateral", "supply_blend", "borrow", "supply_blend"]);
+    expect(levered!.steps![0].amount).toBe("10206.3356118");
     // Sized one basis point inside the floor (FLOOR_MARGIN_BPS in sizing.ts), matching line 222 below.
     expect(Number(levered!.steps![2].amount)).toBeCloseTo(64386.93, 1);
     expect(levered!.steps![2].amount).toBe(levered!.steps![3].amount);
@@ -164,13 +165,8 @@ describe("model proposes, code disposes — end to end", () => {
     expect(levered!.rationale).toMatch(/Deposit it, supply it/);
     // The fixed generator's identical shape was folded into the composed one.
     expect(feasible.map((c) => c.id)).not.toContain("supply_idle:XLM");
-    // The USDC plan could not be sized, and the card says exactly why.
-    expect(view.candidates?.rejected).toContainEqual({
-      label: "Lend idle USDC to Earn",
-      reason: "lend AQUSDC: AQUSDC is not in the connected wallet.",
-      asset: "AQUSDC",
-      pocket: { code: "insufficient_wallet", expected: "wallet", actual: "wallet", remedy: "reduce_or_skip" },
-    });
+    // Bare USDC prompts which USDC before building the plan that needs the choice.
+    expect(view.question).toMatch(/without saying which one: BLUSDC, AQUSDC, SOUSDC\?/i);
     // The headline is generated from the winning option, not assembled beside it.
     expect(view.message).toMatch(/^(Move idle XLM into Blend[^:]*): deposit .* XLM as collateral, then supply .* to Blend/);
     expect(view.message).toMatch(/Health factor after this would be/);

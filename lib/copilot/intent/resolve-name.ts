@@ -20,7 +20,8 @@ export interface NameResolution {
  * - Length < 4: 0 edits (exact match only; prevents dangerous 3-letter collisions)
  * - Length 4-6: 1 edit
  * - Length 7-10: 2 edits
- * - Length >= 11: 3 edits (allows long compound names like "aquariususdc" / "aquiresusdc" to resolve)
+ * - Length >= 11: 3 edits (allows long compound names like "aquariususdc" / "aquiresusdc" to resolve;
+ *   kept because distance >= 2 only ever asks a clarification question, never silently assumes or auto-executes)
  */
 export const DISTANCE_THRESHOLDS: ReadonlyArray<{ maxLen: number; maxEdits: number }> = [
   { maxLen: 3, maxEdits: 0 },
