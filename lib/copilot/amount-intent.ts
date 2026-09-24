@@ -132,3 +132,15 @@ export const REPAY_FRACTION_OPTIONS: Array<{
   { id: "0.5", fraction: 0.5, label: "50%", description: "Repay half of this debt" },
   { id: "1", fraction: 1, label: "100% / all", description: "Repay the full outstanding balance" },
 ];
+
+/**
+ * (PROTOTYPE — try/clarify-options-card) Leverage preset chips for the
+ * "what leverage do you want?" clarify — same idea as REPAY_FRACTION_OPTIONS, applied
+ * to a different missing slot. Multiples only; the free-text "something else" input
+ * the client already renders alongside these chips still accepts any stated multiple.
+ */
+export const LEVERAGE_OPTIONS: Array<{ id: string; label: string; description: string }> = [
+  { id: "2", label: "2x", description: "Standard leverage" },
+  { id: "3", label: "3x", description: "Higher leverage" },
+  { id: "5", label: "5x", description: "Aggressive leverage" },
+];
