@@ -22,7 +22,7 @@ import { appendDiagnostics } from "./diagnostics-log";
 import type { ResearchConversation } from "./continuation";
 import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans, type StrategyRead } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
-import { detectAutomationGap, isConditionalWriteRequest } from "../conditional-guard";
+import { detectAutomationGap, futureConditionRefusal } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
 import { resolveLifecycleWrite } from "../workflow/lifecycle";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
@@ -120,18 +120,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
 }): Promise<ResearchView> {
   const logPhase = dependencies.logPhase ?? (() => undefined);
   const codec = researchCodec(dependencies.secret, dependencies.server);
-  if (isConditionalWriteRequest(input.message)) {
-    return {
-      status: "blocked",
-      message:
-        "I can't schedule or execute conditional financial actions. " +
-        "Please submit a specific action for review when you are ready.",
-      originalRequest: input.message, refinements: [], understanding: null, question: null,
-      facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
-      warnings: [], scope: { wallet: input.wallet, smartAccount: null, network: dependencies.network },
-      continuation: "", executionAllowed: false,
-    };
-  }
   /**
    * Answer before spending anything, when there is nothing to investigate. This runs ahead
    * of scope resolution as well as the model: "hi" was costing two MCP reads for the wallet
@@ -1072,6 +1060,19 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     ...(outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length ? { droppedPlanReasons: outcome.droppedPlanReasons } : {}),
   } : undefined;
   if (diagnostics) void appendDiagnostics({ message: messages[messages.length - 1] ?? "", status, diagnostics });
+  if (outcome.kind === "research_complete") {
+    const conditionalMessage = futureConditionRefusal(outcome.goal.trigger, messages);
+    if (conditionalMessage) {
+      return {
+        status: "blocked", message: conditionalMessage,
+        originalRequest: messages[0] ?? input.message, refinements: messages.slice(1),
+        understanding: outcome.goal, question: null,
+        facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
+        warnings: [], scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
+        continuation: "", executionAllowed: false,
+      };
+    }
+  }
   return {
     status, message, originalRequest: messages[0], refinements: messages.slice(1), question,
     /**

@@ -1150,24 +1150,15 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   /**
-   * "What is Collateral Left Before Liquidation of my margin account?" was refused
-   * outright as a restricted keeper action — it contains "liquidation of", which the
-   * old bare-substring check could not tell apart from an actual command. A genuine
-   * liquidate instruction ("liquidate my account", "liquidate G...") does not open
-   * with a question word; a question about the user's OWN liquidation threshold
-   * always does. This is a read the margin snapshot already answers
-   * (`collateralLeftBeforeLiquidation`), not a keeper action to refuse.
+   * Liquidating another account is not a plan op and not an allowlisted write
+   * (`PLAN_OPS` / `workflow/allowlist.ts` `TOOLS`). There is nothing here to refuse
+   * by the word "liquidate": "liquidate my XLM position" goes to investigation.
+   * This flag only marks a question about the user's own threshold, which the
+   * margin-figure read below answers.
    */
   const asksAboutOwnLiquidationThreshold =
     /\b(what|how much|how many|show me)\b[\s\S]{0,40}\bliquidat/i.test(text) ||
     /\b(before|until|left before|distance to|buffer before)\b[\s\S]{0,10}\bliquidat/i.test(text);
-  if (!asksAboutOwnLiquidationThreshold && any(text, "liquidate", "liquidation of")) {
-    return {
-      kind: "restricted",
-      template_id: "liquidate",
-      reason: "Liquidation of other accounts is a restricted keeper/protocol action — the copilot won't run it.",
-    };
-  }
 
   /**
    * "I have to Faucet AQUSDC" (also matches the "Fucet" typo, a plausible dropped-letter

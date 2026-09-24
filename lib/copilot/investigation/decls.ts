@@ -126,6 +126,15 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           properties: { kind: { type: "string", enum: ["alternatives", "parts"] }, sourceQuote: { type: "string" } },
           required: ["kind", "sourceQuote"],
         },
+        trigger: {
+          type: "object",
+          description: "Whether the user gated the action on a future event. kind \"none\" when the words only size the action (\"borrow until HF is 1.5\"). kind \"future_condition\" only when they asked to act later, when a price or a moment arrives; sourceQuote is the exact substring of their message that states that future event. Omit the field when there is no condition.",
+          properties: {
+            kind: { type: "string", enum: ["none", "future_condition"] },
+            sourceQuote: { type: "string" },
+          },
+          required: ["kind"],
+        },
         walletReserves: {
           type: "array",
           description: "Only when the user said to leave a stated amount of a token in the wallet, untouched by the plan. asset is the token; amount is their exact decimal; sourceQuote is the exact substring of their message that contains it. Never invent one.",
@@ -243,6 +252,7 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.healthFactorFloor !== undefined) goal.healthFactorFloor = source.healthFactorFloor;
   if (source.walletReserves !== undefined) goal.walletReserves = source.walletReserves;
   if (source.planRelation !== undefined) goal.planRelation = source.planRelation;
+  if (source.trigger !== undefined) goal.trigger = source.trigger;
   // Copied by name, like every field above it. A field the model answers and this does not
   // forward is a field that silently does not exist: 16 Sep, the card read "Understood as:
   // Swap 100 XLM for SOUSDC with explicit slippage acceptance" while the sizer refused the

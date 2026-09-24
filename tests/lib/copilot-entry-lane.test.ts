@@ -39,6 +39,7 @@ describe("Copilot entry lanes", () => {
     // Un-enumerated strategy phrasing:
     "where should I allocate my 500 XLM for maximum returns",
     "analyze the best allocation across venues for my funds",
+    "liquidate my XLM position",
   ])("routes strategy/dynamic workflows to investigation: %s", (message) => {
     expect(classifyCopilotEntry(message)).toBe("strategy");
   });

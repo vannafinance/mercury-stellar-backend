@@ -43,10 +43,16 @@ describe("domain classifier", () => {
     expect(mocks.generateInvestigationJson.mock.calls[0][4]).toBe("LOW");
   });
 
-  it("fails closed when Vertex is unavailable", async () => {
+  it("fails open when Vertex is unavailable", async () => {
     mocks.generateInvestigationJson.mockRejectedValue(new Error("vertex down"));
     await expect(classifyOrFallback("trivia", new AbortController().signal, "user", false))
-      .resolves.toEqual({ in_domain: false, reason: "classifier_unavailable" });
+      .resolves.toEqual({ in_domain: true, reason: "classifier_unavailable" });
+  });
+
+  it("fails open when the classifier answer is not the expected shape", async () => {
+    mocks.generateInvestigationJson.mockResolvedValue({ nope: true });
+    await expect(classifyDomain("trivia", new AbortController().signal))
+      .resolves.toEqual({ in_domain: true, reason: "invalid_classifier" });
   });
 
   it("does not call the classifier when the cheap allowlist already matched", async () => {
