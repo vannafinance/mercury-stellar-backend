@@ -12,7 +12,7 @@
  *  4) Systems prompts still restate domain (defense in depth)
  */
 
-import { ASSET_DOMAIN_WORDS } from "./registry/assets";
+import { ASSET_DOMAIN_WORDS, ASSET_IDS } from "./registry/assets";
 import { classifyOrFallback } from "./domain-classifier";
 import { wouldExceedTokenCap, tokenCapMessage } from "./token-budget";
 
@@ -26,6 +26,30 @@ const BLOCK_MESSAGE =
   "I can’t help with general coding, homework, or unrelated chat. " +
   "Try something like “what’s my health factor?”, “lend 10 XLM”, or " +
   "“park 20 XLM then farm 10 BLUSDC at 2x”.";
+
+/**
+ * (PROTOTYPE — try/clarify-options-card) "value/price/worth of N <token>" naming
+ * something this product doesn't support. The SHAPE is unmistakably an in-domain
+ * price question even when the token is nonsense or a typo — "what is the value
+ * of 8000 BLA BLA in usd" used to get the same fully generic "I only help with..."
+ * blurb a genuinely off-topic message gets, which never told the user what they
+ * could have asked instead.
+ */
+const VALUE_OF_QUANTITY_RE =
+  /\b(?:value|price|worth)\s+of\s+\d+(?:\.\d+)?\s+([A-Za-z][A-Za-z0-9]{1,15})\b/i;
+
+/**
+ * (PROTOTYPE — try/clarify-options-card) What the UI actually exposes today — not
+ * ASSET_IDS, which also carries AQUA/EURC/USDT: those are oracle-priceable and stay
+ * "known" for the recognition check below, but they are not valid margin collateral
+ * or Earn-pool assets and the product doesn't surface them as something to act on,
+ * so naming them in a "here's what's supported" message would be misleading.
+ */
+const UI_SUPPORTED_ASSETS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"] as const;
+
+function unsupportedAssetMessage(token: string): string {
+  return `I don't recognize "${token}" as a supported asset. Supported assets: ${UI_SUPPORTED_ASSETS.join(", ")}.`;
+}
 
 /** Narrow abuse tripwire — cost backstop, not the primary domain gate. */
 const ABUSE_TRIPWIRE: RegExp[] = [
@@ -284,6 +308,19 @@ export function evaluateDomainFirewall(
     }
   }
 
+  // 1.5) A price question naming a token this product does not support. Checked before
+  // the length-based blocks below so it applies whatever the rest of the sentence says.
+  const valueOf = m.match(VALUE_OF_QUANTITY_RE);
+  if (valueOf) {
+    const token = valueOf[1]!;
+    const known =
+      (ASSET_IDS as readonly string[]).includes(token.toUpperCase()) ||
+      ASSET_DOMAIN_WORDS.includes(token.toLowerCase());
+    if (!known) {
+      return { allow: false, reason: "block:unsupported_asset", message: unsupportedAssetMessage(token) };
+    }
+  }
+
   // 2) Explicit product allow (exact domain vocabulary, assets, actions, protocol addresses)
   for (const re of ALLOW_PATTERNS) {
     if (re.test(m)) {
@@ -355,9 +392,17 @@ export async function guardUserPrompt(
   if (wouldExceedTokenCap(opts.subject)) {
     return { allow: false, reason: "token_cap", message: tokenCapMessage() };
   }
-  if (hasCheapDomainSignal(message, { hasPageContext: opts.hasPageContext })) {
-    return { allow: true, reason: "cheap_allow" };
-  }
+  const cheap = evaluateDomainFirewall(message, { hasPageContext: opts.hasPageContext });
+  if (cheap.allow) return { allow: true, reason: "cheap_allow" };
+  /**
+   * (PROTOTYPE — try/clarify-options-card) A specific, named-reason refusal — e.g.
+   * an unsupported asset — is strictly more useful than the LLM classifier re-deriving
+   * the same off-domain verdict and getting the fully generic BLOCK_MESSAGE below.
+   * hasCheapDomainSignal used to be called here instead, which threw away everything
+   * but the allow/deny boolean, so this specific message never reached the user even
+   * when evaluateDomainFirewall had already worked out exactly why.
+   */
+  if (cheap.reason === "block:unsupported_asset") return cheap;
   const classified = await classifyOrFallback(message, opts.signal, opts.subject, false);
   if (classified.in_domain) return { allow: true, reason: classified.reason };
   return {
