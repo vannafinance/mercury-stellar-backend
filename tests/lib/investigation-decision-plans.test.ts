@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { parseDecision } from "@/lib/copilot/investigation/decision";
 import { decisionFromFunctionCalls } from "@/lib/copilot/investigation/decls";
+import { MAX_WORKFLOW_STEPS } from "@/lib/copilot/workflow/types";
 
 const base = {
   kind: "research_complete",
@@ -71,7 +72,8 @@ describe("research_complete plans", () => {
     ["an add_liquidity leg with no assetOut", [leg("add_liquidity")]],
     ["an add_liquidity leg paired with the asset it spends", [{ ...leg("add_liquidity"), assetOut: "XLM" }]],
     ["an asset outside the registry", [leg("lend", "DOGE")]],
-    ["seven legs", Array.from({ length: 7 }, () => leg("lend"))],
+    // One past what a single approval can run (was a stricter 6 until 23 Sep, XS5).
+    ["more legs than one approval runs", Array.from({ length: MAX_WORKFLOW_STEPS + 1 }, () => leg("lend"))],
     ["no legs", []],
     ["an extra key", [{ ...leg("lend"), amount: "1" }]],
   ])("drops a plan with %s and keeps the research", (_name, legs) => {
