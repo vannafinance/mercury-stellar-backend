@@ -50,6 +50,8 @@ export interface InvestigationCardProps {
   onApproveCandidate?: (candidateId: string) => void;
   /** Send a choice's text as the user's next turn (a "did you mean" button). */
   onReply?: (text: string) => void;
+  /** A `write` choice was clicked (e.g. "Open a margin account"). */
+  onWrite?: (op: "create_account") => void;
   /**
    * The thread has been told to hide this run's receipt so this card is the one place the
    * run is drawn: the plan card becomes the execution card in the same spot.
@@ -206,6 +208,35 @@ function PlanCard({
   );
 }
 
+/**
+ * The server's one-tap choices. A `send` choice replies with text built from the user's own
+ * words; a `write` choice starts a lifecycle write (today only opening a margin account), which
+ * the workspace runs through the existing `pending_write` path. Never created on its own: only
+ * a click on this button opens the account.
+ */
+function ChoiceButtons({ choices, onReply, onWrite }: {
+  choices: ResearchView["choices"];
+  onReply?: (text: string) => void;
+  onWrite?: (op: "create_account") => void;
+}) {
+  const usable = (choices ?? []).filter((choice) => (choice.write && onWrite) || (choice.send && onReply));
+  if (!usable.length) return null;
+  return (
+    <div className="mt-2.5 flex flex-wrap gap-2" data-testid="question-choices">
+      {usable.map((choice) => (
+        <button
+          key={choice.id}
+          type="button"
+          onClick={() => (choice.write && onWrite ? onWrite(choice.write) : onReply!(choice.send!))}
+          className={choice.write ? BTN_PRIMARY : BTN_QUIET}
+        >
+          {choice.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** A small heading for a section of the reply. Sentence case, no tracking, no mono. */
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="text-[12px] font-semibold text-vgray-500">{children}</h3>;
@@ -220,7 +251,7 @@ const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] fo
 export function InvestigationCard({
   prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, continueLabel,
   onPropose, workflow, planWithdrawn, planLiveFloor, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
-  wallet = null, autoSign = false, onApproveCandidate, onReply, threadDefersReceipt = false,
+  wallet = null, autoSign = false, onApproveCandidate, onReply, onWrite, threadDefersReceipt = false,
 }: InvestigationCardProps) {
   /**
    * Cancel on a plan that was never prepared: nothing was sent, so it only closes the plans
@@ -316,6 +347,7 @@ export function InvestigationCard({
     (result?.candidates && (result.candidates.feasible.length > 0 || result.candidates.rejected.length > 0)) ||
     workflow ||
     result?.question ||
+    !!result?.choices?.length ||
     (result?.warnings && result.warnings.length > 0)
   );
 
@@ -541,20 +573,14 @@ export function InvestigationCard({
                   <SectionTitle>{result.candidates?.feasible.length ? "Open point" : "Needs your answer"}</SectionTitle>
                   <p className="mt-1.5 whitespace-pre-wrap break-words text-[14px] leading-6 text-vgray-900">{result.question}</p>
                   {/* Choices the server built from the user's own words ("did you mean"): one tap answers. */}
-                  {!!result.choices?.length && onReply && (
-                    <div className="mt-2.5 flex flex-wrap gap-2" data-testid="question-choices">
-                      {result.choices.map((choice) => (
-                        <button key={choice.id} type="button" onClick={() => onReply(choice.send)} className={BTN_QUIET}>
-                          {choice.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  <ChoiceButtons choices={result.choices} onReply={onReply} onWrite={onWrite} />
                   <p className="mt-1.5 text-[12.5px] leading-5 text-vgray-500">
                     {result.candidates?.feasible.length ? "The plans above stand. Reply below to change them." : "Reply below to continue."}
                   </p>
                 </section>
               )}
+
+              {!result.question && <ChoiceButtons choices={result.choices} onReply={onReply} onWrite={onWrite} />}
 
               {/* Notes explain a partial answer. With a plan or a run on screen they are noise (UI-FIX-LIST 3). */}
               {result.warnings.length > 0 && !result.candidates?.feasible.length && !workflow && (

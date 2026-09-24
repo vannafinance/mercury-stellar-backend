@@ -110,7 +110,7 @@ export interface ResearchView {
    * next turn through the existing continuation. Built in code from the user's own words
    * (round 2 contract, docs/copilot/AGENT-TASKS.md), never invented by the model.
    */
-  choices?: { id: string; label: string; send: string }[];
+  choices?: { id: string; label: string; send?: string; write?: "create_account" }[];
   /** Present when a direct action is missing inputs. The issued options are sealed in the continuation. */
   questionnaire?: Questionnaire;
   /**

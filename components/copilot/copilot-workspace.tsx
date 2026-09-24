@@ -5705,6 +5705,11 @@ export function CopilotWorkspace() {
                 autoSign={sessionSigning}
                 onApproveCandidate={investigation.result?.continuation ? approveCandidate : undefined}
                 onReply={(text) => { void run(text); }}
+                onWrite={(op) => {
+                  const request = investigation.result?.originalRequest ?? "";
+                  // Only this click opens an account; the server never creates one unasked.
+                  void postCopilot({ pending_write: { op }, message: request }, request);
+                }}
                 threadDefersReceipt={cardDrawsRun}
               />
             )}

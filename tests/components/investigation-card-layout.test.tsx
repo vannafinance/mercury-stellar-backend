@@ -170,3 +170,17 @@ describe("plan layouts by count", () => {
     expect(screen.getByText("Plan C").closest("button")).toBeNull();
   });
 });
+
+describe("a write choice", () => {
+  it("opens a margin account only when its button is clicked", () => {
+    const onWrite = vi.fn(); const onReply = vi.fn();
+    cardFor(view({
+      message: "You don't have a margin account yet.", understanding: null,
+      choices: [{ id: "create_account", label: "Open a margin account", write: "create_account" }],
+    }), { onWrite, onReply });
+    expect(onWrite).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Open a margin account" }));
+    expect(onWrite).toHaveBeenCalledWith("create_account");
+    expect(onReply).not.toHaveBeenCalled();
+  });
+});
