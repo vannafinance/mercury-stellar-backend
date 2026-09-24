@@ -213,7 +213,19 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
       "Ask ONE material question that no read can settle and that changes what would be executed.",
     parameters: {
       type: "object",
-      properties: { question: { type: "string" } },
+      properties: {
+        question: { type: "string" },
+        missing: {
+          type: "object",
+          description: "What a direct action still needs. op is the operation when the user named one. asset is the token they named, or a bare family such as USDC when they did not name the variant. slots lists which of asset, venue and amount they did not give. Name only what is missing. Do not list options.",
+          properties: {
+            op: { type: "string", enum: [...WORKFLOW_OPS] },
+            asset: { type: "string", description: "A registry asset id, or a bare family the user said, such as USDC." },
+            slots: { type: "array", items: { type: "string", enum: ["asset", "venue", "amount"] } },
+          },
+          required: ["slots"],
+        },
+      },
       required: ["question"],
     },
   },
@@ -295,7 +307,7 @@ export function decisionFromFunctionCalls(calls: readonly ModelFunctionCall[]): 
   const control = calls.find((call) => CONTROL_NAMES.has(call.name));
   if (!control) return { kind: "invalid_function" };
   const args = isRecord(control.args) ? control.args : {};
-  if (control.name === "clarify") return { kind: "clarify", question: args.question };
+  if (control.name === "clarify") return { kind: "clarify", question: args.question, ...(args.missing !== undefined ? { missing: args.missing } : {}) };
   if (control.name === "blocked") return { kind: "blocked", reason: args.reason };
   return wrapComplete(args);
 }

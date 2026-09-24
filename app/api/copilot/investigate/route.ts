@@ -33,8 +33,18 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
   } finally { reader.releaseLock(); }
   let body: unknown;
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ResearchError("invalid_request", "Invalid research request.", 400); }
-  if (!isRecord(body) || Object.keys(body).some((key) => !["message", "wallet", "continuation", "session", "history", "conversationId"].includes(key)) ||
-    typeof body.message !== "string" || !body.message.trim() || body.message.length > 8000 ||
+  const answers = body && isRecord(body) ? body.answers : undefined;
+  const answersOk = answers == null || (isRecord(answers) && typeof answers.questionnaireId === "string" && typeof answers.asset === "string"
+    && (answers.venue === null || typeof answers.venue === "string")
+    && typeof answers.summary === "string" && answers.summary.trim().length > 0 && answers.summary.length <= 2000
+    && isRecord(answers.amount) && (answers.amount.kind === "fraction" || answers.amount.kind === "literal"));
+  if (!answersOk) throw new ResearchError("invalid_answers", "The questionnaire answer is missing an option or an amount.", 400);
+  const message = isRecord(body) && typeof body.message === "string" && body.message.trim()
+    ? body.message.trim()
+    : isRecord(answers) && typeof answers.summary === "string" ? answers.summary.trim() : "";
+  if (!isRecord(body) || Object.keys(body).some((key) => !["message", "wallet", "continuation", "session", "history", "conversationId", "answers"].includes(key)) ||
+    !message || message.length > 8000 ||
+    (answers != null && (typeof body.continuation !== "string" || !body.continuation.trim())) ||
     !(body.wallet == null || typeof body.wallet === "string" && body.wallet.length <= 56) ||
     !(body.continuation == null || typeof body.continuation === "string" && body.continuation.length <= 65_536) ||
     !(body.session == null || typeof body.session === "string" && body.session.length <= 65_536) ||
@@ -50,9 +60,10 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
       }))
     : undefined;
   return {
-    message: body.message.trim(),
+    message,
     wallet: body.wallet as string | null ?? null,
     continuation: body.continuation as string | null ?? null,
+    ...(isRecord(answers) ? { answers: answers as unknown as NonNullable<ResearchInput["answers"]> } : {}),
     session: body.session as string | null ?? null,
     history,
     conversationId: body.conversationId as string | null ?? null,

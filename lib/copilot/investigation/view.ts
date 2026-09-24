@@ -48,6 +48,35 @@ export interface ResearchCapacity {
   maxBorrowUsd: string;
 }
 
+export interface QuestionnaireOption {
+  id: string;
+  label: string;
+  detail?: string;
+  forAsset?: string;
+  op?: string;
+}
+export interface QuestionnaireStep {
+  slot: "asset" | "venue" | "amount";
+  prompt: string;
+  options: QuestionnaireOption[];
+  max?: Record<string, { amount: string; asset: string; where: string }>;
+  presets?: { id: string; label: string; percent: string }[];
+  pair?: Record<string, { asset: string; perUnit: string | null }>;
+}
+export interface Questionnaire {
+  id: string;
+  title: string;
+  subtitle: string;
+  steps: QuestionnaireStep[];
+}
+export interface QuestionnaireAnswers {
+  questionnaireId: string;
+  asset: string;
+  venue: string | null;
+  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string };
+  summary: string;
+}
+
 export interface ResearchView {
   /** Why a run stopped or plans were dropped, in validator terms. Never rendered; read from the response. */
   diagnostics?: {
@@ -82,6 +111,13 @@ export interface ResearchView {
    * (round 2 contract, docs/copilot/AGENT-TASKS.md), never invented by the model.
    */
   choices?: { id: string; label: string; send: string }[];
+  /** Present when a direct action is missing inputs. The issued options are sealed in the continuation. */
+  questionnaire?: Questionnaire;
+  /**
+   * The answers named one direct action. The client runs it under the direct-action
+   * approval rule: no plan card. Strategy turns leave this unset.
+   */
+  directAction?: boolean;
   scope: { wallet: string | null; smartAccount: string | null; network: string };
   continuation: string;
   proposalCandidateId?: string | null;

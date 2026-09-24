@@ -1,4 +1,5 @@
 import { lpPairs, lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
+import { parseQuestionnaireMissing } from "./questionnaire";
 import { ASSET_OUT_OPS, MAX_WORKFLOW_STEPS, OP_FLOW, WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { LIFECYCLE_WRITES, isLifecycleWriteOp } from "../workflow/lifecycle";
 import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision } from "./types";
@@ -63,8 +64,13 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     if (new Set(keys).size !== keys.length) return refuse("inspect: duplicate reads");
     return { kind: "inspect", reads };
   }
-  if (raw.kind === "clarify" && exactKeys(raw, ["kind", "question"]) && text(raw.question)) {
-    return { kind: "clarify", question: raw.question };
+  if (raw.kind === "clarify" && text(raw.question)) {
+    const keys = ["kind", "question", ...(raw.missing !== undefined ? ["missing"] : [])];
+    if (!exactKeys(raw, keys)) return refuse("clarify: unexpected keys");
+    if (raw.missing === undefined) return { kind: "clarify", question: raw.question };
+    const missing = parseQuestionnaireMissing(raw.missing);
+    if (!missing) return refuse("clarify: missing inputs are not a known op, asset or slot");
+    return { kind: "clarify", question: raw.question, missing };
   }
   if (raw.kind === "blocked" && exactKeys(raw, ["kind", "reason"]) && text(raw.reason)) {
     return { kind: "blocked", reason: raw.reason };

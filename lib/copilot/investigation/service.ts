@@ -15,6 +15,7 @@ import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizin
 import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, rankingBorrowing, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
+import { actionFromAnswers, answerProblem, buildQuestionnaire, readsForQuestionnaire } from "./questionnaire";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
@@ -63,6 +64,8 @@ export interface ResearchInput {
   conversationId?: string | null;
   /** Named eval fixture for traces. Never the user message. */
   promptName?: string;
+  /** Structured questionnaire answers. Validated against the issued options. No model call. */
+  answers?: import("./view").QuestionnaireAnswers;
 }
 
 function optionalConversation(
@@ -212,6 +215,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     return reconnectWalletView(input, dependencies.network, scope.unverified === "bindings" ? "bindings" : "session");
   }
   const prior = input.continuation ? codec.open(input.continuation, scope) : null;
+  if (input.answers) {
+    const problem = answerProblem(prior?.evidence?.questionnaire, input.answers);
+    if (problem) throw new ResearchError("invalid_answers", problem, 400);
+  }
   const session = prior ? null : optionalConversation(codec, input.session, scope);
   const carried = prior?.evidence ?? session?.evidence;
   /**
@@ -226,7 +233,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const haveCarriedPosition = carriedObs.some(
     (observation) => observation.capability === "account_position" && observation.status === "ok",
   );
-  let messages = [...prior?.messages ?? [], input.message];
+  let messages = [...prior?.messages ?? [], input.answers?.summary ?? input.message];
   // Validate capacity before paying for any model call. Never truncate an older constraint.
   codec.seal(scope, messages, prior?.lastQuestion ?? null);
   const scopedMcp: Pick<MCPClient, "call"> = { call: async (tool, args, userId) => {
@@ -428,12 +435,39 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     logPhase("evidence_seed", { requested: evidenceSeedRequests.map((request) => `${request.capability}:${request.args.asset ?? ""}`), ok: evidenceSeed.filter((observation) => observation.status === "ok").length });
   }
   const loopStarted = Date.now();
-  const result = await withInvestigationPhase("loop", () => runInvestigation({
-    message: input.message, scope, seed,
-    history: (input.history ?? []).slice(-8),
-    task: { messages, lastQuestion: prior?.lastQuestion ?? null },
-    promptName: input.promptName,
-  }, { model: dependencies.model, mcp: scopedMcp, signal: dependencies.signal, onProgress: dependencies.onProgress, limits: dependencies.limits }));
+  const answered = input.answers && prior?.evidence?.questionnaire
+    ? actionFromAnswers(prior.evidence.questionnaire, input.answers) : null;
+  const result = answered
+    ? await (async () => {
+        const draft = planFromStatedActions([answered], input.answers!.summary);
+        const now = Date.now();
+        const needed = readsForPlans(draft ? [draft] : [], seed, now);
+        const fresh = needed.length
+          ? await collectStrategyReads(scope, scopedMcp, dependencies.signal, now, needed, "qa") : [];
+        return {
+          outcome: {
+            kind: "research_complete" as const,
+            goal: {
+              intent: "strategy" as const,
+              objective: input.answers!.summary,
+              constraints: [] as string[],
+              borrowing: "unspecified" as const,
+              actions: [answered],
+            },
+            findings: [{ summary: input.answers!.summary, evidenceIds: [] as string[] }],
+            openQuestions: [] as string[],
+          },
+          observations: [...seed, ...fresh],
+          usage: { modelTurns: 0, toolCalls: fresh.length, elapsedMs: 0 },
+          executionAllowed: false as const,
+        } as Awaited<ReturnType<typeof runInvestigation>>;
+      })()
+    : await withInvestigationPhase("loop", () => runInvestigation({
+      message: input.message, scope, seed,
+      history: (input.history ?? []).slice(-8),
+      task: { messages, lastQuestion: prior?.lastQuestion ?? null },
+      promptName: input.promptName,
+    }, { model: dependencies.model, mcp: scopedMcp, signal: dependencies.signal, onProgress: dependencies.onProgress, limits: dependencies.limits }));
   logPhase("loop", {
     ms: Date.now() - loopStarted,
     outcome: result.outcome.kind,
@@ -446,6 +480,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     loopElapsedMs: result.usage.elapsedMs,
   });
   const outcome = result.outcome;
+  if (outcome.kind === "clarify" && outcome.missing) {
+    const questionnaireNow = Date.now();
+    const needed = readsForQuestionnaire(outcome.missing, result.observations, questionnaireNow);
+    if (needed.length) {
+      const batch = await collectStrategyReads(scope, scopedMcp, dependencies.signal, questionnaireNow, needed, "qn");
+      result.observations.push(...batch);
+    }
+  }
+  const questionnaire = outcome.kind === "clarify" && outcome.missing
+    ? buildQuestionnaire(outcome.missing, result.observations, Date.now()) ?? undefined
+    : undefined;
   /**
    * Borrow ranking is enabled by the typed goal/plan, not by re-reading the user's
    * wording. A required borrow (or a composed/stated borrow leg) needs a live capacity
@@ -955,7 +1000,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
   // The choice IS the turn: no options beside it, which would answer a question not yet settled.
   // Asked always; the turn is ONLY the question when every plan was waiting on it.
-  if (usdcToChoose) {
+  if (usdcToChoose && !questionnaire) {
     if (onlyUsdcAsked) candidates = null;
     // The model's own open question, when it asked one, stands (it often already names the USDC).
     question = question ?? USDC_QUESTION.charAt(0).toUpperCase() + USDC_QUESTION.slice(1);
@@ -1028,6 +1073,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (failedReads.length) logPhase("reads_failed", { reads: failedReads });
   // The reads the sealed plans need survive sealing, so propose can re-size exactly what was offered.
   const evidence = compactResearchEvidence(result.observations, capacity, observedNow, readsForPlans(modelPlans, [], observedNow));
+  if (questionnaire) evidence.questionnaire = questionnaire;
   // Every option shown can be prepared; the sealed list is exactly the shown list.
   evidence.allowedCandidateIds = outcome.kind === "research_complete"
     ? candidates?.feasible.map(candidate => candidate.id) ?? [] : [];
@@ -1101,6 +1147,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       id: observation.id, label: observation.capability.replaceAll("_", " "), status: observation.status, readAt: observation.observedAt,
     })), warnings, scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
     continuation: codec.seal(scope, messages, question, evidence), executionAllowed: false,
+    ...(questionnaire ? { questionnaire } : {}),
+    ...(input.answers ? { directAction: true } : {}),
     // Not rendered. Why a run stopped, a plan was dropped or a read failed, readable from the response (23 Sep).
     ...(diagnostics ? { diagnostics } : {}),
     pendingWrite: lifecycleOp && scope.trader ? { op: lifecycleOp } : null,

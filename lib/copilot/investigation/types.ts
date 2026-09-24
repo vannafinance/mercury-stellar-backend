@@ -219,7 +219,7 @@ export type ResearchDecision =
    * observation so far, making input cost grow quadratically in the number of reads.
    */
   | { kind: "inspect"; reads: ReadRequest[] }
-  | { kind: "clarify"; question: string }
+  | { kind: "clarify"; question: string; missing?: import("./questionnaire").QuestionnaireMissing }
   | { kind: "blocked"; reason: string }
   | {
       kind: "research_complete";
