@@ -239,6 +239,7 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   // Additional-signer consent. Not a wallet-connect modal: this is what writes the
   // Sign Service binding a `wallet_not_bound` 403 is asking for (see WalletBindPrompt).
   vanna_connect_wallet_start: { tool: "vanna_wallet", action: "connect_start" },
+  vanna_connect_wallet_register: { tool: "vanna_wallet", action: "connect_register" },
   vanna_connect_wallet_status: { tool: "vanna_wallet", action: "connect_status" },
   // signing
   vanna_auto_sign_status: { tool: "vanna_sign", action: "session_status" },
