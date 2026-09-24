@@ -596,3 +596,137 @@ describe("advanceWorkflow — an amount that was the whole position is re-read b
     expect(String(view.steps[0].message)).toContain("no BLUSDC left in that position");
   });
 });
+
+/**
+ * A removal's next leg spends the measured account-balance change, not the
+ * pool-read estimate, and only inside SWAP_SLIPPAGE_BPS of that estimate.
+ * The proposal amount is the estimate and is not rewritten.
+ */
+describe("advanceWorkflow — a removal's payout is measured when the next leg is sent", () => {
+  const COLLATERAL = "vanna_get_collateral";
+  const REMOVE = "vanna_remove_liquidity";
+  const SUPPLY = "vanna_blend_supply";
+  const HASH2 = "b".repeat(64);
+  const exitStep = {
+    id: "exit", op: "remove_liquidity" as const, asset: "AQUSDC", amount: "10",
+    label: "Remove 10 XLM/AQUSDC LP shares on Aquarius",
+    tool: REMOVE,
+    args: {
+      smart_account: SCOPE.smartAccount, token_a: "XLM", token_b: "AQUSDC",
+      liquidity: "10", trader: SCOPE.trader, venue: "aquarius",
+    },
+    sizing: { basis: "stated" as const },
+  };
+  const supplyStep = (amount: string) => ({
+    id: "supply", op: "supply_blend" as const, asset: "XLM", amount,
+    label: `Supply an estimated ${amount} XLM to Blend, the removal's payout`,
+    tool: SUPPLY,
+    args: { symbol: "XLM", amount, trader: SCOPE.trader, smart_account: SCOPE.smartAccount },
+    sizing: { basis: "settled_payout" as const, fromStep: "exit", asset: "XLM" },
+  });
+
+  async function approved(amount = "100") {
+    const journal = new WorkflowJournal(harness.store);
+    const created = await journal.create({
+      scope: SCOPE, server: SERVER, objective: "Remove LP and supply the XLM",
+      messages: ["remove AQUSDC liquidity and supply the XLM"], assumptions: [], constraints: [],
+      floor: null,
+      steps: [exitStep, supplyStep(amount)],
+    });
+    await journal.approve(created.proposal.id, { scope: SCOPE, server: SERVER }, 1, created.proposal.digest, async () => null);
+    return { id: created.proposal.id, digest: created.proposal.digest };
+  }
+
+  function scripted(balances: Array<string | "fail">, hashes: string[]) {
+    const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    let balance = 0;
+    let write = 0;
+    const mcp: McpCall = {
+      call: async (tool, args) => {
+        seen.push({ tool, args: args as Record<string, unknown> });
+        if (tool === COLLATERAL) {
+          const next = balances[balance++];
+          if (next === "fail" || next === undefined) throw new Error("upstream credentials leaked");
+          return { collateral: [{ symbol: "XLM", balance: next }] };
+        }
+        return { status: "signed_and_submitted", tx_hash: hashes[write++] ?? HASH };
+      },
+    };
+    return { seen, mcp };
+  }
+
+  async function stored(id: string) {
+    return new WorkflowJournal(harness.store).read(id, { scope: SCOPE, server: SERVER });
+  }
+
+  it("sends the measured payout and leaves the approved estimate on the proposal", async () => {
+    const { id, digest } = await approved("100");
+    const first = scripted(["0"], [HASH]);
+    const opened = await advance(id, first.mcp);
+    expect(opened.status).toBe("running");
+    expect(first.seen.map((call) => call.tool)).toEqual([COLLATERAL, REMOVE]);
+    const mid = await stored(id);
+    expect(mid.value.proposal.digest).toBe(digest);
+    expect(mid.value.proposal.steps[1].amount).toBe("100");
+    expect(mid.value.steps[0].balancesBefore).toEqual({ XLM: "0" });
+
+    const second = scripted(["100.4"], [HASH2]);
+    const view = await advance(id, second.mcp);
+    expect(second.seen.map((call) => call.tool)).toEqual([COLLATERAL, SUPPLY]);
+    expect(second.seen[1].args.amount).toBe("100.4");
+    expect(view.status).toBe("completed");
+    expect(view.message).toContain("measured payout");
+    const done = await stored(id);
+    expect(done.value.proposal.digest).toBe(digest);
+    expect(done.value.proposal.steps[1].amount).toBe("100");
+  });
+
+  it("does not read a balance before a removal that nothing later spends", async () => {
+    const journal = new WorkflowJournal(harness.store);
+    const created = await journal.create({
+      scope: SCOPE, server: SERVER, objective: "Remove LP",
+      messages: ["remove AQUSDC liquidity"], assumptions: [], constraints: [],
+      floor: null, steps: [exitStep],
+    });
+    await journal.approve(created.proposal.id, { scope: SCOPE, server: SERVER }, 1, created.proposal.digest, async () => null);
+    const run = scripted([], [HASH]);
+    const view = await advance(created.proposal.id, run.mcp);
+    expect(run.seen.map((call) => call.tool)).toEqual([REMOVE]);
+    expect(view.status).toBe("completed");
+  });
+
+  it("pauses without submitting when the payout is outside the approved band", async () => {
+    const { id } = await approved("100");
+    await advance(id, scripted(["0"], [HASH]).mcp);
+    const second = scripted(["101"], [HASH2]);
+    const view = await advance(id, second.mcp);
+    expect(second.seen.map((call) => call.tool)).toEqual([COLLATERAL]);
+    expect(view.status).toBe("blocked");
+    expect(view.steps[1].status).toBe("pending");
+    expect(view.message).toContain("outside the approved estimate of 100 XLM");
+    expect(view.message).not.toMatch(/upstream|credentials|Error/);
+  });
+
+  it("pauses without submitting the removal when the before-balance read fails", async () => {
+    const { id } = await approved();
+    const run = scripted(["fail"], [HASH]);
+    const view = await advance(id, run.mcp);
+    expect(run.seen.map((call) => call.tool)).toEqual([COLLATERAL]);
+    expect(view.status).toBe("blocked");
+    expect(view.steps[0].status).toBe("pending");
+    expect(view.message).toContain("could not be read before removing liquidity");
+    expect(view.message).not.toMatch(/upstream|credentials|Error/);
+  });
+
+  it("pauses without submitting the next leg when the after-balance read fails", async () => {
+    const { id } = await approved();
+    await advance(id, scripted(["0"], [HASH]).mcp);
+    const second = scripted(["fail"], [HASH2]);
+    const view = await advance(id, second.mcp);
+    expect(second.seen.map((call) => call.tool)).toEqual([COLLATERAL]);
+    expect(view.status).toBe("blocked");
+    expect(view.steps[1].status).toBe("pending");
+    expect(view.message).toContain("could not be read after the removal settled");
+    expect(view.message).not.toMatch(/upstream|credentials|Error/);
+  });
+});

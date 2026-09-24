@@ -195,7 +195,13 @@ export type StepSizing =
    * lets the write tell "876.38, the number they asked for" from "876.38, which was all of
    * it at the time".
    */
-  | { basis: "whole_position"; read: string };
+  | { basis: "whole_position"; read: string }
+  /**
+   * The amount is the pool-read estimate of what a removal pays in `asset`.
+   * Execute replaces the sent amount with the measured account balance change
+   * after `fromStep` settles. The proposal amount stays the approved estimate.
+   */
+  | { basis: "settled_payout"; fromStep: string; asset: string };
 
 export interface ProposalStep {
   id: string;
@@ -282,6 +288,11 @@ export interface WorkflowStepState {
    * rather than by editing the approved artifact.
    */
   executedAmountUsd?: string;
+  /**
+   * Margin-account balances read immediately before this removal was submitted,
+   * keyed by registry id. Runtime state only: the approved proposal is not edited.
+   */
+  balancesBefore?: Record<string, string>;
   txHash?: string;
   unsignedXdr?: string;
   signedXdr?: string;
