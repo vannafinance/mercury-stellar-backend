@@ -155,6 +155,28 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
   if (debt && !rowLines.some((line) => line.evidenceId === debt.evidenceId)) sentences.push(`Your reported margin debt is ${amount(debt)}.`);
   const prices = selected.filter(f => f.venue === "oracle");
   for (const price of prices) sentences.push(`${price.label}: ${amount(price)}.`);
+  /**
+   * "what is the value of 8000 XLM in usd" used to stop at the bare oracle price
+   * ("XLM oracle price: $0.20") — the correct fact, but not an answer to the
+   * question actually asked, which named a quantity. Every price fact's label is
+   * `<ASSET> oracle price` (facts-by-shape.ts), so the asset is its first word;
+   * matched against a stated `<number> <asset>` in the request, same vocabulary
+   * NAMED_ASSET already uses for relevance filtering above.
+   */
+  if (request) {
+    const qtyMatch = new RegExp(`\\b(\\d+(?:\\.\\d+)?)\\s*(${ASSET_IDS.join("|")})\\b`, "i").exec(request);
+    if (qtyMatch) {
+      const qty = Number(qtyMatch[1]);
+      const asset = qtyMatch[2]!.toUpperCase();
+      const price = prices.find((f) => f.label.split(" ")[0]?.toUpperCase() === asset);
+      const priceValue = price ? Number(price.value) : NaN;
+      if (Number.isFinite(qty) && Number.isFinite(priceValue)) {
+        sentences.push(
+          `${qty.toLocaleString("en-US")} ${asset} ≈ ${money(String(qty * priceValue))} at that price.`,
+        );
+      }
+    }
+  }
   const eligibility = selected.filter(f => f.sourcePath === "allowed" && f.venue === "margin");
   for (const fact of eligibility) {
     sentences.push(`${fact.label} is ${fact.value} on the current health check.`);

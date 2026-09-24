@@ -151,6 +151,16 @@ describe("researchTurn fast path", () => {
     expect(mocks.resolveInvestigationScope).not.toHaveBeenCalled();
   });
 
+  it("answers a stated quantity's USD value, not just the bare unit price", async () => {
+    const mcp = { call: vi.fn(async () => ({ price_usd: "0.20" })) };
+    const result = await researchTurn(
+      { message: "what is the value of 8000 xlm in usd", wallet: null, continuation: null },
+      deps({ mcp }),
+    );
+    expect(result.message).toMatch(/XLM oracle price: \$0\.20/);
+    expect(result.message).toMatch(/8,000 XLM ≈ \$1,600\.00/);
+  });
+
   it("answers health from liquidation_snapshot without waiting on a hung snapshot", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
     mocks.computeAccountPosition.mockResolvedValue(null);
