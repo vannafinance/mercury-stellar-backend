@@ -157,6 +157,40 @@ export interface ResearchView {
   executionAllowed: false;
   /** Server wall time for this turn. Optional so older clients stay valid. */
   elapsedMs?: number;
+  /** Structured questionnaire issued when research identifies missing inputs. */
+  questionnaire?: Questionnaire;
+}
+
+export interface QuestionnaireOption {
+  id: string;             // stable id the server issued
+  label: string;          // "BLUSDC", "Earn", "Aquarius XLM/AQUSDC pool"
+  detail?: string;        // "680 in wallet", "19.17% APY", "pairs with XLM · you have 2,147 XLM"
+  forAsset?: string;      // venue options: the asset they apply to
+  op?: string;            // venue options: the op this choice means (lend, supply_blend, add_liquidity)
+}
+
+export interface QuestionnaireStep {
+  slot: "asset" | "venue" | "amount";
+  prompt: string;         // "Which asset?", "Where should it go?", "How much?"
+  options: QuestionnaireOption[];          // empty for the amount step
+  max?: Record<string, { amount: string; asset: string; where: string }>; // amount step, keyed by asset id (and pool option id for LP)
+  presets?: { id: string; label: string; percent: string }[];            // amount step, from BALANCE_FRACTION_OPTIONS
+  pair?: Record<string, { asset: string; perUnit: string | null }>;      // LP venue option id → the other token and its per-unit ratio (null if reserves not read)
+}
+
+export interface Questionnaire {
+  id: string;             // sealed in the continuation with the issued options
+  title: string;          // "Supply USDC"
+  subtitle: string;       // "Choose which, where and how much"
+  steps: QuestionnaireStep[];
+}
+
+export interface QuestionnaireAnswers {
+  questionnaireId: string;
+  asset: string;                     // an issued asset option id
+  venue: string | null;              // an issued venue option id, or null when that step was skipped
+  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string };
+  summary: string;                   // "Supply 50% of my BLUSDC to Earn": what the thread shows as the user's turn
 }
 
 export type ResearchStreamEvent =
@@ -164,3 +198,4 @@ export type ResearchStreamEvent =
   /** `conversationId`: where the server recorded this turn, so the next turn joins it. */
   | { type: "result"; result: ResearchView; conversationId?: string }
   | { type: "error"; code: string; message: string };
+
