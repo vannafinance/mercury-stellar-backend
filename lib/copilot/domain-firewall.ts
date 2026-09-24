@@ -14,6 +14,7 @@
 
 import { ASSET_DOMAIN_WORDS } from "./registry/assets";
 import { classifyOrFallback } from "./domain-classifier";
+import { resolveName } from "./intent/resolve-name";
 import { wouldExceedTokenCap, tokenCapMessage } from "./token-budget";
 
 export type FirewallResult =
@@ -264,6 +265,35 @@ const FINANCIAL_SEMANTIC_RE =
  * Evaluate whether we should call the LLM / MCP path at all.
  * Call this at the top of handleChat before Vertex.
  */
+/** Letters and digits of one message, in order. Punctuation is a separator, not a phrase rule. */
+function messageWords(message: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  for (const ch of message) {
+    if ((ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")) current += ch;
+    else if (current) { words.push(current); current = ""; }
+  }
+  if (current) words.push(current);
+  return words;
+}
+
+/**
+ * A word the resolver calls an asset, venue, or op — exact or near — is a domain
+ * name. An off-domain refusal must not fire on one. The resolver owns the distance.
+ */
+export function messageNamesDomain(message: string): boolean {
+  for (const word of messageWords(message)) {
+    const hit = resolveName(word, ["asset", "venue", "op"]);
+    if (hit.kind === "exact" || hit.kind === "near") return true;
+  }
+  return false;
+}
+
+function refuseOffDomain(message: string, reason: string): FirewallResult {
+  if (messageNamesDomain(message)) return { allow: true, reason: "allow:resolved_name" };
+  return { allow: false, reason, message: BLOCK_MESSAGE };
+}
+
 export function evaluateDomainFirewall(
   message: string,
   opts?: { hasPageContext?: boolean },
@@ -311,12 +341,12 @@ export function evaluateDomainFirewall(
 
   // 5) Ambiguous long text with no domain signal → refuse (saves billing)
   if (m.length > 80) {
-    return { allow: false, reason: "block:no_domain_signal", message: BLOCK_MESSAGE };
+    return refuseOffDomain(m, "block:no_domain_signal");
   }
 
   // 6) A question with no product/financial noun anywhere in it.
   if (/\b(what|how|why|who|when|where|explain|show|list|help|can\s+i|do\s+i)\b/i.test(m)) {
-    return { allow: false, reason: "block:off_domain_question", message: BLOCK_MESSAGE };
+    return refuseOffDomain(m, "block:off_domain_question");
   }
 
   // Default: allow a short leftover that looks like an asset ticker (e.g. "BLUSDC"),
@@ -326,7 +356,7 @@ export function evaluateDomainFirewall(
     return { allow: true, reason: "allow:short_token" };
   }
 
-  return { allow: false, reason: "block:default", message: BLOCK_MESSAGE };
+  return refuseOffDomain(m, "block:default");
 }
 
 export function hasCheapDomainSignal(

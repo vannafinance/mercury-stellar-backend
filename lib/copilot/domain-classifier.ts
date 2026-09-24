@@ -34,9 +34,14 @@ export async function classifyDomain(
     signal,
     "LOW",
   );
-  const parsed = isRecord(raw) && typeof raw.in_domain === "boolean"
-    ? { in_domain: raw.in_domain, reason: typeof raw.reason === "string" ? raw.reason.slice(0, 200) : "classified" }
-    : { in_domain: false, reason: "invalid_classifier" };
+  if (!isRecord(raw) || typeof raw.in_domain !== "boolean") {
+    // A malformed answer is not a refusal. The investigation has its own blocked outcome.
+    return { in_domain: true, reason: "invalid_classifier" };
+  }
+  const parsed = {
+    in_domain: raw.in_domain,
+    reason: typeof raw.reason === "string" ? raw.reason.slice(0, 200) : "classified",
+  };
   cache.set(key, { ...parsed, at: Date.now() });
   return parsed;
 }
@@ -52,8 +57,8 @@ export async function classifyOrFallback(
   try {
     return await classifyDomain(message, signal);
   } catch {
-    // Vertex down: keep product-looking turns, refuse trivia that had no domain signal.
-    return { in_domain: cheapAllow, reason: "classifier_unavailable" };
+    // Vertex down is not evidence the message is off-domain. Fail open into investigation.
+    return { in_domain: true, reason: "classifier_unavailable" };
   }
 }
 
