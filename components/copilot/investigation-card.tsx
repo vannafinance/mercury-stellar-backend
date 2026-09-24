@@ -74,13 +74,6 @@ function toStepperStep(step: WorkflowView["steps"][number]): StepperStep {
   };
 }
 
-type Borrowing = NonNullable<ResearchView["understanding"]>["borrowing"];
-const BORROWING: Record<Borrowing, string | null> = {
-  unspecified: null,
-  allowed: "Borrowing allowed, not required",
-  required: "Borrowing required",
-  forbidden: "No new borrowing",
-};
 
 /** The rate is shown only when the option earns or pays one; a repay has none, and "0.00% APR" was a false figure. */
 function rateOf(candidate: NonNullable<ResearchView["candidates"]>["feasible"][number]): string | null {
@@ -101,12 +94,6 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 const BTN_PRIMARY = "rounded-r2 bg-gradient px-3.5 py-2 text-[13px] font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:opacity-45";
-/** Case and spacing do not make a restatement new; only different words do. */
-function sameWords(a: string, b: string): boolean {
-  const norm = (text: string) => text.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.?!]+$/, "");
-  return norm(a) === norm(b);
-}
-
 /** Plan A, Plan B, Plan C: the owner's layout names alternatives, not "Option 1 of 3". */
 const planLetter = (index: number) => String.fromCharCode(65 + index);
 
@@ -121,7 +108,7 @@ export function InvestigationCard({
    * Cancel on a plan that was never prepared: nothing was sent, so it only closes the plans
    * for this reply. Keyed by the reply's continuation so a new reply starts open.
    */
-  const [dismissedFor, setDismissedFor] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState<{ key: string; ids: string[] } | null>(null);
   const result: ResearchView | null = researchResult ?? (workflow ? {
     status: "researched", message: "Restored your recorded plan.", originalRequest: workflow.objective, refinements: [],
     understanding: null, question: null, facts: [], checks: [], warnings: [], continuation: "", executionAllowed: false,
@@ -133,7 +120,6 @@ export function InvestigationCard({
         : progress.kind === "reading" ? `Reading ${progress.label}`
           : `${progress.label}: ${progress.status === "ok" ? "read" : "unavailable"}`;
 
-  const stance = result?.understanding ? BORROWING[result.understanding.borrowing] : null;
   /**
    * Another option may be prepared once the current plan can no longer submit anything:
    * blocked before broadcast, finished, or cancelled. While a plan is proposed, approved,
@@ -212,6 +198,11 @@ export function InvestigationCard({
     (result?.warnings && result.warnings.length > 0)
   );
 
+  /** Cancel closes THAT plan only (owner, 24 Sep); the others stay. Keyed per reply. */
+  const replyKey = result?.continuation || result?.originalRequest || "";
+  const dismissedIds = dismissed?.key === replyKey ? dismissed.ids : [];
+  const visiblePlans = (result?.candidates?.feasible ?? []).filter((candidate) => !dismissedIds.includes(candidate.id));
+
   return (
     <div aria-label="Copilot investigation" className="min-w-0">
       {!prompt && !result && !error ? (
@@ -256,26 +247,11 @@ export function InvestigationCard({
             <article aria-label="Copilot reply" className="space-y-5">
               {clock && <p className="text-[12px] tabular-nums text-vgray-400">{clock}</p>}
 
-              {result.understanding && (!sameWords(result.understanding.objective, result.originalRequest || prompt) ||
-                result.understanding.constraints.length > 0 || stance) && (
-                <section className="space-y-2">
-                  {/* UI-FIX-LIST 1: a restatement identical to what was typed tells the user nothing. */}
-                  {!sameWords(result.understanding.objective, result.originalRequest || prompt) && (
-                    <>
-                      <SectionTitle>Understood as</SectionTitle>
-                      <p className="text-[14px] leading-6 text-vgray-800">{result.understanding.objective}</p>
-                    </>
-                  )}
-                  {(result.understanding.constraints.length > 0 || stance) && (
-                    <ul className="flex flex-wrap gap-1.5" aria-label="Constraints">
-                      {result.understanding.constraints.filter((constraint) => constraint.trim().toLowerCase() !== stance?.toLowerCase()).map((constraint, index) => (
-                        <li key={index} className="rounded-full border border-violet-100 bg-violet-50 px-2.5 py-1 text-[12px] text-violet-500">{constraint}</li>
-                      ))}
-                      {stance && <li className="rounded-full border border-vgray-100 px-2.5 py-1 text-[12px] text-vgray-500">{stance}</li>}
-                    </ul>
-                  )}
-                </section>
-              )}
+              {/*
+                No "Understood as" block and no constraint chips (owner, 24 Sep, live): the plan card
+                already shows exactly what will run, and the reply says it. A restatement next to it is
+                the extra wording the layout sketch rules out.
+              */}
 
               {/* The one computed number worth its own block: real headroom at their floor. */}
               {result.capacity && (
@@ -301,10 +277,10 @@ export function InvestigationCard({
                 the set of plans goes, so the chosen plan is the only card left. Refusals are not
                 a second card; the reply above already says why (UI-FIX-LIST 12, 16).
               */}
-              {!!result.candidates && result.candidates.feasible.length > 0 && !workflow &&
-                dismissedFor !== (result.continuation || result.originalRequest) && (
+              {!!result.candidates && visiblePlans.length > 0 && !workflow && (
                 <section className="space-y-2.5" aria-label={result.candidates.feasible.length > 1 ? "Plans" : "Plan"}>
-                  {result.candidates.feasible.map((candidate, index) => {
+                  {visiblePlans.map((candidate) => {
+                    const index = result.candidates!.feasible.indexOf(candidate);
                     const rate = rateOf(candidate);
                     const several = result.candidates!.feasible.length > 1;
                     const approve = onApproveCandidate ?? onPropose;
@@ -349,7 +325,7 @@ export function InvestigationCard({
                             <button type="button" onClick={() => approve(candidate.id)} disabled={workflowLoading || planInFlight} className={BTN_PRIMARY}>
                               Approve
                             </button>
-                            <button type="button" onClick={() => setDismissedFor(result.continuation || result.originalRequest)} disabled={workflowLoading} className={BTN_QUIET}>
+                            <button type="button" onClick={() => setDismissed({ key: replyKey, ids: [...dismissedIds, candidate.id] })} disabled={workflowLoading} className={BTN_QUIET}>
                               Cancel
                             </button>
                           </div>
@@ -359,7 +335,7 @@ export function InvestigationCard({
                   })}
                 </section>
               )}
-              {!!result.candidates?.feasible.length && !workflow && dismissedFor === (result.continuation || result.originalRequest) && (
+              {!!result.candidates?.feasible.length && !workflow && visiblePlans.length === 0 && (
                 <p className="text-[13px] leading-5 text-vgray-500" data-testid="plans-cancelled">Cancelled. Nothing was submitted.</p>
               )}
 

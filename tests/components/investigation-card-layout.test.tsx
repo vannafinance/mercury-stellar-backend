@@ -64,22 +64,30 @@ describe("plan cards", () => {
     expect(onPropose).not.toHaveBeenCalled();
   });
 
-  it("closes the plans on Cancel and says nothing was submitted", () => {
+  it("closes only the plan whose Cancel was pressed (owner, 24 Sep: Plan B's Cancel removed Plan A too)", () => {
     cardFor(view({ candidates: twoPlans() }), { onPropose: vi.fn() });
-    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[1]);
+    expect(screen.getByText("Plan A")).toBeTruthy();
+    expect(screen.queryByText("Plan B")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
+    expect(screen.queryByTestId("plans-cancelled")).toBeNull();
+  });
+
+  it("says nothing was submitted once every plan is cancelled", () => {
+    cardFor(view({ candidates: twoPlans() }), { onPropose: vi.fn() });
+    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[1]);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     expect(screen.getByTestId("plans-cancelled").textContent).toMatch(/Nothing was submitted/);
   });
 });
 
 describe("Understood as", () => {
-  it("is left out when it only repeats the prompt", () => {
-    cardFor(view({ originalRequest: "What's my health factor?", understanding: { objective: "what's my health factor", constraints: [], borrowing: "unspecified" }, candidates: twoPlans() }));
+  // Owner, 24 Sep (live): no restatement block at all; the plan card shows what will run.
+  it("is never drawn, even when the understanding differs from what was typed", () => {
+    cardFor(view({ originalRequest: "lend me 30xlm", understanding: { objective: "Borrow 30 XLM on margin", constraints: ["No new borrowing"], borrowing: "forbidden" }, candidates: twoPlans() }));
     expect(screen.queryByText("Understood as")).toBeNull();
-  });
-  it("is shown when the understanding differs from what was typed", () => {
-    cardFor(view({ originalRequest: "lend me 30xlm", understanding: { objective: "Borrow 30 XLM on margin", constraints: [], borrowing: "required" } }));
-    expect(screen.getByText("Understood as")).toBeTruthy();
+    expect(screen.queryByText("No new borrowing")).toBeNull();
   });
 });
 
