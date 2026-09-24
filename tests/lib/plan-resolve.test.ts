@@ -1248,13 +1248,39 @@ describe("resolvePlans — redeem and withdraw", () => {
     ]);
     expect(c.steps![0].args).toEqual({ symbol: "AQUSDC", redeem_all: true, lender: SCOPE.trader });
     expect(c.steps![0].sizing).toEqual({ basis: "whole_position", read: "earn_position" });
-    expect(c.steps![0].label).toMatch(/Redeem 4918.2651397 AQUSDC vTokens from Earn \(≈ 5000.78/);
+    expect(c.steps![0].label).toMatch(/Redeem 4918.2651397 VAQUSDC from Earn \(≈ 5000.78/);
     expect(c.steps![1].args).toEqual({ smart_account: SCOPE.smartAccount, symbol: "AQUSDC", amount: "5000.786863", trader: SCOPE.trader });
     // One sum of money passes through two legs: deployed is what lands, not twice that.
     expect(Number(c.amountUsd)).toBeCloseTo(5000.79, 1);
     // Collateral rises by the deposit; nothing lowers health, so no floor was needed.
     expect(Number(c.finalHealthFactor)).toBeCloseTo((6605.84 + 5000.79) / 5102.54, 3);
     expect(c.borrows).toBe(false);
+  });
+
+  it("uses vtoken_symbol from the mocked on-chain read in the redeem step label", () => {
+    const customEarn = withEarn.map((o) =>
+      o.capability === "earn_position"
+        ? { ...o, data: { ...(o.data as Record<string, unknown>), vtoken_symbol: "vXYZ" } }
+        : o
+    );
+    const { candidates, rejected } = resolvePlans([plan("Redeem custom vToken", [
+      { op: "redeem", asset: "AQUSDC", sizing: { kind: "all_position" } },
+    ])], ctx({ observations: customEarn }));
+    expect(rejected).toEqual([]);
+    expect(candidates[0].steps![0].label).toMatch(/^Redeem 4918.2651397 vXYZ from Earn \(≈ 5000.78/);
+  });
+
+  it("falls back to '{tokens} {asset} vTokens' when the on-chain read carried no vtoken_symbol", () => {
+    const noSymbolEarn = withEarn.map((o) => {
+      if (o.capability !== "earn_position") return o;
+      const { vtoken_symbol: _, ...restData } = o.data as Record<string, unknown>;
+      return { ...o, data: restData };
+    });
+    const { candidates, rejected } = resolvePlans([plan("Redeem fallback", [
+      { op: "redeem", asset: "AQUSDC", sizing: { kind: "all_position" } },
+    ])], ctx({ observations: noSymbolEarn }));
+    expect(rejected).toEqual([]);
+    expect(candidates[0].steps![0].label).toMatch(/^Redeem 4918.2651397 AQUSDC vTokens from Earn \(≈ 5000.78/);
   });
 
   it("converts a literal redeem amount from the underlying the user named into vTokens", () => {

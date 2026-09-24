@@ -587,6 +587,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     /** Index of the removal whose payout this leg spends. */
     settledFrom?: number;
     targetOut?: string;
+    vtokenSymbol?: string | null;
   }
   const drafts: Draft[] = [];
   /**
@@ -843,7 +844,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         const vtokens = precise(formatWad(left.available), position.vtokenSymbol ?? leg.asset, name);
         const underlying = precise(formatWad(mulDown(decimalWad(position.underlying), share, WAD)), leg.asset, name);
         const usd = formatWad(mulDown(decimalWad(underlying), price.price, WAD));
-        drafts.push({ leg, name, usd, tokens: vtokens, produces: underlying, heldTokens: underlying });
+        drafts.push({ leg, name, usd, tokens: vtokens, produces: underlying, heldTokens: underlying, vtokenSymbol: position.vtokenSymbol });
         continue;
       }
       if (flow.positionRead === "farm_lp_position") {
@@ -1072,7 +1073,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         const vtokens = precise(shareOf(formatWad(left.available), share), position.vtokenSymbol ?? leg.asset, name);
         const underlying = precise(shareOf(formatWad(mulDown(decimalWad(position.underlying), remaining, WAD)), share), leg.asset, name);
         const usd = formatWad(mulDown(decimalWad(underlying), price.price, WAD));
-        drafts.push({ leg, name, usd, tokens: vtokens, produces: underlying, heldTokens: underlying });
+        drafts.push({ leg, name, usd, tokens: vtokens, produces: underlying, heldTokens: underlying, vtokenSymbol: position.vtokenSymbol });
         continue;
       }
       if (flow.positionRead !== "account_collateral") throw new Reject(name, `a share of the position sizes ${positionOps()}`);
@@ -1224,7 +1225,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (underlying > redeemable) throw new Reject(name, `only ${formatUserAmount(redeemable, leg.asset)} ${leg.asset} is redeemable from Earn${earlier.length ? " after the legs before it" : ""}`);
       const vtokens = precise(formatWad((underlying * decimalWad(position.vtokens)) / decimalWad(position.underlying)), position.vtokenSymbol ?? leg.asset, name);
       const usd = formatWad(mulDown(underlying, price.price, WAD));
-      drafts.push({ leg, name, usd, tokens: vtokens, produces: sizing.amount, heldTokens: null });
+      drafts.push({ leg, name, usd, tokens: vtokens, produces: sizing.amount, heldTokens: null, vtokenSymbol: position.vtokenSymbol });
       continue;
     }
     const tokens = sizing.amount;
@@ -1416,7 +1417,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       return { amountB: derivedTokens, minLiquidityOut: truncateToDecimals(formatWad(slippageFloor(expectedSharesWad)), 7) };
     })() : null;
     const label = d.leg.op === "redeem"
-      ? `Redeem ${d.tokens} ${def.id} vTokens from Earn (≈ ${d.produces} ${def.displayLabel ?? def.id})`
+      ? (d.vtokenSymbol
+          ? `Redeem ${d.tokens} ${d.vtokenSymbol} from Earn (≈ ${d.produces} ${def.displayLabel ?? def.id})`
+          : `Redeem ${d.tokens} ${def.id} vTokens from Earn (≈ ${d.produces} ${def.displayLabel ?? def.id})`)
       : d.leg.op === "swap" && out
         ? `Swap ${d.tokens} ${def.displayLabel ?? def.id} for at least ${minOut} ${out.displayLabel ?? out.id} on ${venueLabel(dex!)}`
         : d.leg.op === "remove_liquidity"
