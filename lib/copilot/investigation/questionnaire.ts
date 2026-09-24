@@ -4,7 +4,9 @@
  */
 import { createHash } from "node:crypto";
 import { BALANCE_FRACTION_OPTIONS } from "../amount-intent";
+import { resolveName } from "../intent/resolve-name";
 import { allAssets, lpPairs, mentionsBareUsdc, resolveAssetDef, USDC_VARIANTS, type AssetId } from "../registry/assets";
+import { normalizeVenue } from "../registry/intent";
 import { deploysIntoPosition, OP_FLOW, WORKFLOW_OPS, type Pocket, type WorkflowOp } from "../workflow/types";
 import { verbOf } from "./plan";
 import { decimalWad, formatWad, WAD, ZERO } from "./fixed";
@@ -64,10 +66,63 @@ function familyNarrows(asset: string | undefined): boolean {
   return !!asset && (asset.toUpperCase() === "USDC" || mentionsBareUsdc(asset)) && !namedAsset(asset);
 }
 
-/** The ops this question is choosing among. A named op is the only one. */
-export function opsInPlay(missing: QuestionnaireMissing): WorkflowOp[] {
+function messageWords(message: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  for (const ch of message) {
+    if ((ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")) current += ch;
+    else if (current) { words.push(current); current = ""; }
+  }
+  if (current) words.push(current);
+  return words;
+}
+
+/** Venues the user actually named, via the registry's own venue matcher. */
+function venuesNamed(messages: readonly string[]): Set<string> {
+  const named = new Set<string>();
+  for (const message of messages) {
+    for (const word of messageWords(message)) {
+      const venue = normalizeVenue(word);
+      if (venue) named.add(venue);
+      const hit = resolveName(word, ["venue"]);
+      if ((hit.kind === "exact" || hit.kind === "near") && hit.candidates[0]) named.add(hit.candidates[0].id);
+    }
+  }
+  return named;
+}
+
+function opServesVenue(op: WorkflowOp, venues: Set<string>): boolean {
+  const flow = OP_FLOW[op];
+  if (venues.has(flow.to) || venues.has(flow.venue)) return true;
+  return op === "add_liquidity" && lpPairs().some((pair) => venues.has(pair.venue));
+}
+
+/**
+ * The ops this question is choosing among.
+ *
+ * A guessed op is not a venue. When the question still asks where the tokens go, a
+ * deploy op the model filled in is ignored unless the user's own words name a venue.
+ */
+export function opsInPlay(missing: QuestionnaireMissing, messages: readonly string[] = []): WorkflowOp[] {
+  const deploy = WORKFLOW_OPS.filter((op) => deploysIntoPosition(op));
+  const named = venuesNamed(messages);
+  if (missing.slots.includes("venue") && named.size > 0) {
+    const matched = deploy.filter((op) => opServesVenue(op, named));
+    if (matched.length) return matched;
+  }
+  if (missing.slots.includes("venue") && missing.op && deploysIntoPosition(missing.op) && named.size === 0) return deploy;
   if (missing.op) return [missing.op];
-  return WORKFLOW_OPS.filter((op) => deploysIntoPosition(op));
+  return deploy;
+}
+
+function choiceId(op: WorkflowOp, asset: AssetId, venue?: string): string {
+  return venue ? `${op}:${venue}:${asset}` : `${op}:${asset}`;
+}
+
+function pocketPhrase(pocket: Pocket): string {
+  if (pocket === "wallet") return "in your wallet";
+  if (pocket === "account") return "in your margin account";
+  return `in ${POCKET_WHERE[pocket]}`;
 }
 
 function assetsAccepted(op: WorkflowOp): AssetId[] {
@@ -145,7 +200,7 @@ function readMissing(observations: readonly Observation[], capability: string): 
   return !observations.some((item) => item.capability === capability && item.status === "ok" && item.data);
 }
 
-export function readsForQuestionnaire(missing: QuestionnaireMissing, observations: readonly Observation[], now: number): StrategyRead[] {
+export function readsForQuestionnaire(missing: QuestionnaireMissing, observations: readonly Observation[], now: number, messages: readonly string[] = []): StrategyRead[] {
   const fresh = (capability: string, asset?: string) => observations.some((item) =>
     item.capability === capability && item.status === "ok" && item.data && now - item.observedAt <= 60_000 &&
     (asset === undefined || item.args.asset === asset));
@@ -154,11 +209,11 @@ export function readsForQuestionnaire(missing: QuestionnaireMissing, observation
     if (fresh(capability, asset)) return;
     wanted.set(`${capability}:${asset ?? ""}`, { capability, args: asset ? { asset } : {} });
   };
-  const ops = opsInPlay(missing);
+  const ops = opsInPlay(missing, messages);
   const assets = candidateAssets(missing, ops);
   for (const op of ops) {
     const flow = OP_FLOW[op];
-    if (flow.from === "wallet" || flow.to === "wallet") want("wallet_balances");
+    if (flow.from === "wallet" || flow.to === "wallet" || (flow.from === "account" && deploysIntoPosition(op))) want("wallet_balances");
     if (flow.from === "account" || flow.to === "account") want("account_collateral");
     if (flow.from === "debt" || flow.to === "debt") want("account_debt");
     if (flow.positionRead === "earn_position" || flow.positionRead === "farm_lp_position") {
@@ -211,47 +266,89 @@ interface VenueChoice {
   pool?: { venue: "aquarius" | "soroswap"; tokens: [AssetId, AssetId] };
 }
 
-function venueChoices(asset: AssetId, ops: readonly WorkflowOp[], observations: readonly Observation[]): VenueChoice[] {
+function pocketRead(observations: readonly Observation[], pocket: Pocket): boolean {
+  const capability = pocket === "wallet" ? "wallet_balances"
+    : pocket === "account" ? "account_collateral"
+      : pocket === "debt" ? "account_debt"
+        : pocket === "earn" ? "earn_position"
+          : pocket === "blend" ? "blend_position"
+            : "farm_lp_position";
+  return observations.some((item) => item.capability === capability && item.status === "ok" && item.data);
+}
+
+/** A read that does not list the asset holds none of it. An absent read is unknown. */
+function amountInPocket(observations: readonly Observation[], pocket: Pocket, asset: AssetId): string | null {
+  const held = heldInPocket(observations, pocket, asset);
+  if (held) return held;
+  return pocketRead(observations, pocket) ? "0" : null;
+}
+
+function wadOf(value: string | null): bigint {
+  if (!value) return ZERO;
+  try { return decimalWad(value); } catch { return ZERO; }
+}
+
+function sumKnown(parts: Array<string | null>): string | null {
+  const known = parts.filter((part): part is string => part !== null);
+  if (!known.length) return null;
+  return formatWad(known.reduce((sum, part) => sum + wadOf(part), ZERO));
+}
+
+function balanceDetail(amount: string, asset: string, pocket: Pocket, rate?: string | null): string {
+  const line = `${amount} ${asset} ${pocketPhrase(pocket)}`;
+  return rate ? `${line} · ${rate}` : line;
+}
+
+function depositSentence(accountHeld: string, asset: string, shortfall: string): string {
+  return `Your margin account has ${accountHeld} ${asset}; I'll deposit the other ${shortfall} from your wallet first.`;
+}
+
+function venueChoices(asset: AssetId, ops: readonly WorkflowOp[], observations: readonly Observation[], named: Set<string>): VenueChoice[] {
   const choices: VenueChoice[] = [];
   for (const op of ops) {
     const flow = OP_FLOW[op];
     if (!assetsAccepted(op).includes(asset)) continue;
-    const held = heldInPocket(observations, flow.from, asset);
+    const accountHeld = flow.from === "account" ? amountInPocket(observations, "account", asset) : null;
+    const walletTopUp = flow.from === "account" ? amountInPocket(observations, "wallet", asset) : null;
+    const held = flow.from === "account"
+      ? (accountHeld && accountHeld !== "0" ? accountHeld : walletTopUp && walletTopUp !== "0" ? accountHeld ?? "0" : null)
+      : heldInPocket(observations, flow.from, asset);
     if (!held) continue;
     if (deploysIntoPosition(op) && flow.to === "earn" && resolveAssetDef(asset)?.earnSymbol) {
       const rate = earnRate(observations, asset);
       choices.push({
         pocket: flow.from,
-        option: { id: op, label: "Earn", forAsset: asset, op, ...(rate ? { detail: rate } : {}) },
+        option: { id: choiceId(op, asset), label: "Earn", forAsset: asset, op, detail: balanceDetail(held, asset, flow.from, rate) },
       });
     } else if (deploysIntoPosition(op) && flow.to === "blend" && resolveAssetDef(asset)?.blendReserve) {
       const rate = blendRate(observations, asset);
       choices.push({
         pocket: flow.from,
-        option: { id: op, label: "Farm · Blend", forAsset: asset, op, ...(rate ? { detail: rate } : {}) },
+        option: { id: choiceId(op, asset), label: "Farm · Blend", forAsset: asset, op, detail: balanceDetail(held, asset, flow.from, rate) },
       });
     } else if (deploysIntoPosition(op) && flow.to === "lp") {
       for (const pair of lpPairs()) {
         if (!pair.tokens.includes(asset)) continue;
+        if (named.size > 0 && (named.has("aquarius") || named.has("soroswap")) && !named.has(pair.venue)) continue;
         const other = pair.tokens[0] === asset ? pair.tokens[1] : pair.tokens[0];
-        const otherHeld = heldInPocket(observations, flow.from, other);
+        const otherHeld = amountInPocket(observations, flow.from, other);
         const label = pair.venue === "aquarius" ? `Aquarius ${pair.tokens.join("/")} pool` : `Soroswap ${pair.tokens.join("/")} pool`;
         choices.push({
           pocket: flow.from,
           pool: pair,
           option: {
-            id: `${op}:${pair.venue}`,
+            id: choiceId(op, asset, pair.venue),
             label,
             forAsset: asset,
             op,
-            detail: `pairs with ${other}${otherHeld ? ` · you have ${otherHeld} ${other}` : ""}`,
+            detail: `pairs with ${other}${otherHeld && otherHeld !== "0" ? ` · ${otherHeld} ${other} ${pocketPhrase(flow.from)}` : ""}`,
           },
         });
       }
     } else if (!deploysIntoPosition(op)) {
       choices.push({
         pocket: flow.from,
-        option: { id: op, label: verbOf(op), forAsset: asset, op, detail: `${held} in ${POCKET_WHERE[flow.from]}` },
+        option: { id: choiceId(op, asset), label: verbOf(op), forAsset: asset, op, detail: balanceDetail(held, asset, flow.from) },
       });
     }
   }
@@ -294,10 +391,16 @@ function titleFor(missing: QuestionnaireMissing, ops: readonly WorkflowOp[]): st
   return family ? `${verb} ${family}` : verb;
 }
 
-export function buildQuestionnaire(missing: QuestionnaireMissing, observations: readonly Observation[], now: number): Questionnaire | null {
+export function buildQuestionnaire(
+  missing: QuestionnaireMissing,
+  observations: readonly Observation[],
+  now: number,
+  messages: readonly string[] = [],
+): Questionnaire | null {
   void now;
   if (!missing.slots.length) return null;
-  const ops = opsInPlay(missing);
+  const named = venuesNamed(messages);
+  const ops = opsInPlay(missing, messages);
   const assets = candidateAssets(missing, ops);
   const steps: QuestionnaireStep[] = [];
   let chosen = namedAsset(missing.asset);
@@ -310,7 +413,7 @@ export function buildQuestionnaire(missing: QuestionnaireMissing, observations: 
       for (const asset of assets) {
         const held = heldFor(asset, ops, observations);
         if (!held) continue;
-        options.push({ id: asset, label: asset, detail: `${held.amount} in ${POCKET_WHERE[held.pocket]}` });
+        options.push({ id: asset, label: asset, detail: `${held.amount} ${asset} ${pocketPhrase(held.pocket)}` });
       }
     }
     if (options.length === 1) chosen = options[0].id as AssetId;
@@ -323,22 +426,50 @@ export function buildQuestionnaire(missing: QuestionnaireMissing, observations: 
 
   const venueAssets = chosen ? [chosen] : assets;
   const venueOptions: QuestionnaireOption[] = [];
-  const pair: Record<string, { asset: string; perUnit: string | null }> = {};
-  const max: Record<string, { amount: string; asset: string; where: string }> = {};
+  const pair: Record<string, { asset: string; perUnit: string | null; note?: string }> = {};
+  const max: Record<string, { amount: string; asset: string; where: string; note?: string }> = {};
   for (const asset of venueAssets) {
-    for (const choice of venueChoices(asset, ops, observations)) {
+    for (const choice of venueChoices(asset, ops, observations, named)) {
+      const spendsAccount = choice.pocket === "account";
+      const accountHeld = spendsAccount ? amountInPocket(observations, "account", asset) : null;
+      const walletHeld = amountInPocket(observations, "wallet", asset);
+      const own = spendsAccount ? sumKnown([accountHeld, walletHeld]) : heldInPocket(observations, choice.pocket, asset);
+      if (!own || own === "0") continue;
       venueOptions.push(choice.option);
-      const held = heldInPocket(observations, choice.pocket, asset);
-      if (held) max[choice.option.id] = { amount: held, asset, where: POCKET_WHERE[choice.pocket] };
-      if (choice.pool && held) {
+      const where = spendsAccount && walletHeld && walletHeld !== "0"
+        ? "your margin account and your wallet"
+        : pocketPhrase(choice.pocket).replace(/^in /, "");
+      max[choice.option.id] = { amount: own, asset, where };
+      const notes: string[] = [];
+      const noteFor = (held: string | null, token: string, needed: bigint) => {
+        if (!held || needed <= wadOf(held)) return;
+        notes.push(depositSentence(held, token, formatWad(needed - wadOf(held))));
+      };
+      noteFor(accountHeld, asset, wadOf(own));
+      if (choice.pool) {
         const other = choice.pool.tokens[0] === asset ? choice.pool.tokens[1] : choice.pool.tokens[0];
         const reserves = reservesFor(observations, choice.pool.venue, choice.pool.tokens[1]);
         const unit = reserves ? perUnit(reserves, choice.pool.tokens[0] === asset) : null;
-        pair[choice.option.id] = { asset: other, perUnit: unit };
-        const otherHeld = heldInPocket(observations, choice.pocket, other);
-        max[choice.option.id] = { amount: capByPair(held, otherHeld, unit), asset, where: choice.option.label };
+        const otherAccount = amountInPocket(observations, "account", other);
+        const otherWallet = amountInPocket(observations, "wallet", other);
+        const otherFunds = sumKnown([otherAccount, otherWallet]);
+        const capped = capByPair(own, otherFunds, unit);
+        max[choice.option.id] = { amount: capped, asset, where };
+        notes.length = 0;
+        noteFor(accountHeld, asset, wadOf(capped));
+        if (unit && otherAccount) noteFor(otherAccount, other, (wadOf(capped) * wadOf(unit)) / WAD);
+        const note = notes.length ? notes.join(" ") : undefined;
+        pair[choice.option.id] = { asset: other, perUnit: unit, ...(note ? { note } : {}) };
+        if (note) {
+          choice.option.detail = `${choice.option.detail} ${note}`;
+          max[choice.option.id].note = note;
+        }
+      } else if (notes.length) {
+        const note = notes.join(" ");
+        choice.option.detail = `${choice.option.detail} ${note}`;
+        max[choice.option.id].note = note;
       }
-      if (held && !max[asset]) max[asset] = { amount: held, asset, where: POCKET_WHERE[choice.pocket] };
+      if (!max[asset]) max[asset] = { amount: own, asset, where };
     }
   }
   if (missing.slots.includes("venue") || venueOptions.length === 1) {
@@ -409,7 +540,7 @@ export function actionFromAnswers(issued: Questionnaire, answers: QuestionnaireA
     : venueOptions.length === 1 ? venueOptions[0] : undefined;
   const op = (venue?.op ?? issued.steps.flatMap((step) => step.options).find((option) => option.op)?.op) as WorkflowOp;
   const flow = OP_FLOW[op];
-  const pool = venue?.id.startsWith("add_liquidity:") ? lpPairs().find((pair) => pair.venue === venue.id.slice("add_liquidity:".length) && pair.tokens.includes(answers.asset as AssetId)) : undefined;
+  const pool = venue?.id.startsWith("add_liquidity:") ? lpPairs().find((pair) => venue.id.split(":")[1] === pair.venue && pair.tokens.includes(answers.asset as AssetId)) : undefined;
   const other = pool ? (pool.tokens[0] === answers.asset ? pool.tokens[1] : pool.tokens[0]) : undefined;
   const sizing: PlanLeg["sizing"] = answers.amount.kind === "fraction"
     ? { kind: "fraction", percent: answers.amount.percent, of: flow.from === "wallet" ? "idle" : "position", sourceQuote: answers.summary }

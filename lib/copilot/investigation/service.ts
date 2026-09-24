@@ -482,14 +482,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const outcome = result.outcome;
   if (outcome.kind === "clarify" && outcome.missing) {
     const questionnaireNow = Date.now();
-    const needed = readsForQuestionnaire(outcome.missing, result.observations, questionnaireNow);
+    const needed = readsForQuestionnaire(outcome.missing, result.observations, questionnaireNow, messages);
     if (needed.length) {
       const batch = await collectStrategyReads(scope, scopedMcp, dependencies.signal, questionnaireNow, needed, "qn");
       result.observations.push(...batch);
     }
   }
   const questionnaire = outcome.kind === "clarify" && outcome.missing
-    ? buildQuestionnaire(outcome.missing, result.observations, Date.now()) ?? undefined
+    ? buildQuestionnaire(outcome.missing, result.observations, Date.now(), messages) ?? undefined
     : undefined;
   /**
    * Borrow ranking is enabled by the typed goal/plan, not by re-reading the user's

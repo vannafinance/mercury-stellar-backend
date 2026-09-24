@@ -136,7 +136,12 @@ function opCode(op: PlanLeg["op"]): string {
 }
 
 /** A leg as the sizer walks it: the model's leg, plus a marker the expansion below sets. */
-type SizerLeg = ProposedPlan["legs"][number] & { fundsRepay?: true; repayShare?: PlanSizing & { kind: "fraction" } };
+type SizerLeg = ProposedPlan["legs"][number] & {
+  fundsRepay?: true;
+  repayShare?: PlanSizing & { kind: "fraction" };
+  /** A deposit of the shortfall, derived from the reads. Its amount is not one the user typed. */
+  fundsAccount?: true;
+};
 
 /**
  * The account is what repays — `vanna_repay` draws on the smart account's balance, and
@@ -151,6 +156,83 @@ type SizerLeg = ProposedPlan["legs"][number] & { fundsRepay?: true; repayShare?:
 function drawsOnWallet(sizing: PlanSizing): boolean {
   return sizing.kind === "all_idle" || sizing.kind === "all_position"
     || (sizing.kind === "fraction" && sizing.of === "idle") || sizing.kind === "literal";
+}
+
+function postedBalance(ctx: PlanContext, asset: string): bigint | null {
+  const def = resolveAssetDef(asset);
+  if (!def?.marginSymbol) return null;
+  const read = [...ctx.observations].reverse().find((observation) =>
+    observation.capability === "account_collateral" && observation.status === "ok" && observation.data && ctx.now - observation.observedAt <= 60_000);
+  if (!read) return null;
+  const held = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol, def.id, ctx.now);
+  if (held === null) return ZERO;
+  try { return decimalWad(held); } catch { return null; }
+}
+
+function spendableWallet(ctx: PlanContext, asset: string): bigint | null {
+  const read = ctx.observations.some((observation) =>
+    observation.capability === "wallet_balances" && observation.status === "ok" && observation.data && ctx.now - observation.observedAt <= 60_000);
+  if (!read) return null;
+  const row = idleWalletHoldingsFrom(ctx.observations, ctx.now)[asset as keyof ReturnType<typeof idleWalletHoldingsFrom>];
+  if (!row?.tokens) return ZERO;
+  try { return decimalWad(row.tokens); } catch { return ZERO; }
+}
+
+function pairedNeed(stated: bigint, reserves: PoolReserves, statedIsXlm: boolean): bigint | null {
+  try {
+    const reserveStated = decimalWad(statedIsXlm ? reserves.xlm : reserves.paired);
+    const reserveDerived = decimalWad(statedIsXlm ? reserves.paired : reserves.xlm);
+    if (reserveStated <= ZERO) return null;
+    return mulDown(stated, reserveDerived, reserveStated);
+  } catch { return null; }
+}
+
+/**
+ * A Blend supply or an LP add spends the margin account. When that account is short of
+ * the stated amount — and, for a pool, of the paired amount the same reserves ratio
+ * sizes — the wallet deposits the shortfall first. No reserves read leaves the leg
+ * alone, so the existing refusal still speaks.
+ */
+function literalFarmFunding(leg: ProposedPlan["legs"][number], ctx: PlanContext): SizerLeg[] | null {
+  if (leg.sizing.kind !== "literal" || (leg.op !== "supply_blend" && leg.op !== "add_liquidity")) return null;
+  const stated = (() => { try { return decimalWad(leg.sizing.amount); } catch { return null; } })();
+  if (stated === null || stated <= ZERO) return null;
+  const needs: Array<{ asset: string; held: bigint; needed: bigint }> = [];
+  const held = postedBalance(ctx, leg.asset);
+  if (held === null) return null;
+  needs.push({ asset: leg.asset, held, needed: stated });
+  if (leg.op === "add_liquidity") {
+    const paired = resolveAssetDef(leg.assetOut ?? "");
+    const pool = paired ? poolVenueFor(leg.asset, paired.id) : null;
+    if (!paired || !pool) return null;
+    const reserves = poolReservesOf(ctx.observations, leg.asset === "XLM" ? paired.id : leg.asset, pool, ctx.now);
+    if (!reserves) return null;
+    const needed = pairedNeed(stated, reserves, leg.asset === "XLM");
+    if (needed === null) return null;
+    const otherHeld = postedBalance(ctx, paired.id);
+    if (otherHeld === null) return null;
+    needs.push({ asset: paired.id, held: otherHeld, needed });
+  }
+  const deposits: SizerLeg[] = [];
+  for (const need of needs) {
+    if (need.held >= need.needed) continue;
+    const wallet = spendableWallet(ctx, need.asset);
+    if (wallet === null) return null;
+    const shortfall = need.needed - need.held;
+    if (wallet < shortfall) {
+      throw new Reject(
+        `${leg.op.replaceAll("_", " ")} ${need.asset}`,
+        `Your margin account has ${formatWad(need.held)} ${need.asset} and this needs ${formatWad(need.needed)}. Your wallet has ${formatWad(wallet)} ${need.asset}, which does not cover the other ${formatWad(shortfall)}.`,
+      );
+    }
+    deposits.push({
+      op: "deposit_collateral",
+      asset: need.asset,
+      sizing: { kind: "literal", amount: formatWad(shortfall), sourceQuote: leg.sizing.sourceQuote },
+      fundsAccount: true,
+    });
+  }
+  return deposits.length ? [...deposits, leg] : [leg];
 }
 
 function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
@@ -171,7 +253,10 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
        */
       const flow = OP_FLOW[leg.op];
       const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
-      if (!ofIdle || flow.from !== "account" || flow.to === "wallet") return [leg];
+      if (!ofIdle || flow.from !== "account" || flow.to === "wallet") {
+        const funded = literalFarmFunding(leg, ctx);
+        return funded ?? [leg];
+      }
       const prior = legs[index - 1];
       if (prior && prior.op === "deposit_collateral" && prior.asset === leg.asset && drawsOnWallet(prior.sizing)) {
         return [{ ...leg, sizing: { kind: "previous_leg" } }];
@@ -1149,7 +1234,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       continue;
     }
     // literal — anchored to the user's own words, exactly as goal.actions requires.
-    if (!literalAmountAnchored(sizing, ctx, plan, leg)) {
+    if (!leg.fundsAccount && !literalAmountAnchored(sizing, ctx, plan, leg)) {
       throw new Reject(name, `the amount ${sizing.amount} does not appear in your request`);
     }
     /**

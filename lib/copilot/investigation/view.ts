@@ -59,9 +59,9 @@ export interface QuestionnaireStep {
   slot: "asset" | "venue" | "amount";
   prompt: string;
   options: QuestionnaireOption[];
-  max?: Record<string, { amount: string; asset: string; where: string }>;
+  max?: Record<string, { amount: string; asset: string; where: string; note?: string }>;
   presets?: { id: string; label: string; percent: string }[];
-  pair?: Record<string, { asset: string; perUnit: string | null }>;
+  pair?: Record<string, { asset: string; perUnit: string | null; note?: string }>;
 }
 export interface Questionnaire {
   id: string;
