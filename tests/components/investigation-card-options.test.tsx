@@ -332,7 +332,7 @@ describe("investigation card / historical receipts", () => {
     const link = screen.getByRole("link", { name: new RegExp(hash) });
     expect(link.getAttribute("href")).toBe(`https://stellar.expert/explorer/testnet/tx/${hash}`);
     expect(screen.getByText("Settled")).toBeTruthy();
-    expect(screen.getByText(/ledger #42/)).toBeTruthy();
+    expect(screen.getByText(/Ledger 42/)).toBeTruthy();
   });
 });
 

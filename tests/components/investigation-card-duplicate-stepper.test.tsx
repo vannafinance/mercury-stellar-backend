@@ -90,7 +90,7 @@ function renderCard(turns: ThreadTurn[]) {
 describe("THE LIVE BUG: one settled swap, two execution steppers", () => {
   it("does not draw the stepper when the thread already carries this run's receipt", () => {
     renderCard(turnsWithReceipt(WORKFLOW_ID));
-    expect(screen.queryByText(/execution progress/i)).toBeNull();
+    expect(screen.queryByRole("region", { name: /execution progress/i })).toBeNull();
   });
 
   /**
@@ -111,7 +111,7 @@ describe("THE LIVE BUG: one settled swap, two execution steppers", () => {
       { role: "user", text: "swap 100 XLM to AQUSDC" },
       { role: "assistant", text: "Swap 100 XLM for at least 1.1264769 AQUSDC on Aquarius." },
     ]);
-    expect(screen.queryByText(/execution progress/i)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /execution progress/i })).toBeTruthy();
   });
 
   /**
@@ -120,6 +120,6 @@ describe("THE LIVE BUG: one settled swap, two execution steppers", () => {
    */
   it("still draws the stepper when the only receipt belongs to an earlier run", () => {
     renderCard(turnsWithReceipt("wf-some-earlier-run"));
-    expect(screen.queryByText(/execution progress/i)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /execution progress/i })).toBeTruthy();
   });
 });

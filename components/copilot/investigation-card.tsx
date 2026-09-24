@@ -438,17 +438,21 @@ export function InvestigationCard({
                     </ol>
                   ) : stepperDrawnInThread ? null : (
                     <div className="mt-3">
-                      <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={result.scope.network} autoApprove={!!autoSign} />
+                      <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={result.scope.network} autoApprove={!!autoSign}
+                        busy={!!workflowLoading}
+                        onSign={workflow.status === "awaiting_signature" ? onSign : undefined}
+                        onStop={["approved", "awaiting_signature"].includes(workflow.status) ? onCancelPlan : undefined} />
                     </div>
                   )}
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {workflow.status === "awaiting_signature" && onSign && (
+                    {/* Sign and Stop live on the execution card itself; the blocked list has neither. */}
+                    {workflow.status === "awaiting_signature" && onSign && stepperDrawnInThread && (
                       <button type="button" onClick={onSign} disabled={workflowLoading} className={BTN_PRIMARY}>Sign in wallet</button>
                     )}
                     {["running", "approved"].includes(workflow.status) && onResume && (
                       <button type="button" disabled={workflowLoading} onClick={onResume} className={BTN_QUIET}>Check progress</button>
                     )}
-                    {["approved", "awaiting_signature"].includes(workflow.status) && onCancelPlan && (
+                    {["approved", "awaiting_signature"].includes(workflow.status) && onCancelPlan && stepperDrawnInThread && (
                       <button type="button" disabled={workflowLoading} onClick={onCancelPlan} className={BTN_QUIET}>Cancel remaining steps</button>
                     )}
                   </div>

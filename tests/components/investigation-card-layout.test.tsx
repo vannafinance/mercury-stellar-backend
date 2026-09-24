@@ -120,13 +120,13 @@ describe("one run, drawn in the plan card's place", () => {
   it("draws the execution stepper in the card when the thread defers its receipt", () => {
     render(<InvestigationCard prompt="supply 100 xlm to blend" result={view()} progress={null} loading={false} error={null}
       turns={turns} omitTranscript workflow={run} threadDefersReceipt />);
-    expect(screen.queryByText(/execution progress/i)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /execution progress/i })).toBeTruthy();
   });
 
   it("leaves that receipt out of the thread, and keeps other runs' receipts", () => {
     const { rerender } = render(<ChatTurns turns={turns} hideReceiptFor="wf-1" />);
-    expect(screen.queryByText(/execution progress/i)).toBeNull();
+    expect(screen.queryByRole("region", { name: /execution progress/i })).toBeNull();
     rerender(<ChatTurns turns={turns} hideReceiptFor="wf-other" />);
-    expect(screen.queryByText(/execution progress/i)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /execution progress/i })).toBeTruthy();
   });
 });

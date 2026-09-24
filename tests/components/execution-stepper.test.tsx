@@ -40,15 +40,18 @@ describe("ExecutionStepper", () => {
       />,
     );
 
-    expect(screen.getByText("Execution Progress")).toBeTruthy();
-    expect(screen.getByText("Autonomous")).toBeTruthy();
+    expect(screen.getByRole("region", { name: /execution progress/i })).toBeTruthy();
+    expect(screen.getByText("Executing")).toBeTruthy();
+    expect(screen.getByText("Step 2 of 3")).toBeTruthy();
+    expect(screen.getByText("Signed within your auto-approve limits.")).toBeTruthy();
     expect(screen.getByText("Deposit 1,000 USDC Collateral")).toBeTruthy();
     expect(screen.getByText("Borrow 500 XLM")).toBeTruthy();
     expect(screen.getByText("Supply to Blend")).toBeTruthy();
     expect(screen.getByText("Settled")).toBeTruthy();
     expect(screen.getByText("Signing…")).toBeTruthy();
-    expect(screen.getByText("Queued")).toBeTruthy();
-    expect(screen.getByText(/tx 8a92b1c4…/)).toBeTruthy();
+    expect(screen.getByText("Next")).toBeTruthy();
+    expect(screen.getByText(/8a92b1…1a2/)).toBeTruthy();
+    expect(screen.getByText("Ledger 142,981")).toBeTruthy();
   });
 
   it("handles retry for failed step", () => {
@@ -75,5 +78,28 @@ describe("ExecutionStepper", () => {
     const retryBtn = screen.getByText("Retry");
     fireEvent.click(retryBtn);
     expect(onRetry).toHaveBeenCalledWith(0);
+    expect(screen.getByText("Stopped at step 1")).toBeTruthy();
+    expect(screen.getByText("0 of 1 went through")).toBeTruthy();
+  });
+
+  const two = (first: "settled" | "signing", second: "pending" | "settled") => [
+    { id: "a", op: "deposit_collateral", label: "Deposit 100 XLM", asset: "XLM", amount: "100", status: first },
+    { id: "b", op: "borrow", label: "Borrow 20 BLUSDC", asset: "BLUSDC", amount: "20", status: second },
+  ] as const;
+
+  it("puts Sign on the waiting step when auto-approve is off, and says nothing is sent without it", () => {
+    const onSign = vi.fn();
+    render(<ExecutionStepper currentStepIndex={0} steps={[...two("signing", "pending")]} onSign={onSign} onStop={() => {}} />);
+    expect(screen.getByText("Your signature needed")).toBeTruthy();
+    fireEvent.click(screen.getByText("Sign in wallet"));
+    expect(onSign).toHaveBeenCalled();
+    expect(screen.getByText("Nothing is sent without your signature.")).toBeTruthy();
+    expect(screen.getByText("Cancel remaining steps")).toBeTruthy();
+  });
+
+  it("shows Completed and no stop button once every step settled", () => {
+    render(<ExecutionStepper currentStepIndex={1} autoApprove steps={[...two("settled", "settled")]} onStop={() => {}} />);
+    expect(screen.getByText("Completed")).toBeTruthy();
+    expect(screen.queryByText("Stop after this step")).toBeNull();
   });
 });
