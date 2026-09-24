@@ -130,3 +130,43 @@ describe("one run, drawn in the plan card's place", () => {
     expect(screen.queryByRole("region", { name: /execution progress/i })).toBeTruthy();
   });
 });
+
+/**
+ * How many plans decides the layout (mockup boards 5–9): one is a full card that previews
+ * its first steps, two sit side by side with steps behind a toggle, three or more are a
+ * compact list where only the opened plan carries Approve.
+ */
+describe("plan layouts by count", () => {
+  const withSteps = (candidate: ReturnType<typeof twoPlans>["feasible"][number], count: number) => ({
+    ...candidate,
+    steps: Array.from({ length: count }, (_, i) => ({ id: `${candidate.id}-s${i}`, op: "lend", asset: "AQUSDC", amount: "1", label: `Step ${i + 1} of ${candidate.id}` })),
+  }) as typeof candidate;
+
+  it("previews a single plan's first four steps and offers the rest", () => {
+    const base = twoPlans();
+    const one = withSteps(base.feasible[0], 6);
+    cardFor(view({ candidates: { ...base, feasible: [one] } }), { onPropose: vi.fn() });
+    expect(screen.getAllByText(/^Step \d of /)).toHaveLength(4);
+    fireEvent.click(screen.getByRole("button", { name: "Show all 6 steps" }));
+    expect(screen.getAllByText(/^Step \d of /)).toHaveLength(6);
+    expect(screen.getByRole("button", { name: "Hide steps" })).toBeTruthy();
+  });
+
+  it("lays two plans side by side with their steps behind a toggle", () => {
+    const base = twoPlans();
+    cardFor(view({ candidates: { ...base, feasible: base.feasible.map((c) => withSteps(c, 3)) } }), { onPropose: vi.fn() });
+    expect(screen.getByRole("region", { name: "Plans" }).className).toMatch(/grid-cols-2/);
+    expect(screen.queryAllByText(/^Step \d of /)).toHaveLength(0);
+    expect(screen.getAllByRole("button", { name: "Show the 3 steps" })).toHaveLength(2);
+  });
+
+  it("collapses three or more plans to rows, with Approve only on the opened one", () => {
+    const base = twoPlans();
+    const third = { ...base.feasible[1], id: `${base.feasible[1].id}-c`, label: "A third plan" };
+    cardFor(view({ candidates: { ...base, feasible: [...base.feasible, third] } }), { onPropose: vi.fn() });
+    expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /A third plan/ }));
+    expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
+    expect(screen.getByText("Plan C").closest("button")).toBeNull();
+  });
+});

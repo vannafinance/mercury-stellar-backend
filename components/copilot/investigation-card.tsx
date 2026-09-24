@@ -88,6 +88,124 @@ function rateOf(candidate: NonNullable<ResearchView["candidates"]>["feasible"][n
   return candidate.supplyApyPct != null ? `${Number(candidate.supplyApyPct).toFixed(2)}% APY` : `${Number(candidate.supplyAprPct).toFixed(2)}% APR`;
 }
 
+type PlanCandidate = NonNullable<ResearchView["candidates"]>["feasible"][number];
+type PlanLayout = "single" | "pair" | "list";
+
+/** Steps a single plan shows before "Show all"; a pair shows none until asked (mockup boards 5–7). */
+const SINGLE_PLAN_PREVIEW_STEPS = 4;
+
+/** Health factor as the plan card states it: where it goes, not just where it ends. */
+function healthCell(candidate: PlanCandidate, fallbackBefore: string | null): { value: string; tone: "ok" | "plain" } {
+  const fmt = (value: string | null | undefined) =>
+    value != null && Number.isFinite(Number(value)) ? Number(value).toFixed(2) : null;
+  const before = fmt(candidate.initialHealthFactor ?? candidate.healthFactorBefore ?? fallbackBefore);
+  if (candidate.repaysAllDebt) return { value: before ? `${before} → No debt` : "No debt", tone: "ok" };
+  const after = fmt(candidate.finalHealthFactor);
+  if (before && after) return { value: before === after ? `${before} · unchanged` : `${before} → ${after}`, tone: "plain" };
+  return { value: after ?? "unchanged", tone: "plain" };
+}
+
+/**
+ * One plan (mockup boards 5–9). The same card in every layout; what changes is how much
+ * of it shows: a single plan previews its first steps, a pair keeps them behind a toggle
+ * so the two stay comparable side by side, and a list of three or more collapses all but
+ * the opened plan to a row that still carries its figures.
+ */
+function PlanCard({
+  candidate, index, several, layout, compact, beforeHf, stepsOpen, onToggleSteps, onOpen,
+  onApprove, onCancel, approveDisabled, cancelDisabled,
+}: {
+  candidate: PlanCandidate; index: number; several: boolean; layout: PlanLayout; compact: boolean;
+  beforeHf: string | null; stepsOpen: boolean; onToggleSteps: () => void; onOpen: () => void;
+  onApprove?: () => void; onCancel: () => void; approveDisabled: boolean; cancelDisabled: boolean;
+}) {
+  const rate = rateOf(candidate);
+  const health = healthCell(candidate, beforeHf);
+  const steps = candidate.steps ?? [];
+  const lead = index === 0;
+  const shownSteps = stepsOpen ? steps : layout === "single" ? steps.slice(0, SINGLE_PLAN_PREVIEW_STEPS) : [];
+  const hiddenCount = steps.length - shownSteps.length;
+  const stats = (
+    <dl className={`grid grid-cols-3 rounded-xl border border-vgray-100 ${compact ? "text-[12px]" : ""}`}>
+      <div className="flex flex-col gap-0.5 border-r border-vgray-100 px-3.5 py-2.5">
+        <dt className="text-[12px] text-vgray-400">Moves</dt>
+        <dd className="text-[15px] font-semibold tabular-nums text-vgray-900">{money(candidate.amountUsd)}</dd>
+      </div>
+      <div className="flex flex-col gap-0.5 border-r border-vgray-100 px-3.5 py-2.5">
+        <dt className="text-[12px] text-vgray-400">Health factor</dt>
+        <dd className={`text-[15px] font-semibold tabular-nums ${health.tone === "ok" ? "text-[var(--cp-ok-fg)]" : "text-vgray-900"}`}>{health.value}</dd>
+      </div>
+      <div className="flex flex-col gap-0.5 px-3.5 py-2.5">
+        <dt className="text-[12px] text-vgray-400">Transactions</dt>
+        <dd className="text-[15px] font-semibold tabular-nums text-vgray-900">{Math.max(1, steps.length)}</dd>
+      </div>
+    </dl>
+  );
+  const heading = (
+    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+      <div className="flex min-w-0 flex-col gap-1">
+        {several && <span className={`text-[12px] font-semibold ${lead ? "text-violet-500" : "text-vgray-400"}`}>Plan {planLetter(index)}</span>}
+        <p className="min-w-0 break-words text-[15.5px] font-semibold leading-[22px] text-vgray-900">{candidate.label}</p>
+      </div>
+      {rate && <p className="shrink-0 text-[14px] font-semibold tabular-nums text-violet-500">{rate}</p>}
+    </div>
+  );
+
+  if (compact) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-expanded={false}
+        className="flex w-full flex-col gap-3 rounded-2xl border border-vgray-100 bg-surface px-5 py-4 text-left transition-colors hover:border-violet-400"
+      >
+        {heading}
+        {stats}
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className="flex flex-col gap-4 rounded-2xl border bg-surface px-5 py-5 sm:px-6"
+      style={{ borderColor: lead && several ? "var(--cp-violet-soft-border)" : "var(--cp-g100)" }}
+    >
+      {heading}
+      {stats}
+      {shownSteps.length > 0 && (
+        <ol className="flex flex-col" data-testid="plan-steps">
+          {shownSteps.map((step, stepIndex) => (
+            <li key={step.id} className={`flex items-baseline gap-3 py-2 ${stepIndex === shownSteps.length - 1 ? "" : "border-b border-vgray-50"}`}>
+              <span className="w-4 shrink-0 font-mono text-[11.5px] tabular-nums text-vgray-300">{stepIndex + 1}</span>
+              <span className="min-w-0 grow break-words text-[13.5px] leading-5 text-vgray-800">{step.label}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+      {steps.length > 1 && (hiddenCount > 0 || stepsOpen) && (
+        <button type="button" onClick={onToggleSteps} className="self-start text-[13px] font-semibold text-violet-500 hover:text-violet-600">
+          {stepsOpen ? "Hide steps" : shownSteps.length ? `Show all ${steps.length} steps` : `Show the ${steps.length} steps`}
+        </button>
+      )}
+      {candidate.rationale && <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-500">{candidate.rationale}</p>}
+      {candidate.simulation && (
+        <p className="max-w-[68ch] text-[12.5px] leading-5 text-vgray-500" data-testid="plan-simulation">{candidate.simulation.summary}</p>
+      )}
+      {lead && candidate.decision?.reason && <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-700">{candidate.decision.reason}</p>}
+      {onApprove && (
+        <div className="flex gap-2">
+          <button type="button" onClick={onApprove} disabled={approveDisabled} className={`${BTN_PRIMARY} ${layout === "pair" ? "grow" : ""}`}>
+            Approve
+          </button>
+          <button type="button" onClick={onCancel} disabled={cancelDisabled} className={BTN_QUIET}>
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** A small heading for a section of the reply. Sentence case, no tracking, no mono. */
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="text-[12px] font-semibold text-vgray-500">{children}</h3>;
@@ -109,6 +227,9 @@ export function InvestigationCard({
    * for this reply. Keyed by the reply's continuation so a new reply starts open.
    */
   const [dismissed, setDismissed] = useState<{ key: string; ids: string[] } | null>(null);
+  /** Plans whose steps are shown in full, and the one opened in a list of three or more. */
+  const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({});
+  const [openPlan, setOpenPlan] = useState<string | null>(null);
   const result: ResearchView | null = researchResult ?? (workflow ? {
     status: "researched", message: "Restored your recorded plan.", originalRequest: workflow.objective, refinements: [],
     understanding: null, question: null, facts: [], checks: [], warnings: [], continuation: "", executionAllowed: false,
@@ -277,89 +398,39 @@ export function InvestigationCard({
                 the set of plans goes, so the chosen plan is the only card left. Refusals are not
                 a second card; the reply above already says why (UI-FIX-LIST 12, 16).
               */}
-              {!!result.candidates && visiblePlans.length > 0 && !workflow && (
-                <section className="space-y-2.5" aria-label={result.candidates.feasible.length > 1 ? "Plans" : "Plan"}>
-                  {visiblePlans.map((candidate) => {
-                    const index = result.candidates!.feasible.indexOf(candidate);
-                    const rate = rateOf(candidate);
-                    const several = result.candidates!.feasible.length > 1;
-                    const approve = onApproveCandidate ?? onPropose;
-                    return (
-                      <div
-                        key={candidate.id}
-                        className="rounded-xl border px-4 py-3.5"
-                        style={{ borderColor: index === 0 ? "var(--cp-violet-soft-border)" : "var(--cp-g100)" }}
-                      >
-                        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                          <p className="min-w-0 break-words text-[15px] leading-6 text-vgray-900">
-                            {several && <span className="mr-1.5 font-semibold text-violet-500">Plan {planLetter(index)}</span>}
-                            {candidate.label}
-                          </p>
-                          {rate && <p className="shrink-0 text-[14px] font-semibold tabular-nums text-violet-500">{rate}</p>}
-                        </div>
-                        <dl className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1 text-[12.5px] leading-5 text-vgray-500">
-                          <div className="flex gap-1.5"><dt>Amount</dt><dd className="tabular-nums text-vgray-800">{money(candidate.amountUsd)}</dd></div>
-                          {(() => {
-                            if (candidate.repaysAllDebt) {
-                              return (
-                                <div className="flex gap-1.5">
-                                  <dt>Health factor after</dt>
-                                  <dd className="tabular-nums text-vgray-800">No debt after</dd>
-                                </div>
-                              );
-                            }
-                            const before = candidate.initialHealthFactor ?? candidate.healthFactorBefore ?? result.capacity?.healthFactor ?? null;
-                            const beforeFormatted = before && Number.isFinite(Number(before)) ? Number(before).toFixed(2) : null;
-                            const afterFormatted = candidate.finalHealthFactor && Number.isFinite(Number(candidate.finalHealthFactor))
-                              ? Number(candidate.finalHealthFactor).toFixed(2)
-                              : null;
-                            if (beforeFormatted !== null && afterFormatted !== null) {
-                              return (
-                                <div className="flex gap-1.5">
-                                  <dt>Health factor</dt>
-                                  <dd className="tabular-nums text-vgray-800">{beforeFormatted} → {afterFormatted}</dd>
-                                </div>
-                              );
-                            }
-                            return (
-                              <div className="flex gap-1.5">
-                                <dt>Health factor after</dt>
-                                <dd className="tabular-nums text-vgray-800">{afterFormatted ?? "unchanged"}</dd>
-                              </div>
-                            );
-                          })()}
-                        </dl>
-                        {/* A composed plan shows its legs in order — every amount here was sized in code. */}
-                        {!!candidate.steps?.length && (
-                          <ol className="mt-2.5 space-y-1 text-[13px] leading-5 text-vgray-800" data-testid="plan-steps">
-                            {candidate.steps.map((step, stepIndex) => (
-                              <li key={step.id} className="flex gap-2.5">
-                                <span className="w-4 shrink-0 text-right tabular-nums text-vgray-400">{stepIndex + 1}</span>
-                                <span className="min-w-0 break-words">{step.label}</span>
-                              </li>
-                            ))}
-                          </ol>
-                        )}
-                        {candidate.rationale && <p className="mt-2.5 max-w-[68ch] text-[13px] leading-5 text-vgray-600">{candidate.rationale}</p>}
-                        {candidate.simulation && (
-                          <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-5 text-vgray-500" data-testid="plan-simulation">{candidate.simulation.summary}</p>
-                        )}
-                        {index === 0 && candidate.decision?.reason && <p className="mt-2 max-w-[68ch] text-[13px] leading-5 text-vgray-700">{candidate.decision.reason}</p>}
-                        {approve && (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <button type="button" onClick={() => approve(candidate.id)} disabled={workflowLoading || planInFlight} className={BTN_PRIMARY}>
-                              Approve
-                            </button>
-                            <button type="button" onClick={() => setDismissed({ key: replyKey, ids: [...dismissedIds, candidate.id] })} disabled={workflowLoading} className={BTN_QUIET}>
-                              Cancel
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </section>
-              )}
+              {!!result.candidates && visiblePlans.length > 0 && !workflow && (() => {
+                const feasible = result.candidates!.feasible;
+                const several = feasible.length > 1;
+                const approve = onApproveCandidate ?? onPropose;
+                const layout: PlanLayout = visiblePlans.length >= 3 ? "list" : visiblePlans.length === 2 ? "pair" : "single";
+                const opened = visiblePlans.some((c) => c.id === openPlan) ? openPlan : visiblePlans[0].id;
+                const cardFor = (candidate: (typeof feasible)[number], compact: boolean) => (
+                  <PlanCard
+                    key={candidate.id}
+                    candidate={candidate}
+                    index={feasible.indexOf(candidate)}
+                    several={several}
+                    layout={layout}
+                    compact={compact}
+                    beforeHf={result.capacity?.healthFactor ?? null}
+                    stepsOpen={!!openSteps[candidate.id]}
+                    onToggleSteps={() => setOpenSteps((open) => ({ ...open, [candidate.id]: !open[candidate.id] }))}
+                    onOpen={() => setOpenPlan(candidate.id)}
+                    onApprove={approve ? () => approve(candidate.id) : undefined}
+                    onCancel={() => setDismissed({ key: replyKey, ids: [...dismissedIds, candidate.id] })}
+                    approveDisabled={!!workflowLoading || planInFlight}
+                    cancelDisabled={!!workflowLoading}
+                  />
+                );
+                return (
+                  <section
+                    aria-label={several ? "Plans" : "Plan"}
+                    className={layout === "pair" ? "grid items-start gap-3.5 sm:grid-cols-2" : "flex flex-col gap-3.5"}
+                  >
+                    {visiblePlans.map((candidate) => cardFor(candidate, layout === "list" && candidate.id !== opened))}
+                  </section>
+                );
+              })()}
               {!!result.candidates?.feasible.length && !workflow && visiblePlans.length === 0 && (
                 <p className="text-[13px] leading-5 text-vgray-500" data-testid="plans-cancelled">Cancelled. Nothing was submitted.</p>
               )}

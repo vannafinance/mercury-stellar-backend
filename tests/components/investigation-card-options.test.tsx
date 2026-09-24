@@ -83,7 +83,8 @@ describe("investigation card / options", () => {
     // projected floor is shown next to it — a size with no health consequence beside it
     // is the number that gets approved without being understood.
     expect(screen.getByText("$6,537.46")).toBeTruthy();
-    expect(screen.getAllByText("Health factor after")[0].nextElementSibling?.textContent).toBe("1.30");
+    // The plan card says where health goes (mockup board 5), ending at the projected floor.
+    expect(screen.getAllByText("Health factor")[0].nextElementSibling?.textContent).toMatch(/(^|→ )1\.30$/);
   });
 
   it("says a ruled-out shape WITH its reason in the reply, never as a silent omission", () => {
@@ -115,7 +116,9 @@ describe("investigation card / options", () => {
     expect(screen.queryByText(/% APR$/)).toBeNull();
     expect(screen.getAllByText("$680.00")).toHaveLength(2);
     // Two idle options leave health untouched; the levered third is the only one with a figure.
-    expect(screen.getAllByText("Health factor after").map((dt) => dt.nextElementSibling?.textContent)).toEqual(["unchanged", "unchanged", "1.30"]);
+    const health = screen.getAllByText("Health factor").map((dt) => dt.nextElementSibling?.textContent ?? "");
+    expect(health.slice(0, 2)).toEqual(["unchanged", "unchanged"]);
+    expect(health[2]).toMatch(/(^|→ )1\.30$/);
   });
 
   it("renders only the no-debt option when the user forbade borrowing", () => {
@@ -376,17 +379,17 @@ describe("investigation card / plan health factor before and after", () => {
     expect(screen.getByText("1.80 → 2.02")).toBeTruthy();
   });
 
-  it("renders 'No debt after' when candidate repays all debt", () => {
-    const candidate = baseCandidate({ repaysAllDebt: true, finalHealthFactor: null });
+  it("renders '→ No debt' when candidate repays all debt", () => {
+    const candidate = baseCandidate({ repaysAllDebt: true, finalHealthFactor: null, initialHealthFactor: "2.33" });
     card(view({ candidates: { feasible: [candidate], rejected: [] } }));
-    expect(screen.getByText("Health factor after")).toBeTruthy();
-    expect(screen.getByText("No debt after")).toBeTruthy();
+    expect(screen.getByText("Health factor")).toBeTruthy();
+    expect(screen.getByText("2.33 → No debt")).toBeTruthy();
   });
 
   it("keeps 'after' only when candidate has no before figure", () => {
     const candidate = baseCandidate({ finalHealthFactor: "2.02" });
     card(view({ candidates: { feasible: [candidate], rejected: [] }, capacity: null }));
-    expect(screen.getByText("Health factor after")).toBeTruthy();
+    expect(screen.getByText("Health factor")).toBeTruthy();
     expect(screen.getByText("2.02")).toBeTruthy();
   });
 
