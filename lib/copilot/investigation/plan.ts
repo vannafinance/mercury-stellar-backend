@@ -193,12 +193,27 @@ function pairedNeed(stated: bigint, reserves: PoolReserves, statedIsXlm: boolean
  * sizes — the wallet deposits the shortfall first. No reserves read leaves the leg
  * alone, so the existing refusal still speaks.
  */
-function literalFarmFunding(leg: ProposedPlan["legs"][number], ctx: PlanContext): SizerLeg[] | null {
-  if (leg.sizing.kind !== "literal" || (leg.op !== "supply_blend" && leg.op !== "add_liquidity")) return null;
+function heldAfterEarlier(ctx: PlanContext, asset: string, earlier: readonly ProposedPlan["legs"][number][]): bigint | null {
+  const posted = postedBalance(ctx, asset);
+  if (posted === null) return null;
+  const drafts = earlier.flatMap((leg) => {
+    if (leg.sizing.kind !== "literal") return [];
+    return [{
+      leg,
+      tokens: leg.sizing.amount,
+      produces: producedAsset(leg) ? leg.sizing.amount : null,
+    }];
+  });
+  return pocketBalance("account", posted, drafts, asset).available;
+}
+
+function literalFarmFunding(leg: ProposedPlan["legs"][number], ctx: PlanContext, earlier: readonly ProposedPlan["legs"][number][] = []): SizerLeg[] | null {
+  const flow = OP_FLOW[leg.op];
+  if (leg.sizing.kind !== "literal" || flow.from !== "account" || !deploysIntoPosition(leg.op)) return null;
   const stated = (() => { try { return decimalWad(leg.sizing.amount); } catch { return null; } })();
   if (stated === null || stated <= ZERO) return null;
   const needs: Array<{ asset: string; held: bigint; needed: bigint }> = [];
-  const held = postedBalance(ctx, leg.asset);
+  const held = heldAfterEarlier(ctx, leg.asset, earlier);
   if (held === null) return null;
   needs.push({ asset: leg.asset, held, needed: stated });
   if (leg.op === "add_liquidity") {
@@ -209,7 +224,7 @@ function literalFarmFunding(leg: ProposedPlan["legs"][number], ctx: PlanContext)
     if (!reserves) return null;
     const needed = pairedNeed(stated, reserves, leg.asset === "XLM");
     if (needed === null) return null;
-    const otherHeld = postedBalance(ctx, paired.id);
+    const otherHeld = heldAfterEarlier(ctx, paired.id, earlier);
     if (otherHeld === null) return null;
     needs.push({ asset: paired.id, held: otherHeld, needed });
   }
@@ -254,7 +269,7 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
       const flow = OP_FLOW[leg.op];
       const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
       if (!ofIdle || flow.from !== "account" || flow.to === "wallet") {
-        const funded = literalFarmFunding(leg, ctx);
+        const funded = literalFarmFunding(leg, ctx, legs.slice(0, index));
         return funded ?? [leg];
       }
       const prior = legs[index - 1];
@@ -2410,15 +2425,9 @@ export function verbOf(op: WorkflowOp): string {
   return verb.charAt(0).toUpperCase() + verb.slice(1);
 }
 
-/** The same verb in the past tense, for "you just deposited". Conjugates the op's own verb. */
+/** Past tense of the op's own verb, read from the same label table as `WHERE`. */
 export function pastOf(op: WorkflowOp): string {
-  const verb = verbOf(op).toLowerCase();
-  if (verb === "lend") return "lent";
-  if (verb === "repay") return "repaid";
-  if (verb === "withdraw") return "withdrew";
-  if (verb.endsWith("e")) return `${verb}d`;
-  if (verb.endsWith("y")) return `${verb.slice(0, -1)}ied`;
-  return `${verb}ed`;
+  return OP_LABEL[op].past;
 }
 
 /**
@@ -2443,13 +2452,19 @@ export function pocketAfterMoves(
   }));
   return pocketBalance(pocket, starting, drafts, asset).available;
 }
-/** Where a step's label says the tokens go, from the table's destination pocket. */
-const WHERE: Record<WorkflowOp, string> = Object.fromEntries(WORKFLOW_OPS.map((op) => {
+/**
+ * One label row per op: where the step says the tokens go, and the past tense of the
+ * verb `verbOf` already takes from the op's name. The past tense is not a second list.
+ */
+const OP_LABEL: Record<WorkflowOp, { where: string; past: string }> = Object.fromEntries(WORKFLOW_OPS.map((op) => {
   const { from, to } = OP_FLOW[op];
-  const text = to === "earn" ? " to Earn" : to === "blend" ? " to Blend" : to === "account" && from === "wallet" ? " as collateral"
+  const where = to === "earn" ? " to Earn" : to === "blend" ? " to Blend" : to === "account" && from === "wallet" ? " as collateral"
     : to === "wallet" && from === "account" ? " of collateral to the wallet" : "";
-  return [op, text];
-})) as Record<WorkflowOp, string>;
+  const verb = verbOf(op).toLowerCase();
+  const past = verb.endsWith("e") ? `${verb}d` : verb.endsWith("y") ? `${verb.slice(0, -1)}ied` : `${verb}ed`;
+  return [op, { where, past }];
+})) as Record<WorkflowOp, { where: string; past: string }>;
+const WHERE: Record<WorkflowOp, string> = Object.fromEntries(WORKFLOW_OPS.map((op) => [op, OP_LABEL[op].where])) as Record<WorkflowOp, string>;
 /** "a lend or a deposit" — the ops the wallet feeds, for a refusal. */
 function walletOps(): string {
   return listOps(WORKFLOW_OPS.filter((op) => OP_FLOW[op].from === "wallet"));

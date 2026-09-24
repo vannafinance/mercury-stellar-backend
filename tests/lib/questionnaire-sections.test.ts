@@ -131,10 +131,15 @@ describe("one questionnaire, one section per action", () => {
         { sectionId: "forged", asset: "XLM", venue: "deposit_collateral:XLM", amount: { kind: "literal", amount: "1" } },
       ],
     };
-    expect(answerProblem(built, answers)).toMatch(/section/);
+    expect(answerProblem(built, answers)).toMatch(/section|once/);
+    const ids = built.sections!.map((section) => section.id);
     expect(answerProblem(built, {
       ...answers,
-      sections: [{ sectionId: built.sections![0].id, asset: "XLM", venue: "deposit_collateral:XLM", amount: { kind: "literal", amount: "99999" } }],
+      sections: [
+        { sectionId: ids[0], asset: "XLM", venue: "deposit_collateral:XLM", amount: { kind: "literal", amount: "99999" } },
+        { sectionId: ids[1], asset: "BLUSDC", venue: "lend:BLUSDC", amount: { kind: "literal", amount: "1" } },
+        { sectionId: ids[2], asset: "XLM", venue: "swap:XLM", amount: { kind: "literal", amount: "1" } },
+      ],
     })).toMatch(/more than/);
   });
 
@@ -173,6 +178,92 @@ describe("one questionnaire, one section per action", () => {
     expect(fromTyping.rejected.map((item) => item.reason)).toEqual([]);
     expect(shape(fromCard.candidates[0]?.steps)).toEqual(shape(fromTyping.candidates[0]?.steps));
     expect(fromCard.candidates[0]?.steps?.find((step) => step.op === "swap")?.label).toMatch(/at least/);
+  });
+
+  it("deposits the stated 100 once, and only the shortfall when 60 is already posted", () => {
+    const quote = "deposit 100 xlm and supply 100 xlm to blend";
+    const scope = {
+      subject: "user", network: "testnet",
+      trader: "GBH5G2WPAAFZ5MS76GDJ4HKHYXSRGF2MBLYDIRQOHGVS4HPU6NNOFIHA",
+      smartAccount: "CCKITLMKA2VKSWGOTFABSUFA3RMOZHRP5YNP6HLG73JSWMMUUNCTHDMC",
+    };
+    const sized = (legs: StatedAction[], said: string, posted: string) => resolvePlans([planFromStatedActions(legs, said)!], {
+      scope, now: NOW, messages: [said], borrowing: "forbidden" as const, comparisons: [],
+      capacity: { grossCollateralUsd: "1000", debtUsd: "0", floor: "1.1" },
+      observations: [
+        wallet([{ symbol: "XLM", balance: "500" }]),
+        account([{ symbol: "XLM", balance: posted }]),
+        ...prices, blend,
+      ],
+    });
+    const both: StatedAction[] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: quote }, sourceQuote: quote },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: quote }, sourceQuote: quote },
+    ];
+    expect(sized(both, quote, "0").candidates[0]?.steps?.filter((step) => step.op === "deposit_collateral").map((step) => step.amount)).toEqual(["100"]);
+    const supplyOnly = "supply 100 xlm to blend";
+    const supply: StatedAction[] = [
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: supplyOnly }, sourceQuote: supplyOnly },
+    ];
+    expect(sized(supply, supplyOnly, "60").candidates[0]?.steps?.filter((step) => step.op === "deposit_collateral").map((step) => step.amount)).toEqual(["40"]);
+  });
+
+  it("keeps Blend when the money comes from the margin account, and ignores a forged swap summary", () => {
+    const open = buildQuestionnaire({ asset: "XLM", op: "supply_blend", slots: ["venue", "amount"] }, rows, NOW, ["supply xlm"]);
+    expect(open?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.label)).toEqual([
+      "Earn", "Farm · Blend", "Aquarius XLM/AQUSDC pool", "Soroswap XLM/SOUSDC pool",
+    ]);
+    const fromAccount = buildQuestionnaire({ asset: "XLM", op: "supply_blend", slots: ["venue", "amount"] }, rows, NOW, ["supply xlm from my margin account"]);
+    expect(fromAccount?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.label)).toEqual([
+      "Farm · Blend", "Aquarius XLM/AQUSDC pool", "Soroswap XLM/SOUSDC pool",
+    ]);
+    const blendOnly = buildQuestionnaire({ asset: "XLM", op: "supply_blend", slots: ["venue", "amount"] }, rows, NOW, ["supply xlm to blend"]);
+    expect(blendOnly?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.label)).toEqual(["Farm · Blend"]);
+
+    const message = "swap xlm to aqusdc";
+    const built = buildQuestionnaireSet([
+      { op: "swap", asset: "XLM", slots: ["amount"], sourceQuote: message },
+    ], rows, NOW, [message])!;
+    const answers: QuestionnaireAnswers = {
+      questionnaireId: built.id, asset: "XLM", venue: "swap:XLM",
+      amount: { kind: "literal", amount: "5" }, summary: "swap 5 xlm to SOUSDC",
+      sections: [{ sectionId: built.sections![0].id, asset: "XLM", venue: "swap:XLM", amount: { kind: "literal", amount: "5" } }],
+    };
+    expect(actionsFromAnswers(built, answers)[0].assetOut).toBe("AQUSDC");
+  });
+
+  it("runs a typed lend and an answered deposit in the user's order", () => {
+    const message = "lend 20 blusdc and deposit xlm";
+    const built = buildQuestionnaireSet([
+      { op: "deposit_collateral", asset: "XLM", slots: ["amount"], sourceQuote: "deposit xlm" },
+    ], rows, NOW, [message], [
+      { op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "20", sourceQuote: "lend 20 blusdc" }, sourceQuote: "lend 20 blusdc" },
+    ])!;
+    expect(built.sections).toHaveLength(1);
+    expect(built.sections?.[0].title).toBe("Deposit XLM");
+    const answers: QuestionnaireAnswers = {
+      questionnaireId: built.id, asset: "XLM", venue: null, amount: { kind: "literal", amount: "15" }, summary: "lend 20 blusdc and deposit 15 xlm",
+      sections: [{ sectionId: built.sections![0].id, asset: "XLM", venue: "deposit_collateral:XLM", amount: { kind: "literal", amount: "15" } }],
+    };
+    const actions = actionsFromAnswers(built, answers);
+    expect(actions.map((action) => [action.op, action.asset, action.sizing.kind === "literal" ? action.sizing.amount : action.sizing.kind])).toEqual([
+      ["lend", "BLUSDC", "20"],
+      ["deposit_collateral", "XLM", "15"],
+    ]);
+  });
+
+  it("reads a BLUSDC account row spelled USDC when projecting the Blend max", () => {
+    const message = "deposit blusdc and supply it to blend";
+    const built = buildQuestionnaireSet([
+      { op: "deposit_collateral", asset: "BLUSDC", slots: ["amount"], sourceQuote: "deposit blusdc" },
+      { op: "supply_blend", asset: "BLUSDC", slots: ["amount"], sourceQuote: "supply it to blend" },
+    ], [
+      wallet([{ symbol: "BLUSDC", balance: "400" }]),
+      account([{ symbol: "USDC", balance: "50" }]),
+      ...prices, blend, earn,
+    ], NOW, [message])!;
+    const blendMax = Object.values(built.sections![1].steps.find((step) => step.slot === "amount")?.max ?? {})[0];
+    expect(blendMax?.amount).toBe("450");
   });
 
   it("still parses a single-object missing on a clarify decision", () => {

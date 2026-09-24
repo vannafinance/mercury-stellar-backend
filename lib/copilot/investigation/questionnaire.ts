@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { BALANCE_FRACTION_OPTIONS } from "../amount-intent";
 import { resolveName } from "../intent/resolve-name";
-import { allAssets, lpPairs, mentionsBareUsdc, resolveAssetDef, USDC_VARIANTS, type AssetId } from "../registry/assets";
+import { allAssets, lpPairs, lpVenues, mentionsBareUsdc, resolveAssetDef, USDC_VARIANTS, type AssetId } from "../registry/assets";
 import { normalizeVenue } from "../registry/intent";
 import { deploysIntoPosition, feeds, OP_FLOW, producedAsset, WORKFLOW_OPS, type Pocket, type WorkflowOp } from "../workflow/types";
 import { pastOf, pocketAfterMoves, verbOf } from "./plan";
@@ -91,18 +91,36 @@ function messageWords(message: string): string[] {
   return words;
 }
 
-/** Venues the user actually named, via the registry's own venue matcher. */
-function venuesNamed(messages: readonly string[]): Set<string> {
-  const named = new Set<string>();
+/**
+ * A word names a source pocket when it is `from` on a deploy op and not `to` on one
+ * ("account"). It names a destination when it is `to` ("blend", "earn") or an LP venue.
+ * "margin" is the venue field of the account pocket, so it is not a destination once
+ * that pocket was named.
+ */
+function namedPlaces(messages: readonly string[]): { sources: Set<Pocket>; destinations: Set<string> } {
+  const deploy = WORKFLOW_OPS.filter((op) => deploysIntoPosition(op));
+  const froms = new Set(deploy.map((op) => OP_FLOW[op].from));
+  const tos = new Set(deploy.map((op) => OP_FLOW[op].to));
+  const pools = new Set<string>(lpVenues());
+  const sources = new Set<Pocket>();
+  const destinations = new Set<string>();
   for (const message of messages) {
     for (const word of messageWords(message)) {
+      const lower = word.toLowerCase();
+      if (froms.has(lower as Pocket) && !tos.has(lower as Pocket)) sources.add(lower as Pocket);
+      else if (tos.has(lower as Pocket)) destinations.add(lower);
       const venue = normalizeVenue(word);
-      if (venue) named.add(venue);
+      if (venue && (pools.has(venue) || venue === "earn" || venue === "blend" || venue === "margin")) destinations.add(venue);
       const hit = resolveName(word, ["venue"]);
-      if ((hit.kind === "exact" || hit.kind === "near") && hit.candidates[0]) named.add(hit.candidates[0].id);
+      if ((hit.kind === "exact" || hit.kind === "near") && hit.candidates[0]) destinations.add(hit.candidates[0].id);
     }
   }
-  return named;
+  if (sources.has("account")) destinations.delete("margin");
+  return { sources, destinations };
+}
+
+function venuesNamed(messages: readonly string[]): Set<string> {
+  return namedPlaces(messages).destinations;
 }
 
 function opServesVenue(op: WorkflowOp, venues: Set<string>): boolean {
@@ -119,12 +137,17 @@ function opServesVenue(op: WorkflowOp, venues: Set<string>): boolean {
  */
 export function opsInPlay(missing: QuestionnaireMissing, messages: readonly string[] = []): WorkflowOp[] {
   const deploy = WORKFLOW_OPS.filter((op) => deploysIntoPosition(op));
-  const named = venuesNamed(messages);
-  if (missing.slots.includes("venue") && named.size > 0) {
-    const matched = deploy.filter((op) => opServesVenue(op, named));
+  const { sources, destinations } = namedPlaces(messages);
+  if (missing.slots.includes("venue") && (sources.size > 0 || destinations.size > 0)) {
+    const matched = deploy.filter((op) => {
+      const flow = OP_FLOW[op];
+      if (sources.size > 0 && ![...sources].some((pocket) => flow.from === pocket)) return false;
+      if (destinations.size > 0 && !opServesVenue(op, destinations) && !destinations.has(flow.to)) return false;
+      return true;
+    });
     if (matched.length) return matched;
   }
-  if (missing.slots.includes("venue") && missing.op && deploysIntoPosition(missing.op) && named.size === 0) return deploy;
+  if (missing.slots.includes("venue") && missing.op && deploysIntoPosition(missing.op) && sources.size === 0 && destinations.size === 0) return deploy;
   if (missing.op) return [missing.op];
   return deploy;
 }
@@ -343,7 +366,9 @@ function venueChoices(asset: AssetId, ops: readonly WorkflowOp[], observations: 
     } else if (deploysIntoPosition(op) && flow.to === "lp") {
       for (const pair of lpPairs()) {
         if (!pair.tokens.includes(asset)) continue;
-        if (named.size > 0 && (named.has("aquarius") || named.has("soroswap")) && !named.has(pair.venue)) continue;
+        const pools = new Set<string>(lpVenues());
+        const namedPools = [...named].filter((venue) => pools.has(venue));
+        if (namedPools.length > 0 && !namedPools.includes(pair.venue)) continue;
         const other = pair.tokens[0] === asset ? pair.tokens[1] : pair.tokens[0];
         const otherHeld = amountInPocket(observations, flow.from, other);
         const label = pair.venue === "aquarius" ? `Aquarius ${pair.tokens.join("/")} pool` : `Soroswap ${pair.tokens.join("/")} pool`;
@@ -560,7 +585,6 @@ export function actionFromAnswers(issued: Questionnaire, answers: QuestionnaireA
   const flow = OP_FLOW[op];
   const pool = venue?.id.startsWith("add_liquidity:") ? lpPairs().find((pair) => venue.id.split(":")[1] === pair.venue && pair.tokens.includes(answers.asset as AssetId)) : undefined;
   const other = pool ? (pool.tokens[0] === answers.asset ? pool.tokens[1] : pool.tokens[0]) : undefined;
-  const namedOut = op === "swap" ? messageWords(answers.summary).map((word) => resolveAssetDef(word)?.id).find((id) => id && id !== answers.asset) : undefined;
   const sizing: PlanLeg["sizing"] = answers.amount.kind === "previous_leg"
     ? { kind: "previous_leg" }
     : answers.amount.kind === "fraction"
@@ -569,7 +593,7 @@ export function actionFromAnswers(issued: Questionnaire, answers: QuestionnaireA
   return {
     op,
     asset: answers.asset,
-    ...(other || namedOut ? { assetOut: other ?? namedOut } : {}),
+    ...(other ? { assetOut: other } : {}),
     ...(pool ? { venue: pool.venue } : {}),
     sizing,
     sourceQuote: answers.summary,
@@ -597,6 +621,7 @@ function writeBalance(observations: readonly Observation[], pocket: Pocket, asse
   const target = next.find((observation) => observation.status === "ok" && observation.data && (
     pocket === "wallet" ? observation.capability === "wallet_balances" : observation.capability === "account_collateral"));
   if (!target?.data) return next;
+  const spelled = pocket === "account" ? resolveAssetDef(asset)?.marginSymbol ?? asset : asset;
   if (pocket === "wallet") {
     const assets = Array.isArray(target.data.assets) ? target.data.assets : [];
     const row = assets.find((item) => isRecord(item) && item.symbol === asset);
@@ -605,9 +630,9 @@ function writeBalance(observations: readonly Observation[], pocket: Pocket, asse
     target.data.assets = assets;
   } else {
     const rows = Array.isArray(target.data.collateral) ? target.data.collateral : [];
-    const row = rows.find((item) => isRecord(item) && (item.symbol === asset || item.asset === asset));
+    const row = rows.find((item) => isRecord(item) && (item.symbol === spelled || item.symbol === asset || item.asset === asset));
     if (isRecord(row)) row.balance = amount;
-    else rows.push({ symbol: asset, balance: amount });
+    else rows.push({ symbol: spelled, balance: amount });
     target.data.collateral = rows;
   }
   return next;
@@ -618,22 +643,15 @@ function projectMoves(
   moves: ReadonlyArray<{ op: WorkflowOp; asset: string; assetOut?: string; amount: string }>,
 ): Observation[] {
   let next: Observation[] = [...observations];
-  const touched = new Set<string>();
-  for (const move of moves) touched.add(`${move.asset}`);
-  for (const asset of touched) {
-    for (const pocket of ["wallet", "account"] as const) {
-      const starting = amountInPocket(next, pocket, asset as AssetId);
-      if (starting === null) continue;
-      const after = pocketAfterMoves(pocket, wadOf(starting), moves, asset);
-      next = writeBalance(next, pocket, asset, formatWad(after < ZERO ? ZERO : after));
-    }
-  }
   for (const move of moves) {
-    const produced = producedAsset(move);
-    if (!produced || touched.has(produced)) continue;
-    const starting = amountInPocket(next, "account", produced as AssetId) ?? "0";
-    const after = pocketAfterMoves("account", wadOf(starting), moves, produced);
-    next = writeBalance(next, "account", produced, formatWad(after < ZERO ? ZERO : after));
+    const flow = OP_FLOW[move.op];
+    for (const pocket of [flow.from, flow.to]) {
+      if (pocket !== "account" && pocket !== "wallet") continue;
+      const token = pocket === flow.to ? (producedAsset(move) ?? move.asset) : move.asset;
+      const starting = amountInPocket(next, pocket, token as AssetId) ?? "0";
+      const after = pocketAfterMoves(pocket, wadOf(starting), [move], token);
+      next = writeBalance(next, pocket, token, formatWad(after < ZERO ? ZERO : after));
+    }
   }
   return next;
 }
@@ -652,22 +670,23 @@ export function buildQuestionnaireSet(
   observations: readonly Observation[],
   now: number,
   messages: readonly string[] = [],
+  stated: readonly StatedAction[] = [],
 ): Questionnaire | null {
   const entries = anchoredEntries(Array.isArray(missing) ? [...missing] : [missing], messages)
     .sort((a, b) => quoteAt(a.sourceQuote, messages) - quoteAt(b.sourceQuote, messages));
   if (!entries.length) return null;
   let view = observations;
-  const moves: Array<{ op: WorkflowOp; asset: string; assetOut?: string; amount: string }> = [];
+  const moves: Array<{ op: WorkflowOp; asset: string; assetOut?: string; amount: string; sectionId: string }> = [];
   const built: BuiltSection[] = [];
   for (const entry of entries) {
     const one = buildQuestionnaire(entry, view, now, entry.sourceQuote ? [entry.sourceQuote] : messages);
     if (!one) continue;
-    const links = moves.flatMap((move, index) => {
+    const links = moves.flatMap((move) => {
       if (!entry.op || !feeds(move.op, entry.op)) return [];
       const produced = producedAsset(move);
       if (!produced || !assetsAccepted(entry.op).includes(produced as AssetId)) return [];
       return [{
-        id: `previous:${index}:${produced}`,
+        id: `previous:${move.sectionId}:${produced}`,
         label: `All of the ${produced} you just ${pastOf(move.op)}`,
         forAsset: produced,
         detail: `${move.amount} ${produced}`,
@@ -679,13 +698,23 @@ export function buildQuestionnaireSet(
     }
     built.push({
       missing: entry,
-      section: { id: one.id, title: one.title, actionIndex: built.length, steps: one.steps, ...(entry.sourceQuote ? { sourceQuote: entry.sourceQuote } : {}) },
+      section: {
+        id: one.id, title: one.title, actionIndex: built.length, position: quoteAt(entry.sourceQuote, messages),
+        steps: one.steps, ...(entry.sourceQuote ? { sourceQuote: entry.sourceQuote } : {}),
+        ...(entry.op === "swap" && entry.sourceQuote && namedAsset(entry.asset)
+          ? { assetOut: messageWords(entry.sourceQuote).map((word) => resolveAssetDef(word)?.id).find((id) => id && id !== namedAsset(entry.asset)) }
+          : {}),
+      },
     });
+    const amountStep = one.steps.find((step) => step.slot === "amount");
+    if (amountStep?.max && moves.length) {
+      for (const cap of Object.values(amountStep.max)) cap.bound = "upper";
+    }
     if (entry.op && entry.asset && namedAsset(entry.asset)) {
       const flow = OP_FLOW[entry.op];
       const ceiling = amountInPocket(view, flow.from, namedAsset(entry.asset)!);
-      if (ceiling && ceiling !== "0") {
-        moves.push({ op: entry.op, asset: namedAsset(entry.asset)!, amount: ceiling });
+      if (ceiling && ceiling !== "0" && (flow.to === "account" || flow.to === "wallet")) {
+        moves.push({ op: entry.op, asset: namedAsset(entry.asset)!, amount: ceiling, sectionId: one.id });
         view = projectMoves(observations, moves);
       }
     }
@@ -694,12 +723,16 @@ export function buildQuestionnaireSet(
   const sections = built.map((item) => item.section);
   const steps = sections.length === 1 ? sections[0].steps : sections.flatMap((section) => section.steps);
   const id = createHash("sha256").update(JSON.stringify(sections.map((section) => [section.title, section.steps.map((step) => [step.slot, step.options.map((option) => option.id)])]))).digest("hex").slice(0, 16);
+  const sealed = stated
+    .filter((action) => !action.sourceQuote || messages.some((message) => message.includes(action.sourceQuote)))
+    .map((action) => ({ position: quoteAt(action.sourceQuote, messages), action }));
   return {
     id,
     title: sections.length === 1 ? sections[0].title : "A few things to fill in",
     subtitle: sections.length === 1 ? "Choose which, where and how much" : "One section for each action",
     steps,
     sections,
+    ...(sealed.length ? { stated: sealed } : {}),
   };
 }
 
@@ -708,6 +741,12 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
     if (!issued) return "No questionnaire was issued for this conversation.";
     if (answers.questionnaireId !== issued.id) return "That questionnaire is no longer the one that was asked.";
     if (!answers.summary.trim()) return "The answer needs a summary of what was chosen.";
+    const issuedIds = issued.sections?.map((section) => section.id) ?? [];
+    const answeredIds = answers.sections.map((section) => section.sectionId);
+    if (issuedIds.length !== answeredIds.length || new Set(answeredIds).size !== answeredIds.length || issuedIds.some((id) => !answeredIds.includes(id))) {
+      return "Answer each section once.";
+    }
+    const running = new Map<string, bigint>();
     for (const sectionAnswer of answers.sections) {
       const section = issued.sections?.find((item) => item.id === sectionAnswer.sectionId);
       if (!section) return "That section was not one of the ones asked.";
@@ -715,6 +754,25 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
         ...answers, asset: sectionAnswer.asset, venue: sectionAnswer.venue, amount: sectionAnswer.amount, sections: undefined,
       });
       if (problem) return problem;
+      if (sectionAnswer.amount.kind === "literal") {
+        const option = section.steps.flatMap((step) => step.options).find((item) => item.id === sectionAnswer.venue || item.op);
+        const op = (option?.op ?? section.steps.flatMap((step) => step.options).find((item) => item.op)?.op) as WorkflowOp | undefined;
+        if (op) {
+          const flow = OP_FLOW[op];
+          const key = `${flow.from}:${sectionAnswer.asset}`;
+          const cap = section.steps.find((step) => step.slot === "amount")?.max?.[sectionAnswer.venue ?? ""]
+            ?? section.steps.find((step) => step.slot === "amount")?.max?.[sectionAnswer.asset];
+          const start = cap?.starting ? wadOf(cap.starting) : cap ? wadOf(cap.amount) : null;
+          if (start !== null && !running.has(key)) running.set(key, start);
+          if (running.has(key)) {
+            let amount: bigint;
+            try { amount = decimalWad(sectionAnswer.amount.amount); } catch { return "That amount is not a number."; }
+            const left = running.get(key)!;
+            if (amount > left) return `That is more than the ${formatWad(left)} ${sectionAnswer.asset} available.`;
+            running.set(key, left - amount);
+          }
+        }
+      }
     }
     return null;
   }
@@ -723,14 +781,14 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
 
 export function actionsFromAnswers(issued: Questionnaire, answers: QuestionnaireAnswers): StatedAction[] {
   if (!answers.sections?.length) return [actionFromAnswers(issued, answers)];
-  return answers.sections.map((sectionAnswer) => {
+  const answered = answers.sections.map((sectionAnswer) => {
     const section = issued.sections?.find((item) => item.id === sectionAnswer.sectionId);
     const action = actionFromAnswers(
       { ...issued, steps: section?.steps ?? issued.steps },
       { ...answers, asset: sectionAnswer.asset, venue: sectionAnswer.venue, amount: sectionAnswer.amount, sections: undefined },
     );
-    if (action.op !== "swap" || !section?.sourceQuote) return action;
-    const named = messageWords(section.sourceQuote).map((word) => resolveAssetDef(word)?.id).find((id) => id && id !== action.asset);
-    return named ? { ...action, assetOut: named } : action;
+    if (action.op === "swap" && section?.assetOut) return { position: section.position ?? 0, action: { ...action, assetOut: section.assetOut } };
+    return { position: section?.position ?? 0, action };
   });
+  return [...(issued.stated ?? []), ...answered].sort((a, b) => a.position - b.position).map((item) => item.action);
 }
