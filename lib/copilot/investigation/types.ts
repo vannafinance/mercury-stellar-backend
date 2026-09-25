@@ -219,7 +219,7 @@ export type ResearchDecision =
    * observation so far, making input cost grow quadratically in the number of reads.
    */
   | { kind: "inspect"; reads: ReadRequest[] }
-  | { kind: "clarify"; question: string; missing?: import("./questionnaire").QuestionnaireMissing[]; actions?: StatedAction[]; trigger?: GoalUnderstanding["trigger"] }
+  | { kind: "clarify"; question: string; missing?: import("./questionnaire").QuestionnaireMissing[]; actions?: StatedAction[]; trigger?: GoalUnderstanding["trigger"]; carried?: CarriedGoal }
   | { kind: "blocked"; reason: string }
   | {
       kind: "research_complete";
@@ -313,3 +313,9 @@ export interface InvestigationResult {
   /** Phase 1 output is internal research, not a safe-to-execute proposal. */
   executionAllowed: false;
 }
+
+/**
+ * The user's own limits on a goal (a wallet reserve, a health-factor floor, an accepted loss),
+ * kept when a completed goal is turned back into a question so the answer is sized under them.
+ */
+export type CarriedGoal = Pick<GoalUnderstanding, "walletReserves" | "healthFactorFloor" | "slippageAccepted">;

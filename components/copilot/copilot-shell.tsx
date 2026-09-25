@@ -231,7 +231,8 @@ export function CopilotShell({
     });
     observer.observe(thread, { childList: true, subtree: true });
     return () => observer.disconnect();
-  }, [pinLatest]);
+    // Re-counted per conversation: opening a saved chat with one message is not a send.
+  }, [pinLatest, conversationId]);
   const zoom = useViewportScale(1440);
   const [height, setHeight] = useState<number | null>(null);
   /** The navbar's bottom edge in layout px: where the sticky rail sits once the page scrolls. */

@@ -15,7 +15,7 @@ import { poolReservesFrom } from "./pool-quote";
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-import type { GoalUnderstanding, Observation, PlanLeg, StatedAction } from "./types";
+import type { CarriedGoal, GoalUnderstanding, Observation, PlanLeg, StatedAction } from "./types";
 import type { Questionnaire, QuestionnaireAnswers, QuestionnaireOption, QuestionnaireSection, QuestionnaireStep } from "./view";
 import type { StrategyRead } from "./strategy-reads";
 
@@ -477,6 +477,10 @@ export function buildQuestionnaire(
         if (!held) continue;
         options.push({ id: asset, label: asset, detail: `${held.amount} ${asset} ${pocketPhrase(held.pocket)}` });
       }
+    } else {
+      // Balances unread: every candidate the registry accepts is offered, without a balance, so
+      // the answer has an option to match (an empty list refused every asset sent back).
+      for (const asset of assets) options.push({ id: asset, label: asset });
     }
     if (options.length === 1) chosen = options[0].id as AssetId;
     steps.push({
@@ -708,6 +712,7 @@ export function buildQuestionnaireSet(
   stated: readonly StatedAction[] = [],
   hasMarginAccount = true,
   trigger?: GoalUnderstanding["trigger"],
+  carried?: CarriedGoal,
 ): Questionnaire | null {
   const rawEntries = anchoredEntries(Array.isArray(missing) ? [...missing] : [missing], messages);
   const entries = (hasMarginAccount ? rawEntries : rawEntries.filter((entry) => {
@@ -779,6 +784,7 @@ export function buildQuestionnaireSet(
     sections,
     ...(sealed.length ? { stated: sealed } : {}),
     ...(trigger ? { trigger: structuredClone(trigger) } : {}),
+    ...(carried ? { carried: structuredClone(carried) } : {}),
   };
 }
 

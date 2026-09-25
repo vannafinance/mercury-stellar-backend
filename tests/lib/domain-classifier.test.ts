@@ -19,7 +19,7 @@ import { researchTurn } from "@/lib/copilot/investigation/service";
 import { recordTokenUsage, resetTokenUsage } from "@/lib/copilot/token-budget";
 
 /** Grok's round-5 report, the paste the owner sent. */
-const ROUND5_REPORT = `The questionnaire server path is on \`agent/grok-questionnaire\` in \`C:\\Users\\akgam\\documents\\vco-grok3\`, two local commits, not pushed. Both are authored by AdityaVanna.
+const ROUND5_REPORT = `The questionnaire server path is on \`agent/grok-questionnaire\` in \`/work/examples/documents/vco-grok3\`, two local commits, not pushed. Both are authored by a developer.
 
 | Commit | What |
 |---|---|

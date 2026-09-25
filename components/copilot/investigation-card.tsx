@@ -597,7 +597,8 @@ export function InvestigationCard({
                 </section>
               )}
 
-              {!result.question && <ChoiceButtons choices={result.choices} onReply={onReply} onWrite={onWrite} />}
+              {/* With a questionnaire the question box is hidden, so its choices (e.g. "Open a margin account") show here. */}
+              {(!result.question || result.questionnaire) && <ChoiceButtons choices={result.choices} onReply={onReply} onWrite={onWrite} />}
 
               {/* Notes explain a partial answer. With a plan or a run on screen they are noise (UI-FIX-LIST 3). */}
               {result.warnings.length > 0 && !result.candidates?.feasible.length && !workflow && (

@@ -216,15 +216,18 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
       properties: {
         question: { type: "string" },
         missing: {
-          type: "object",
-          description: "What is still missing, in the user's order. One object, or a list of one object per action. op is the operation when they named one. asset is the token, or a bare family such as USDC. slots lists which of asset, venue and amount they did not give. sourceQuote is the exact substring of their message for that action. Do not list an action they already stated in full, and do not list options.",
-          properties: {
-            op: { type: "string", enum: [...WORKFLOW_OPS] },
-            asset: { type: "string", description: "A registry asset id, or a bare family the user said, such as USDC." },
-            slots: { type: "array", items: { type: "string", enum: ["asset", "venue", "amount"] } },
-            sourceQuote: { type: "string" },
+          type: "array",
+          description: "What is still missing, in the user's order: one entry per action. op is the operation when they named one. asset is the token, or a bare family such as USDC. slots lists which of asset, venue and amount they did not give. sourceQuote is the exact substring of their message for that action. Do not list an action they already stated in full, and do not list options.",
+          items: {
+            type: "object",
+            properties: {
+              op: { type: "string", enum: [...WORKFLOW_OPS] },
+              asset: { type: "string", description: "A registry asset id, or a bare family the user said, such as USDC." },
+              slots: { type: "array", items: { type: "string", enum: ["asset", "venue", "amount"] } },
+              sourceQuote: { type: "string" },
+            },
+            required: ["slots"],
           },
-          required: ["slots"],
         },
         actions: {
           type: "array",

@@ -472,6 +472,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
               borrowing: "unspecified" as const,
               actions: answered,
               ...(answeredQuestionnaire?.trigger ? { trigger: answeredQuestionnaire.trigger } : {}),
+              ...(answeredQuestionnaire?.carried ?? {}),
             },
             findings: [{ summary: input.answers!.summary, evidenceIds: [] as string[] }],
             openQuestions: [] as string[],
@@ -536,7 +537,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       })
     : [];
   const questionnaire = outcome.kind === "clarify" && outcome.missing?.length
-    ? buildQuestionnaireSet(outcome.missing, result.observations, Date.now(), messages, outcome.actions ?? [], Boolean(scope.smartAccount), outcome.trigger) ?? undefined
+    ? buildQuestionnaireSet(outcome.missing, result.observations, Date.now(), messages, outcome.actions ?? [], Boolean(scope.smartAccount), outcome.trigger, outcome.carried) ?? undefined
     : undefined;
   /**
    * Borrow ranking is enabled by the typed goal/plan, not by re-reading the user's
@@ -836,9 +837,16 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   /** Assets the questionnaire's sections own (even ones a missing account dropped): never lent by sharing. */
   const ownedElsewhere = [...(outcome.kind === "clarify" ? [outcome.missing].flat() : []), ...droppedMissingAccountActions]
     .flatMap((entry) => (entry?.asset ? [entry.asset] : []));
+  /**
+   * A clarify runs its fully stated actions only when every missing input was dropped because
+   * the margin account does not exist (the rest can still run). A questionnaire that failed to
+   * build for any other reason leaves something unanswered, so nothing runs.
+   */
+  const clarifyRunsStated = outcome.kind === "clarify" && !questionnaire &&
+    droppedMissingAccountActions.length > 0 && droppedMissingAccountActions.length === (outcome.missing?.length ?? 0);
   const statedActions = outcome.kind === "research_complete" ? outcome.goal.actions
-    : (outcome.kind === "clarify" && !questionnaire ? outcome.actions : undefined);
-  const statedPlan = !lifecycleOp && (outcome.kind === "research_complete" || (outcome.kind === "clarify" && !questionnaire)) && (outcome.kind === "research_complete" ? outcome.goal.intent === "strategy" : true) && !modelPlans.length && statedActions?.length
+    : (clarifyRunsStated ? outcome.actions : undefined);
+  const statedPlan = !lifecycleOp && (outcome.kind === "research_complete" || clarifyRunsStated) && (outcome.kind === "research_complete" ? outcome.goal.intent === "strategy" : true) && !modelPlans.length && statedActions?.length
     ? planFromStatedActions(shareSameOpLiteralActions(statedActions, messages, ownedElsewhere),
       outcome.kind === "research_complete" ? outcome.goal.objective : messages[0]) : null;
   /**

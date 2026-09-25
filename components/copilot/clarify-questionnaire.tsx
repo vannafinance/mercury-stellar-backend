@@ -300,8 +300,8 @@ export function ClarifyQuestionnaire({
         const pct = parseFloat(trimmed.slice(0, -1));
         if (!Number.isFinite(pct) || pct <= 0) return { kind: "error", error: "Invalid percentage" };
         if (pct > 100) return { kind: "error", error: "Percentage cannot exceed 100%" };
-        const convertedLiteral =
-          maxAmountNum !== null ? ((maxAmountNum * pct) / 100).toString() : null;
+        // Exact fixed-point, the same figure a preset fills in (no float artifacts).
+        const convertedLiteral = maxInfo ? shareOfAmount(maxInfo.amount, pct.toString()) : null;
         return {
           kind: "fraction",
           percent: pct.toString(),
@@ -473,10 +473,8 @@ export function ClarifyQuestionnaire({
         // Check if section had a linked amount
         if (st.linkedOptionId) {
           const amountStep = sec.steps.find((s) => s.slot === "amount");
-          const linkedOpt = amountStep?.options.find((o) =>
-            o.id === st.linkedOptionId || o.sourceSectionId || o.id.startsWith("previous:")
-          );
-          if (linkedOpt && st.linkedOptionId === linkedOpt.id) {
+          const linkedOpt = amountStep?.options.find((o) => o.id === st.linkedOptionId);
+          if (linkedOpt) {
             const linked = resolveLinkedOptionAmount(linkedOpt, i, updated);
             if (linked) {
               // Keep linked amount in sync with source

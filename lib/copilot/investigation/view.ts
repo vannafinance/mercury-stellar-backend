@@ -95,6 +95,8 @@ export interface Questionnaire {
   op?: string | null;
   /** A future-event gate from the decision, sealed so answers cannot turn it into an immediate action. */
   trigger?: import("./types").GoalUnderstanding["trigger"];
+  /** The user's reserve, floor and accepted loss, sealed so the answered goal keeps them. */
+  carried?: import("./types").CarriedGoal;
 }
 export interface QuestionnaireSectionAnswer {
   sectionId: string;
