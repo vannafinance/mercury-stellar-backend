@@ -96,6 +96,7 @@ import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useLiveWorkflow } from "@/contexts/workflow-context";
 import { finished as finishedWorkflow } from "@/hooks/use-workflow";
 import { InvestigationCard } from "./investigation-card";
+import { ClarifyQuestionnaire } from "./clarify-questionnaire";
 import { ConversationMenu } from "./conversation-menu";
 import { AutoApproveMenu } from "./auto-approve-menu";
 import { runIsOnEarlierTurn, shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
@@ -5532,6 +5533,16 @@ export function CopilotWorkspace() {
    * run is one card. Once the user moves on, the card stops drawing it and the thread's
    * receipt keeps the run's final state on the past turn.
    */
+  /**
+   * The questionnaire docks where the chat box is (owner, 24 Sep; mockup boards 10–16), for
+   * the reply that issued it and only while that reply is the latest, live one. Closing it
+   * brings the chat box back for that reply; a new reply can issue a new one.
+   */
+  const [closedQuestionnaire, setClosedQuestionnaire] = useState<string | null>(null);
+  const openQuestionnaire = !investigation.loading && investigation.resultOrigin === "live" &&
+    investigation.turns[investigation.turns.length - 1]?.role === "assistant" &&
+    investigation.result?.questionnaire && investigation.result.questionnaire.id !== closedQuestionnaire
+    ? investigation.result.questionnaire : null;
   /** The run finished on an earlier reply: it is history, drawn by the thread on its own turn. */
   const runIsPast = runIsOnEarlierTurn(investigation.turns, workflow.view ? { id: workflow.view.id, finished: finishedWorkflow(workflow.view) } : null);
   const cardDrawsRun = !isStaleInvestigation && !!workflow.view && !runIsPast &&
@@ -6267,10 +6278,26 @@ export function CopilotWorkspace() {
                 </div>
               </div>
             )}
+            {openQuestionnaire && (
+              <ClarifyQuestionnaire
+                questionnaire={openQuestionnaire}
+                busy={investigation.loading}
+                onSubmit={(answers) => {
+                  setClosedQuestionnaire(openQuestionnaire.id);
+                  void investigation.run(answers.summary, undefined, answers);
+                }}
+                onCancel={() => setClosedQuestionnaire(openQuestionnaire.id)}
+                onSomethingElse={(text) => {
+                  setClosedQuestionnaire(openQuestionnaire.id);
+                  run(text);
+                }}
+              />
+            )}
             {/* The pill is styled inline for the reason recorded in globals.css: a custom
                 class declared there did not survive into the served stylesheet, and the
                 composer must never render as an unstyled row. */}
             <div
+              hidden={!!openQuestionnaire}
               className="cp-composer"
               style={{
                 minWidth: 0,

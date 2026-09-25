@@ -583,7 +583,8 @@ export function InvestigationCard({
                 </p>
               )}
 
-              {result.question && (
+              {/* A questionnaire asks this in the chat box's place; the same question twice is noise. */}
+              {result.question && !result.questionnaire && (
                 <section className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3.5">
                   <SectionTitle>{result.candidates?.feasible.length ? "Open point" : "Needs your answer"}</SectionTitle>
                   <p className="mt-1.5 whitespace-pre-wrap break-words text-[14px] leading-6 text-vgray-900">{result.question}</p>

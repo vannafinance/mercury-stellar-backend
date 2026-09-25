@@ -54,27 +54,55 @@ export interface QuestionnaireOption {
   detail?: string;
   forAsset?: string;
   op?: string;
+  sourceSectionId?: string;
 }
 export interface QuestionnaireStep {
   slot: "asset" | "venue" | "amount";
   prompt: string;
   options: QuestionnaireOption[];
-  max?: Record<string, { amount: string; asset: string; where: string }>;
+  max?: Record<string, { amount: string; asset: string; where: string; note?: string; bound?: "upper"; starting?: string }>;
   presets?: { id: string; label: string; percent: string }[];
-  pair?: Record<string, { asset: string; perUnit: string | null }>;
+  pair?: Record<string, { asset: string; perUnit: string | null; note?: string }>;
+}
+export interface QuestionnaireSection {
+  id: string;
+  title: string;
+  actionIndex: number;
+  /** Position of this action in the user's message, so stated actions can be merged back in order. */
+  position?: number;
+  steps: QuestionnaireStep[];
+  sourceQuote?: string;
+  op?: string;
+  /** Sealed when the section was built. A later summary cannot change it. */
+  assetOut?: string;
+}
+export interface SealedAction {
+  position: number;
+  action: import("./types").StatedAction;
 }
 export interface Questionnaire {
   id: string;
   title: string;
   subtitle: string;
   steps: QuestionnaireStep[];
+  /** One entry per action that was missing something, in the order the user said them. */
+  sections?: QuestionnaireSection[];
+  /** Fully stated actions, sealed with their position so Send runs them too. */
+  stated?: SealedAction[];
+}
+export interface QuestionnaireSectionAnswer {
+  sectionId: string;
+  asset: string;
+  venue: string | null;
+  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" };
 }
 export interface QuestionnaireAnswers {
   questionnaireId: string;
   asset: string;
   venue: string | null;
-  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string };
+  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" };
   summary: string;
+  sections?: QuestionnaireSectionAnswer[];
 }
 
 export interface ResearchView {

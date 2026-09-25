@@ -386,6 +386,9 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
   }
   const amountStep = issued.steps.find((step) => step.slot === "amount");
   const cap = amountStep?.max?.[answers.venue ?? ""] ?? amountStep?.max?.[answers.asset];
+  // A linked "all of what you just …" answer needs an earlier section to link to; a
+  // single-action questionnaire issues none, so it can only be forged.
+  if (answers.amount.kind === "previous_leg") return "That amount was not one of the options.";
   if (answers.amount.kind === "fraction") {
     const percent = Number(answers.amount.percent);
     if (!Number.isFinite(percent) || percent <= 0 || percent > 100) return "The share has to be between 0 and 100.";
@@ -413,7 +416,10 @@ export function actionFromAnswers(issued: Questionnaire, answers: QuestionnaireA
   const other = pool ? (pool.tokens[0] === answers.asset ? pool.tokens[1] : pool.tokens[0]) : undefined;
   const sizing: PlanLeg["sizing"] = answers.amount.kind === "fraction"
     ? { kind: "fraction", percent: answers.amount.percent, of: flow.from === "wallet" ? "idle" : "position", sourceQuote: answers.summary }
-    : { kind: "literal", amount: answers.amount.amount, sourceQuote: answers.summary };
+    : answers.amount.kind === "literal"
+      ? { kind: "literal", amount: answers.amount.amount, sourceQuote: answers.summary }
+      // Refused by answerProblem before this is reached; kept total so the type stays honest.
+      : { kind: "previous_leg" };
   return {
     op,
     asset: answers.asset,
