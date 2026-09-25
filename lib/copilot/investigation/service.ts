@@ -13,8 +13,9 @@ import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } fro
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom } from "./candidates";
+import { venueCoveragePlans } from "./coverage";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
-import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
+import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { actionFromAnswers, answerProblem, buildQuestionnaire, readsForQuestionnaire } from "./questionnaire";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
@@ -815,9 +816,30 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * quoted loss" for what was really a missing choice. No plan means no card; the question is
    * the turn. The same check plan.ts applies to every leg (`unchosenUsdcVariant`).
    */
-  const usdcToChoose = modelPlans.some((plan) => plan.legs.some((leg) => unchosenUsdcVariant(leg, messages)));
+  /**
+   * A strategy is different (owner, 25 Sep). "put my idle usdc to work" names a goal over
+   * every USDC the user holds, so each held variant is a real option and becomes its own
+   * plan; asking "which one?" first made the user do the copilot's job. Only what a plan
+   * would PRODUCE (a swap's bought token) still needs the choice, because buying the wrong
+   * variant is a real loss. A stated instruction keeps the full check, as before.
+   */
+  const strategyGoal = statedPlanIndex < 0;
+  const unchosenIn = (leg: (typeof modelPlans)[number]["legs"][number]) =>
+    strategyGoal ? unchosenAcquiredUsdc(leg, messages) : unchosenUsdcVariant(leg, messages);
+  const usdcToChoose = modelPlans.some((plan) => plan.legs.some(unchosenIn));
   // Only the plans that need the choice wait for it; the rest ("deploy my XLM and USDC") still size.
-  if (usdcToChoose) modelPlans = modelPlans.filter((plan) => !plan.legs.some((leg) => unchosenUsdcVariant(leg, messages)));
+  if (usdcToChoose) modelPlans = modelPlans.filter((plan) => !plan.legs.some(unchosenIn));
+  /**
+   * The remaining venues for the idle assets the fixed shapes already offer (the DEX pools),
+   * so a strategy's options cover every place that takes the asset, from the registry.
+   */
+  if (strategyGoal && !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy") {
+    const coverage = venueCoveragePlans(onlyNamedAssets(candidates, messages), modelPlans, outcome.goal.objective);
+    if (coverage.length) {
+      modelPlans.push(...coverage);
+      logPhase("venue_coverage", { plans: coverage.map((plan) => plan.title) });
+    }
+  }
   const onlyUsdcAsked = usdcToChoose && !modelPlans.length;
   let partsBeforeJoin: typeof modelPlans | null = null;
   if (statedPlanIndex < 0 && modelPlans.length > 1 && outcome.kind === "research_complete" && anchoredPlanParts(outcome.goal, messages)) {
@@ -941,6 +963,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
        */
       statedPlanId: statedPlanIndex >= 0 && modelPlans[statedPlanIndex]
         ? planCandidateId(modelPlans[statedPlanIndex]) : null,
+      strategyGoal,
       // Only an acceptance anchored in the user's own message counts.
       goal: outcome.kind === "research_complete" && anchoredSlippageAccepted(outcome.goal, messages)
         ? outcome.goal : undefined,

@@ -70,7 +70,7 @@ export function opsInPlay(missing: QuestionnaireMissing): WorkflowOp[] {
   return WORKFLOW_OPS.filter((op) => deploysIntoPosition(op));
 }
 
-function assetsAccepted(op: WorkflowOp): AssetId[] {
+export function assetsAccepted(op: WorkflowOp): AssetId[] {
   const flow = OP_FLOW[op];
   if (flow.to === "lp" || flow.from === "lp") {
     return [...new Set(lpPairs().flatMap((pair) => pair.tokens))];

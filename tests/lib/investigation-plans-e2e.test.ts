@@ -158,10 +158,11 @@ describe("model proposes, code disposes — end to end", () => {
     expect(unlevered).toBeTruthy();
     expect(levered!.steps!.map((s) => s.op)).toEqual(["deposit_collateral", "supply_blend", "borrow", "supply_blend"]);
     expect(levered!.steps![0].amount).toBe("10206.3356118");
-    // After the deposit lifts collateral to 8,442.98, the floor allows (8442.98 − 1.2·5102.54)/0.2 = 11,599.66 USD ≈ 64,442.6 XLM.
-    expect(Number(levered!.steps![2].amount)).toBeCloseTo(64442.57, 1);
+    // After the deposit lifts collateral to 8,442.98, the floor allows (8442.98 − F·5102.54)/(F − 1) USD, sized one basis
+    // point inside the floor (F = 1.2 × 1.0001, FLOOR_MARGIN_BPS in sizing.ts) so the plan is never born on the line.
+    expect(Number(levered!.steps![2].amount)).toBeCloseTo(64386.93, 1);
     expect(levered!.steps![2].amount).toBe(levered!.steps![3].amount);
-    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.2, 6);
+    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.20012, 5);
     expect(levered!.rationale).toMatch(/Deposit it, supply it/);
     // The fixed generator's identical shape was folded into the composed one.
     expect(feasible.map((c) => c.id)).not.toContain("supply_idle:XLM");
@@ -481,5 +482,68 @@ describe("model proposes, code disposes — end to end", () => {
       network: "testnet", mcp, signal: new AbortController().signal,
     });
     expect(proposal.status).toBe("proposed");
+  });
+});
+
+/**
+ * "put my idle usdc to work" is a goal, not an instruction (owner, 25 Sep). It used to ask
+ * "which USDC?" and offer no plan; now every held variant is its own option, in every venue
+ * the registry says takes it, and nothing is asked about a variant the user already holds.
+ */
+describe("a strategy over a bare USDC", () => {
+  const usdcMcp = {
+    call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_get_wallet_balance") return { assets: [
+        { symbol: "XLM", balance: "0", decimals: 7, status: "ok" },
+        { symbol: "AQUSDC", balance: "100", decimals: 7, status: "ok" },
+        { symbol: "BLUSDC", balance: "50", decimals: 7, status: "ok" },
+        { symbol: "SOUSDC", balance: "0", decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" };
+      return mcp.call(tool, args);
+    }),
+  };
+  const goal = {
+    kind: "research_complete",
+    goal: { intent: "strategy", relation: "new", objective: "Put idle USDC to work", constraints: [], borrowing: "unspecified" },
+    findings: [{ summary: "The wallet holds idle AQUSDC and BLUSDC.", evidenceIds: ["e1"] }],
+    openQuestions: ["Would you prefer to lend in Vanna Earn or supply BLUSDC to Blend?"],
+    plans: [],
+  };
+  const turn = async () => {
+    let n = 0;
+    return researchTurn(
+      { message: "put my idle usdc to work", wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: usdcMcp, signal: new AbortController().signal,
+        model: async () => n++ === 0
+          ? { kind: "inspect", reads: [
+              { capability: "wallet_balances", args: {} }, { capability: "blend_markets", args: {} },
+              ...["AQUSDC", "BLUSDC", "SOUSDC"].map((asset) => ({ capability: "earn_market", args: { asset } })),
+              ...["AQUSDC", "BLUSDC", "XLM"].map((asset) => ({ capability: "asset_price", args: { asset } })),
+            ] }
+          : goal,
+      },
+    );
+  };
+
+  it("offers every held variant as a plan instead of asking which USDC", async () => {
+    const view = await turn();
+    const offered = (view.candidates?.feasible ?? []).map((c) => `${c.venue}:${c.asset}`);
+    expect(offered).toEqual(expect.arrayContaining(["earn:AQUSDC", "earn:BLUSDC", "blend:BLUSDC"]));
+    // Nothing held is asked about.
+    expect(view.question ?? "").not.toMatch(/without saying which one/);
+    // SOUSDC is held at zero, so it is not offered anywhere.
+    expect(offered.some((entry) => entry.endsWith(":SOUSDC"))).toBe(false);
+  });
+
+  it("also tries the pool that takes the held variant, from the registry", async () => {
+    const view = await turn();
+    const everything = [
+      ...(view.candidates?.feasible ?? []).map((c) => c.label),
+      ...(view.candidates?.rejected ?? []).map((r) => r.label),
+    ];
+    // AQUSDC pairs with XLM on Aquarius. The wallet has no XLM for the pair, so the plan may be
+    // refused, but it is considered and its reason is on record rather than never tried.
+    expect(everything.some((label) => /AQUSDC/.test(label) && /aquarius/i.test(label))).toBe(true);
   });
 });

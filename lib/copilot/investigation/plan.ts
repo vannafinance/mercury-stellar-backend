@@ -78,6 +78,12 @@ export interface PlanContext {
    */
   statedPlanId?: string | null;
   /**
+   * The request states a goal, not an instruction (no stated plan). A bare "USDC" then covers
+   * every held variant, so only a variant a leg would ACQUIRE still needs the user's choice
+   * (owner, 25 Sep). Absent means an instruction: the full check, as before.
+   */
+  strategyGoal?: boolean;
+  /**
    * The margin position and the user's stated floor (null when none was stated — then the
    * contract's liquidation line is the stop and no borrow can be sized). Null as a whole
    * when the position could not be read; every account-touching leg is then rejected.
@@ -622,7 +628,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * registry aliases. 23 Sep, S5: "swap 100 XLM to USDC" compiled to AQUSDC, a pick the
      * model made. A request that never said USDC (sized from holdings) is not affected.
      */
-    if (unchosenUsdcVariant(leg, ctx.messages)) throw new Reject(name, USDC_QUESTION);
+    if ((ctx.strategyGoal ? unchosenAcquiredUsdc(leg, ctx.messages) : unchosenUsdcVariant(leg, ctx.messages))) throw new Reject(name, USDC_QUESTION);
     // The venue the op acts on decides which spelling of the asset it needs (the op-flow table).
     // Checked BEFORE the price: an asset the venue does not support is the real reason, and a
     // missing price must not stand in for it (AQUA has no Earn pool; "lend AQUA" was refused
@@ -2154,6 +2160,16 @@ export function unchosenUsdcVariant(leg: { asset: string; assetOut?: string }, m
   return null;
 }
 
+/**
+ * The USDC variant a leg would ACQUIRE without the user having chosen it: what it produces,
+ * when that differs from what it spends (a swap's bought token). Read off the op table
+ * (`producedAsset`), so no op is named. Spending a held variant is not a choice left open.
+ */
+export function unchosenAcquiredUsdc(leg: { op: WorkflowOp; asset: string; assetOut?: string }, messages: readonly string[]): string | null {
+  const acquired = producedAsset(leg);
+  return acquired && acquired !== leg.asset ? unchosenUsdcVariant({ asset: acquired }, messages) : null;
+}
+
 export function literalAmountAnchored(
   sizing: Extract<PlanSizing, { kind: "literal" }>,
   ctx: PlanContext,
@@ -2367,4 +2383,9 @@ function handoffReason(earlier: WorkflowOp, later: WorkflowOp): string {
   const list = takers.length <= 1 ? takers.join("") : `${takers.slice(0, -1).join(", ")} or ${takers[takers.length - 1]}`;
   const where = left === "wallet" ? "returns tokens to the wallet" : "puts tokens in the account";
   return `a ${verbOf(earlier).toLowerCase()} ${where} — ${list} them next, not a ${verbOf(later).toLowerCase()}`;
+}
+
+/** A leg's title as a plan card shows it: the stated-action label, plus where the tokens go. */
+export function legTitle(leg: PlanLeg): string {
+  return `${statedActionLabel({ ...leg, sourceQuote: "" })}${leg.venue ? "" : WHERE[leg.op as WorkflowOp] ?? ""}`;
 }
