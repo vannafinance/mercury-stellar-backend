@@ -55,6 +55,11 @@ function server(results: Array<{ result: ResearchView; conversationId?: string }
         { role: "user", text: "repay 25% of my debt" }, { role: "assistant", text: "Repay …", question: null },
       ], continuation: "r-newer", result: view("Repay …", "r-newer") }) } as unknown as Response;
     }
+    if (url === "/api/copilot/session/c-newer" && (init?.method ?? "GET") === "GET") {
+      return { ok: true, json: async () => ({ id: "c-newer", turns: [
+        { role: "user", text: "repay 25% of my debt" }, { role: "assistant", text: "Repay …", question: null },
+      ], continuation: "r-newer", result: view("Repay …", "r-newer") }) } as unknown as Response;
+    }
     if (url === "/api/copilot/session/c-older" && (init?.method ?? "GET") === "GET") {
       return { ok: true, json: async () => ({ id: "c-older", turns: [
         { role: "user", text: "lend 1 XLM" }, { role: "assistant", text: "Lend 1 XLM.", question: null },
@@ -77,18 +82,43 @@ beforeEach(() => {
 });
 
 describe("useInvestigation — conversations", () => {
-  it("lists the server's conversations on load and restores the open one", async () => {
-    server([]);
+  /**
+   * A reload starts a new chat (owner, 25 Sep): the server's open conversation stays in the
+   * list, where opening it brings every turn back, and its pointer is cleared so the next turn
+   * is not appended to it.
+   */
+  it("lists the server's conversations on load, starts blank, and reopens the last one from the list", async () => {
+    const calls = server([]);
     const { result } = renderHook(() => useInvestigation(WALLET));
     await waitFor(() => expect(result.current.conversations.map((c) => c.id)).toEqual(["c-newer", "c-older"]));
-    await waitFor(() => expect(result.current.conversationId).toBe("c-newer"));
+    expect(result.current.conversationId).toBeNull();
+    expect(result.current.turns).toEqual([]);
+    await waitFor(() => expect(calls.some((c) => c.url === "/api/copilot/session" && c.method === "DELETE")).toBe(true));
+    await act(async () => { await result.current.open("c-newer"); });
+    expect(result.current.conversationId).toBe("c-newer");
     expect(result.current.turns.map((t) => t.text)).toEqual(["repay 25% of my debt", "Repay …"]);
+  });
+
+  it("archives the chat that was on screen when the page reloads, and keeps it openable", async () => {
+    server([]);
+    sessionStorage.setItem(`vanna.copilot.thread.${WALLET}`, JSON.stringify({
+      wallet: WALLET, turns: [{ role: "user", text: "lend 5 XLM" }, { role: "assistant", text: "Lent 5 XLM." }],
+      continuation: null, result: null, conversationId: null,
+    }));
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    expect(result.current.turns).toEqual([]);
+    const archived = result.current.conversations.find((c) => c.title === "lend 5 XLM");
+    expect(archived?.id).toMatch(/^local:/);
+    await act(async () => { await result.current.open(archived!.id); });
+    expect(result.current.turns.map((t) => t.text)).toEqual(["lend 5 XLM", "Lent 5 XLM."]);
   });
 
   it("persists a workflow receipt and mirrors it into the open thread", async () => {
     const calls = server([{ result: view("unused") }]);
     const { result } = renderHook(() => useInvestigation(WALLET));
-    await waitFor(() => expect(result.current.conversationId).toBe("c-newer"));
+    await waitFor(() => expect(result.current.conversations.length).toBe(2));
+    await act(async () => { await result.current.open("c-newer"); });
+    expect(result.current.conversationId).toBe("c-newer");
     const hash = "a".repeat(64);
     await act(async () => {
       expect(await result.current.updateExecutionReceipt({
@@ -103,7 +133,9 @@ describe("useInvestigation — conversations", () => {
   it("sends the open conversation's id with a turn, and adopts the id the server records a first turn under", async () => {
     const calls = server([{ result: view("Repay …", "r2"), conversationId: "c-newer" }, { result: view("1.46"), conversationId: "c-fresh" }]);
     const { result } = renderHook(() => useInvestigation(WALLET));
-    await waitFor(() => expect(result.current.conversationId).toBe("c-newer"));
+    await waitFor(() => expect(result.current.conversations.length).toBe(2));
+    await act(async () => { await result.current.open("c-newer"); });
+    expect(result.current.conversationId).toBe("c-newer");
     await act(async () => { await result.current.run("and my debt?"); });
     const first = calls.find((c) => c.url === "/api/copilot/investigate")?.body as { conversationId?: string };
     expect(first.conversationId).toBe("c-newer");
@@ -125,7 +157,7 @@ describe("useInvestigation — conversations", () => {
   it("opens a conversation from the list and deletes one, clearing the screen when it was the open one", async () => {
     const calls = server([]);
     const { result } = renderHook(() => useInvestigation(WALLET));
-    await waitFor(() => expect(result.current.conversationId).toBe("c-newer"));
+    await waitFor(() => expect(result.current.conversations.length).toBe(2));
     await act(async () => { await result.current.open("c-older"); });
     expect(result.current.conversationId).toBe("c-older");
     expect(result.current.turns.map((t) => t.text)).toEqual(["lend 1 XLM", "Lend 1 XLM."]);

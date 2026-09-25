@@ -9,7 +9,7 @@ import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap-review-card";
 import { PlanReviewCard } from "@/components/copilot/plan-review-card";
-import { inFlight } from "@/hooks/use-workflow";
+import { finished, inFlight } from "@/hooks/use-workflow";
 import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
 import { ASSISTANT_TEXT_INDENT, ChatTurns } from "@/components/copilot/chat-message";
 
@@ -278,7 +278,7 @@ export function InvestigationCard({
    * running, awaiting a signature — or uncertain, where a transaction may be in flight —
    * a second plan would race it, so the buttons wait.
    */
-  const planInFlight = !!workflow && !["blocked", "completed", "cancelled"].includes(workflow.status);
+  const planInFlight = !!workflow && !finished(workflow);
   /**
    * The thread already draws this run's progress, so drawing it again here is one run
    * shown twice.

@@ -226,3 +226,25 @@ export function clearStoredLocalThread(wallet: string | null, localId: string): 
     /* ignore */
   }
 }
+
+/**
+ * A finished run that belongs to an EARLIER reply than the newest one.
+ *
+ * The receipt is attached to the assistant turn that ran it (session-store keeps that
+ * invariant). While that turn is the newest reply, the live card draws the run and the thread
+ * leaves the receipt out, so one run is one card. Once a newer reply exists, the run is
+ * history: the thread must draw it on its own turn, and the live card must let it go. Before
+ * this, a new question in the same chat kept the old run on the live card, the thread kept
+ * hiding its receipt, and the execution card vanished from the conversation (owner, 25 Sep).
+ * A run still in progress is never treated as past.
+ */
+export function runIsOnEarlierTurn(
+  turns: readonly Pick<ThreadTurn, "role" | "executionReceipt">[],
+  run: { id: string; finished: boolean } | null,
+): boolean {
+  if (!run || !run.finished) return false;
+  const owner = turns.findIndex((turn) => turn.role === "assistant" && turn.executionReceipt?.workflowId === run.id);
+  if (owner === -1) return false;
+  const newest = turns.map((turn) => turn.role).lastIndexOf("assistant");
+  return owner < newest;
+}

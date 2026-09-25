@@ -22,18 +22,13 @@ const options = () => ({
 });
 
 describe("single composer entry", () => {
-  it("routes plain actions directly, strategies and swaps to investigation", async () => {
+  // Investigate-first (2ca1c3c, 22 Sep): plain actions and reads go through the investigation
+  // too; its fast path answers reads without the loop, and a stated action becomes a direct
+  // action there. Only a settled refusal is delivered directly (entry-lane.ts).
+  it("routes plain actions, reads, strategies and swaps to investigation", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
-    for (const message of ["deposit 5 XLM as collateral", "what is my health factor?"]) {
-      const input = options();
-      const { result } = renderHook(() => useCopilotEntry(input));
-      await act(async () => result.current.run(message));
-      expect(input.onDirect).toHaveBeenCalledWith(message, expect.any(AbortSignal));
-      expect(input.onInvestigate).not.toHaveBeenCalled();
-      expect(result.current.loading).toBe(false);
-    }
-    for (const message of ["build me a strategy", "swap 10 XLM to AQUSDC"]) {
+    for (const message of ["deposit 5 XLM as collateral", "what is my health factor?", "build me a strategy", "swap 10 XLM to AQUSDC"]) {
       const input = options();
       const { result } = renderHook(() => useCopilotEntry(input));
       await act(async () => result.current.run(message));

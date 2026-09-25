@@ -94,10 +94,11 @@ import { CopilotShell } from "./copilot-shell";
 import { CopilotRailTop, CopilotRailBody, CopilotRailMini } from "./copilot-rail";
 import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useLiveWorkflow } from "@/contexts/workflow-context";
+import { finished as finishedWorkflow } from "@/hooks/use-workflow";
 import { InvestigationCard } from "./investigation-card";
 import { ConversationMenu } from "./conversation-menu";
 import { AutoApproveMenu } from "./auto-approve-menu";
-import { shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
+import { runIsOnEarlierTurn, shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
   status: string;
@@ -5531,7 +5532,9 @@ export function CopilotWorkspace() {
    * run is one card. Once the user moves on, the card stops drawing it and the thread's
    * receipt keeps the run's final state on the past turn.
    */
-  const cardDrawsRun = !isStaleInvestigation && !!workflow.view &&
+  /** The run finished on an earlier reply: it is history, drawn by the thread on its own turn. */
+  const runIsPast = runIsOnEarlierTurn(investigation.turns, workflow.view ? { id: workflow.view.id, finished: finishedWorkflow(workflow.view) } : null);
+  const cardDrawsRun = !isStaleInvestigation && !!workflow.view && !runIsPast &&
     workflow.view.status !== "proposed" && workflow.view.status !== "validating" &&
     investigation.turns[investigation.turns.length - 1]?.role !== "user";
   /**
@@ -5714,7 +5717,7 @@ export function CopilotWorkspace() {
                       void workflow.propose(continuation, candidateId);
                     }
                   : undefined}
-                workflow={workflow.view}
+                workflow={runIsPast ? null : workflow.view}
                 planWithdrawn={workflow.stale}
                 planLiveFloor={workflow.quote}
                 workflowError={workflow.error}

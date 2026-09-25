@@ -231,7 +231,7 @@ export function useInvestigation(wallet: string | null) {
     const stored = wallet ? readStoredThread(wallet) : null;
     const liveId = stored?.conversationId && !isLocalConversationId(stored.conversationId)
       ? stored.conversationId : LIVE_CONVERSATION_ID;
-    const seeded = stored?.turns.some((turn) => turn.role === "user")
+    let seeded = stored?.turns.some((turn) => turn.role === "user")
       ? upsertConversation(listed, {
           id: liveId,
           title: titleFromTurns(stored.turns),
@@ -239,12 +239,26 @@ export function useInvestigation(wallet: string | null) {
           updatedAt: Date.now(),
         })
       : listed;
-    setConversations(seeded);
+    /**
+     * A reload starts a NEW chat (owner, 25 Sep), the same as pressing New chat: the chat that
+     * was on screen goes into History, where opening it brings back every turn and its
+     * execution cards, and the screen starts blank. It used to reopen the last chat, so a
+     * refresh could never get a clean start. A chat the server recorded is already in its list;
+     * one it never recorded is kept in this tab's cache under a local id, exactly as New chat
+     * keeps it.
+     */
+    let keptId = liveId;
     if (stored?.turns.length) {
-      applyThread(wallet, { turns: stored.turns, continuation: stored.continuation, result: stored.result, conversationId: stored.conversationId ?? null });
-    } else {
-      applyBlank(wallet);
+      if (!stored.conversationId || isLocalConversationId(stored.conversationId)) {
+        keptId = stored.conversationId && isLocalConversationId(stored.conversationId) ? stored.conversationId : `local:${Date.now()}`;
+        writeStoredLocalThread(wallet!, keptId, { ...stored, conversationId: keptId });
+        seeded = seeded.map((item) => (item.id === LIVE_CONVERSATION_ID ? { ...item, id: keptId } : item));
+        writeStoredConversations(wallet!, seeded);
+      }
+      clearStoredThread(wallet!);
     }
+    setConversations(seeded);
+    applyBlank(wallet);
     if (!wallet) return () => { abort.current?.abort("wallet cleared"); sequence.current += 1; };
     // The server holds the list and, when this tab has nothing, the open conversation.
     const restore = new AbortController();
@@ -257,21 +271,18 @@ export function useInvestigation(wallet: string | null) {
         const remote = await response.json() as SessionPayload;
         if (Array.isArray(remote.conversations)) {
           const remoteConversations = remote.conversations;
-          const live = seeded.find((item) => item.id === liveId);
+          const live = seeded.find((item) => item.id === keptId);
           const merged = live && !remoteConversations.some((item) => item.id === live.id)
             ? upsertConversation(remoteConversations, live)
             : sortedByActivity(remoteConversations);
           setConversations(merged);
           writeStoredConversations(wallet, merged);
         }
-        if (stored?.turns.length) return;
-        if (!Array.isArray(remote.turns) || !remote.turns.length) return;
-        const thread = {
-          turns: remote.turns, continuation: remote.continuation ?? null, result: remote.result ?? null,
-          conversationId: remote.activeId ?? null,
-        };
-        writeStoredThread(wallet, { wallet, ...thread });
-        applyThread(wallet, thread);
+        // The server's "open conversation" is not reopened on load either: it stays in the list.
+        // Clearing the pointer keeps the next turn from being appended to that old chat.
+        if (remote.activeId) {
+          await fetch("/api/copilot/session", { method: "DELETE", headers, cache: "no-store" }).catch(() => undefined);
+        }
       } catch { /* sessionStorage remains the live thread; the list appears on the next load */ }
     })();
     return () => { restore.abort("wallet effect cleanup"); abort.current?.abort(); sequence.current += 1; };

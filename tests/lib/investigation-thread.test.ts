@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isIndependentGoal, isRefinement, shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
+import { isIndependentGoal, isRefinement, runIsOnEarlierTurn, shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
 
 describe("investigation thread continuation", () => {
   it("always continues when a question is open, including a one-word variant answer", () => {
@@ -35,5 +35,31 @@ describe("investigation thread continuation", () => {
     expect(shouldReplacePlan("what's my health factor", {
       question: "Which USDC variant?", status: "needs_input",
     })).toBe(false);
+  });
+});
+
+describe("a finished run on an earlier reply", () => {
+  const receipt = (workflowId: string) => ({ workflowId, status: "completed", network: "testnet", steps: [] }) as never;
+  const run = { id: "wf-1", finished: true };
+
+  it("is history once a newer reply exists, so the thread draws its card", () => {
+    const turns = [
+      { role: "user" as const }, { role: "assistant" as const, executionReceipt: receipt("wf-1") },
+      { role: "user" as const }, { role: "assistant" as const },
+    ];
+    expect(runIsOnEarlierTurn(turns, run)).toBe(true);
+  });
+
+  it("stays on the live card while its own reply is still the newest", () => {
+    const turns = [{ role: "user" as const }, { role: "assistant" as const, executionReceipt: receipt("wf-1") }];
+    expect(runIsOnEarlierTurn(turns, run)).toBe(false);
+  });
+
+  it("never treats a run still in progress as past", () => {
+    const turns = [
+      { role: "user" as const }, { role: "assistant" as const, executionReceipt: receipt("wf-1") },
+      { role: "user" as const }, { role: "assistant" as const },
+    ];
+    expect(runIsOnEarlierTurn(turns, { id: "wf-1", finished: false })).toBe(false);
   });
 });
