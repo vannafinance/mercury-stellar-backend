@@ -93,6 +93,8 @@ export interface Questionnaire {
   stated?: SealedAction[];
   namedAsset?: string | null;
   op?: string | null;
+  /** A future-event gate from the decision, sealed so answers cannot turn it into an immediate action. */
+  trigger?: import("./types").GoalUnderstanding["trigger"];
 }
 export interface QuestionnaireSectionAnswer {
   sectionId: string;

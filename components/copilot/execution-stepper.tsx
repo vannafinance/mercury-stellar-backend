@@ -60,7 +60,10 @@ export function ExecutionStepper({
   const uncertainIndex = steps.findIndex((step) => step.status === "uncertain");
   const complete = total > 0 && settled === total;
   const stopped = failedIndex !== -1 || uncertainIndex !== -1 || cancelled;
-  const awaitingWallet = !autoApprove && steps.some((step) => step.status === "signing");
+  // A step handed back to the wallet needs it even under auto-approve: the signer refused that
+  // one (a cap, a lapsed session), and `onSign` is supplied exactly when the run waits on it.
+  const walletCanSign = !autoApprove || Boolean(onSign);
+  const awaitingWallet = walletCanSign && steps.some((step) => step.status === "signing");
   const explorer = network === "mainnet" || network === "public" ? "public" : "testnet";
   const nextIndex = stopped ? -1 : steps.findIndex((step, index) => index > currentStepIndex && step.status === "pending");
 
@@ -112,7 +115,7 @@ export function ExecutionStepper({
           const isFailed = step.status === "failed";
           const isUncertain = step.status === "uncertain";
           const isInFlight = IN_FLIGHT.has(step.status);
-          const waitsHere = step.status === "signing" && !autoApprove;
+          const waitsHere = step.status === "signing" && walletCanSign;
           const last = index === steps.length - 1;
           return (
             <li key={step.id || index} className={`flex gap-3.5 py-3 ${last ? "" : "border-b border-vgray-50"}`}>

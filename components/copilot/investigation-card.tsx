@@ -528,7 +528,7 @@ export function InvestigationCard({
                     cancelled={workflow.status === "cancelled"}
                     onSign={workflow.status === "awaiting_signature" ? onSign : undefined}
                     onStop={["approved", "awaiting_signature"].includes(workflow.status) ? onCancelPlan : undefined} />
-                  {!["completed", "running", "approved", "awaiting_signature"].includes(workflow.status) && workflow.message && (
+                  {!["completed", "running", "approved"].includes(workflow.status) && workflow.message && (
                     <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-500">{workflow.message}</p>
                   )}
                   {["running", "approved"].includes(workflow.status) && onResume && (

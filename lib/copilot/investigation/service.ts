@@ -219,8 +219,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     return reconnectWalletView(input, dependencies.network, scope.unverified === "bindings" ? "bindings" : "session");
   }
   const prior = input.continuation ? codec.open(input.continuation, scope) : null;
+  const answeredQuestionnaire = prior?.evidence?.questionnaire;
   if (input.answers) {
-    const problem = answerProblem(prior?.evidence?.questionnaire, input.answers);
+    const problem = answerProblem(answeredQuestionnaire, input.answers);
     if (problem) throw new ResearchError("invalid_answers", problem, 400);
   }
   const session = prior ? null : optionalConversation(codec, input.session, scope);
@@ -238,6 +239,19 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     (observation) => observation.capability === "account_position" && observation.status === "ok",
   );
   let messages = [...prior?.messages ?? [], input.answers?.summary ?? input.message];
+  const sealedConditionalMessage = input.answers
+    ? futureConditionRefusal(answeredQuestionnaire?.trigger, messages)
+    : null;
+  if (sealedConditionalMessage) {
+    return {
+      status: "blocked", message: sealedConditionalMessage,
+      originalRequest: messages[0] ?? input.message, refinements: messages.slice(1),
+      understanding: null, question: null,
+      facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
+      warnings: [], scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
+      continuation: "", executionAllowed: false,
+    };
+  }
   // Validate capacity before paying for any model call. Never truncate an older constraint.
   codec.seal(scope, messages, prior?.lastQuestion ?? null);
   const scopedMcp: Pick<MCPClient, "call"> = { call: async (tool, args, userId) => {
@@ -439,8 +453,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     logPhase("evidence_seed", { requested: evidenceSeedRequests.map((request) => `${request.capability}:${request.args.asset ?? ""}`), ok: evidenceSeed.filter((observation) => observation.status === "ok").length });
   }
   const loopStarted = Date.now();
-  const answered = input.answers && prior?.evidence?.questionnaire
-    ? actionsFromAnswers(prior.evidence.questionnaire, input.answers) : null;
+  const answered = input.answers && answeredQuestionnaire
+    ? actionsFromAnswers(answeredQuestionnaire, input.answers) : null;
   const result = answered
     ? await (async () => {
         const draft = planFromStatedActions(answered, input.answers!.summary);
@@ -457,6 +471,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
               constraints: [] as string[],
               borrowing: "unspecified" as const,
               actions: answered,
+              ...(answeredQuestionnaire?.trigger ? { trigger: answeredQuestionnaire.trigger } : {}),
             },
             findings: [{ summary: input.answers!.summary, evidenceIds: [] as string[] }],
             openQuestions: [] as string[],
@@ -491,13 +506,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * 2; any future_condition refuses, fail safe): a regex over the user's wording is exactly
    * what that replaced, so none is used here.
    */
-  if (outcome.kind === "research_complete") {
-    const conditionalMessage = futureConditionRefusal(outcome.goal.trigger, messages);
+  if (outcome.kind === "research_complete" || outcome.kind === "clarify") {
+    const trigger = outcome.kind === "research_complete" ? outcome.goal.trigger : outcome.trigger;
+    const conditionalMessage = futureConditionRefusal(trigger, messages);
     if (conditionalMessage) {
       return {
         status: "blocked", message: conditionalMessage,
         originalRequest: messages[0] ?? input.message, refinements: messages.slice(1),
-        understanding: outcome.goal, question: null,
+        understanding: outcome.kind === "research_complete" ? outcome.goal : null, question: null,
         facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
         warnings: [], scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
         continuation: "", executionAllowed: false,
@@ -520,7 +536,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       })
     : [];
   const questionnaire = outcome.kind === "clarify" && outcome.missing?.length
-    ? buildQuestionnaireSet(outcome.missing, result.observations, Date.now(), messages, outcome.actions ?? [], Boolean(scope.smartAccount)) ?? undefined
+    ? buildQuestionnaireSet(outcome.missing, result.observations, Date.now(), messages, outcome.actions ?? [], Boolean(scope.smartAccount), outcome.trigger) ?? undefined
     : undefined;
   /**
    * Borrow ranking is enabled by the typed goal/plan, not by re-reading the user's

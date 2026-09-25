@@ -97,6 +97,14 @@ describe("ExecutionStepper", () => {
     expect(screen.getByText("Cancel remaining steps")).toBeTruthy();
   });
 
+  it("still offers Sign when auto-approve hands the step back to the wallet", () => {
+    const onSign = vi.fn();
+    render(<ExecutionStepper currentStepIndex={0} autoApprove steps={[...two("signing", "pending")]} onSign={onSign} />);
+    expect(screen.getByText("Your signature needed")).toBeTruthy();
+    fireEvent.click(screen.getByText("Sign in wallet"));
+    expect(onSign).toHaveBeenCalledTimes(1);
+  });
+
   it("shows Completed and no stop button once every step settled", () => {
     render(<ExecutionStepper currentStepIndex={1} autoApprove steps={[...two("settled", "settled")]} onStop={() => {}} />);
     expect(screen.getByText("Completed")).toBeTruthy();

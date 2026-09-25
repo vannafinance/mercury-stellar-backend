@@ -15,7 +15,7 @@ import { poolReservesFrom } from "./pool-quote";
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-import type { Observation, PlanLeg, StatedAction } from "./types";
+import type { GoalUnderstanding, Observation, PlanLeg, StatedAction } from "./types";
 import type { Questionnaire, QuestionnaireAnswers, QuestionnaireOption, QuestionnaireSection, QuestionnaireStep } from "./view";
 import type { StrategyRead } from "./strategy-reads";
 
@@ -707,6 +707,7 @@ export function buildQuestionnaireSet(
   messages: readonly string[] = [],
   stated: readonly StatedAction[] = [],
   hasMarginAccount = true,
+  trigger?: GoalUnderstanding["trigger"],
 ): Questionnaire | null {
   const rawEntries = anchoredEntries(Array.isArray(missing) ? [...missing] : [missing], messages);
   const entries = (hasMarginAccount ? rawEntries : rawEntries.filter((entry) => {
@@ -777,6 +778,7 @@ export function buildQuestionnaireSet(
     steps,
     sections,
     ...(sealed.length ? { stated: sealed } : {}),
+    ...(trigger ? { trigger: structuredClone(trigger) } : {}),
   };
 }
 

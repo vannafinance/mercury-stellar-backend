@@ -42,6 +42,7 @@ export function askForUnstatedAmounts<T extends { kind: string }>(input: T): T {
       question: `How much for ${missing.map((entry) => `${verbOf(entry.op!).toLowerCase()} ${entry.asset}`).join(" and ")}?`,
       actions: kept,
       missing,
+      ...(outcome.goal.trigger ? { trigger: outcome.goal.trigger } : {}),
     } as unknown as T;
   }
   return input;

@@ -239,6 +239,15 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
             required: ["sourceQuote"],
           }),
         },
+        trigger: {
+          type: "object",
+          description: "Carry the user's future-event gate even when another input is missing. kind future_condition means do not act now; sourceQuote is the exact substring that states the event. Omit when there is no future condition.",
+          properties: {
+            kind: { type: "string", enum: ["none", "future_condition"] },
+            sourceQuote: { type: "string" },
+          },
+          required: ["kind"],
+        },
       },
       required: ["question"],
     },
@@ -321,7 +330,7 @@ export function decisionFromFunctionCalls(calls: readonly ModelFunctionCall[]): 
   const control = calls.find((call) => CONTROL_NAMES.has(call.name));
   if (!control) return { kind: "invalid_function" };
   const args = isRecord(control.args) ? control.args : {};
-  if (control.name === "clarify") return { kind: "clarify", question: args.question, ...(args.missing !== undefined ? { missing: args.missing } : {}), ...(args.actions !== undefined ? { actions: args.actions } : {}) };
+  if (control.name === "clarify") return { kind: "clarify", question: args.question, ...(args.missing !== undefined ? { missing: args.missing } : {}), ...(args.actions !== undefined ? { actions: args.actions } : {}), ...(args.trigger !== undefined ? { trigger: args.trigger } : {}) };
   if (control.name === "blocked") return { kind: "blocked", reason: args.reason };
   return wrapComplete(args);
 }

@@ -2,7 +2,7 @@ import { lpPairs, lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
 import { parseQuestionnaireMissingList } from "./questionnaire";
 import { ASSET_OUT_OPS, MAX_WORKFLOW_STEPS, OP_FLOW, WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { LIFECYCLE_WRITES, isLifecycleWriteOp } from "../workflow/lifecycle";
-import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision, StatedAction } from "./types";
+import type { GoalUnderstanding, PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision, StatedAction } from "./types";
 
 export const PLAN_OPS: readonly PlanOp[] = WORKFLOW_OPS;
 /** The sizing words a leg may carry. `plan.ts` gives each one its meaning; the prompt lists them from here. */
@@ -29,6 +29,14 @@ function text(value: unknown, max = 1600): value is string {
 
 function texts(value: unknown, maxItems = 12): value is string[] {
   return Array.isArray(value) && value.length <= maxItems && value.every((item) => text(item));
+}
+
+function parseTrigger(value: unknown): GoalUnderstanding["trigger"] {
+  if (!isRecord(value)) return undefined;
+  if (value.kind === "none" && exactKeys(value, ["kind"])) return { kind: "none" };
+  // Kept even without a usable quote: the refusal fails safe (conditional-guard.ts).
+  if (value.kind !== "future_condition") return undefined;
+  return { kind: "future_condition", ...(text(value.sourceQuote, 400) ? { sourceQuote: String(value.sourceQuote) } : {}) };
 }
 
 /**
@@ -65,9 +73,9 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return { kind: "inspect", reads };
   }
   if (raw.kind === "clarify" && text(raw.question)) {
-    const keys = ["kind", "question", ...(raw.missing !== undefined ? ["missing"] : []), ...(raw.actions !== undefined ? ["actions"] : [])];
+    const keys = ["kind", "question", ...(raw.missing !== undefined ? ["missing"] : []), ...(raw.actions !== undefined ? ["actions"] : []), ...(raw.trigger !== undefined ? ["trigger"] : [])];
     if (!exactKeys(raw, keys)) return refuse("clarify: unexpected keys");
-    const missing = raw.missing !== undefined ? parseQuestionnaireMissingList(raw.missing) : undefined;
+    const trigger = raw.trigger === undefined ? undefined : parseTrigger(raw.trigger);    const missing = raw.missing !== undefined ? parseQuestionnaireMissingList(raw.missing) : undefined;
     if (raw.missing !== undefined && !missing) return refuse("clarify: missing inputs are not a known op, asset or slot");
     const actionRows = raw.actions === undefined ? [] : Array.isArray(raw.actions) ? raw.actions.slice(0, 8) : [];
     const actions: StatedAction[] = actionRows.flatMap((action) => {
@@ -80,6 +88,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       question: raw.question,
       ...(missing ? { missing } : {}),
       ...(actions.length ? { actions } : {}),
+      ...(trigger ? { trigger } : {}),
     };
   }
   if (raw.kind === "blocked" && exactKeys(raw, ["kind", "reason"]) && text(raw.reason)) {
@@ -152,14 +161,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
   const relation = isRecord(goal.planRelation) && exactKeys(goal.planRelation, ["kind", "sourceQuote"]) &&
     (goal.planRelation.kind === "alternatives" || goal.planRelation.kind === "parts") && text(goal.planRelation.sourceQuote, 400)
     ? { kind: goal.planRelation.kind as "alternatives" | "parts", sourceQuote: goal.planRelation.sourceQuote } : undefined;
-  const trigger = goal.trigger === undefined || goal.trigger === null ? undefined
-    : isRecord(goal.trigger) && goal.trigger.kind === "none" && exactKeys(goal.trigger, ["kind"])
-      ? { kind: "none" as const }
-      // Kept even without a usable quote: the refusal fails safe (conditional-guard.ts).
-      : isRecord(goal.trigger) && goal.trigger.kind === "future_condition"
-        ? { kind: "future_condition" as const, ...(text(goal.trigger.sourceQuote, 400) ? { sourceQuote: String(goal.trigger.sourceQuote) } : {}) }
-        : undefined;
-  const reserves = Array.isArray(goal.walletReserves) ? goal.walletReserves.slice(0, 8).flatMap((row) =>
+  const trigger = goal.trigger === undefined || goal.trigger === null ? undefined : parseTrigger(goal.trigger);  const reserves = Array.isArray(goal.walletReserves) ? goal.walletReserves.slice(0, 8).flatMap((row) =>
     isRecord(row) && exactKeys(row, ["asset", "amount", "sourceQuote"]) &&
       (ASSET_IDS as readonly string[]).includes(String(row.asset)) &&
       typeof row.amount === "string" && /^\d+(\.\d{1,18})?$/.test(row.amount) &&

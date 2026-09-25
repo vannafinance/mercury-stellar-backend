@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { SIZING_SOURCES_DISAGREE_WARNING } from "@/lib/copilot/investigation/sizing-copy";
+import { CONDITIONAL_REFUSAL } from "@/lib/copilot/conditional-guard";
+import { researchCodec } from "@/lib/copilot/investigation/continuation";
+import { buildQuestionnaireSet } from "@/lib/copilot/investigation/questionnaire";
 
 /**
  * P2.6 fixture-backed evaluation gate. Asserts behaviour, not prose: which
@@ -182,6 +185,68 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     expect(result.executionAllowed).toBe(false);
     expect(result.question).toMatch(/BLUSDC|AQUSDC|SOUSDC|which USDC/i);
     expect(mcp.call).not.toHaveBeenCalled();
+  });
+
+  it("refuses a future-conditioned clarify before issuing a questionnaire", async () => {
+    const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a refused conditional"); }) };
+    const result = await researchTurn(
+      { message: "supply XLM when it reaches $0.30", wallet: SCOPE.trader, continuation: null, promptName: "conditional-clarify" },
+      deps(mcp, async () => ({
+        kind: "clarify",
+        question: "How much XLM?",
+        missing: [{ op: "supply_blend", asset: "XLM", slots: ["amount"], sourceQuote: "supply XLM" }],
+        trigger: { kind: "future_condition", sourceQuote: "when it reaches $0.30" },
+      })),
+    );
+    expect(result.status).toBe("blocked");
+    expect(result.message).toBe(CONDITIONAL_REFUSAL);
+    expect(result.questionnaire).toBeUndefined();
+    expect(result.executionAllowed).toBe(false);
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
+
+  it("refuses answers to a sealed future-conditioned questionnaire before planning", async () => {
+    const now = Date.now();
+    const observations = [{
+      id: "w", capability: "wallet_balances", args: {}, observedAt: now, status: "ok" as const,
+      data: { assets: [{ symbol: "XLM", balance: "10", decimals: 7, status: "ok" }], fee_reserve_xlm: "0" },
+    }, {
+      id: "a", capability: "account_collateral", args: {}, observedAt: now, status: "ok" as const,
+      data: { collateral: [{ symbol: "XLM", balance: "10", decimals: 7 }] },
+    }];
+    const questionnaire = buildQuestionnaireSet(
+      [{ op: "supply_blend", asset: "XLM", slots: ["amount"], sourceQuote: "supply XLM" }],
+      observations, now, ["supply XLM when it reaches $0.30"], [], true,
+      { kind: "future_condition", sourceQuote: "when it reaches $0.30" },
+    )!;
+    const continuation = researchCodec("a".repeat(32), "mcp-test").seal(
+      SCOPE,
+      ["supply XLM when it reaches $0.30"],
+      "How much XLM?",
+      { capturedAt: now, observations, capacity: null, questionnaire },
+    );
+    const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a refused questionnaire answer"); }) };
+    const model = vi.fn(async () => { throw new Error("no model on a refused questionnaire answer"); });
+    const section = questionnaire.sections![0];
+    const result = await researchTurn({
+      message: "Use 1 XLM",
+      wallet: SCOPE.trader,
+      continuation,
+      promptName: "conditional-answer",
+      answers: {
+        questionnaireId: questionnaire.id,
+        asset: "XLM",
+        venue: "supply_blend:XLM",
+        amount: { kind: "literal", amount: "1" },
+        summary: "Supply 1 XLM when it reaches $0.30",
+        sections: [{ sectionId: section.id, asset: "XLM", venue: "supply_blend:XLM", amount: { kind: "literal", amount: "1" } }],
+      },
+    }, deps(mcp, model));
+    expect(result.status).toBe("blocked");
+    expect(result.message).toBe(CONDITIONAL_REFUSAL);
+    expect(result.executionAllowed).toBe(false);
+    expect(mcp.call).not.toHaveBeenCalled();
+    expect(model).not.toHaveBeenCalled();
   });
 
   it.each([

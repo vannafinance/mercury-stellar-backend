@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { CONDITIONAL_REFUSAL, futureConditionRefusal } from "@/lib/copilot/conditional-guard";
 import { parseDecision } from "@/lib/copilot/investigation/decision";
+import { buildQuestionnaireSet } from "@/lib/copilot/investigation/questionnaire";
 
 const goal = (trigger: unknown) => ({
   kind: "research_complete",
@@ -44,5 +45,17 @@ describe("future conditions are a field, not a phrase", () => {
     const parsed = parseDecision(goal({ kind: "future_condition" }));
     if (!parsed || parsed.kind !== "research_complete") throw new Error("decision did not parse");
     expect(futureConditionRefusal(parsed.goal.trigger, ["repay when XLM hits $0.30"])).toBe(CONDITIONAL_REFUSAL);
+  });
+
+  it("seals a clarify trigger into the issued questionnaire", () => {
+    const trigger = { kind: "future_condition" as const, sourceQuote: "when XLM hits $0.30" };
+    const questionnaire = buildQuestionnaireSet(
+      [{ op: "supply_blend", asset: "XLM", slots: ["amount"], sourceQuote: "supply XLM" }],
+      [{ id: "w", capability: "wallet_balances", args: {}, observedAt: Date.now(), status: "ok", data: {
+        assets: [{ symbol: "XLM", balance: "10", decimals: 7, status: "ok" }], fee_reserve_xlm: "0",
+      } }],
+      Date.now(), ["supply XLM when XLM hits $0.30"], [], true, trigger,
+    );
+    expect(questionnaire?.trigger).toEqual(trigger);
   });
 });

@@ -272,21 +272,35 @@ function literalFarmFunding(leg: ProposedPlan["legs"][number], ctx: PlanContext,
     needs.push({ asset: paired.id, held: otherHeld.available, needed });
   }
   const deposits: SizerLeg[] = [];
+  const tokenDecimals = decimalsFrom(ctx.observations);
   for (const need of needs) {
     if (need.held >= need.needed) continue;
-    const wallet = spendableWallet(ctx, need.asset);
-    if (wallet === null) return null;
+    const read = spendableWallet(ctx, need.asset);
+    if (read === null) return null;
+    // A shortfall deposit an earlier leg already takes from the wallet is not there to take twice.
+    const committed = earlier.reduce((sum, e) => {
+      if (!(e as SizerLeg).fundsAccount || e.asset !== need.asset || e.sizing.kind !== "literal") return sum;
+      try { return sum + decimalWad(e.sizing.amount); } catch { return sum; }
+    }, ZERO);
+    const wallet = read > committed ? read - committed : ZERO;
     const shortfall = need.needed - need.held;
-    if (wallet < shortfall) {
+    const rawAmount = formatWad(shortfall);
+    const decimals = tokenDecimals.get(need.asset);
+    const amount = decimals === undefined ? rawAmount : truncateToDecimals(rawAmount, decimals);
+    const fundedShortfall = decimalWad(amount);
+    // Truncation is intentional: contracts reject excess precision, and rounding up could
+    // spend more than the user stated. A sub-unit remainder cannot produce a valid deposit.
+    if (fundedShortfall <= ZERO) continue;
+    if (wallet < fundedShortfall) {
       throw new Reject(
         `${leg.op.replaceAll("_", " ")} ${need.asset}`,
-        `Your margin account has ${formatWad(need.held)} ${need.asset} and this needs ${formatWad(need.needed)}. Your wallet has ${formatWad(wallet)} ${need.asset}, which does not cover the other ${formatWad(shortfall)}.`,
+        `Your margin account has ${formatWad(need.held)} ${need.asset} and this needs ${formatWad(need.needed)}. Your wallet has ${formatWad(wallet)} ${need.asset}, which does not cover the other ${amount}.`,
       );
     }
     deposits.push({
       op: "deposit_collateral",
       asset: need.asset,
-      sizing: { kind: "literal", amount: formatWad(shortfall), sourceQuote: leg.sizing.sourceQuote },
+      sizing: { kind: "literal", amount, sourceQuote: leg.sizing.sourceQuote },
       fundsAccount: true,
     });
   }
@@ -298,7 +312,15 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
   // the account, so it is the same two legs, capped by the debt — partial when the wallet
   // covers less, and the card says what remains. 13 Sep: "Repay 14113 XLM, then 2559 BLUSDC"
   // was offered against a wallet holding 9,999 XLM and no BLUSDC; it could never have run.
+  // The earlier legs as they will run, with the shortfall deposits already inserted before them,
+  // so a later leg's shortfall counts what an earlier one moved into the account and out of the wallet.
+  const expanded: ProposedPlan["legs"][number][] = [];
   return legs.flatMap((leg, index): SizerLeg[] => {
+    const out = expandLeg(leg, index);
+    expanded.push(...out.filter((e) => e.fundsAccount), leg);
+    return out;
+  });
+  function expandLeg(leg: ProposedPlan["legs"][number], index: number): SizerLeg[] {
     if (leg.op !== "repay") {
       /**
        * The same two legs for any op that spends the margin account when the model sized it
@@ -312,7 +334,7 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
       const flow = OP_FLOW[leg.op];
       const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
       if (!ofIdle || flow.from !== "account" || flow.to === "wallet") {
-        const funded = literalFarmFunding(leg, ctx, legs.slice(0, index));
+        const funded = literalFarmFunding(leg, ctx, expanded);
         return funded ?? [leg];
       }
       const prior = legs[index - 1];
@@ -364,7 +386,7 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
       return [{ op: "deposit_collateral", asset: leg.asset, sizing: leg.sizing, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
     }
     return [leg];
-  });
+  }
 }
 
 /**

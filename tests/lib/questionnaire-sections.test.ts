@@ -206,6 +206,33 @@ describe("one questionnaire, one section per action", () => {
       { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: supplyOnly }, sourceQuote: supplyOnly },
     ];
     expect(sized(supply, supplyOnly, "60").candidates[0]?.steps?.filter((step) => step.op === "deposit_collateral").map((step) => step.amount)).toEqual(["40"]);
+
+    const twice = "supply 60 xlm twice";
+    const doubleSupply: StatedAction[] = [
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "60", sourceQuote: twice }, sourceQuote: twice },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "60", sourceQuote: twice }, sourceQuote: twice },
+    ];
+    const doubleResult = resolvePlans([planFromStatedActions(doubleSupply, twice)!], {
+      scope, now: NOW, messages: [twice], borrowing: "forbidden" as const, comparisons: [],
+      capacity: { grossCollateralUsd: "1000", debtUsd: "0", floor: "1.1" },
+      observations: [wallet([{ symbol: "XLM", balance: "100" }]), account([{ symbol: "XLM", balance: "0" }]), ...prices, blend],
+    });
+    expect(doubleResult.candidates).toHaveLength(0);
+    expect(doubleResult.rejected[0]?.reason).toMatch(/wallet has 40 XLM.*does not cover the other 60/i);
+
+    const precise = "supply 1 xlm to blend";
+    const precisionResult = resolvePlans([planFromStatedActions([{
+      op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "1", sourceQuote: precise }, sourceQuote: precise,
+    }], precise)!], {
+      scope, now: NOW, messages: [precise], borrowing: "forbidden" as const, comparisons: [],
+      capacity: { grossCollateralUsd: "1000", debtUsd: "0", floor: "1.1" },
+      observations: [
+        obs("w2", "wallet_balances", { assets: [{ symbol: "XLM", balance: "10", decimals: 2, status: "ok" }], fee_reserve_xlm: "0" }),
+        account([{ symbol: "XLM", balance: "0.995" }]), ...prices, blend,
+      ],
+    });
+    expect(precisionResult.candidates).toHaveLength(0);
+    expect(precisionResult.rejected[0]?.reason).toMatch(/only 0\.99 XLM is in the margin account/i);
   });
 
   it("keeps Blend when the money comes from the margin account, and ignores a forged swap summary", () => {
@@ -273,12 +300,14 @@ describe("one questionnaire, one section per action", () => {
       actions: [
         { op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "20", sourceQuote: "lend 20 blusdc" }, sourceQuote: "lend 20 blusdc" },
       ],
+      trigger: { kind: "future_condition", sourceQuote: "when XLM reaches 0.30" },
     });
     expect(decision?.kind).toBe("clarify");
     if (decision?.kind === "clarify") {
       expect(decision.missing).toEqual([{ op: "lend", asset: "XLM", slots: ["amount"] }]);
       expect(decision.actions).toHaveLength(1);
       expect(decision.actions?.[0].asset).toBe("BLUSDC");
+      expect(decision.trigger).toEqual({ kind: "future_condition", sourceQuote: "when XLM reaches 0.30" });
     }
   });
 

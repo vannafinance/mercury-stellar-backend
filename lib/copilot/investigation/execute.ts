@@ -582,6 +582,15 @@ export async function advanceWorkflow(input: {
   lookupTx?: LedgerLookup;
 }): Promise<WorkflowView> {
   const journal = workflowJournal(input.secret);
+  // Where an execution's seconds go (25 Sep: a card sat on its in-flight line long enough to
+  // be reported). One line per phase, keyed by workflow, so a slow run can be read back.
+  const startedAt = Date.now();
+  let lastAt = startedAt;
+  const phase = (name: string, extra?: Record<string, unknown>) => {
+    const now = Date.now();
+    console.info("[copilot] workflow phase", { id: input.id, phase: name, ms: now - lastAt, total: now - startedAt, ...extra });
+    lastAt = now;
+  };
   const stored = await journal.lookup(input.id, input.subject);
   const expected = stored.value.proposal.scope;
   if (stored.value.proposal.server !== input.server || expected.network !== input.network)
@@ -593,9 +602,11 @@ export async function advanceWorkflow(input: {
     scope.smartAccount !== expected.smartAccount || scope.network !== expected.network) {
     throw new ResearchError("context_expired", "This investigation has expired or the connected account changed. Start a new investigation to refresh its context.");
   }
+  phase("scope");
   const identity = identityOf(stored.value.proposal);
   const lookup = input.lookupTx ?? lookupTransaction;
   let record = await settleSubmitted(journal, input.id, identity, lookup);
+  phase("settle_previous");
   if (record.steps.some(s => ["submitted", "invoking", "submitting"].includes(s.status))) return workflowView(record);
   if (["completed", "blocked", "cancelled", "uncertain", "awaiting_signature"].includes(record.status)) {
     return workflowView(record);
@@ -607,6 +618,7 @@ export async function advanceWorkflow(input: {
   let step: ProposalStep;
   try {
     step = await journal.claimNext(input.id, identity, input.ready ?? readyForStep);
+    phase("claim", { tool: step.tool });
   } catch (error) {
     if (error instanceof WorkflowConflict && error.message === "no_pending_step") {
       return workflowView((await journal.read(input.id, identity)).value);
@@ -694,12 +706,14 @@ export async function advanceWorkflow(input: {
     await journal.noteBalancesBefore(input.id, identity, step.id, baseline.balances);
   }
 
+  phase("prewrite_checks");
   let build: Record<string, unknown>;
   try {
     const raw = await interruptible(() => input.mcp.call(invocation.tool, invocationArgs, scope.trader!),
       AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]));
     if (!isRecord(raw)) throw new Error("invalid_write_result");
     build = raw;
+    phase("mcp_write", { tool: invocation.tool });
   } catch (error) {
     // This catch used to be silent: a step went "uncertain" with nothing in any log
     // explaining why, so a timeout, a transport error and a malformed payload were
@@ -751,6 +765,7 @@ export async function advanceWorkflow(input: {
     }
     record = await journal.invocationResult(input.id, identity, step.id, { kind: "submitted", txHash, note: note ?? undefined });
     record = await settleSubmitted(journal, input.id, identity, lookup, note ?? undefined);
+    phase("settle", { settled: record.steps.find(s => s.id === step.id)?.status === "settled" });
     persistRun(record, input.subject);
     return workflowView(record);
   }
