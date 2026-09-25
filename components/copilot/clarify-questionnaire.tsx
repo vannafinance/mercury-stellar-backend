@@ -1306,29 +1306,8 @@ export function ClarifyQuestionnaire({
                 </div>
               </div>
 
-              {/* Note on max (e.g. "I'll deposit the other 14 from your wallet first") */}
-              {currentMaxInfo?.note && (
-                <div
-                  className={`text-[12px] px-1 ${
-                    isDark ? "text-vgray-400" : "text-vgray-500"
-                  }`}
-                  data-testid="amount-note"
-                >
-                  {currentMaxInfo.note}
-                </div>
-              )}
-
-              {/* Note on pair */}
-              {currentLpPairInfo?.note && (
-                <div
-                  className={`text-[12px] px-1 ${
-                    isDark ? "text-vgray-400" : "text-vgray-500"
-                  }`}
-                  data-testid="pair-note"
-                >
-                  {currentLpPairInfo.note}
-                </div>
-              )}
+              {/* The wallet top-up note is not shown here (owner, 25 Sep): it was sized for Max, not
+                  the amount typed, and the plan card lists the deposit steps with their real amounts. */}
 
               {/* Converted amount preview when a percentage is chosen */}
               {currentParsedAmount?.kind === "fraction" && currentParsedAmount.convertedLiteral && (

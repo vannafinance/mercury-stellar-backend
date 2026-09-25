@@ -863,8 +863,19 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
 
         if (running.has(key)) {
           const left = running.get(key)!;
-          if (amount > left) return `That is more than the ${formatWad(left)} ${sectionAnswer.asset} available.`;
-          running.set(key, left - amount);
+          // A margin-account spend the account cannot cover is topped up from the wallet (the plan
+          // deposits the shortfall first), so the wallet's running balance covers the rest. Its
+          // share is what the issued cap adds on top of what the account started with.
+          const walletKey = `wallet:${sectionAnswer.asset}`;
+          const topUp = flow.from === "account" && cap?.starting ? wadOf(cap.amount) - wadOf(cap.starting) : ZERO;
+          if (amount > left && topUp > ZERO && !running.has(walletKey)) running.set(walletKey, topUp);
+          const fromWallet = amount > left && topUp > ZERO ? amount - left : ZERO;
+          const walletLeft = running.get(walletKey) ?? ZERO;
+          if (amount > left && (topUp <= ZERO || fromWallet > walletLeft)) {
+            return `That is more than the ${formatWad(left + (topUp > ZERO ? walletLeft : ZERO))} ${sectionAnswer.asset} available.`;
+          }
+          running.set(key, amount > left ? ZERO : left - amount);
+          if (fromWallet > ZERO) running.set(walletKey, walletLeft - fromWallet);
         }
         if (holdsTokens(flow.to)) {
           const producedToken = producedAsset({ op, asset: sectionAnswer.asset }) ?? sectionAnswer.asset;

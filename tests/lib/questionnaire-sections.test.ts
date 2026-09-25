@@ -360,15 +360,18 @@ describe("one questionnaire, one section per action", () => {
     };
     expect(answerProblem(built, badAnswers)).toBe("Answer each section once.");
 
-    // 2. Deposit 10 then Blend 1100 -> fails because account only has 100 + 10 = 110 XLM
+    // 2. Deposit 10 then Blend 1101 -> fails: the account has 100 + 10 = 110 and the wallet top-up
+    // (owner, 24 Sep) covers only the 990 the deposit left in it, 1100 in all.
     const overAnswers: QuestionnaireAnswers = {
-      questionnaireId: built.id, asset: "XLM", venue: null, amount: { kind: "literal", amount: "10" }, summary: "deposit 10 and supply 1100 to blend",
+      questionnaireId: built.id, asset: "XLM", venue: null, amount: { kind: "literal", amount: "10" }, summary: "deposit 10 and supply 1101 to blend",
       sections: [
         { sectionId: built.sections![0].id, asset: "XLM", venue: "deposit_collateral:XLM", amount: { kind: "literal", amount: "10" } },
-        { sectionId: built.sections![1].id, asset: "XLM", venue: "supply_blend:XLM", amount: { kind: "literal", amount: "1100" } },
+        { sectionId: built.sections![1].id, asset: "XLM", venue: "supply_blend:XLM", amount: { kind: "literal", amount: "1101" } },
       ],
     };
-    expect(answerProblem(built, overAnswers)).toBe("That is more than the 110 XLM available.");
+    expect(answerProblem(built, overAnswers)).toBe("That is more than the 1100 XLM available.");
+    const toppedUp = { ...overAnswers, sections: [overAnswers.sections![0], { ...overAnswers.sections![1], amount: { kind: "literal" as const, amount: "1100" } }] };
+    expect(answerProblem(built, toppedUp)).toBeNull();
 
     // 3. Deposit 10 then Blend 50 -> succeeds (50 <= 110)
     const goodAnswers: QuestionnaireAnswers = {
@@ -495,7 +498,11 @@ describe("one questionnaire, one section per action", () => {
         },
       ],
     };
-    expect(answerProblem(built, blendAnswers)).toBe("That is more than the 0 BLUSDC available.");
+    // The account holds none, so the plan deposits it from the wallet first (owner, 24 Sep):
+    // 25 Sep live, this refusal ended "supply my usdc" with no transaction.
+    expect(answerProblem(built, blendAnswers)).toBeNull();
+    const beyond = { ...blendAnswers, sections: [{ ...blendAnswers.sections![0], amount: { kind: "literal" as const, amount: "401" } }] };
+    expect(answerProblem(built, beyond)).toBe("That is more than the 400 BLUSDC available.");
 
     // Picking firstOption (Earn) keys to wallet (which has 400 BLUSDC) and succeeds
     const earnAnswers: QuestionnaireAnswers = {

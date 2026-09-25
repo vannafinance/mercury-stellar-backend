@@ -709,7 +709,7 @@ describe("ClarifyQuestionnaire Component", () => {
       expect(updatedLinkedOpt.textContent).toContain("250 XLM");
     });
 
-    it("displays note fields on max and pair under the amount box", () => {
+    it("does not show the wallet top-up notes under the amount box", () => {
       const questionnaireWithNotes: Questionnaire = {
         id: "q-notes",
         title: "Supply to LP Pool",
@@ -757,14 +757,11 @@ describe("ClarifyQuestionnaire Component", () => {
         />
       );
 
-      // Both single-option steps (asset & venue) are auto-skipped, lands directly on amount step
-      const amountNote = screen.getByTestId("amount-note");
-      expect(amountNote).toBeTruthy();
-      expect(amountNote.textContent).toContain("Your margin account has 10 AQUSDC; I'll deposit the other 14 from your wallet first.");
-
-      const pairNote = screen.getByTestId("pair-note");
-      expect(pairNote).toBeTruthy();
-      expect(pairNote.textContent).toContain("Paired with XLM at pool ratio");
+      // Owner, 25 Sep: the wallet top-up notes are not shown (they were sized for Max, not the
+      // amount typed); the plan card lists the deposit steps with their real amounts.
+      expect(screen.queryByTestId("amount-note")).toBeNull();
+      expect(screen.queryByTestId("pair-note")).toBeNull();
+      expect(screen.queryByText(/deposit the other 14/)).toBeNull();
     });
 
     it("resolves linked option strictly via sourceSectionId and submits previous_leg", () => {

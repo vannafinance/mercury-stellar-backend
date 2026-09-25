@@ -6302,6 +6302,9 @@ export function CopilotWorkspace() {
                 busy={investigation.loading}
                 onSubmit={(answers) => {
                   setClosedQuestionnaire(openQuestionnaire.id);
+                  // The answer is this turn's user message; left on the earlier prompt, the thread
+                  // redrew that prompt as a pending bubble under the answer.
+                  setSubmitted(answers.summary);
                   void investigation.run(answers.summary, undefined, answers);
                 }}
                 onCancel={() => setClosedQuestionnaire(openQuestionnaire.id)}
