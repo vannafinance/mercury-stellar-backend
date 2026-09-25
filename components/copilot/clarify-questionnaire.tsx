@@ -930,19 +930,11 @@ export function ClarifyQuestionnaire({
       }`}
     >
       {/* Header: Title, Subtitle, Step count, and Cancel (X) */}
-      <div className="flex items-start justify-between gap-3 border-b border-vgray-100 dark:border-[#2A2A2A] pb-3">
+      <div className="flex items-start justify-between gap-3 pb-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h2 className="text-[15px] font-semibold leading-tight">
-              {currentSection.title || questionnaire.title}
-            </h2>
-            <span
-              className="text-[12px] font-medium text-vgray-400 tabular-nums"
-              data-testid="step-counter"
-            >
-              {currentState.activeStepIdx + 1} of {currentSection.steps.length}
-            </span>
-          </div>
+          <h2 className="text-[16px] font-semibold leading-tight">
+            {currentSection.title || questionnaire.title}
+          </h2>
           {questionnaire.subtitle && (
             <p className="mt-0.5 text-[13px] text-vgray-500 dark:text-vgray-400 leading-normal">
               {questionnaire.subtitle}
@@ -1062,14 +1054,27 @@ export function ClarifyQuestionnaire({
 
       {/* Active Step Content */}
       {currentStep && (
-        <div className="py-2">
-          <h3 className="text-[13px] font-semibold mb-2.5 text-vgray-800 dark:text-vgray-100">
-            {currentStep.prompt}
-          </h3>
+        <div className={`rounded-xl border p-3.5 ${isDark ? "border-[#2A2A2A] bg-[#181818]" : "border-vgray-100 bg-vgray-50/60"}`}>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-[15px] font-semibold leading-snug text-vgray-900">
+              {currentStep.prompt}
+            </h3>
+            <div className="flex shrink-0 items-center gap-1 text-[12px] text-vgray-400">
+              <button type="button" onClick={handleBack} disabled={isFirstVisibleStep || busy || submitted}
+                aria-label="Previous question" data-testid="btn-back"
+                className="rounded p-1 hover:text-vgray-700 disabled:opacity-30"><ArrowLeft size={13} aria-hidden="true" /></button>
+              <span className="tabular-nums" data-testid="step-counter">
+                {currentState.activeStepIdx + 1} of {currentSection.steps.length}
+              </span>
+              <button type="button" onClick={handleNext} disabled={isLastVisibleStep || busy || submitted}
+                aria-label="Next question" data-testid="btn-next"
+                className="rounded p-1 hover:text-vgray-700 disabled:opacity-30"><ArrowRight size={13} aria-hidden="true" /></button>
+            </div>
+          </div>
 
           {/* Options for Asset or Venue (Radio rows with label on left, rate/balance on right, LP note second line) */}
           {currentStep.slot !== "amount" && (
-            <div className="space-y-2" role="radiogroup" aria-label={currentStep.prompt}>
+            <div className="space-y-1.5" role="radiogroup" aria-label={currentStep.prompt}>
               {currentStepOptions.map((opt, oIdx) => {
                 const isSelected =
                   currentStep.slot === "asset"
@@ -1085,7 +1090,7 @@ export function ClarifyQuestionnaire({
                     aria-checked={isSelected}
                     disabled={submitted}
                     onClick={() => handleSelectOption(opt.id)}
-                    className={`w-full flex items-center justify-between rounded-lg border p-3 text-left transition-all ${
+                    className={`w-full flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-all ${
                       isSelected
                         ? isDark
                           ? "border-violet-500 bg-violet-950/20 text-white"
@@ -1100,32 +1105,16 @@ export function ClarifyQuestionnaire({
                     }`}
                     data-testid={`option-${opt.id}`}
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      {/* Radio dot indicator */}
-                      <span
-                        className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${
-                          isSelected
-                            ? "border-violet-500"
-                            : isDark
-                            ? "border-vgray-600"
-                            : "border-vgray-300"
-                        }`}
-                      >
-                        {isSelected && (
-                          <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
-                        )}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="text-[13px] font-semibold">
-                          {opt.label}
-                        </div>
-                        {opt.detail && (
-                          <div className="text-[11px] text-vgray-400 dark:text-vgray-400 mt-0.5 truncate">
-                            {opt.detail}
-                          </div>
-                        )}
-                      </div>
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      {/* The number is the keyboard shortcut (1-9), as in the hint below. */}
+                      <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-[11px] font-semibold tabular-nums ${
+                        isSelected ? "bg-violet-500 text-white" : isDark ? "bg-[#262626] text-vgray-300" : "border border-vgray-100 bg-white text-vgray-500"
+                      }`}>{oIdx + 1}</span>
+                      <span className="truncate text-[13.5px] font-medium">{opt.label}</span>
                     </div>
+                    {opt.detail && (
+                      <span className="max-w-[55%] shrink-0 truncate text-right text-[12px] tabular-nums text-vgray-400">{opt.detail}</span>
+                    )}
                   </button>
                 );
               })}
@@ -1350,80 +1339,41 @@ export function ClarifyQuestionnaire({
         </div>
       )}
 
-      {/* Navigation Buttons: Back, Next, Send */}
-      <div className="flex items-center justify-between gap-2 border-t border-vgray-100 dark:border-[#2A2A2A] pt-3.5 mt-3">
-        <div>
-          {!isFirstVisibleStep && (
-            <button
-              type="button"
-              onClick={handleBack}
-              disabled={busy || submitted}
-              className={`${BTN_QUIET} flex items-center gap-1.5`}
-              data-testid="btn-back"
-            >
-              <ArrowLeft size={14} aria-hidden="true" />
-              Back
-            </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          {!isLastVisibleStep && (
-            <button
-              type="button"
-              onClick={handleNext}
-              disabled={busy || submitted}
-              className={`${BTN_QUIET} flex items-center gap-1.5`}
-              data-testid="btn-next"
-            >
-              Next
-              <ArrowRight size={14} aria-hidden="true" />
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={!isAllComplete || busy || submitted}
-            className={BTN_PRIMARY}
-            data-testid="btn-send"
-          >
-            {busy ? "Sending..." : "Send"}
-          </button>
-        </div>
-      </div>
-
-      {/* "Something else" input escape hatch */}
-      <div className="flex items-center gap-2 border-t border-vgray-100 dark:border-[#2A2A2A] pt-3 mt-3">
+      {/* Footer: the escape hatch and Send; Back and Next are the pager above */}
+      <div className="mt-3 flex items-center gap-2">
         <input
           id="something-else-input"
           type="text"
-          placeholder="Something else..."
+          placeholder="Something else…"
           value={somethingElseText}
           onChange={(e) => setSomethingElseText(e.target.value)}
           disabled={busy || submitted}
-          className="flex-1 rounded-lg border border-vgray-200 dark:border-[#2A2A2A] bg-transparent px-3 py-1.5 text-[12px] placeholder:text-vgray-400 outline-none focus:border-violet-500 transition-colors"
+          className="min-w-0 flex-1 rounded-lg border border-vgray-100 dark:border-[#2A2A2A] bg-transparent px-3 py-1.5 text-[12.5px] placeholder:text-vgray-400 outline-none focus:border-violet-500 transition-colors"
           data-testid="input-something-else"
         />
         <button
           type="button"
-          onClick={() => {
-            if (somethingElseText.trim()) {
-              onSomethingElse(somethingElseText.trim());
-            }
-          }}
+          onClick={() => { if (somethingElseText.trim()) onSomethingElse(somethingElseText.trim()); }}
           disabled={!somethingElseText.trim() || busy || submitted}
-          className="rounded-lg border border-vgray-200 dark:border-[#2A2A2A] px-2.5 py-1.5 text-[12px] font-semibold text-vgray-700 dark:text-vgray-300 hover:border-violet-400 hover:text-violet-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          aria-label="Send something else"
+          className="rounded-lg border border-vgray-100 dark:border-[#2A2A2A] px-2 py-1.5 text-vgray-500 hover:text-violet-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           data-testid="btn-something-else"
         >
           <CornerDownLeft size={13} aria-hidden="true" />
         </button>
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={!isAllComplete || busy || submitted}
+          className={BTN_PRIMARY}
+          data-testid="btn-send"
+        >
+          {busy ? "Sending..." : "Send"}
+        </button>
       </div>
-
-      {/* Keyboard hint */}
-      <div className="flex items-center justify-between text-[11px] text-vgray-400 dark:text-vgray-500 mt-2 px-0.5">
-        <span>Press 1-9 to select &middot; &crarr; to submit &middot; Esc to close</span>
-      </div>
+      <p className="mt-2 text-center text-[11px] text-vgray-400 dark:text-vgray-500">
+        ↑↓ move · 1-9 choose · Enter select · Esc close
+      </p>
     </div>
   );
 }
