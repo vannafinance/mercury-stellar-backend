@@ -6402,19 +6402,15 @@ export function CopilotWorkspace() {
                     : undefined
                 }
                 aria-label={loading || signing || investigation.loading || entry.loading ? "Cancel" : "Send"}
-                className={
-                  loading || signing || investigation.loading || entry.loading
-                    ? `shrink-0 rounded-full px-4 py-2 text-[13px] ${BTN_QUIET}`
-                    : "flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-100"
-                }
-                style={
-                  loading || signing || investigation.loading || entry.loading
-                    ? undefined
-                    : { background: "var(--gradient, linear-gradient(135deg, #FC5457 10%, #703AE6 80%))" }
-                }
+                // One round button in the pill: Send, or while a reply runs, Stop (the square).
+                className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-100"
+                style={{ background: "var(--gradient, linear-gradient(135deg, #FC5457 10%, #703AE6 80%))" }}
+                title={loading || signing || investigation.loading || entry.loading ? "Stop" : "Send"}
               >
                 {loading || signing || investigation.loading || entry.loading ? (
-                  "Cancel"
+                  <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden>
+                    <rect x="5" y="5" width="14" height="14" rx="2.5" fill="currentColor" />
+                  </svg>
                 ) : (
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <path d="M12 19V5" /><path d="m5 12 7-7 7 7" />

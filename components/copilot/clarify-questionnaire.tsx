@@ -1075,7 +1075,7 @@ export function ClarifyQuestionnaire({
       {/* Active Step Content */}
       {currentStep && (
         <div className="py-2">
-          <h3 className="text-[13px] font-semibold mb-2.5 text-vgray-800">
+          <h3 className="text-[13px] font-semibold mb-2.5 text-vgray-900">
             {currentStep.prompt}
           </h3>
 
@@ -1097,7 +1097,7 @@ export function ClarifyQuestionnaire({
                     aria-checked={isSelected}
                     disabled={submitted}
                     onClick={() => handleSelectOption(opt.id)}
-                    className={`w-full flex items-center justify-between rounded-lg border p-3 text-left transition-all ${
+                    className={`w-full flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-all ${
                       isSelected
                         ? isDark
                           ? "border-violet-500 bg-violet-950/20 text-white"
@@ -1107,7 +1107,7 @@ export function ClarifyQuestionnaire({
                           ? "border-violet-400/50 bg-[#1E1E1E] text-white"
                           : "border-violet-300 bg-vgray-50 text-vgray-800"
                         : isDark
-                        ? "border-[#2A2A2A] bg-[#1A1A1A] hover:border-[#3A3A3A] hover:bg-[#202020] text-vgray-200"
+                        ? "border-[#2A2A2A] bg-[#1A1A1A] hover:border-[#3A3A3A] hover:bg-[#202020] text-vgray-900"
                         : "border-vgray-100 bg-white hover:border-vgray-200 hover:bg-vgray-50 text-vgray-800"
                     }`}
                     data-testid={`option-${opt.id}`}
@@ -1127,20 +1127,42 @@ export function ClarifyQuestionnaire({
                           <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
                         )}
                       </span>
-                      <div className="min-w-0">
-                        <div className="text-[13px] font-semibold">
-                          {opt.label}
-                        </div>
-                        {opt.detail && (
-                          <div className="text-[11px] text-vgray-400 mt-0.5 truncate">
-                            {opt.detail}
-                          </div>
-                        )}
-                      </div>
+                      <div className="min-w-0 text-[13px] font-semibold">{opt.label}</div>
                     </div>
+                    {opt.detail && (
+                      <span className="max-w-[55%] shrink-0 truncate text-right text-[12px] tabular-nums text-vgray-500">{opt.detail}</span>
+                    )}
                   </button>
                 );
               })}
+              {/* "Something else" is the list's last row, typed in place (CoinFello), not a separate section. */}
+              <div className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 ${isDark ? "border-[#2A2A2A] bg-[#1A1A1A]" : "border-vgray-100 bg-white"}`}>
+                <input
+                  type="text"
+                  aria-label="Something else"
+                  placeholder="Something else…"
+                  value={somethingElseText}
+                  onChange={(e) => setSomethingElseText(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Typing here must not trigger the list's 1-9 / arrow shortcuts.
+                    e.stopPropagation();
+                    if (e.key === "Enter" && somethingElseText.trim()) onSomethingElse(somethingElseText.trim());
+                  }}
+                  disabled={busy || submitted}
+                  className="min-w-0 flex-1 bg-transparent py-1 text-[13px] text-vgray-900 placeholder:text-vgray-400 outline-none"
+                  data-testid="input-something-else"
+                />
+                <button
+                  type="button"
+                  aria-label="Send something else"
+                  onClick={() => { if (somethingElseText.trim()) onSomethingElse(somethingElseText.trim()); }}
+                  disabled={!somethingElseText.trim() || busy || submitted}
+                  className="rounded p-1 text-vgray-500 hover:text-violet-500 disabled:opacity-40"
+                  data-testid="btn-something-else"
+                >
+                  <CornerDownLeft size={13} aria-hidden="true" />
+                </button>
+              </div>
             </div>
           )}
 
@@ -1169,7 +1191,7 @@ export function ClarifyQuestionnaire({
                             ? "border-violet-500 bg-violet-950/20 text-white"
                             : "border-violet-500 bg-violet-50/40 text-vgray-900"
                           : isDark
-                          ? "border-[#2A2A2A] bg-[#1A1A1A] hover:border-[#3A3A3A] text-vgray-200"
+                          ? "border-[#2A2A2A] bg-[#1A1A1A] hover:border-[#3A3A3A] text-vgray-900"
                           : "border-vgray-200 bg-white hover:border-vgray-300 text-vgray-800"
                       }`}
                       data-testid={`option-${linkedOpt.id}`}
@@ -1404,8 +1426,9 @@ export function ClarifyQuestionnaire({
         </div>
       </div>
 
-      {/* "Something else" input escape hatch */}
-      <div className="flex items-center gap-2 border-t border-vgray-100 pt-3 mt-3">
+      {/* "Something else" input escape hatch: kept only on the amount step, where there is no option list. */}
+      {currentStep?.slot === "amount" && (
+      <div className="flex items-center gap-2 pt-3">
         <input
           id="something-else-input"
           type="text"
@@ -1430,6 +1453,7 @@ export function ClarifyQuestionnaire({
           <CornerDownLeft size={13} aria-hidden="true" />
         </button>
       </div>
+      )}
 
       {/* Keyboard hint */}
       <div className="flex items-center justify-between text-[11px] text-vgray-400 mt-2 px-0.5">
