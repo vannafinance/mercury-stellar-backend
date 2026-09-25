@@ -1,5 +1,6 @@
+import { shareSameOpLiteralActions } from "@/lib/copilot/investigation/plan";
 import { describe, expect, it } from "vitest";
-import { resolvePlans } from "@/lib/copilot/investigation/plan";
+import { planCandidateId, resolvePlans } from "@/lib/copilot/investigation/plan";
 import { fastPathView } from "@/lib/copilot/investigation/fast-path";
 import { buildQuestionnaireSet } from "@/lib/copilot/investigation/questionnaire";
 import { researchTurn } from "@/lib/copilot/investigation/service";
@@ -108,7 +109,10 @@ describe("no-margin-account gate", () => {
         { op: "deposit_collateral" as const, asset: "XLM", sizing: { kind: "literal" as const, amount: "100", sourceQuote: "100" } },
       ],
     };
-    const res = resolvePlans([mixedPlan], ctx);
+    // The user's own stated plan is split; the same plan composed by the model is refused whole.
+    const composed = resolvePlans([mixedPlan], ctx);
+    expect(composed.candidates).toHaveLength(0);
+    const res = resolvePlans([mixedPlan], { ...ctx, statedPlanId: planCandidateId(mixedPlan) });
     // The Earn part still runs as a candidate
     expect(res.candidates).toHaveLength(1);
     expect(res.candidates[0]!.steps).toHaveLength(1);
@@ -185,13 +189,13 @@ describe("no-margin-account gate", () => {
         if (tool === "vanna_list_my_wallet_bindings") {
           return { has_assertion: true, sub: `stellar:${NO_ACCOUNT_TRADER}`, bindings: [{ wallet_address: NO_ACCOUNT_TRADER, active: true }] };
         }
-        if (tool === "vanna_read_wallet_balances") {
+        if (tool === "vanna_get_wallet_balance") {
           return { assets: [{ symbol: "XLM", balance: "1000", decimals: 7 }, { symbol: "BLUSDC", balance: "400", decimals: 7 }] };
         }
-        if (tool === "vanna_get_asset_price") {
-          return { price: "1", decimals: 7 };
+        if (tool === "vanna_get_price") {
+          return { price_usd: "1" };
         }
-        if (tool === "vanna_read_earn_market") {
+        if (tool === "vanna_get_pool_stats") {
           return { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "10" };
         }
         return {};
@@ -221,16 +225,42 @@ describe("no-margin-account gate", () => {
       },
     );
 
-    // No questionnaire because deposit was dropped and lend has no missing slots
+    // Real tool names, so the lend actually sizes: it runs, and the deposit is named as blocked.
     expect(result.questionnaire).toBeUndefined();
-    // Lend 20 BLUSDC is offered as requested steps or feasible candidate
-    const feasibleOps = result.candidates?.feasible.flatMap((c) => c.steps?.map((s) => s.op) ?? []) ?? [];
-    // Lend 20 XLM was NOT invented
-    const lendXlmCandidate = result.candidates?.feasible.find((c) => c.steps?.some((s) => s.op === "lend" && s.args?.symbol === "XLM"));
-    expect(lendXlmCandidate).toBeUndefined();
-    // The deposit was blocked with accountRequired
-    expect(result.candidates?.rejected.some((r) => r.accountRequired?.code === "accountRequired" && r.accountRequired.actions.includes("Deposit XLM"))).toBe(true);
-    // Open a margin account choice is offered
+    expect(result.message).toMatch(/Lend 20 BLUSDC/);
+    expect(result.message).not.toMatch(/Lend 20 XLM/);
+    expect(result.message).toMatch(/Deposit XLM: a margin account is needed/);
+    expect(result.message.match(/a margin account is needed/g)).toHaveLength(1);
     expect(result.choices?.some((c) => c.id === "create_account")).toBe(true);
+  });
+
+  /**
+   * A stated amount is shared only across assets named in that lend's OWN quote. Phrasings no
+   * list could anticipate: the other asset belongs to another action, so it gets nothing.
+   */
+  it("never lends an asset named for a different action, however it is phrased", () => {
+    for (const message of [
+      "put 20 blusdc into earn, also move some xlm to my account",
+      "stick 20 blusdc in earn plus xlm over to my margin",
+      "lend 20 blusdc & shove xlm into my margin account",
+    ]) {
+      const quote = message.slice(0, message.indexOf("blusdc") + "blusdc".length);
+      // The model gives the XLM part its own action or section; that ownership is what stops it.
+      const out = shareSameOpLiteralActions(
+        [{ op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "20", sourceQuote: quote }, sourceQuote: quote }],
+        [message],
+        ["XLM"],
+      );
+      expect(out.map((a) => a.asset), message).toEqual(["BLUSDC"]);
+    }
+  });
+
+  it("still shares one amount across assets the lend itself names", () => {
+    const quote = "lend 100 xlm and blusdc";
+    const out = shareSameOpLiteralActions(
+      [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: quote }, sourceQuote: quote }],
+      [quote],
+    );
+    expect(out.map((a) => a.asset).sort()).toEqual(["BLUSDC", "XLM"]);
   });
 });

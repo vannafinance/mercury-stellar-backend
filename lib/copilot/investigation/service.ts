@@ -795,10 +795,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * refusal names the figure. It used to compile straight to steps (14 Sep: "lend 1 xlm"
    * from a wallet with nothing spendable, refused by the contract after Approve).
    */
+  /** Assets the questionnaire's sections own (even ones a missing account dropped): never lent by sharing. */
+  const ownedElsewhere = [...(outcome.kind === "clarify" ? [outcome.missing].flat() : []), ...droppedMissingAccountActions]
+    .flatMap((entry) => (entry?.asset ? [entry.asset] : []));
   const statedActions = outcome.kind === "research_complete" ? outcome.goal.actions
     : (outcome.kind === "clarify" && !questionnaire ? outcome.actions : undefined);
   const statedPlan = !lifecycleOp && (outcome.kind === "research_complete" || (outcome.kind === "clarify" && !questionnaire)) && (outcome.kind === "research_complete" ? outcome.goal.intent === "strategy" : true) && !modelPlans.length && statedActions?.length
-    ? planFromStatedActions(shareSameOpLiteralActions(statedActions, messages), outcome.kind === "research_complete" ? outcome.goal.objective : messages[0]) : null;
+    ? planFromStatedActions(shareSameOpLiteralActions(statedActions, messages, ownedElsewhere),
+      outcome.kind === "research_complete" ? outcome.goal.objective : messages[0]) : null;
   /**
    * Its POSITION, not its identity: `withSharedLiteralAmount` below can append a leg,
    * which would change the plan's candidate id and silently turn the user's own
@@ -812,7 +816,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * the reads are chosen and before the evidence is sealed, so the reads phase, the sizer,
    * the card and the sealed plan all see the same leg.
    */
-  modelPlans = withSharedLiteralAmount(withBoughtAsset(modelPlans, messages), messages);
+  modelPlans = withSharedLiteralAmount(withBoughtAsset(modelPlans, messages), messages, ownedElsewhere);
   /**
    * Plans the user asked for together become ONE plan (23 Sep, XS6: "use my whole wallet"
    * came back as one option per asset, and Approve could run only one). Only when the model
@@ -1041,9 +1045,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   if (droppedMissingAccountActions.length > 0) {
     const droppedRejections: CandidateSet["rejected"] = droppedMissingAccountActions.map((entry) => {
-      const op = entry.op ?? opsInPlay(entry, messages)[0] ?? "deposit_collateral";
+      // Never name an op the user did not state: with none resolvable, the asset alone is named.
+      const op = entry.op ?? opsInPlay(entry, messages)[0];
       const asset = entry.asset ?? "tokens";
-      const name = `${verbOf(op)} ${asset}`;
+      const name = op ? `${verbOf(op)} ${asset}` : asset;
       return {
         label: `${name.charAt(0).toUpperCase()}${name.slice(1)}`,
         reason: `${name}: a margin account is needed for this step and none is connected.`,
@@ -1131,7 +1136,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const statedCandidate = statedId ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
   const requestedSteps = statedCandidate?.steps ?? [];
   if (statedCandidate && candidates) candidates = { ...candidates, feasible: candidates.feasible.filter((c) => c.id !== statedId) };
-  const message = lifecycleOp === "create_account"
+  let message = lifecycleOp === "create_account"
     ? "No active margin account was found for your wallet. Approve below to deploy and initialize your margin smart account."
     : strategyReply({
         status, facts, candidates: requestedSteps.length ? null : candidates, capacity, question,
@@ -1141,6 +1146,15 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         statedSteps: requestedSteps,
         stopReason: outcome.kind === "stopped" ? outcome.reason : null,
       });
+  /**
+   * The part that runs is the stated steps; the part a missing margin account blocked must be
+   * said too (owner, 24 Sep: "say which part runs"). The reply is built from the steps alone, so
+   * the refusal reasons, the ones the refusal path already wrote, are added after it.
+   */
+  const blockedByAccount = requestedSteps.length
+    ? (candidates?.rejected ?? []).filter((entry) => entry.accountRequired).map((entry) => entry.reason)
+    : [];
+  if (blockedByAccount.length) message = `${message} ${blockedByAccount.join(" ")}`;
   if (scope.unverified === "bindings") {
     warnings.push("I couldn't verify the wallet link this turn, so I did not load your margin account. Ask again in a moment.");
   } else if (scope.unverified === "claimed") {

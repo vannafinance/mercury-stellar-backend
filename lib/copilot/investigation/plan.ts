@@ -567,6 +567,15 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
 function independentAccountCheck(plan: ProposedPlan, ctx: PlanContext):
   { legs: PlanLeg[]; rejected: Array<{ leg: string; reason: string; accountRequired: { code: "accountRequired"; actions: string[] } }> } | null {
   if (ctx.scope.smartAccount) return null;
+  /**
+   * Split only the user's OWN stated plan ("lend 20 blusdc and deposit xlm": the Earn part runs,
+   * the account part is named as blocked; owner, 24 Sep), and only when its steps are
+   * independent. A plan the model composed, or one where a step takes an earlier step's output
+   * ("redeem, then deposit what came out"), means something else in part, so it is refused
+   * whole, exactly as before the gate.
+   */
+  if (ctx.statedPlanId == null || planCandidateId(plan) !== ctx.statedPlanId) return null;
+  if (plan.legs.some((leg) => leg.sizing.kind === "previous_leg")) return null;
   const accountLegs = plan.legs.filter((leg) => touchesMarginAccount(leg.op));
   const freeLegs = plan.legs.filter((leg) => !touchesMarginAccount(leg.op));
   if (!accountLegs.length || !freeLegs.length) return null;
@@ -2144,7 +2153,7 @@ function namedEarnAssetsIn(text: string): string[] {
  * One stated amount applies to every named asset of the same op. The last message is the
  * instruction — history may contain other numbers. Two numbers stay per-asset.
  */
-function applySharedLiteral(legs: PlanLeg[], messages: readonly string[]): PlanLeg[] {
+function applySharedLiteral(legs: PlanLeg[], messages: readonly string[], claimed: readonly string[] = []): PlanLeg[] {
   const request = requestText(messages);
   const amounts = uniqueAmountsIn(request);
   const shared = amounts.length === 1 ? amounts[0] : null;
@@ -2164,52 +2173,31 @@ function applySharedLiteral(legs: PlanLeg[], messages: readonly string[]): PlanL
       },
     };
   });
-function opForClause(clause: string): WorkflowOp | null {
-  const lower = clause.toLowerCase();
-  for (const op of WORKFLOW_OPS) {
-    const verb = verbOf(op).toLowerCase();
-    const past = pastOf(op);
-    const regex = new RegExp(`\\b(?:${verb}|${past})\\b`, "i");
-    if (regex.test(lower)) return op;
-  }
-  return null;
-}
-
-function actionClauses(text: string): Array<{ op: WorkflowOp | null; text: string; assets: string[] }> {
-  const rawClauses = text.split(/\b(?:and\s+then|then|and|also|plus)\b|[,;\.]+/i);
-  const out: Array<{ op: WorkflowOp | null; text: string; assets: string[] }> = [];
-  let currentOp: WorkflowOp | null = null;
-  for (const raw of rawClauses) {
-    const clause = raw.trim();
-    if (!clause) continue;
-    const detected = opForClause(clause);
-    if (detected) currentOp = detected;
-    const assets = namedEarnAssetsIn(clause);
-    out.push({ op: currentOp, text: clause, assets });
-  }
-  return out;
-}
-
+  /**
+   * Which other named assets share the lend's stated amount. "100 xlm and BLUSDC" means both
+   * (13 Sep; the model often quotes only "100 xlm"). But an asset another action owns is never
+   * lent: "lend 20 blusdc and deposit xlm" names XLM for the deposit, and treating every named
+   * asset as a lend invented a "Lend 20 XLM" that auto-ran (25 Sep). Ownership comes from the
+   * model's own structured actions: another stated leg in that asset, or a questionnaire
+   * section (`claimed`) for it. Nothing here reads the user's phrasing; asset names are the
+   * registry's.
+   */
   if (shared) {
-    const clauses = actionClauses(request);
+    const owned = new Set(claimed.map((asset) => asset.toUpperCase()));
     for (const leg of legs) {
-      if (leg.op !== "lend") continue;
-      if (leg.sizing.kind !== "literal") continue;
+      if (leg.op !== "lend" || leg.sizing.kind !== "literal") continue;
       const legQuote = leg.sizing.sourceQuote;
-      const candidateAssets = namedEarnAssetsIn(request).filter((asset) => {
-        if (namedEarnAssetsIn(legQuote).includes(asset)) return true;
-        const clauseForAsset = clauses.find((c) => c.assets.includes(asset));
-        if (clauseForAsset && clauseForAsset.op && clauseForAsset.op !== leg.op) return false;
-        if (legs.some((other) => other.asset === asset && other.op !== leg.op)) return false;
-        return true;
-      });
-      for (const asset of candidateAssets) {
+      const ownQuote = new Set(namedEarnAssetsIn(legQuote));
+      for (const asset of namedEarnAssetsIn(request)) {
         if (next.some((l) => l.op === "lend" && l.asset === asset)) continue;
-        const clauseForAsset = clauses.find((c) => c.assets.includes(asset));
+        if (!ownQuote.has(asset)) {
+          if (owned.has(asset.toUpperCase())) continue;
+          if (legs.some((other) => other.asset === asset && other.op !== leg.op)) continue;
+        }
         next = [...next, {
           op: "lend",
           asset,
-          sizing: { kind: "literal", amount: formatWad(decimalWad(shared)), sourceQuote: clauseForAsset?.text ?? legQuote },
+          sizing: { kind: "literal", amount: formatWad(decimalWad(shared)), sourceQuote: legQuote },
         }];
       }
     }
@@ -2217,9 +2205,9 @@ function actionClauses(text: string): Array<{ op: WorkflowOp | null; text: strin
   return next;
 }
 
-export function withSharedLiteralAmount(plans: readonly ProposedPlan[], messages: readonly string[]): ProposedPlan[] {
+export function withSharedLiteralAmount(plans: readonly ProposedPlan[], messages: readonly string[], claimed: readonly string[] = []): ProposedPlan[] {
   return plans.map((plan) => {
-    const legs = applySharedLiteral(plan.legs, messages);
+    const legs = applySharedLiteral(plan.legs, messages, claimed);
     if (legs.length === plan.legs.length && legs.every((leg, index) => leg === plan.legs[index])) return plan;
     const title = legs.every((leg) => leg.sizing.kind === "literal")
       ? legs.map((leg) => `${verbOf(leg.op)} ${leg.sizing.kind === "literal" ? leg.sizing.amount : ""} ${leg.asset}`).join(", then ")
@@ -2231,6 +2219,8 @@ export function withSharedLiteralAmount(plans: readonly ProposedPlan[], messages
 export function shareSameOpLiteralActions(
   actions: NonNullable<GoalUnderstanding["actions"]>,
   messages: readonly string[],
+  /** Assets another part of the request owns (a questionnaire section), so never lent here. */
+  claimed: readonly string[] = [],
 ): NonNullable<GoalUnderstanding["actions"]> {
   const plan = planFromStatedActions(actions, "tmp");
   if (!plan) return actions;
@@ -2247,7 +2237,7 @@ export function shareSameOpLiteralActions(
    * first action's, which would misattribute every later leg to the opening clause.
    * Appended legs have no action behind them and fall back to their sizing's quote.
    */
-  return applySharedLiteral(plan.legs, messages).map((leg, index) => ({
+  return applySharedLiteral(plan.legs, messages, claimed).map((leg, index) => ({
     ...leg,
     sourceQuote: actions[index]?.sourceQuote
       ?? ("sourceQuote" in leg.sizing ? leg.sizing.sourceQuote : requestText(messages)),
