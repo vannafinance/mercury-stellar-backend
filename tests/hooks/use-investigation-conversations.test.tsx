@@ -215,4 +215,16 @@ describe("useInvestigation — conversations", () => {
     expect(result.current.conversationId).toBe(archivedId);
     expect(result.current.turns.map((t) => t.text)).toEqual(["lend 50 XLM", "Lend 50 XLM."]);
   });
+
+  it("sends questionnaire answers with the continuation of the reply that issued them", async () => {
+    const calls = server([{ result: view("Which asset?", "r-issued") }, { result: view("Done.") }]);
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await act(async () => { await result.current.run("supply my usdc"); });
+    const answers = { questionnaireId: "q1", asset: "asset:AQUSDC", venue: "lend:AQUSDC", amount: { kind: "fraction" as const, percent: "25" }, summary: "Lend 25% of my AQUSDC to Earn" };
+    await act(async () => { await result.current.run(answers.summary, undefined, answers); });
+    const sent = calls.filter((c) => c.url === "/api/copilot/investigate")[1].body as { answers?: unknown; continuation?: string; message?: string };
+    expect(sent.answers).toEqual(answers);
+    expect(sent.continuation).toBe("r-issued");
+    expect(sent.message).toBe(answers.summary);
+  });
 });

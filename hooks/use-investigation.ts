@@ -6,7 +6,7 @@ import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
 import { walletSessionStatus } from "@/lib/copilot/establish-wallet-session";
 import { consumeResearchStream } from "@/lib/copilot/investigation/stream";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
-import type { ResearchView } from "@/lib/copilot/investigation/view";
+import type { QuestionnaireAnswers, ResearchView } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import {
   type ConversationSummary,
@@ -587,7 +587,12 @@ export function useInvestigation(wallet: string | null) {
     }
   }, [rememberLive]);
 
-  const run = useCallback(async (message: string, signal?: AbortSignal) => {
+  /**
+   * `answers`: the user filled in the questionnaire the last reply issued. They travel with
+   * THAT reply's continuation, which seals the options the server checks them against; the
+   * summary is only what the thread shows as the user's turn, never what is executed.
+   */
+  const run = useCallback(async (message: string, signal?: AbortSignal, answers?: QuestionnaireAnswers) => {
     const prompt = message.trim();
     if (!prompt) return;
     abort.current?.abort("replaced by a newer prompt");
@@ -618,7 +623,8 @@ export function useInvestigation(wallet: string | null) {
     const abortedCopy = () => timedOut
       ? "The investigation ran out of time before it could finish. Nothing was executed — please try again."
       : "This investigation was cancelled or replaced before it finished. Nothing was executed — run it again.";
-    const followUp = shouldContinueInvestigation(prompt, lastResult.current) ? continuation.current : null;
+    const followUp = answers ? continuation.current
+      : shouldContinueInvestigation(prompt, lastResult.current) ? continuation.current : null;
     const session = continuation.current;
     const history = transcript.current.slice(-8);
     const startedIn = conversationId.current && !isLocalConversationId(conversationId.current)
@@ -658,6 +664,7 @@ export function useInvestigation(wallet: string | null) {
         body: JSON.stringify({
           message: prompt, wallet: owner, continuation: followUp, session, history,
           ...(startedIn ? { conversationId: startedIn } : {}),
+          ...(answers ? { answers } : {}),
         }),
       });
       await consumeResearchStream(response, (event) => {
