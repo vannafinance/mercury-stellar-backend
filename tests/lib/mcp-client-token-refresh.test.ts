@@ -292,7 +292,9 @@ describe("reads and signed-out writes", () => {
     await getMcpClient().call("vanna_get_price", { symbol: "XLM" }, wallet);
 
     expect(toolCalls()[0].assertion).toBeNull();
-    expect(toolCalls()[0].rateLimitSubject).toBe(`wallet:${wallet}`);
+    // Unproven: its own kind, so it can never share the bucket of the wallet that proved it.
+    expect(toolCalls()[0].rateLimitSubject).toBe(`trader:${wallet}`);
+    expect(toolCalls()[0].rateLimitSubject).not.toBe(`wallet:${wallet}`);
   });
 
   it("does not turn an arbitrary third argument into a wallet rate-limit key", async () => {

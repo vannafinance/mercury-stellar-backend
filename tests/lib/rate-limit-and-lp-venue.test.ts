@@ -38,6 +38,7 @@ describe("the MCP's rate-limit refusal", () => {
   });
 
   it("stops after its retries and hands back a readable refusal", async () => {
+    rateLimitTiming.random = () => 0.1;
     const send = vi.fn().mockImplementation(async () => refused("rate_limited"));
     const res = await retryRateLimited(send);
     expect(send).toHaveBeenCalledTimes(5);
@@ -50,6 +51,15 @@ describe("the MCP's rate-limit refusal", () => {
     const send = vi.fn().mockResolvedValueOnce(refused("rate_limited", { "retry-after": "2" })).mockResolvedValue(ok());
     await retryRateLimited(send);
     expect(waits).toEqual([3000]);
+  });
+
+  it("spends at most the total retry budget, so a read never outlives its 8s budget", async () => {
+    rateLimitTiming.random = () => 0.99;
+    const send = vi.fn().mockImplementation(async () => refused("rate_limited", { "retry-after": "1" }));
+    const res = await retryRateLimited(send);
+    expect(res.status).toBe(429);
+    expect(waits.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(6000);
+    expect(send.mock.calls.length).toBeLessThan(5);
   });
 
   it("returns the refusal when Retry-After exceeds the bounded retry window", async () => {

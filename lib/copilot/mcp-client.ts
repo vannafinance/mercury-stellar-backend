@@ -553,7 +553,7 @@ class LiveMCPClient implements MCPClient {
       typeof _userId === "string" &&
       StrKey.isValidEd25519PublicKey(_userId)
     ) {
-      rateLimitSubject = `wallet:${_userId}`;
+      rateLimitSubject = `trader:${_userId}`;
     }
     if (rateLimitSubject) {
       sessionHeaders["X-Vanna-Rate-Limit-Subject"] = rateLimitSubject;
@@ -710,6 +710,12 @@ class LiveMCPClient implements MCPClient {
 const RATE_LIMIT_RETRIES = 4;
 const RATE_LIMIT_BASE_MS = 500;
 const RATE_LIMIT_CAP_MS = 4_000;
+/**
+ * The most time all retries of one call may spend waiting. It sits inside the tightest read
+ * budget (POSITION_BUDGET_MS, 8s, investigation/service.ts), so a rate-limited read either lands
+ * or returns its structured 429 in time, instead of timing out and looking like missing data.
+ */
+const RATE_LIMIT_TOTAL_MS = 6_000;
 
 /** Test seam: the wait between attempts. */
 export const rateLimitTiming = {
@@ -734,6 +740,7 @@ export const rateLimitTiming = {
  * full jitter fills the remaining capped window so parallel reads do not retry in step.
  */
 export async function retryRateLimited(send: () => Promise<Response>): Promise<Response> {
+  let waited = 0;
   for (let attempt = 0; ; attempt++) {
     const res = await send();
     if (res.status !== 429) return res;
@@ -752,8 +759,15 @@ export async function retryRateLimited(send: () => Promise<Response>): Promise<R
       return rebuilt;
     }
     const wait = Number.isFinite(retryAfterSec) && retryAfterSec > 0
-      ? serverWaitMs + Math.floor(rateLimitTiming.random() * (RATE_LIMIT_CAP_MS - serverWaitMs))
+      // Jitter over [Retry-After, 2 x Retry-After], within the cap: refused reads spread out
+      // without stretching every wait to the cap (it averaged 2.5s per retry with a 1s header).
+      ? Math.min(RATE_LIMIT_CAP_MS, serverWaitMs + Math.floor(rateLimitTiming.random() * serverWaitMs))
       : Math.floor(rateLimitTiming.random() * Math.min(RATE_LIMIT_CAP_MS, RATE_LIMIT_BASE_MS * 2 ** attempt));
+    if (waited + wait > RATE_LIMIT_TOTAL_MS) {
+      console.info("[mcp-client] rate limit retry budget spent", { attempt: attempt + 1, waitedMs: waited });
+      return rebuilt;
+    }
+    waited += wait;
     console.info("[mcp-client] rate limited, retrying", { attempt: attempt + 1, waitMs: wait });
     await rateLimitTiming.sleep(wait);
   }
