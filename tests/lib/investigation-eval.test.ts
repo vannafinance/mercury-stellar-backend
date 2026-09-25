@@ -172,6 +172,37 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     expect(tools).toContain("vanna_get_price");
   });
 
+  it("a strategy clarify becomes plan cards, not a questionnaire: put my idle usdc to work (25 Sep, live)", async () => {
+    const mcp = {
+      call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+        if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "19", supply_apy_pct: "19", borrow_apr_pct: "4", utilization_pct: "60" };
+        if (tool === "vanna_list_blend_reserves") return { reserves: [{ venue: "blend", symbol: "USDC", supply_apr_pct: "2", supply_apy_pct: "2", borrow_apr_pct: "5", utilization_pct: "50" }] };
+        if (tool === "vanna_get_wallet_balance") return { assets: [{ symbol: "XLM", balance: "50", status: "ok" }, { symbol: "BLUSDC", balance: "80", status: "ok" }] };
+        if (tool === "vanna_get_price") return { price_usd: args.symbol === "XLM" ? "0.18" : "1" };
+        return {};
+      }),
+    };
+    let turn = 0;
+    const result = await researchTurn(
+      { message: "put my idle usdc to work", wallet: SCOPE.trader, continuation: null, promptName: "strategy-clarify" },
+      deps(mcp, async () => turn++ === 0
+        ? { kind: "inspect", reads: [
+            { capability: "earn_market", args: { asset: "BLUSDC" } },
+            { capability: "blend_markets", args: {} },
+            { capability: "wallet_balances", args: {} },
+            { capability: "asset_price", args: { asset: "BLUSDC" } },
+          ] }
+        : {
+            kind: "clarify", intent: "strategy",
+            question: "Which venue would you like to put your idle USDC to work in?",
+            missing: [{ asset: "USDC", slots: ["asset", "venue", "amount"], sourceQuote: "put my idle usdc to work" }],
+          }),
+    );
+    expect(result.questionnaire).toBeUndefined();
+    expect(result.candidates?.feasible.length ?? 0).toBeGreaterThan(0);
+    expect(result.executionAllowed).toBe(false);
+  });
+
   it("bare USDC clarifies or resolves a variant rather than guessing", async () => {
     const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a clarify"); }) };
     const result = await researchTurn(
@@ -203,6 +234,25 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     expect(result.questionnaire).toBeUndefined();
     expect(result.executionAllowed).toBe(false);
     expect(mcp.call).not.toHaveBeenCalled();
+  });
+
+  it("refuses 'repay 5 xlm when xlm hits $0.30' with no standing-order mandate (25 Sep, live)", async () => {
+    const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a refused conditional"); }) };
+    const message = "repay 5 xlm of my debt when xlm hits $0.30";
+    const result = await researchTurn(
+      { message, wallet: SCOPE.trader, continuation: null, promptName: "conditional-complete" },
+      deps(mcp, async () => ({
+        kind: "research_complete",
+        goal: { objective: message, constraints: [], borrowing: "unspecified", intent: "strategy",
+          trigger: { kind: "future_condition", sourceQuote: "when xlm hits $0.30" },
+          actions: [{ op: "repay", asset: "XLM", sizing: { kind: "literal", amount: "5", sourceQuote: "repay 5 xlm" }, sourceQuote: "repay 5 xlm" }] },
+        findings: [{ summary: "The user wants this later, when a price arrives.", evidenceIds: [] }], openQuestions: [],
+      })),
+    );
+    expect(result.status).toBe("blocked");
+    expect(result.message).toBe(CONDITIONAL_REFUSAL);
+    expect(result.message).not.toMatch(/Mandate/);
+    expect(result.executionAllowed).toBe(false);
   });
 
   it("refuses answers to a sealed future-conditioned questionnaire before planning", async () => {

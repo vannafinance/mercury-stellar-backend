@@ -242,6 +242,10 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
             required: ["sourceQuote"],
           }),
         },
+        intent: {
+          type: "string", enum: ["action", "strategy"],
+          description: "action when the user stated what to do and only an input is missing; strategy when they asked you to choose what to do (a goal, not an instruction).",
+        },
         trigger: {
           type: "object",
           description: "Carry the user's future-event gate even when another input is missing. kind future_condition means do not act now; sourceQuote is the exact substring that states the event. Omit when there is no future condition.",
@@ -333,7 +337,7 @@ export function decisionFromFunctionCalls(calls: readonly ModelFunctionCall[]): 
   const control = calls.find((call) => CONTROL_NAMES.has(call.name));
   if (!control) return { kind: "invalid_function" };
   const args = isRecord(control.args) ? control.args : {};
-  if (control.name === "clarify") return { kind: "clarify", question: args.question, ...(args.missing !== undefined ? { missing: args.missing } : {}), ...(args.actions !== undefined ? { actions: args.actions } : {}), ...(args.trigger !== undefined ? { trigger: args.trigger } : {}) };
+  if (control.name === "clarify") return { kind: "clarify", question: args.question, ...(args.missing !== undefined ? { missing: args.missing } : {}), ...(args.actions !== undefined ? { actions: args.actions } : {}), ...(args.trigger !== undefined ? { trigger: args.trigger } : {}), ...(args.intent !== undefined ? { intent: args.intent } : {}) };
   if (control.name === "blocked") return { kind: "blocked", reason: args.reason };
   return wrapComplete(args);
 }

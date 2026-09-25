@@ -27,8 +27,8 @@ import { appendDiagnostics } from "./diagnostics-log";
 import type { ResearchConversation } from "./continuation";
 import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans, type StrategyRead } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
-import { detectAutomationGap, futureConditionRefusal } from "../conditional-guard";
-import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
+import { futureConditionRefusal } from "../conditional-guard";
+import { evaluateStandingOrders } from "../standing-orders";
 import { resolveLifecycleWrite } from "../workflow/lifecycle";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
@@ -357,33 +357,12 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         return { value: null, error };
       })
     : Promise.resolve({ value: null, error: null });
-  if (!prior) {
-    const parsed = parseStandingOrder(input.message);
-    if (parsed && scope.trader) {
-      const order = createStandingOrder({
-        subject: dependencies.subject, trader: scope.trader, smartAccount: scope.smartAccount,
-        trigger: parsed.trigger, action: parsed.action,
-      });
-      return {
-        status: "blocked",
-        message: `${STANDING_ORDER_OFFER} Mandate ${order.id} is waiting for an approved plan; nothing is watching yet.`,
-        originalRequest: input.message, refinements: [], understanding: null, question: null,
-        facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
-        warnings: [], scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
-        continuation: "", executionAllowed: false,
-      };
-    }
-    const gap = detectAutomationGap(input.message, true);
-    if (gap?.kind === "standing_order") {
-      return {
-        status: "blocked", message: gap.message,
-        originalRequest: input.message, refinements: [], understanding: null, question: null,
-        facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
-        warnings: [], scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
-        continuation: "", executionAllowed: false,
-      };
-    }
-  }
+  /**
+   * No wording parser runs ahead of the model any more. A pattern over "when … hits …" stored a
+   * standing-order mandate before the model was asked, so "repay 5 xlm when xlm hits $0.30" got a
+   * mandate reply instead of the refusal (25 Sep, live). The model's structured `trigger` decides,
+   * and any future_condition is refused (futureConditionRefusal, fail safe).
+   */
   const withdrawResult = await withdrawTask;
   const withdrawObs = withdrawResult.value;
   if (withdrawAsk) {
@@ -501,7 +480,29 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     loopElapsedMs: result.usage.elapsedMs,
   });
   // A stated action the model sized "all idle" is asked, never spent whole (unstated-amount.ts).
-  const outcome = askForUnstatedAmounts(result.outcome);
+  /**
+   * A strategy is answered with plans, never a questionnaire (owner, 24 Sep): "put my idle usdc
+   * to work" names a goal, and the copilot chooses, with a plan per held asset and venue. The
+   * model marks that on its clarify (`intent: "strategy"`, a structured field, not the user's
+   * words); such a clarify becomes the strategy turn the fixed generator and venue coverage
+   * build plans for. 25 Sep, live, it came back as a which/where/how-much questionnaire.
+   */
+  const decided = result.outcome.kind === "clarify" && result.outcome.intent === "strategy"
+    ? {
+        kind: "research_complete" as const,
+        goal: {
+          intent: "strategy" as const,
+          objective: messages[messages.length - 1] ?? input.message,
+          constraints: [] as string[],
+          borrowing: "unspecified" as const,
+          ...(result.outcome.trigger ? { trigger: result.outcome.trigger } : {}),
+          ...(result.outcome.carried ?? {}),
+        },
+        findings: [{ summary: result.outcome.question, evidenceIds: [] as string[] }],
+        openQuestions: [] as string[],
+      }
+    : result.outcome;
+  const outcome = askForUnstatedAmounts(decided);
   /**
    * A conditional or future action is refused as soon as the outcome is known, before any
    * plan read or sizing. Decided from the model's structured `goal.trigger` alone (Grok round

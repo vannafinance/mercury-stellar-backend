@@ -73,9 +73,10 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return { kind: "inspect", reads };
   }
   if (raw.kind === "clarify" && text(raw.question)) {
-    const keys = ["kind", "question", ...(raw.missing !== undefined ? ["missing"] : []), ...(raw.actions !== undefined ? ["actions"] : []), ...(raw.trigger !== undefined ? ["trigger"] : [])];
+    const keys = ["kind", "question", ...(raw.missing !== undefined ? ["missing"] : []), ...(raw.actions !== undefined ? ["actions"] : []), ...(raw.trigger !== undefined ? ["trigger"] : []), ...(raw.intent !== undefined ? ["intent"] : [])];
     if (!exactKeys(raw, keys)) return refuse("clarify: unexpected keys");
-    const trigger = raw.trigger === undefined ? undefined : parseTrigger(raw.trigger);    const missing = raw.missing !== undefined ? parseQuestionnaireMissingList(raw.missing) : undefined;
+    const trigger = raw.trigger === undefined ? undefined : parseTrigger(raw.trigger);
+    const missing = raw.missing !== undefined ? parseQuestionnaireMissingList(raw.missing) : undefined;
     if (raw.missing !== undefined && !missing) return refuse("clarify: missing inputs are not a known op, asset or slot");
     const actionRows = raw.actions === undefined ? [] : Array.isArray(raw.actions) ? raw.actions.slice(0, 8) : [];
     const actions: StatedAction[] = actionRows.flatMap((action) => {
@@ -89,6 +90,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       ...(missing ? { missing } : {}),
       ...(actions.length ? { actions } : {}),
       ...(trigger ? { trigger } : {}),
+      ...(raw.intent === "action" || raw.intent === "strategy" ? { intent: raw.intent } : {}),
     };
   }
   if (raw.kind === "blocked" && exactKeys(raw, ["kind", "reason"]) && text(raw.reason)) {

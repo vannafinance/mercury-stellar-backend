@@ -296,17 +296,16 @@ describe("researchTurn fast path", () => {
     expect(result.status).toBe("researched");
   });
 
-  it("offers a standing-order mandate and does not execute", async () => {
+  it("stores no standing-order mandate from wording and executes nothing (25 Sep)", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
     mocks.computeAccountPosition.mockResolvedValue(null);
     const result = await researchTurn(
       { message: "when my health factor drops below 1.2 repay 10 XLM", wallet: SCOPE.trader, continuation: null },
-      deps({}),
+      deps({ mcp: { call: vi.fn(async () => ({})) }, model: async () => ({ kind: "blocked", reason: "not now" }) }),
     );
-    expect(result.status).toBe("blocked");
-    expect(result.message).toContain(STANDING_ORDER_OFFER);
+    expect(result.message).not.toContain(STANDING_ORDER_OFFER);
+    expect(result.message).not.toMatch(/Mandate /);
     expect(result.executionAllowed).toBe(false);
-    expect(result.message).toMatch(/Mandate /);
   });
 
   it("sizes a stated write from live reads and refuses it with the wallet's own figures when nothing is spendable (14 Sep: 'lend 1 xlm to earn')", async () => {
