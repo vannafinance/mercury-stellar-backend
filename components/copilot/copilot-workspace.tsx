@@ -6296,7 +6296,7 @@ export function CopilotWorkspace() {
             )}
             {openQuestionnaire && (
               /* Docked where the chat box is, so it must not grow over the thread: capped, with its own scroll. */
-              <div style={{ maxHeight: "min(58vh, 540px)", overflowY: "auto", overscrollBehavior: "contain", borderRadius: 16 }}>
+              <div style={{ maxHeight: "min(46vh, 440px)", overflowY: "auto", overscrollBehavior: "contain", borderRadius: 16 }}>
               <ClarifyQuestionnaire
                 questionnaire={openQuestionnaire}
                 busy={investigation.loading}

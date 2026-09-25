@@ -23,7 +23,7 @@ export interface ClarifyQuestionnaireProps {
 const BTN_PRIMARY =
   "rounded-lg bg-gradient px-4 py-2 text-[13px] font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:opacity-45";
 const BTN_QUIET =
-  "rounded-lg border border-vgray-200 dark:border-[#2A2A2A] px-3.5 py-2 text-[13px] font-semibold text-vgray-800 dark:text-vgray-200 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300 dark:disabled:text-vgray-600";
+  "rounded-lg border border-vgray-200 px-3.5 py-2 text-[13px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
 
 const PRESET_COLORS: Record<string, string> = {
   "25": "bg-[#703AE6] text-white",
@@ -77,6 +77,21 @@ interface SectionInternalState {
   linkedOptionId?: string | null;
 }
 
+/** `percent`% of a decimal amount, exact to 7 places, trailing zeros trimmed. Null when unreadable. */
+export function shareOfAmount(amount: string | undefined, percent: string): string | null {
+  if (!amount || !/^\d+(\.\d+)?$/.test(amount.trim())) return null;
+  const pct = Number(percent);
+  if (!Number.isFinite(pct) || pct <= 0 || pct > 100) return null;
+  if (pct === 100) return amount.trim();
+  const [whole, fraction = ""] = amount.trim().split(".");
+  const units = BigInt(whole + fraction.padEnd(7, "0").slice(0, 7));
+  const part = (units * BigInt(Math.round(pct * 100))) / BigInt(10000);
+  const text = part.toString().padStart(8, "0");
+  const int = text.slice(0, -7).replace(/^0+(?=\d)/, "");
+  const frac = text.slice(-7).replace(/0+$/, "");
+  return frac ? `${int}.${frac}` : int;
+}
+
 export function ClarifyQuestionnaire({
   questionnaire,
   onSubmit,
@@ -102,6 +117,13 @@ export function ClarifyQuestionnaire({
   }, [questionnaire]);
 
   const isMultiSection = Boolean(questionnaire.sections && questionnaire.sections.length > 1);
+  /**
+   * A questionnaire that carries `sections` is answered per section, even with only one: the
+   * server checks each section against its own sealed asset and op, and merges the stated
+   * actions back in by position. 25 Sep, live: "lend 20 blusdc and deposit xlm" issued one
+   * section and was answered in the single form with an empty asset, so the server refused it.
+   */
+  const answersPerSection = Boolean(questionnaire.sections?.length);
 
   // Per-section state
   const [sectionStates, setSectionStates] = useState<Record<string, SectionInternalState>>(() => {
@@ -639,14 +661,20 @@ export function ClarifyQuestionnaire({
   };
 
   // Amount preset click
+  /**
+   * A preset fills in the AMOUNT it stands for, as the Margin page does: 25% of 598 shows 149.5,
+   * not "25%" with the figure somewhere else. Exact fixed-point on the issued max (7 places), so
+   * what the box shows is what is sent. Max is the issued max itself.
+   */
   const handlePresetClick = (percentStr: string) => {
-    handleAmountChange(`${percentStr}%`);
+    const share = shareOfAmount(currentMaxInfo?.amount, percentStr);
+    handleAmountChange(share ?? `${percentStr}%`);
   };
 
   // Max click
   const handleMaxClick = () => {
     if (currentMaxInfo?.amount) {
-      handleAmountChange("100%");
+      handleAmountChange(currentMaxInfo.amount);
     }
   };
 
@@ -730,7 +758,7 @@ export function ClarifyQuestionnaire({
     if (!isAllComplete || submitted) return;
     setSubmitted(true);
 
-    if (isMultiSection) {
+    if (answersPerSection) {
       const sectionAnswers: QuestionnaireSectionAnswer[] = sections.map((sec) => {
         const st = sectionStates[sec.id];
         const maxInfo = getSectionMaxInfo(sec, st.venueId, st.assetId);
@@ -750,7 +778,8 @@ export function ClarifyQuestionnaire({
 
         return {
           sectionId: sec.id,
-          asset: st.assetId || "",
+          // A section whose action already named its asset has no asset step: the sealed one is the answer.
+          asset: st.assetId || sec.namedAsset || "",
           venue: st.venueId,
           amount: amountAnswer,
         };
@@ -906,14 +935,14 @@ export function ClarifyQuestionnaire({
       role="region"
       aria-label="Clarify request"
       onKeyDown={handleKeyDown}
-      className={`rounded-xl border p-4 sm:p-5 transition-colors ${
+      className={`rounded-2xl border p-3.5 sm:p-4 transition-colors ${
         isDark
           ? "border-[#2A2A2A] bg-[#141414] text-white"
-          : "border-vgray-100 bg-surface text-vgray-900"
+          : "border-vgray-200 bg-surface text-vgray-900"
       }`}
     >
       {/* Header: Title, Subtitle, Step count, and Cancel (X) */}
-      <div className="flex items-start justify-between gap-3 border-b border-vgray-100 dark:border-[#2A2A2A] pb-3">
+      <div className="flex items-start justify-between gap-3 border-b border-vgray-100 pb-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h2 className="text-[15px] font-semibold leading-tight">
@@ -927,7 +956,7 @@ export function ClarifyQuestionnaire({
             </span>
           </div>
           {questionnaire.subtitle && (
-            <p className="mt-0.5 text-[13px] text-vgray-500 dark:text-vgray-400 leading-normal">
+            <p className="mt-0.5 text-[13px] text-vgray-500 leading-normal">
               {questionnaire.subtitle}
             </p>
           )}
@@ -937,7 +966,7 @@ export function ClarifyQuestionnaire({
           onClick={onCancel}
           aria-label="Close questionnaire"
           data-testid="questionnaire-cancel-btn"
-          className="rounded p-1 text-vgray-400 hover:text-vgray-700 dark:hover:text-vgray-200 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
+          className="rounded p-1 text-vgray-400 hover:text-vgray-700 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
         >
           <X size={17} aria-hidden="true" />
         </button>
@@ -945,7 +974,7 @@ export function ClarifyQuestionnaire({
 
       {/* Addendum 2: Multi-Action Section Checklist at the Top */}
       {isMultiSection && (
-        <div className="pt-3 pb-2 border-b border-vgray-100 dark:border-[#2A2A2A] space-y-1.5" data-testid="section-checklist">
+        <div className="pt-3 pb-2 border-b border-vgray-100 space-y-1.5" data-testid="section-checklist">
           {sections.map((sec, sIdx) => {
             const isDone = isSectionComplete(sec, sectionStates[sec.id]);
             const isActive = sIdx === activeSectionIdx;
@@ -982,7 +1011,7 @@ export function ClarifyQuestionnaire({
                       <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
                     </span>
                   ) : (
-                    <span className="w-4 h-4 rounded-full border border-dashed border-vgray-400 dark:border-vgray-600 flex items-center justify-center text-[10px] text-vgray-400">
+                    <span className="w-4 h-4 rounded-full border border-dashed border-vgray-400 flex items-center justify-center text-[10px] text-vgray-400">
                       ○
                     </span>
                   )}
@@ -1046,7 +1075,7 @@ export function ClarifyQuestionnaire({
       {/* Active Step Content */}
       {currentStep && (
         <div className="py-2">
-          <h3 className="text-[13px] font-semibold mb-2.5 text-vgray-800 dark:text-vgray-100">
+          <h3 className="text-[13px] font-semibold mb-2.5 text-vgray-800">
             {currentStep.prompt}
           </h3>
 
@@ -1103,7 +1132,7 @@ export function ClarifyQuestionnaire({
                           {opt.label}
                         </div>
                         {opt.detail && (
-                          <div className="text-[11px] text-vgray-400 dark:text-vgray-400 mt-0.5 truncate">
+                          <div className="text-[11px] text-vgray-400 mt-0.5 truncate">
                             {opt.detail}
                           </div>
                         )}
@@ -1226,7 +1255,7 @@ export function ClarifyQuestionnaire({
                       value={currentState.amountRaw}
                       disabled={submitted}
                       onChange={(e) => handleAmountChange(e.target.value)}
-                      className={`w-full text-right text-[22px] sm:text-[28px] md:text-[32px] font-semibold leading-none bg-transparent outline-none placeholder:opacity-30 ${
+                      className={`w-full text-right text-[20px] sm:text-[24px] font-semibold leading-none bg-transparent outline-none placeholder:opacity-30 ${
                         isDark
                           ? "text-white placeholder:text-[#555555]"
                           : "text-[#111111] placeholder:text-[#CCCCCC]"
@@ -1245,7 +1274,7 @@ export function ClarifyQuestionnaire({
                         }`}
                       >
                         You have{" "}
-                        <span className="font-semibold tabular-nums text-vgray-900 dark:text-white">
+                        <span className="font-semibold tabular-nums text-vgray-900">
                           {currentMaxInfo.amount} {currentMaxInfo.asset}
                         </span>{" "}
                         available{currentMaxInfo.where ? ` in ${currentMaxInfo.where}` : ""}
@@ -1281,7 +1310,7 @@ export function ClarifyQuestionnaire({
 
               {/* Converted amount preview when a percentage is chosen */}
               {currentParsedAmount?.kind === "fraction" && currentParsedAmount.convertedLiteral && (
-                <p className="text-[11px] text-vgray-500 dark:text-vgray-400 tabular-nums px-1" data-testid="percent-converted">
+                <p className="text-[11px] text-vgray-500 tabular-nums px-1" data-testid="percent-converted">
                   &asymp; {currentParsedAmount.convertedLiteral} {currentMaxInfo?.asset || ""}
                 </p>
               )}
@@ -1310,7 +1339,7 @@ export function ClarifyQuestionnaire({
                   {currentLpMatchedAmount ? (
                     <span>
                       {currentLpPairInfo.asset} is matched at the pool ratio (~
-                      <span className="font-semibold text-vgray-900 dark:text-white tabular-nums">
+                      <span className="font-semibold text-vgray-900 tabular-nums">
                         {currentLpMatchedAmount} {currentLpPairInfo.asset}
                       </span>
                       )
@@ -1333,7 +1362,7 @@ export function ClarifyQuestionnaire({
       )}
 
       {/* Navigation Buttons: Back, Next, Send */}
-      <div className="flex items-center justify-between gap-2 border-t border-vgray-100 dark:border-[#2A2A2A] pt-3.5 mt-3">
+      <div className="flex items-center justify-between gap-2 border-t border-vgray-100 pt-3.5 mt-3">
         <div>
           {!isFirstVisibleStep && (
             <button
@@ -1376,7 +1405,7 @@ export function ClarifyQuestionnaire({
       </div>
 
       {/* "Something else" input escape hatch */}
-      <div className="flex items-center gap-2 border-t border-vgray-100 dark:border-[#2A2A2A] pt-3 mt-3">
+      <div className="flex items-center gap-2 border-t border-vgray-100 pt-3 mt-3">
         <input
           id="something-else-input"
           type="text"
@@ -1384,7 +1413,7 @@ export function ClarifyQuestionnaire({
           value={somethingElseText}
           onChange={(e) => setSomethingElseText(e.target.value)}
           disabled={busy || submitted}
-          className="flex-1 rounded-lg border border-vgray-200 dark:border-[#2A2A2A] bg-transparent px-3 py-1.5 text-[12px] placeholder:text-vgray-400 outline-none focus:border-violet-500 transition-colors"
+          className="flex-1 rounded-lg border border-vgray-200 bg-transparent px-3 py-1.5 text-[12px] placeholder:text-vgray-400 outline-none focus:border-violet-500 transition-colors"
           data-testid="input-something-else"
         />
         <button
@@ -1395,7 +1424,7 @@ export function ClarifyQuestionnaire({
             }
           }}
           disabled={!somethingElseText.trim() || busy || submitted}
-          className="rounded-lg border border-vgray-200 dark:border-[#2A2A2A] px-2.5 py-1.5 text-[12px] font-semibold text-vgray-700 dark:text-vgray-300 hover:border-violet-400 hover:text-violet-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="rounded-lg border border-vgray-200 px-2.5 py-1.5 text-[12px] font-semibold text-vgray-700 hover:border-violet-400 hover:text-violet-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           data-testid="btn-something-else"
         >
           <CornerDownLeft size={13} aria-hidden="true" />
@@ -1403,7 +1432,7 @@ export function ClarifyQuestionnaire({
       </div>
 
       {/* Keyboard hint */}
-      <div className="flex items-center justify-between text-[11px] text-vgray-400 dark:text-vgray-500 mt-2 px-0.5">
+      <div className="flex items-center justify-between text-[11px] text-vgray-400 mt-2 px-0.5">
         <span>Press 1-9 to select &middot; &crarr; to submit &middot; Esc to close</span>
       </div>
     </div>

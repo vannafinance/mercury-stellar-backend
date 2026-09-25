@@ -281,9 +281,8 @@ describe("ClarifyQuestionnaire Component", () => {
     const preset50 = screen.getByTestId("preset-50");
     fireEvent.click(preset50);
 
-    // 50% of 680 = 340
-    const preview = screen.getByTestId("percent-converted");
-    expect(preview.textContent).toContain("340 BLUSDC");
+    // 50% of 680 = 340, written INTO the amount box as the Margin page does, not left as "50%".
+    expect((screen.getByPlaceholderText("0.0 or 50%") as HTMLInputElement).value).toBe("340");
 
     // Send button should be enabled
     const sendBtn = screen.getByTestId("btn-send");
@@ -325,8 +324,8 @@ describe("ClarifyQuestionnaire Component", () => {
       questionnaireId: "q-test-1",
       asset: "blusdc",
       venue: "earn",
-      amount: { kind: "fraction", percent: "50" },
-      summary: "Supply 50% of my BLUSDC to Earn",
+      amount: { kind: "literal", amount: "340" },
+      summary: "Supply 340 BLUSDC to Earn",
     });
   });
 
