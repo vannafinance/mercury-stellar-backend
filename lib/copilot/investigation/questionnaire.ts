@@ -11,6 +11,7 @@ import { deploysIntoPosition, feeds, holdsTokens, OP_FLOW, POSITION_POCKETS, pro
 import { pastOf, pocketAfterMoves, venueLabel, verbOf } from "./plan";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { poolReservesFrom } from "./pool-quote";
+import { decimalsFrom, truncateToDecimals } from "./precision";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -137,6 +138,21 @@ function venuesNamed(messages: readonly string[]): Set<string> {
   return namedPlaces(messages).destinations;
 }
 
+/**
+ * An op that answers "where should it go?": it takes the user's own tokens out of the wallet
+ * and puts them somewhere they are held, into a position (Earn, Blend, a pool) or into the margin
+ * account. Read off OP_FLOW, so a deposit is a choice for the same reason a supply is. 25 Sep,
+ * live: "deposit xlm" offered Earn, Blend and two pools, and no margin deposit at all.
+ */
+function placesTokens(op: WorkflowOp): boolean {
+  const flow = OP_FLOW[op];
+  return deploysIntoPosition(op) || (flow.from === "wallet" && flow.to === "account");
+}
+
+function capitalised(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function opServesVenue(op: WorkflowOp, venues: Set<string>): boolean {
   const flow = OP_FLOW[op];
   if (venues.has(flow.to) || venues.has(flow.venue)) return true;
@@ -150,7 +166,8 @@ function opServesVenue(op: WorkflowOp, venues: Set<string>): boolean {
  * deploy op the model filled in is ignored unless the user's own words name a venue.
  */
 export function opsInPlay(missing: QuestionnaireMissing, messages: readonly string[] = []): WorkflowOp[] {
-  const deploy = WORKFLOW_OPS.filter((op) => deploysIntoPosition(op));
+  // While the venue is open the op is a guess, so every place the tokens can go is offered.
+  const deploy = WORKFLOW_OPS.filter((op) => placesTokens(op));
   const { sources, destinations } = namedPlaces(messages);
   if (missing.slots.includes("venue") && (sources.size > 0 || destinations.size > 0)) {
     const matched = deploy.filter((op) => {
@@ -161,7 +178,7 @@ export function opsInPlay(missing: QuestionnaireMissing, messages: readonly stri
     });
     if (matched.length) return matched;
   }
-  if (missing.slots.includes("venue") && missing.op && deploysIntoPosition(missing.op) && sources.size === 0 && destinations.size === 0) return deploy;
+  if (missing.slots.includes("venue") && missing.op && placesTokens(missing.op) && sources.size === 0 && destinations.size === 0) return deploy;
   if (missing.op) return [missing.op];
   return deploy;
 }
@@ -212,8 +229,23 @@ function rowBalance(row: Record<string, unknown>, keys: readonly string[]): stri
   return null;
 }
 
-/** The amount of `asset` sitting in `pocket`, from a fresh read. Null when that read is absent. */
+/**
+ * The amount of `asset` sitting in `pocket`, from a fresh read. Null when that read is absent.
+ * Cut to the token's on-chain precision when a read states it: an account read carries 18
+ * places ("11361.255927197146497012 XLM"), which is neither what the user can send nor readable.
+ */
 export function heldInPocket(observations: readonly Observation[], pocket: Pocket, asset: AssetId): string | null {
+  const raw = heldInPocketRaw(observations, pocket, asset);
+  if (!raw) return raw;
+  const def = resolveAssetDef(asset);
+  const decimals = decimalsFrom(observations);
+  const places = decimals.get(asset) ?? (def?.marginSymbol ? decimals.get(def.marginSymbol) : undefined);
+  if (places === undefined) return raw;
+  const cut = truncateToDecimals(raw, places);
+  return wadOf(cut) > ZERO ? cut : null;
+}
+
+function heldInPocketRaw(observations: readonly Observation[], pocket: Pocket, asset: AssetId): string | null {
   const def = resolveAssetDef(asset);
   if (!def) return null;
   const symbol = def.marginSymbol ?? def.id;
@@ -401,10 +433,12 @@ function venueChoices(asset: AssetId, ops: readonly WorkflowOp[], observations: 
     } else if (!deploysIntoPosition(op)) {
       choices.push({
         pocket: flow.from,
-        option: { id: choiceId(op, asset), label: verbOf(op), forAsset: asset, op, detail: balanceDetail(held, asset, flow.from) },
+        // A place answers "where": a move into the margin account is named by that pocket, not its verb.
+        option: { id: choiceId(op, asset), label: placesTokens(op) ? capitalised(POCKET_WHERE[flow.to].replace(/^the /, "")) : verbOf(op), forAsset: asset, op, detail: balanceDetail(held, asset, flow.from) },
       });
     }
   }
+  for (const choice of choices) if (choice.option.op) choice.option.verb = verbOf(choice.option.op as WorkflowOp);
   return choices;
 }
 
@@ -528,14 +562,11 @@ export function buildQuestionnaire(
         if (unit && otherAccount) noteFor(otherAccount, other, (wadOf(capped) * wadOf(unit)) / WAD);
         const note = notes.length ? notes.join(" ") : undefined;
         pair[choice.option.id] = { asset: other, perUnit: unit, ...(note ? { note } : {}) };
-        if (note) {
-          choice.option.detail = `${choice.option.detail} ${note}`;
-          max[choice.option.id].note = note;
-        }
+        // Kept on the sealed max, not shown on the option row (owner, 25 Sep: the plan card lists
+        // the deposit step with its real amount; this note was sized for Max).
+        if (note) max[choice.option.id].note = note;
       } else if (notes.length) {
-        const note = notes.join(" ");
-        choice.option.detail = `${choice.option.detail} ${note}`;
-        max[choice.option.id].note = note;
+        max[choice.option.id].note = notes.join(" ");
       }
       if (!max[asset]) max[asset] = { amount: own, asset, where, starting };
     }

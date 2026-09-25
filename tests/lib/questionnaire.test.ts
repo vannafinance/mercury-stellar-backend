@@ -61,8 +61,8 @@ describe("questionnaire options come from what is held", () => {
       pool("AQUSDC", "1000", "200"),
     ], NOW);
     const venues = (asset: string) => built?.steps.find((step) => step.slot === "venue")?.options.filter((option) => option.forAsset === asset).map((option) => option.label);
-    expect(venues("BLUSDC")).toEqual(["Earn", "Farm · Blend"]);
-    expect(venues("AQUSDC")).toEqual(["Earn", "Aquarius XLM/AQUSDC pool"]);
+    expect(venues("BLUSDC")).toEqual(["Earn", "Margin account", "Farm · Blend"]);
+    expect(venues("AQUSDC")).toEqual(["Earn", "Margin account", "Aquarius XLM/AQUSDC pool"]);
     const aquarius = built?.steps.find((step) => step.slot === "venue")?.options.find((option) => option.forAsset === "AQUSDC" && option.op === "add_liquidity");
     expect(aquarius?.detail).toContain("pairs with XLM");
     expect(aquarius?.detail).toContain("20 XLM");
@@ -78,7 +78,7 @@ describe("questionnaire options come from what is held", () => {
     ];
     const full = buildQuestionnaire({ asset: "XLM", slots: ["venue", "amount"] }, rows, NOW);
     expect(full?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.label)).toEqual([
-      "Earn", "Farm · Blend", "Aquarius XLM/AQUSDC pool", "Soroswap XLM/SOUSDC pool",
+      "Earn", "Margin account", "Farm · Blend", "Aquarius XLM/AQUSDC pool", "Soroswap XLM/SOUSDC pool",
     ]);
     const { lpPairs } = await import("@/lib/copilot/registry/assets");
     const withoutSoroswap = lpPairs().filter((pair) => pair.venue !== "soroswap");
@@ -194,7 +194,7 @@ describe("a guessed op does not hide a venue the user did not name", () => {
   it("offers every venue for supply xlm, and only Blend when the user named it", () => {
     const open = buildQuestionnaire(missing, xlmRows, NOW, ["supply xlm"]);
     expect(open?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.label)).toEqual([
-      "Earn", "Farm · Blend", "Aquarius XLM/AQUSDC pool", "Soroswap XLM/SOUSDC pool",
+      "Earn", "Margin account", "Farm · Blend", "Aquarius XLM/AQUSDC pool", "Soroswap XLM/SOUSDC pool",
     ]);
     const named = buildQuestionnaire(missing, xlmRows, NOW, ["supply xlm to blend"]);
     expect(named?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.label)).toEqual(["Farm · Blend"]);

@@ -238,7 +238,7 @@ describe("one questionnaire, one section per action", () => {
   it("keeps Blend when the money comes from the margin account, and ignores a forged swap summary", () => {
     const open = buildQuestionnaire({ asset: "XLM", op: "supply_blend", slots: ["venue", "amount"] }, rows, NOW, ["supply xlm"]);
     expect(open?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.label)).toEqual([
-      "Earn", "Farm · Blend", "Aquarius XLM/AQUSDC pool", "Soroswap XLM/SOUSDC pool",
+      "Earn", "Margin account", "Farm · Blend", "Aquarius XLM/AQUSDC pool", "Soroswap XLM/SOUSDC pool",
     ]);
     const fromAccount = buildQuestionnaire({ asset: "XLM", op: "supply_blend", slots: ["venue", "amount"] }, rows, NOW, ["supply xlm from my margin account"]);
     expect(fromAccount?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.label)).toEqual([

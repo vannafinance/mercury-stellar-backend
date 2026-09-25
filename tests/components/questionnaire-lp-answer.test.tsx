@@ -43,4 +43,16 @@ describe("supply my usdc answered with an LP pool", () => {
     const over = { ...answers, sections: [{ ...section, amount: { kind: "literal" as const, amount: "2705.7" } }] };
     expect(answerProblem(issued, over)).toMatch(/more than the 2705.6980851 SOUSDC/);
   });
+
+  it("deposit xlm offers the margin account and says Deposit 5 XLM, not 'asset'", () => {
+    const issued = buildQuestionnaireSet([{ op: "deposit_collateral", asset: "XLM", slots: ["venue", "amount"], sourceQuote: "deposit xlm" }], rows, NOW, ["deposit xlm"])!;
+    const onSubmit = vi.fn();
+    render(<ThemeProvider><ClarifyQuestionnaire questionnaire={issued} onSubmit={onSubmit} onCancel={vi.fn()} onSomethingElse={vi.fn()} /></ThemeProvider>);
+    fireEvent.click(screen.getByText("Margin account"));
+    fireEvent.change(screen.getByPlaceholderText("0.0 or 50%"), { target: { value: "5" } });
+    fireEvent.click(screen.getByTestId("btn-send"));
+    const answers = onSubmit.mock.calls[0][0] as QuestionnaireAnswers;
+    expect(answers.summary).toBe("Deposit 5 XLM to Margin account");
+    expect(answerProblem(issued, answers)).toBeNull();
+  });
 });

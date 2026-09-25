@@ -40,13 +40,15 @@ const DEFAULT_PRESETS = [
 ];
 
 export function buildQuestionnaireSummary(
-  questionnaire: { title?: string },
+  questionnaire: { title?: string; namedAsset?: string | null },
   assetOption?: QuestionnaireOption,
   venueOption?: QuestionnaireOption | null,
   amount?: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" }
 ): string {
-  const verb = questionnaire.title ? questionnaire.title.split(" ")[0] : "Supply";
-  const assetLabel = assetOption?.label || "asset";
+  // The chosen option's own verb ("Deposit" for the margin account), else the title's.
+  const verb = venueOption?.verb || (questionnaire.title ? questionnaire.title.split(" ")[0] : "Supply");
+  // An action that named its token has no asset step: the sealed asset is the one chosen.
+  const assetLabel = assetOption?.label || questionnaire.namedAsset || "asset";
 
   let amountStr = "";
   if (amount) {
@@ -790,7 +792,7 @@ export function ClarifyQuestionnaire({
         const venueStep = sec.steps.find((s) => s.slot === "venue");
         const assetOpt = assetStep?.options.find((o) => o.id === ans.asset);
         const venueOpt = venueStep?.options.find((o) => o.id === ans.venue);
-        return buildQuestionnaireSummary({ title: sec.title }, assetOpt, venueOpt, ans.amount);
+        return buildQuestionnaireSummary({ title: sec.title, namedAsset: sec.namedAsset ?? null }, assetOpt, venueOpt, ans.amount);
       });
       const summary = summaryParts.join(", ");
 

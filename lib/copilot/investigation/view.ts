@@ -54,6 +54,8 @@ export interface QuestionnaireOption {
   detail?: string;
   forAsset?: string;
   op?: string;
+  /** The op's own verb ("Deposit", "Supply", "Lend"), so a summary says what the choice does. */
+  verb?: string;
   sourceSectionId?: string;
 }
 export interface QuestionnaireStep {
