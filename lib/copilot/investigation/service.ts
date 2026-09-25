@@ -25,7 +25,7 @@ import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
 import { appendDiagnostics } from "./diagnostics-log";
 import type { ResearchConversation } from "./continuation";
-import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans, type StrategyRead } from "./strategy-reads";
+import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans, STRATEGY_READS, type StrategyRead } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
 import { futureConditionRefusal } from "../conditional-guard";
 import { evaluateStandingOrders } from "../standing-orders";
@@ -795,6 +795,21 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
 
   // Amounts the user said to keep in the wallet, anchored to their own words; every sizer below honours them.
   const walletReserves = outcome.kind === "research_complete" ? anchoredWalletReserves(outcome.goal, messages) : [];
+  /**
+   * The fixed generator sizes from its own inputs (`STRATEGY_READS`: the wallet, a price and an
+   * Earn market per asset, Blend). A strategy the model reached without them, such as a clarify
+   * marked `intent: "strategy"`, had rates but no idle amounts, so it offered nothing (25 Sep,
+   * live). Whatever of that list is not already fresh is read before the plans are built.
+   */
+  if (!lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy") {
+    const stale = STRATEGY_READS.filter((read) => !result.observations.some((item) =>
+      item.capability === read.capability && item.status === "ok" && observedNow - item.observedAt <= 60_000
+      && (read.args.asset === undefined || item.args.asset === read.args.asset)));
+    if (stale.length) {
+      result.observations.push(...await collectStrategyReads(scope, scopedMcp, dependencies.signal, observedNow, stale, "sg"));
+      logPhase("strategy_inputs", { requested: stale.length });
+    }
+  }
   const idleAfterReserves = idleWalletAfterReserves(result.observations, observedNow, walletReserves);
   let candidates = null;
   try {
@@ -1281,7 +1296,23 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       ? { tokenIn: swapLeg.asset, tokenOut: swapLeg.assetOut, venue: swapVenue,
           amount: swapLeg.sizing.amount, amountAsset: swapLeg.sizing.amountAsset ?? "asset" }
       : null;
-  const diagnostics = outcome.kind === "stopped" || (outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length) || failedReads.length ? {
+  /**
+   * A strategy that ends with no plan at all says why in the dev log: what the generator was
+   * given. 25 Sep, live: "put my idle usdc to work" returned zero plans and zero refusals, and
+   * nothing on screen or in the log could say which input was empty.
+   */
+  const emptyStrategy = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && !candidates?.feasible.length && !modelPlans.length
+    ? {
+        candidatesBuilt: candidates !== null,
+        rejected: candidates?.rejected.map((row) => `${row.label}: ${row.reason}`).slice(0, 8) ?? [],
+        rateComparisons: rateComparisons.map((row) => JSON.stringify(row).slice(0, 120)).slice(0, 8),
+        idle: JSON.stringify(idleAfterReserves).slice(0, 400),
+        capacity: capacity ? "read" : "missing",
+        requestedBorrowUsd: requestedBorrow?.usd ?? "none",
+      }
+    : null;
+  const diagnostics = outcome.kind === "stopped" || (outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length) || failedReads.length || emptyStrategy ? {
+    ...(emptyStrategy ? { emptyStrategy } : {}),
     ...(failedReads.length ? { failedReads } : {}),
     ...(outcome.kind === "stopped" ? { stopReason: outcome.reason, ...(result.stopDetail ? { stopDetail: result.stopDetail } : {}) } : {}),
     ...(outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length ? { droppedPlanReasons: outcome.droppedPlanReasons } : {}),
