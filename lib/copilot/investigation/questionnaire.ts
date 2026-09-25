@@ -7,7 +7,7 @@ import { BALANCE_FRACTION_OPTIONS } from "../amount-intent";
 import { resolveName } from "../intent/resolve-name";
 import { allAssets, lpPairs, lpVenues, mentionsBareUsdc, resolveAssetDef, USDC_VARIANTS, type AssetId } from "../registry/assets";
 import { normalizeVenue } from "../registry/intent";
-import { deploysIntoPosition, feeds, holdsTokens, OP_FLOW, producedAsset, touchesMarginAccount, WORKFLOW_OPS, type Pocket, type WorkflowOp } from "../workflow/types";
+import { deploysIntoPosition, feeds, holdsTokens, OP_FLOW, POSITION_POCKETS, producedAsset, touchesMarginAccount, WORKFLOW_OPS, type Pocket, type WorkflowOp } from "../workflow/types";
 import { pastOf, pocketAfterMoves, venueLabel, verbOf } from "./plan";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { poolReservesFrom } from "./pool-quote";
@@ -103,6 +103,11 @@ function namedPlaces(messages: readonly string[]): { sources: Set<Pocket>; desti
   const tos = new Set(deploy.map((op) => OP_FLOW[op].to));
   const pools = new Set<string>(lpVenues());
   const validDestinations = new Set<string>([...tos, ...pools]);
+  const accountVenues = new Set<string>(
+    WORKFLOW_OPS
+      .filter((op) => touchesMarginAccount(op) && !POSITION_POCKETS.includes(OP_FLOW[op].from) && !POSITION_POCKETS.includes(OP_FLOW[op].to))
+      .map((op) => OP_FLOW[op].venue)
+  );
   const sources = new Set<Pocket>();
   const destinations = new Set<string>();
   for (const message of messages) {
@@ -111,7 +116,7 @@ function namedPlaces(messages: readonly string[]): { sources: Set<Pocket>; desti
       if (froms.has(lower as Pocket) && !tos.has(lower as Pocket)) sources.add(lower as Pocket);
       else if (tos.has(lower as Pocket)) destinations.add(lower);
       const venue = normalizeVenue(word);
-      if (venue === "margin" || lower === "margin") {
+      if ((venue && accountVenues.has(venue)) || accountVenues.has(lower)) {
         sources.add("account");
       } else if (venue && validDestinations.has(venue)) {
         destinations.add(venue);
@@ -122,7 +127,9 @@ function namedPlaces(messages: readonly string[]): { sources: Set<Pocket>; desti
       }
     }
   }
-  if (sources.has("account")) destinations.delete("margin");
+  if (sources.has("account")) {
+    for (const v of accountVenues) destinations.delete(v);
+  }
   return { sources, destinations };
 }
 
@@ -684,7 +691,12 @@ export function buildQuestionnaireSet(
   hasMarginAccount = true,
 ): Questionnaire | null {
   const rawEntries = anchoredEntries(Array.isArray(missing) ? [...missing] : [missing], messages);
-  const entries = (hasMarginAccount ? rawEntries : rawEntries.filter((entry) => !entry.op || !touchesMarginAccount(entry.op)))
+  const entries = (hasMarginAccount ? rawEntries : rawEntries.filter((entry) => {
+    if (entry.op && touchesMarginAccount(entry.op)) return false;
+    const inPlay = opsInPlay(entry, messages);
+    if (inPlay.length > 0 && inPlay.every((op) => touchesMarginAccount(op))) return false;
+    return true;
+  }))
     .sort((a, b) => quoteAt(a.sourceQuote, messages) - quoteAt(b.sourceQuote, messages));
   if (!entries.length) return null;
   let view = observations;
@@ -760,8 +772,7 @@ function opForSection(section: QuestionnaireSection, venueId: string | null): Wo
   if (section.op) return section.op as WorkflowOp;
   const fromOption = section.steps.flatMap((step) => step.options).find((opt) => opt.op)?.op;
   if (fromOption) return fromOption as WorkflowOp;
-  const titleWord = section.title.split(" ")[0].toLowerCase();
-  return WORKFLOW_OPS.find((op) => op.replace("_", " ").startsWith(titleWord) || verbOf(op).toLowerCase() === titleWord);
+  return undefined;
 }
 
 export function answerProblem(issued: Questionnaire | undefined, answers: QuestionnaireAnswers): string | null {
@@ -812,6 +823,14 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
         let amount: bigint;
         if (sectionAnswer.amount.kind === "literal") {
           try { amount = decimalWad(sectionAnswer.amount.amount); } catch { return "That amount is not a number."; }
+        } else if (sectionAnswer.amount.kind === "fraction") {
+          const avail = running.get(key) ?? ZERO;
+          try {
+            const frac = BigInt(Math.round(parseFloat(sectionAnswer.amount.percent) * 100));
+            amount = (avail * frac) / BigInt(10000);
+          } catch {
+            return "That percentage is not valid.";
+          }
         } else if (sectionAnswer.amount.kind === "previous_leg") {
           const linkedOpt = options.find((opt) => opt.id.startsWith("previous:") && (!opt.forAsset || opt.forAsset === sectionAnswer.asset));
           const srcId = linkedOpt?.sourceSectionId ?? linkedOpt?.id.split(":")[1];

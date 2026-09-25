@@ -175,4 +175,62 @@ describe("no-margin-account gate", () => {
     expect(result.questionnaire?.stated).toHaveLength(1);
     expect(result.questionnaire?.stated?.[0].action.op).toBe("lend");
   });
+  it("lend 20 blusdc and deposit xlm with no margin account does not invent Lend 20 XLM and blocks deposit with accountRequired", async () => {
+    const NO_ACCOUNT_TRADER = "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5";
+    const mcp = {
+      call: async (tool: string) => {
+        if (tool === "vanna_resolve_account") {
+          return { status: "required", smart_account: null };
+        }
+        if (tool === "vanna_list_my_wallet_bindings") {
+          return { has_assertion: true, sub: `stellar:${NO_ACCOUNT_TRADER}`, bindings: [{ wallet_address: NO_ACCOUNT_TRADER, active: true }] };
+        }
+        if (tool === "vanna_read_wallet_balances") {
+          return { assets: [{ symbol: "XLM", balance: "1000", decimals: 7 }, { symbol: "BLUSDC", balance: "400", decimals: 7 }] };
+        }
+        if (tool === "vanna_get_asset_price") {
+          return { price: "1", decimals: 7 };
+        }
+        if (tool === "vanna_read_earn_market") {
+          return { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "10" };
+        }
+        return {};
+      },
+    };
+
+    const message = "lend 20 blusdc and deposit xlm";
+    const result = await researchTurn(
+      { message, wallet: NO_ACCOUNT_TRADER, continuation: null },
+      {
+        subject: `stellar:${NO_ACCOUNT_TRADER}`,
+        server: "test",
+        network: "testnet",
+        secret: "a".repeat(64),
+        mcp,
+        signal: new AbortController().signal,
+        model: async () => ({
+          kind: "clarify",
+          question: "How much XLM would you like to deposit?",
+          actions: [
+            { op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "20", sourceQuote: "20" }, sourceQuote: "lend 20 blusdc" },
+          ],
+          missing: [
+            { op: "deposit_collateral", asset: "XLM", slots: ["amount"], sourceQuote: "deposit xlm" },
+          ],
+        }),
+      },
+    );
+
+    // No questionnaire because deposit was dropped and lend has no missing slots
+    expect(result.questionnaire).toBeUndefined();
+    // Lend 20 BLUSDC is offered as requested steps or feasible candidate
+    const feasibleOps = result.candidates?.feasible.flatMap((c) => c.steps?.map((s) => s.op) ?? []) ?? [];
+    // Lend 20 XLM was NOT invented
+    const lendXlmCandidate = result.candidates?.feasible.find((c) => c.steps?.some((s) => s.op === "lend" && s.args?.symbol === "XLM"));
+    expect(lendXlmCandidate).toBeUndefined();
+    // The deposit was blocked with accountRequired
+    expect(result.candidates?.rejected.some((r) => r.accountRequired?.code === "accountRequired" && r.accountRequired.actions.includes("Deposit XLM"))).toBe(true);
+    // Open a margin account choice is offered
+    expect(result.choices?.some((c) => c.id === "create_account")).toBe(true);
+  });
 });

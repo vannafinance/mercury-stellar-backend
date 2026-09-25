@@ -57,7 +57,19 @@ function view(input: {
     question: null,
     facts,
     capacity: null,
-    candidates: null,
+    candidates: healthFailedNoAccount
+      ? {
+          feasible: [],
+          rejected: [
+            {
+              label: "Check health factor",
+              reason: "Check health factor: a margin account is needed for this step and none is connected.",
+              asset: "margin",
+              accountRequired: { code: "accountRequired", actions: ["Check health factor"] },
+            },
+          ],
+        }
+      : null,
     rateComparisons: [],
     checks: input.observations.map((observation) => ({
       id: observation.id,

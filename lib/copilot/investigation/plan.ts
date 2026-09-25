@@ -198,11 +198,28 @@ function pairedNeed(stated: bigint, reserves: PoolReserves, statedIsXlm: boolean
 function heldAfterEarlier(ctx: PlanContext, asset: string, earlier: readonly ProposedPlan["legs"][number][]): { available: bigint; unsized: boolean } | null {
   const posted = postedBalance(ctx, asset);
   if (posted === null) return null;
-  const drafts = earlier.map((leg) => ({
-    leg,
-    tokens: leg.sizing.kind === "literal" ? leg.sizing.amount : null,
-    produces: leg.sizing.kind === "literal" && producedAsset(leg) ? leg.sizing.amount : null,
-  }));
+  const drafts = earlier.map((leg) => {
+    let tokens: string | null = null;
+    if (leg.sizing.kind === "literal") {
+      tokens = leg.sizing.amount;
+    } else if (leg.sizing.kind === "all_idle" && OP_FLOW[leg.op].from === "wallet") {
+      const w = spendableWallet(ctx, leg.asset);
+      if (w !== null) tokens = formatWad(w);
+    } else if (leg.sizing.kind === "fraction" && leg.sizing.of === "idle" && OP_FLOW[leg.op].from === "wallet") {
+      const w = spendableWallet(ctx, leg.asset);
+      if (w !== null) {
+        try {
+          const frac = BigInt(Math.round(parseFloat(leg.sizing.percent) * 100));
+          tokens = formatWad((w * frac) / BigInt(10000));
+        } catch { /* ignore */ }
+      }
+    }
+    return {
+      leg,
+      tokens,
+      produces: tokens && producedAsset(leg) ? tokens : (tokens && OP_FLOW[leg.op].to === "account" ? tokens : null),
+    };
+  });
   const pb = pocketBalance("account", posted, drafts, asset);
   return { available: pb.available, unsized: pb.unsized };
 }
@@ -220,9 +237,9 @@ function literalFarmFunding(leg: ProposedPlan["legs"][number], ctx: PlanContext,
       throw new Reject(`${verbOf(leg.op)} ${leg.asset}`, "a swap fills at the pool's price, so how much it buys is not known in advance — state the next leg's amount yourself");
     }
     if (producer && feeds(producer.op, leg.op)) {
-      return [{ ...leg, sizing: { kind: "previous_leg" } }];
+      return [leg];
     }
-    throw new Reject(`${verbOf(leg.op)} ${leg.asset}`, `${verbOf(leg.op)} after an unsized earlier leg takes what that leg yields — size it as previous_leg`);
+    throw new Reject(`${verbOf(leg.op)} ${leg.asset}`, `${verbOf(leg.op)} after an unsized earlier leg takes what that leg yields — use the amount from the earlier step`);
   }
   const needs: Array<{ asset: string; held: bigint; needed: bigint }> = [];
   needs.push({ asset: leg.asset, held: held.available, needed: stated });
@@ -241,7 +258,10 @@ function literalFarmFunding(leg: ProposedPlan["legs"][number], ctx: PlanContext,
       if (producer?.op === "swap") {
         throw new Reject(`${verbOf(leg.op)} ${paired.id}`, "a swap fills at the pool's price, so how much it buys is not known in advance — state the next leg's amount yourself");
       }
-      throw new Reject(`${verbOf(leg.op)} ${paired.id}`, `${verbOf(leg.op)} after an unsized earlier leg takes what that leg yields — size it as previous_leg`);
+      if (producer && feeds(producer.op, leg.op)) {
+        return [leg];
+      }
+      throw new Reject(`${verbOf(leg.op)} ${paired.id}`, `${verbOf(leg.op)} after an unsized earlier leg takes what that leg yields — use the amount from the earlier step`);
     }
     needs.push({ asset: paired.id, held: otherHeld.available, needed });
   }
@@ -1032,7 +1052,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const pocket = flow.positionRead === "account_debt" ? "debt"
         : flow.positionRead === "blend_position" ? "blend" : "account";
       const left = pocketBalance(pocket, decimalWad(raw), drafts, leg.asset);
-      if (left.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — size it as previous_leg`);
+      if (left.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — use the amount from the earlier step`);
       if (left.available <= ZERO) {
         throw new Reject(name, pocket === "debt"
           ? `the legs before this one already repay the whole ${raw} ${leg.asset} debt`
@@ -1056,7 +1076,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (posted === null) throw new Reject(name, `no ${leg.asset} posted collateral was read this investigation`);
       if (decimalWad(posted) <= ZERO) throw new Reject(name, `no ${leg.asset} is posted as collateral`);
       const stillPosted = pocketBalance("account", decimalWad(posted), drafts, leg.asset);
-      if (stillPosted.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — size it as previous_leg`);
+      if (stillPosted.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — use the amount from the earlier step`);
       if (stillPosted.available <= ZERO) throw new Reject(name, `the legs before this one already use all ${posted} ${leg.asset} in the margin account`);
       const capUsd = formatWad(mulDown(stillPosted.available, price.price, WAD));
       /**
@@ -1233,7 +1253,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (posted === null) throw new Reject(name, `no ${leg.asset} posted collateral was read this investigation`);
       if (decimalWad(posted) <= ZERO) throw new Reject(name, `no ${leg.asset} is posted as collateral`);
       const stillPosted = pocketBalance("account", decimalWad(posted), drafts, leg.asset);
-      if (stillPosted.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — size it as previous_leg`);
+      if (stillPosted.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — use the amount from the earlier step`);
       if (stillPosted.available <= ZERO) throw new Reject(name, `the legs before this one already use all ${posted} ${leg.asset} in the margin account`);
       const tokens = precise(shareOf(formatWad(stillPosted.available), share), leg.asset, name);
       const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
@@ -1328,7 +1348,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     if (flow.from === "account") {
       const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
       const { available, unsized } = pocketBalance("account", posted === null ? ZERO : decimalWad(posted), drafts, leg.asset);
-      if (unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — size it as previous_leg`);
+      if (unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — use the amount from the earlier step`);
       if (available < amountWad) {
         throw new Reject(name, posted === null && !earlier.length
           ? `${verbOf(leg.op)} takes what a deposit or borrow put in the account — add that leg before it`
@@ -2144,15 +2164,54 @@ function applySharedLiteral(legs: PlanLeg[], messages: readonly string[]): PlanL
       },
     };
   });
-  if (shared && next.some((leg) => leg.op === "lend")) {
-    const quote = request;
-    for (const asset of namedEarnAssetsIn(request)) {
-      if (next.some((leg) => leg.op === "lend" && leg.asset === asset)) continue;
-      next = [...next, {
-        op: "lend",
-        asset,
-        sizing: { kind: "literal", amount: formatWad(decimalWad(shared)), sourceQuote: quote },
-      }];
+function opForClause(clause: string): WorkflowOp | null {
+  const lower = clause.toLowerCase();
+  for (const op of WORKFLOW_OPS) {
+    const verb = verbOf(op).toLowerCase();
+    const past = pastOf(op);
+    const regex = new RegExp(`\\b(?:${verb}|${past})\\b`, "i");
+    if (regex.test(lower)) return op;
+  }
+  return null;
+}
+
+function actionClauses(text: string): Array<{ op: WorkflowOp | null; text: string; assets: string[] }> {
+  const rawClauses = text.split(/\b(?:and\s+then|then|and|also|plus)\b|[,;\.]+/i);
+  const out: Array<{ op: WorkflowOp | null; text: string; assets: string[] }> = [];
+  let currentOp: WorkflowOp | null = null;
+  for (const raw of rawClauses) {
+    const clause = raw.trim();
+    if (!clause) continue;
+    const detected = opForClause(clause);
+    if (detected) currentOp = detected;
+    const assets = namedEarnAssetsIn(clause);
+    out.push({ op: currentOp, text: clause, assets });
+  }
+  return out;
+}
+
+  if (shared) {
+    const clauses = actionClauses(request);
+    for (const leg of legs) {
+      if (leg.op !== "lend") continue;
+      if (leg.sizing.kind !== "literal") continue;
+      const legQuote = leg.sizing.sourceQuote;
+      const candidateAssets = namedEarnAssetsIn(request).filter((asset) => {
+        if (namedEarnAssetsIn(legQuote).includes(asset)) return true;
+        const clauseForAsset = clauses.find((c) => c.assets.includes(asset));
+        if (clauseForAsset && clauseForAsset.op && clauseForAsset.op !== leg.op) return false;
+        if (legs.some((other) => other.asset === asset && other.op !== leg.op)) return false;
+        return true;
+      });
+      for (const asset of candidateAssets) {
+        if (next.some((l) => l.op === "lend" && l.asset === asset)) continue;
+        const clauseForAsset = clauses.find((c) => c.assets.includes(asset));
+        next = [...next, {
+          op: "lend",
+          asset,
+          sizing: { kind: "literal", amount: formatWad(decimalWad(shared)), sourceQuote: clauseForAsset?.text ?? legQuote },
+        }];
+      }
     }
   }
   return next;

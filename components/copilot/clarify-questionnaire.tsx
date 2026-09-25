@@ -332,35 +332,18 @@ export function ClarifyQuestionnaire({
     [sections, sectionStates, getSectionMaxInfo, parseAmountValue]
   );
 
-  // Linked option resolver: looks up source section's amount through sourceSectionId or label
+  // Linked option resolver: looks up source section's amount through sourceSectionId
   const resolveLinkedOptionAmount = useCallback(
     (opt: QuestionnaireOption | string, currentSecIdx: number, statesOverride?: Record<string, SectionInternalState>): { amount: string; asset: string } | null => {
+      void currentSecIdx;
       const optObj = typeof opt === "string" ? undefined : opt;
-      const optLabel = typeof opt === "string" ? opt : opt.label;
       const srcId = optObj?.sourceSectionId ?? (optObj?.id.startsWith("previous:") ? optObj.id.split(":")[1] : undefined);
       if (srcId) {
-        const direct = getSourceSectionAmount(srcId, statesOverride);
-        if (direct) return direct;
-      }
-      if (!optLabel.toLowerCase().includes("you just")) return null;
-      const statesMap = statesOverride ?? sectionStates;
-      // Search preceding sections for deposited or produced asset
-      for (let i = currentSecIdx - 1; i >= 0; i--) {
-        const prevSec = sections[i];
-        const prevSt = statesMap[prevSec.id];
-        if (!prevSt || !prevSt.amountRaw) continue;
-
-        const assetStep = prevSec.steps.find((s) => s.slot === "asset");
-        const assetOpt = assetStep?.options.find((o) => o.id === prevSt.assetId);
-        const assetName = assetOpt?.label || prevSt.assetId?.toUpperCase() || "";
-
-        if (!assetName || optLabel.toUpperCase().includes(assetName.toUpperCase())) {
-          return { amount: prevSt.amountRaw, asset: assetName };
-        }
+        return getSourceSectionAmount(srcId, statesOverride);
       }
       return null;
     },
-    [sections, sectionStates, getSourceSectionAmount]
+    [getSourceSectionAmount]
   );
 
   const currentParsedAmount = useMemo(() => {
@@ -466,15 +449,17 @@ export function ClarifyQuestionnaire({
         if (!st) continue;
 
         // Check if section had a linked amount
-        const amountStep = sec.steps.find((s) => s.slot === "amount");
-        const linkedOpt = amountStep?.options.find((o) =>
-          o.id === st.linkedOptionId || o.sourceSectionId || o.id.startsWith("previous:") || o.label.toLowerCase().includes("you just")
-        );
-        if (linkedOpt) {
-          const linked = resolveLinkedOptionAmount(linkedOpt, i, updated);
-          if (linked && (st.linkedOptionId || st.amountRaw)) {
-            // Keep linked amount in sync with source
-            st.amountRaw = linked.amount;
+        if (st.linkedOptionId) {
+          const amountStep = sec.steps.find((s) => s.slot === "amount");
+          const linkedOpt = amountStep?.options.find((o) =>
+            o.id === st.linkedOptionId || o.sourceSectionId || o.id.startsWith("previous:")
+          );
+          if (linkedOpt && st.linkedOptionId === linkedOpt.id) {
+            const linked = resolveLinkedOptionAmount(linkedOpt, i, updated);
+            if (linked) {
+              // Keep linked amount in sync with source
+              st.amountRaw = linked.amount;
+            }
           }
         }
 
@@ -1137,9 +1122,8 @@ export function ClarifyQuestionnaire({
               {currentStep.options
                 .filter(
                   (opt) =>
-                    Boolean(opt.sourceSectionId) ||
-                    opt.id.startsWith("previous:") ||
-                    opt.label.toLowerCase().includes("you just")
+                    (Boolean(opt.sourceSectionId) || opt.id.startsWith("previous:")) &&
+                    (!opt.forAsset || !currentState.assetId || opt.forAsset.toLowerCase() === currentState.assetId.toLowerCase())
                 )
                 .map((linkedOpt) => {
                   const linked = resolveLinkedOptionAmount(linkedOpt, activeSectionIdx);

@@ -384,9 +384,9 @@ describe("one questionnaire, one section per action", () => {
       ],
     };
     const res1 = resolvePlans([allIdlePlan], idleCtx);
-    // supply_blend was sized previous_leg without adding a second deposit
+    // supply_blend kept its stated amount 100 without enlarging or adding a second deposit
     expect(res1.candidates[0]?.steps?.filter((s) => s.op === "deposit_collateral")).toHaveLength(1);
-    expect(res1.candidates[0]?.steps?.find((s) => s.op === "supply_blend")?.amount).toBe("1000");
+    expect(res1.candidates[0]?.steps?.find((s) => s.op === "supply_blend")?.amount).toBe("100");
 
     // 2. Earlier leg is fraction
     const fractionCtx = { ...ctx, messages: ["deposit 50% and supply 100 to blend"] };
@@ -487,6 +487,56 @@ describe("one questionnaire, one section per action", () => {
     expect(answerProblem(built, earnAnswers)).toBeNull();
     const actions = actionsFromAnswers(built, earnAnswers);
     expect(actions[0].op).toBe(firstOption.op);
+  });
+
+  it("resolves fraction answers against pocket balance and feeds subsequent steps", () => {
+    const built = buildQuestionnaireSet([
+      { op: "deposit_collateral", asset: "XLM", slots: ["amount"], sourceQuote: "deposit xlm" },
+      { op: "supply_blend", asset: "XLM", slots: ["amount"], sourceQuote: "supply to blend" },
+    ], rows, NOW, ["deposit xlm and supply to blend"])!;
+    expect(built.sections).toHaveLength(2);
+
+    const validAnswers: QuestionnaireAnswers = {
+      questionnaireId: built.id,
+      asset: "XLM",
+      venue: null,
+      amount: { kind: "fraction", percent: "100" },
+      summary: "Deposit 100%, then Blend 1000",
+      sections: [
+        {
+          sectionId: built.sections![0].id,
+          asset: "XLM",
+          venue: null,
+          amount: { kind: "fraction", percent: "100" },
+        },
+        {
+          sectionId: built.sections![1].id,
+          asset: "XLM",
+          venue: null,
+          amount: { kind: "literal", amount: "1000" },
+        },
+      ],
+    };
+    expect(answerProblem(built, validAnswers)).toBeNull();
+
+    const overspendAnswers: QuestionnaireAnswers = {
+      ...validAnswers,
+      sections: [
+        {
+          sectionId: built.sections![0].id,
+          asset: "XLM",
+          venue: null,
+          amount: { kind: "fraction", percent: "100" },
+        },
+        {
+          sectionId: built.sections![1].id,
+          asset: "XLM",
+          venue: null,
+          amount: { kind: "literal", amount: "1101" },
+        },
+      ],
+    };
+    expect(answerProblem(built, overspendAnswers)).toBe("That is more than the 1100 XLM available.");
   });
 });
 

@@ -16,7 +16,7 @@ import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalle
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { touchesMarginAccount } from "../workflow/types";
-import { actionsFromAnswers, answerProblem, buildQuestionnaireSet, readsForQuestionnaire } from "./questionnaire";
+import { actionsFromAnswers, answerProblem, buildQuestionnaireSet, opsInPlay, readsForQuestionnaire } from "./questionnaire";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
@@ -491,7 +491,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
   }
   const droppedMissingAccountActions = !scope.smartAccount && outcome.kind === "clarify" && outcome.missing
-    ? outcome.missing.filter((entry) => entry.op && touchesMarginAccount(entry.op))
+    ? outcome.missing.filter((entry) => {
+        if (entry.op && touchesMarginAccount(entry.op)) return true;
+        const inPlay = opsInPlay(entry, messages);
+        return inPlay.length > 0 && inPlay.every((op) => touchesMarginAccount(op));
+      })
     : [];
   const questionnaire = outcome.kind === "clarify" && outcome.missing?.length
     ? buildQuestionnaireSet(outcome.missing, result.observations, Date.now(), messages, outcome.actions ?? [], Boolean(scope.smartAccount)) ?? undefined
@@ -1037,7 +1041,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   if (droppedMissingAccountActions.length > 0) {
     const droppedRejections: CandidateSet["rejected"] = droppedMissingAccountActions.map((entry) => {
-      const op = entry.op!;
+      const op = entry.op ?? opsInPlay(entry, messages)[0] ?? "deposit_collateral";
       const asset = entry.asset ?? "tokens";
       const name = `${verbOf(op)} ${asset}`;
       return {
@@ -1075,7 +1079,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       : "The investigation ran out of time before it could work out a plan for this, so no options are"
         + " offered — only the reads that finished are shown. Ask again, or split it into smaller steps.");
   }
-  let question = outcome.kind === "clarify" && questionnaire ? outcome.question
+  let question = outcome.kind === "clarify" && (!droppedMissingAccountActions.length || questionnaire) ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
   question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
   // The choice IS the turn: no options beside it, which would answer a question not yet settled.
@@ -1118,9 +1122,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const status: ResearchView["status"] = outcome.kind === "blocked" ? "blocked"
     : offered ? "researched"
       : question ? "needs_input"
-        : outcome.kind === "research_complete" ? "researched"
-          : outcome.kind === "stopped" ? "incomplete"
-            : "needs_input";
+        : candidates?.rejected.length ? "researched"
+          : outcome.kind === "research_complete" ? "researched"
+            : outcome.kind === "stopped" ? "incomplete"
+              : "needs_input";
   // A stated write, once sized and simulated, is offered as the steps to approve — not as a ranked option.
   const statedId = statedPlan ? planCandidateId(statedPlan) : null;
   const statedCandidate = statedId ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
@@ -1202,9 +1207,13 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       };
     }
   }
+  const accountChoices = !scope.smartAccount && (candidates?.rejected.some((r) => r.accountRequired) || droppedMissingAccountActions.length > 0)
+    ? [{ id: "create_account", label: "Open a margin account", write: "create_account" as const }]
+    : [];
+  const mergedChoices = [...(nameChoices ?? []), ...accountChoices];
   return {
     status, message, originalRequest: messages[0], refinements: messages.slice(1), question,
-    choices: nameChoices ?? undefined,
+    ...(mergedChoices.length ? { choices: mergedChoices } : {}),
     /**
      * A nomination means "there is one unambiguous thing to prepare", not "here is the
      * first row". The client auto-proposes whatever is nominated, and with session signing
@@ -1236,13 +1245,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     // Not rendered. Why a run stopped, a plan was dropped or a read failed, readable from the response (23 Sep).
     ...(diagnostics ? { diagnostics } : {}),
     pendingWrite: lifecycleOp && scope.trader ? { op: lifecycleOp } : null,
-    ...(!scope.smartAccount && (candidates?.rejected.some((r) => r.accountRequired) || droppedMissingAccountActions.length > 0)
-      ? {
-          choices: [
-            { id: "create_account", label: "Open a margin account", write: "create_account" as const },
-          ],
-        }
-      : {}),
   };
 }
 
