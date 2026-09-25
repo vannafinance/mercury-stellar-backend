@@ -5620,6 +5620,7 @@ export function CopilotWorkspace() {
         collapsed={railCollapsed}
         onToggleCollapsed={() => setRailCollapsed((v) => !v)}
         empty={stageEmpty}
+        conversationId={investigation.conversationId}
         justSubmitted={Boolean(pendingUser && loading)}
         scrollKey={`${investigation.turns.length}-${pendingUser}-${liveReply}-${loading}-${response?.request_id}`}
         railTop={

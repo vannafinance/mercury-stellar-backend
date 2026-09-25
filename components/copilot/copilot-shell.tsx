@@ -54,6 +54,8 @@ export interface CopilotShellProps {
   empty: boolean;
   /** When a send or reply landing changes the thread content, triggers the bottom-scroll check. */
   scrollKey?: unknown;
+  /** Identifies the conversation so pin state cannot leak across equal-sized threads. */
+  conversationId?: string | null;
   /** When the user has just submitted a prompt, forces scrolling to bottom unconditionally. */
   justSubmitted?: boolean;
 }
@@ -68,6 +70,7 @@ export function CopilotShell({
   composer,
   empty,
   scrollKey,
+  conversationId,
   justSubmitted,
 }: CopilotShellProps) {
   const shell = useRef<HTMLDivElement | null>(null);
@@ -115,6 +118,7 @@ export function CopilotShell({
    * no send still opens at the bottom.
    */
   const pinnedRef = useRef<HTMLElement | null>(null);
+  const pinnedConversationRef = useRef<string | null | undefined>(conversationId);
   const wasSubmittedRef = useRef(false);
   const [spacer, setSpacer] = useState(0);
 
@@ -127,7 +131,10 @@ export function CopilotShell({
   const fitSpacer = useCallback(() => {
     const thread = threadRef.current;
     const bubble = pinnedRef.current;
-    if (!thread || !bubble || !bubble.isConnected) return;
+    if (!thread || !bubble || !bubble.isConnected) {
+      setSpacer(0);
+      return;
+    }
     const below = thread.getBoundingClientRect().bottom - bubble.getBoundingClientRect().top;
     // Visual px back into layout px, for a style inside the zoomed wrapper.
     setSpacer(Math.max(0, room() - below) / (zoomRef.current || 1));
@@ -156,6 +163,27 @@ export function CopilotShell({
   }, [fitSpacer, scrollToBottom]);
 
   useEffect(() => {
+    const previous = pinnedConversationRef.current;
+    /**
+     * A new chat has no id until the server records its first turn, so "no id -> an id" is the
+     * SAME conversation landing its first reply: the pin must survive it, or the message the
+     * user just sent is unpinned the moment its answer arrives. Only a switch between two
+     * different conversations, or an emptied thread, clears the pin.
+     */
+    if (!previous && conversationId && !empty) {
+      pinnedConversationRef.current = conversationId;
+      return undefined;
+    }
+    if (previous !== conversationId || empty) {
+      pinnedConversationRef.current = conversationId;
+      pinnedRef.current = null;
+      const frame = requestAnimationFrame(() => setSpacer(0));
+      return () => cancelAnimationFrame(frame);
+    }
+    return undefined;
+  }, [conversationId, empty]);
+
+  useEffect(() => {
     const rising = Boolean(justSubmitted) && !wasSubmittedRef.current;
     wasSubmittedRef.current = Boolean(justSubmitted);
     if (rising) { pinLatest(); return; }
@@ -168,12 +196,19 @@ export function CopilotShell({
     if (!thread || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
       // The pending bubble is replaced by the recorded one when the turn lands; follow it.
-      if (pinnedRef.current && !pinnedRef.current.isConnected) pinnedRef.current = latestBubble();
+      if (pinnedConversationRef.current === conversationId && pinnedRef.current && !pinnedRef.current.isConnected) {
+        const bubble = latestBubble();
+        if (bubble) pinnedRef.current = bubble;
+        else {
+          pinnedRef.current = null;
+          setSpacer(0);
+        }
+      }
       fitSpacer();
     });
     observer.observe(thread);
     return () => observer.disconnect();
-  }, [fitSpacer]);
+  }, [conversationId, fitSpacer]);
 
   /**
    * A send is detected from the thread itself: exactly one new message bubble appeared.

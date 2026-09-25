@@ -216,6 +216,7 @@ async function handleBindRegister(
           (registered.expired ? " The authorization request expired; start it again." : ""),
         wallet_bind: {
           status: registered.expired ? "expired" : "unavailable",
+          request_id: requestId,
           wallet_address: walletAddress,
           retry_action: retryAction,
           max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
@@ -658,4 +659,3 @@ export async function handleAutoSignAction(
 
   return { kind: "error", message: "Unknown auto-sign action.", request_id };
 }
-

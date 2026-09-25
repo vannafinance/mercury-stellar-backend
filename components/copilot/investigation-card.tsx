@@ -65,7 +65,8 @@ const money = (value: string) =>
 function toStepperStep(step: WorkflowView["steps"][number]): StepperStep {
   const status: StepperStep["status"] =
     step.status === "settled" ? "settled"
-      : step.status === "failed" || step.status === "uncertain" ? "failed"
+      : step.status === "uncertain" ? "uncertain"
+        : step.status === "failed" ? "failed"
         : step.status === "awaiting_signature" ? "signing"
           : step.status === "submitted" || step.status === "submitting" ? "submitting"
             : step.status === "invoking" ? "claiming"

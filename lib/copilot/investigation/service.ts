@@ -481,6 +481,25 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     loopElapsedMs: result.usage.elapsedMs,
   });
   const outcome = result.outcome;
+  /**
+   * A conditional or future action is refused as soon as the outcome is known, before any
+   * plan read or sizing. Decided from the model's structured `goal.trigger` alone (Grok round
+   * 2; any future_condition refuses, fail safe): a regex over the user's wording is exactly
+   * what that replaced, so none is used here.
+   */
+  if (outcome.kind === "research_complete") {
+    const conditionalMessage = futureConditionRefusal(outcome.goal.trigger, messages);
+    if (conditionalMessage) {
+      return {
+        status: "blocked", message: conditionalMessage,
+        originalRequest: messages[0] ?? input.message, refinements: messages.slice(1),
+        understanding: outcome.goal, question: null,
+        facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
+        warnings: [], scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
+        continuation: "", executionAllowed: false,
+      };
+    }
+  }
   if (outcome.kind === "clarify" && outcome.missing) {
     const questionnaireNow = Date.now();
     const needed = readsForQuestionnaire(outcome.missing, result.observations, questionnaireNow);
@@ -833,19 +852,20 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * The remaining venues for the idle assets the fixed shapes already offer (the DEX pools),
    * so a strategy's options cover every place that takes the asset, from the registry.
    */
-  if (strategyGoal && !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy") {
-    const coverage = venueCoveragePlans(onlyNamedAssets(candidates, messages), modelPlans, outcome.goal.objective);
-    if (coverage.length) {
-      modelPlans.push(...coverage);
-      logPhase("venue_coverage", { plans: coverage.map((plan) => plan.title) });
-    }
-  }
+  const coverage = strategyGoal && !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy"
+    ? venueCoveragePlans(onlyNamedAssets(candidates, messages), modelPlans, outcome.goal.objective)
+    : [];
   const onlyUsdcAsked = usdcToChoose && !modelPlans.length;
   let partsBeforeJoin: typeof modelPlans | null = null;
+  let plansJoined = false;
   if (statedPlanIndex < 0 && modelPlans.length > 1 && outcome.kind === "research_complete" && anchoredPlanParts(outcome.goal, messages)) {
     const joined = joinPlanParts(modelPlans);
-    if ("plan" in joined) { partsBeforeJoin = modelPlans; modelPlans = [joined.plan]; }
+    if ("plan" in joined) { partsBeforeJoin = modelPlans; modelPlans = [joined.plan]; plansJoined = true; }
     else logPhase("plans_not_joined", { reason: joined.reason });
+  }
+  if (coverage.length && !plansJoined) {
+    modelPlans.push(...coverage);
+    logPhase("venue_coverage", { plans: coverage.map((plan) => plan.title) });
   }
   if (outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length) logPhase("plans_dropped", { reasons: outcome.droppedPlanReasons });
   if (outcome.kind === "research_complete" && outcome.droppedPlans) {
@@ -1129,19 +1149,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     ...(outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length ? { droppedPlanReasons: outcome.droppedPlanReasons } : {}),
   } : undefined;
   if (diagnostics) void appendDiagnostics({ message: messages[messages.length - 1] ?? "", status, diagnostics });
-  if (outcome.kind === "research_complete") {
-    const conditionalMessage = futureConditionRefusal(outcome.goal.trigger, messages);
-    if (conditionalMessage) {
-      return {
-        status: "blocked", message: conditionalMessage,
-        originalRequest: messages[0] ?? input.message, refinements: messages.slice(1),
-        understanding: outcome.goal, question: null,
-        facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
-        warnings: [], scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
-        continuation: "", executionAllowed: false,
-      };
-    }
-  }
   return {
     status, message, originalRequest: messages[0], refinements: messages.slice(1), question,
     /**

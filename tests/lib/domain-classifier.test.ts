@@ -116,15 +116,24 @@ describe("domain classifier", () => {
     expect(JSON.parse(mocks.generateInvestigationJson.mock.calls[0][2]).message).toHaveLength(8000);
   });
 
-  it("treats a request whose quote is not in the message as not a request", async () => {
+  it("treats a request whose quote is not in the message as an invalid classifier result", async () => {
     mocks.generateInvestigationJson.mockResolvedValue({ kind: "request", sourceQuote: "send it now" });
     await expect(classifyDomain("supply 5 xlm to blend", new AbortController().signal)).resolves.toEqual({
-      kind: "not_a_request", sourceQuote: null,
+      kind: "invalid_classifier", sourceQuote: null,
     });
   });
 });
 
 describe("guardUserPrompt", () => {
+  it("allows a short message with an unanchored quote", async () => {
+    mocks.generateInvestigationJson.mockResolvedValue({ kind: "request", sourceQuote: "send it now" });
+    const verdict = await guardUserPrompt("supply 5 xlm", {
+      subject: "user",
+      signal: new AbortController().signal,
+    });
+    expect(verdict.allow).toBe(true);
+  });
+
   it("lets product phrasing that used to look like a recipe through without classifying", async () => {
     const verdict = await guardUserPrompt("What's a good recipe for laddering my XLM?", {
       subject: "user",

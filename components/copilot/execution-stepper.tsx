@@ -8,7 +8,7 @@ export interface StepperStep {
   op: string;
   asset: string;
   amount: string;
-  status: "pending" | "claiming" | "signing" | "submitting" | "settled" | "failed";
+  status: "pending" | "claiming" | "signing" | "submitting" | "settled" | "failed" | "uncertain";
   txHash?: string;
   ledger?: number;
   error?: string;
@@ -56,14 +56,17 @@ export function ExecutionStepper({
   const total = steps.length;
   const settled = steps.filter((step) => step.status === "settled").length;
   const failedIndex = steps.findIndex((step) => step.status === "failed");
+  /** A step whose transaction may or may not have landed: the run is halted until someone checks. */
+  const uncertainIndex = steps.findIndex((step) => step.status === "uncertain");
   const complete = total > 0 && settled === total;
-  const stopped = failedIndex !== -1 || cancelled;
+  const stopped = failedIndex !== -1 || uncertainIndex !== -1 || cancelled;
   const awaitingWallet = !autoApprove && steps.some((step) => step.status === "signing");
   const explorer = network === "mainnet" || network === "public" ? "public" : "testnet";
   const nextIndex = stopped ? -1 : steps.findIndex((step, index) => index > currentStepIndex && step.status === "pending");
 
   const headline = complete ? "Completed"
     : failedIndex !== -1 ? `Stopped at step ${failedIndex + 1}`
+      : uncertainIndex !== -1 ? `Check step ${uncertainIndex + 1}`
       : cancelled ? "Cancelled"
       : awaitingWallet ? "Your signature needed"
         : "Executing";
@@ -95,6 +98,7 @@ export function ExecutionStepper({
                 <div className="cp-exec-fill h-full w-full rounded-full bg-[var(--cp-emerald)]" style={{ animationDelay: `${index * STAGGER_MS}ms` }} />
               )}
               {step.status === "failed" && <div className="h-full w-full rounded-full bg-[var(--cp-danger-fg)]" />}
+              {step.status === "uncertain" && <div className="h-full w-full rounded-full bg-[var(--cp-amber)]" />}
               {IN_FLIGHT.has(step.status) && <div className="cp-exec-live h-full w-full rounded-full" />}
             </div>
           ))}
@@ -106,6 +110,7 @@ export function ExecutionStepper({
           const label = step.label || `${step.op} ${step.amount} ${step.asset}`;
           const isSettled = step.status === "settled";
           const isFailed = step.status === "failed";
+          const isUncertain = step.status === "uncertain";
           const isInFlight = IN_FLIGHT.has(step.status);
           const waitsHere = step.status === "signing" && !autoApprove;
           const last = index === steps.length - 1;
@@ -114,7 +119,7 @@ export function ExecutionStepper({
               <StepMark status={step.status} delayMs={index * STAGGER_MS} />
               <div className="flex min-w-0 grow flex-col gap-1">
                 <div className="flex items-baseline justify-between gap-3">
-                  <span className={`text-[14px] leading-5 ${isSettled || isInFlight || isFailed ? "font-semibold text-vgray-900" : "font-medium text-vgray-400"}`}>
+                  <span className={`text-[14px] leading-5 ${isSettled || isInFlight || isFailed || isUncertain ? "font-semibold text-vgray-900" : "font-medium text-vgray-400"}`}>
                     {label}
                   </span>
                   {step.status === "pending" && (
@@ -123,6 +128,7 @@ export function ExecutionStepper({
                     </span>
                   )}
                   {isFailed && <span className="shrink-0 text-[12px] font-semibold text-[var(--cp-danger-fg)]">Not sent</span>}
+                  {isUncertain && <span className="shrink-0 text-[12px] font-semibold text-[var(--cp-warn-fg)]">Outcome unknown</span>}
                 </div>
 
                 {isSettled && (
@@ -173,6 +179,15 @@ export function ExecutionStepper({
                     )}
                   </div>
                 )}
+
+                {/* No Retry: resubmitting a transaction that may already have landed could run it twice. */}
+                {isUncertain && (
+                  <p className="text-[12.5px] leading-5 text-vgray-500">
+                    {step.txHash ? (
+                      <>It is not known whether this landed. <a href={`https://stellar.expert/explorer/${explorer}/tx/${step.txHash}`} target="_blank" rel="noreferrer" className="text-violet-500 hover:text-violet-600">Check it on the explorer ↗</a> before trying again.</>
+                    ) : "It is not known whether this landed. Check your wallet's recent transactions before trying again."}
+                  </p>
+                )}
               </div>
             </li>
           );
@@ -208,6 +223,9 @@ function StepMark({ status, delayMs }: { status: StepperStep["status"]; delayMs:
         <X size={13} strokeWidth={2.5} />
       </span>
     );
+  }
+  if (status === "uncertain") {
+    return <span className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-[var(--cp-warn-bg)] text-[12px] font-semibold text-[var(--cp-warn-fg)]" aria-label="Outcome unknown">?</span>;
   }
   if (IN_FLIGHT.has(status)) {
     return <Loader2 size={22} className="mt-px shrink-0 animate-spin text-violet-500" aria-label="In progress" />;

@@ -11,6 +11,7 @@ describe("wallet-bind panel response continuity", () => {
     const unavailable = {
       kind: "needs_wallet_bind" as const,
       message: "Vanna could not finish authorizing this wallet.",
+      request_id: requestId,
       wallet_bind: {
         status: "unavailable" as const,
         request_id: requestId,

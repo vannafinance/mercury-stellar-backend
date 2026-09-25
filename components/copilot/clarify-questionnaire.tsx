@@ -239,8 +239,8 @@ export function ClarifyQuestionnaire({
     (sec: QuestionnaireSection, venueId: string | null, assetId: string | null) => {
       const amountStep = sec.steps.find((s) => s.slot === "amount");
       if (!amountStep?.max) return null;
-      if (venueId && amountStep.max[venueId]) {
-        return amountStep.max[venueId];
+      if (venueId && assetId && (amountStep.max[`${assetId}:${venueId}`] || amountStep.max[venueId])) {
+        return amountStep.max[`${assetId}:${venueId}`] || amountStep.max[venueId];
       }
       if (assetId && amountStep.max[assetId]) {
         return amountStep.max[assetId];
@@ -371,7 +371,9 @@ export function ClarifyQuestionnaire({
   const currentLpPairInfo = useMemo(() => {
     const amountStep = currentSection.steps.find((s) => s.slot === "amount");
     if (!amountStep?.pair || !currentState.venueId) return null;
-    return amountStep.pair[currentState.venueId] ?? null;
+    return amountStep.pair[`${currentState.assetId}:${currentState.venueId}`]
+      ?? amountStep.pair[currentState.venueId]
+      ?? null;
   }, [currentSection, currentState.venueId]);
 
   const currentLpMatchedAmount = useMemo(() => {

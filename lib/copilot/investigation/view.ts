@@ -89,6 +89,8 @@ export interface Questionnaire {
   sections?: QuestionnaireSection[];
   /** Fully stated actions, sealed with their position so Send runs them too. */
   stated?: SealedAction[];
+  namedAsset?: string | null;
+  op?: string | null;
 }
 export interface QuestionnaireSectionAnswer {
   sectionId: string;

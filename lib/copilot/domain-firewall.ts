@@ -55,7 +55,7 @@ export const PASTE_SHAPE = {
     reason: "Above the catalogue's highest non-letter share (11.1%). Box-drawing and table characters are outside the ordinary set, so a drawn table clears this while it is still short.",
   },
   ordinaryPunctuation: {
-    value: ".,;:!?'\"()-/",
+    value: ".,;:!?'\"()-/%$+&<>=×",
     reason: "The marks catalogue prompts actually use: sentence punctuation, apostrophes, parentheses, hyphens and slashes. Pipes, backticks, underscores and box-drawing are outside, so they raise the share.",
   },
 } as const;
@@ -83,7 +83,7 @@ export function isStructurallyLarge(message: string): boolean {
     count += 1;
     if (!isOrdinaryCharacter(ch)) unusual += 1;
   }
-  return count > 0 && unusual / count >= PASTE_SHAPE.minUnusualShare.value;
+  return count >= 20 && unusual / count >= PASTE_SHAPE.minUnusualShare.value;
 }
 
 /** A known in-domain message. A structurally large one still has to be classified. */

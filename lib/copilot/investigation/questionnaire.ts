@@ -329,14 +329,20 @@ export function buildQuestionnaire(missing: QuestionnaireMissing, observations: 
     for (const choice of venueChoices(asset, ops, observations)) {
       venueOptions.push(choice.option);
       const held = heldInPocket(observations, choice.pocket, asset);
-      if (held) max[choice.option.id] = { amount: held, asset, where: POCKET_WHERE[choice.pocket] };
+      const compositeKey = `${asset}:${choice.option.id}`;
+      if (held) {
+        max[compositeKey] = { amount: held, asset, where: POCKET_WHERE[choice.pocket] };
+        if (venueAssets.length === 1) max[choice.option.id] = max[compositeKey];
+      }
       if (choice.pool && held) {
         const other = choice.pool.tokens[0] === asset ? choice.pool.tokens[1] : choice.pool.tokens[0];
         const reserves = reservesFor(observations, choice.pool.venue, choice.pool.tokens[1]);
         const unit = reserves ? perUnit(reserves, choice.pool.tokens[0] === asset) : null;
-        pair[choice.option.id] = { asset: other, perUnit: unit };
+        pair[compositeKey] = { asset: other, perUnit: unit };
+        if (venueAssets.length === 1) pair[choice.option.id] = pair[compositeKey];
         const otherHeld = heldInPocket(observations, choice.pocket, other);
-        max[choice.option.id] = { amount: capByPair(held, otherHeld, unit), asset, where: choice.option.label };
+        max[compositeKey] = { amount: capByPair(held, otherHeld, unit), asset, where: choice.option.label };
+        if (venueAssets.length === 1) max[choice.option.id] = max[compositeKey];
       }
       if (held && !max[asset]) max[asset] = { amount: held, asset, where: POCKET_WHERE[choice.pocket] };
     }
@@ -360,7 +366,7 @@ export function buildQuestionnaire(missing: QuestionnaireMissing, observations: 
   }
   if (!steps.length) return null;
   const id = createHash("sha256").update(JSON.stringify({ missing, steps: steps.map((step) => [step.slot, step.options.map((option) => option.id)]) })).digest("hex").slice(0, 16);
-  return { id, title: titleFor(missing, ops), subtitle: "Choose which, where and how much", steps };
+  return { id, title: titleFor(missing, ops), subtitle: "Choose which, where and how much", steps, namedAsset: chosen, op: missing.op ?? ops[0] ?? null };
 }
 
 export function answerProblem(issued: Questionnaire | undefined, answers: QuestionnaireAnswers): string | null {
@@ -369,9 +375,9 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
   if (!answers.summary.trim()) return "The answer needs a summary of what was chosen.";
   const assetStep = issued.steps.find((step) => step.slot === "asset");
   const venueStep = issued.steps.find((step) => step.slot === "venue");
-  const assetIds = assetStep ? assetStep.options.map((option) => option.id) : [answers.asset];
+  const assetIds = assetStep ? assetStep.options.map((option) => option.id) : issued.namedAsset ? [issued.namedAsset] : [];
   if (assetStep && !assetIds.includes(answers.asset)) return "That asset was not one of the options.";
-  if (!assetStep && answers.asset !== assetIds[0] && !issued.steps.some((step) => step.options.some((option) => option.forAsset === answers.asset || option.id === answers.asset))) {
+  if (!assetStep && answers.asset !== assetIds[0]) {
     return "That asset was not one of the options.";
   }
   if (venueStep) {
@@ -384,8 +390,13 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
     const known = issued.steps.flatMap((step) => step.options).some((option) => option.id === answers.venue);
     if (!known) return "That venue was not one of the options.";
   }
+  const resolvedOp = venueStep?.options.find((option) => option.id === answers.venue)?.op
+    ?? issued.steps.flatMap((step) => step.options).find((option) => option.op)?.op
+    ?? issued.op;
+  if (!resolvedOp) return "That answer did not identify an operation.";
   const amountStep = issued.steps.find((step) => step.slot === "amount");
-  const cap = amountStep?.max?.[answers.venue ?? ""] ?? amountStep?.max?.[answers.asset];
+  const compositeKey = answers.venue ? `${answers.asset}:${answers.venue}` : "";
+  const cap = (compositeKey ? amountStep?.max?.[compositeKey] : undefined) ?? amountStep?.max?.[answers.asset];
   // A linked "all of what you just …" answer needs an earlier section to link to; a
   // single-action questionnaire issues none, so it can only be forged.
   if (answers.amount.kind === "previous_leg") return "That amount was not one of the options.";
@@ -410,7 +421,8 @@ export function actionFromAnswers(issued: Questionnaire, answers: QuestionnaireA
   const venue = answers.venue
     ? venueOptions.find((option) => option.id === answers.venue) ?? issued.steps.flatMap((step) => step.options).find((option) => option.id === answers.venue)
     : venueOptions.length === 1 ? venueOptions[0] : undefined;
-  const op = (venue?.op ?? issued.steps.flatMap((step) => step.options).find((option) => option.op)?.op) as WorkflowOp;
+  const op = (venue?.op ?? issued.steps.flatMap((step) => step.options).find((option) => option.op)?.op ?? issued.op) as WorkflowOp | undefined;
+  if (!op) throw new Error("Questionnaire did not retain an operation.");
   const flow = OP_FLOW[op];
   const pool = venue?.id.startsWith("add_liquidity:") ? lpPairs().find((pair) => pair.venue === venue.id.slice("add_liquidity:".length) && pair.tokens.includes(answers.asset as AssetId)) : undefined;
   const other = pool ? (pool.tokens[0] === answers.asset ? pool.tokens[1] : pool.tokens[0]) : undefined;

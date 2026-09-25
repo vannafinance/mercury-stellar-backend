@@ -49,8 +49,7 @@ function parseClassification(message: string, raw: unknown): DomainClassificatio
   if (!isRecord(raw)) return null;
   const quote = quoteInMessage(message, raw.sourceQuote);
   if (raw.kind === "request") {
-    // A request whose quote is not in the message is not a request.
-    if (!quote) return { kind: "not_a_request", sourceQuote: null };
+    if (!quote) return null;
     return { kind: "request", sourceQuote: quote };
   }
   if (raw.kind === "not_a_request") return { kind: "not_a_request", sourceQuote: quote };

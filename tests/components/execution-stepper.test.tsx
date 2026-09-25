@@ -102,4 +102,21 @@ describe("ExecutionStepper", () => {
     expect(screen.getByText("Completed")).toBeTruthy();
     expect(screen.queryByText("Stop after this step")).toBeNull();
   });
+
+  it("halts on a step whose outcome is unknown, offers no Retry, and points to the explorer", () => {
+    const onRetry = vi.fn();
+    render(
+      <ExecutionStepper
+        currentStepIndex={0}
+        onRetry={onRetry}
+        onStop={() => {}}
+        steps={[{ id: "u", op: "lend", label: "Lend 5 XLM", asset: "XLM", amount: "5", status: "uncertain", txHash: "cd".repeat(32) }]}
+      />,
+    );
+    expect(screen.getByText("Check step 1")).toBeTruthy();
+    expect(screen.getByText("Outcome unknown")).toBeTruthy();
+    expect(screen.getByText(/Check it on the explorer/)).toBeTruthy();
+    expect(screen.queryByText("Retry")).toBeNull();
+    expect(screen.queryByText("Cancel remaining steps")).toBeNull();
+  });
 });
