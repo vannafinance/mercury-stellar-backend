@@ -302,7 +302,15 @@ export function buildQuestionnaire(missing: QuestionnaireMissing, observations: 
   const steps: QuestionnaireStep[] = [];
   let chosen = namedAsset(missing.asset);
 
-  if (missing.slots.includes("asset")) {
+  /**
+   * The asset is open whenever it is not settled, whatever the model listed as missing. 25 Sep,
+   * live: "supply my usdc" came back with only "venue" missing, so the questionnaire had no
+   * asset step and showed every venue of all three USDCs at once, with the same option ids,
+   * and Send submitted no asset at all. A family ("USDC") or no asset, with more than one
+   * candidate, is a choice the user still has to make.
+   */
+  const assetOpen = missing.slots.includes("asset") || (!chosen && assets.length > 1);
+  if (assetOpen) {
     const pockets = [...new Set(ops.map((op) => OP_FLOW[op].from))];
     const unread = pockets.length > 0 && pockets.every((pocket) => readMissing(observations, pocket === "wallet" ? "wallet_balances" : pocket === "account" ? "account_collateral" : pocket === "earn" ? "earn_position" : pocket === "blend" ? "blend_position" : pocket === "debt" ? "account_debt" : "farm_lp_position"));
     const options: QuestionnaireOption[] = [];
@@ -350,7 +358,12 @@ export function buildQuestionnaire(missing: QuestionnaireMissing, observations: 
   if (missing.slots.includes("venue") || venueOptions.length === 1) {
     steps.push({ slot: "venue", prompt: "Where should it go?", options: venueOptions });
   }
-  if (missing.slots.includes("amount")) {
+  /**
+   * Always asked. The questionnaire carries no sizing of its own, so an amount the model did not
+   * list as missing has nowhere to come from: 25 Sep, live, "supply my usdc" was issued without
+   * an amount step and Send went out with no amount ("Supply 0 asset to Earn").
+   */
+  {
     steps.push({
       slot: "amount",
       prompt: "How much?",

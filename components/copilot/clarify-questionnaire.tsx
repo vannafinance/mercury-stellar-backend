@@ -1079,7 +1079,7 @@ export function ClarifyQuestionnaire({
 
                 return (
                   <button
-                    key={opt.id}
+                    key={`${opt.forAsset ?? ""}:${opt.id}`}
                     type="button"
                     role="radio"
                     aria-checked={isSelected}

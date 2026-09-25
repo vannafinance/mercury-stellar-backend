@@ -151,3 +151,31 @@ describe("an answer is checked against the questionnaire that was issued", () =>
     expect(answered.candidates[0]?.steps?.[0]?.amount).toBe("340");
   });
 });
+
+/**
+ * 25 Sep, live: "supply my usdc" came back with only "venue" missing. The questionnaire had no
+ * asset step, listed Earn three times with one id, and Send carried no asset. An unsettled
+ * asset is always asked, whatever the model listed.
+ */
+describe("an unsettled asset is asked even when the model only listed the venue", () => {
+  it("adds the asset step first, and keeps each venue option tied to its asset", () => {
+    const built = buildQuestionnaire({ asset: "USDC", slots: ["venue"] }, [
+      wallet([{ symbol: "BLUSDC", balance: "680" }, { symbol: "AQUSDC", balance: "10" }]),
+      ...prices, earn("BLUSDC", "5"), earn("AQUSDC", "4"), blend,
+    ], NOW);
+    expect(built?.steps[0].slot).toBe("asset");
+    expect(built?.steps[0].options.map((option) => option.id).sort()).toEqual(["AQUSDC", "BLUSDC"]);
+    const venues = built?.steps.find((step) => step.slot === "venue")?.options ?? [];
+    expect(venues.every((option) => !!option.forAsset)).toBe(true);
+    expect(new Set(venues.map((option) => `${option.forAsset}:${option.id}`)).size).toBe(venues.length);
+  });
+
+  it("does not add an asset step when only one candidate is held", () => {
+    const built = buildQuestionnaire({ asset: "USDC", slots: ["venue"] }, [
+      wallet([{ symbol: "BLUSDC", balance: "680" }]), ...prices, earn("BLUSDC", "5"), blend,
+    ], NOW);
+    // The single held variant is settled by the asset step's one option; the client skips it.
+    const assetStep = built?.steps.find((step) => step.slot === "asset");
+    expect(assetStep?.options.map((option) => option.id) ?? ["BLUSDC"]).toEqual(["BLUSDC"]);
+  });
+});

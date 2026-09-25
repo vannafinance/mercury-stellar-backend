@@ -400,7 +400,7 @@ export function InvestigationCard({
             */}
           {result && resultIsLatest && !(loading && !workflow) && hasCardContent && (
             <article aria-label="Copilot reply" className="space-y-5">
-              {clock && <p className={`${ASSISTANT_TEXT_INDENT} -mt-3 text-[12px] tabular-nums text-vgray-400`}>{clock}</p>}
+              {clock && <p className={`${ASSISTANT_TEXT_INDENT} text-[12px] tabular-nums text-vgray-400`}>{clock}</p>}
 
               {/*
                 No "Understood as" block and no constraint chips (owner, 24 Sep, live): the plan card

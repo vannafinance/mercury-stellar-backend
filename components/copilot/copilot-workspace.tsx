@@ -1488,6 +1488,9 @@ function ImpactPanel({ sim: served }: { sim: Simulation }) {
 }
 
 
+/** The fewest milliseconds between two background auto-sign status reads (focus, visibility, poll). */
+const AUTO_SIGN_STATUS_MIN_GAP_MS = 20_000;
+
 /** How long switching auto-approve on or off may take before the toggle is released again. */
 const AUTO_SIGN_SWITCH_TIMEOUT_MS = 30_000;
 export function CopilotWorkspace() {
@@ -2029,7 +2032,19 @@ export function CopilotWorkspace() {
      * rail is never stale by the time it is looked at.
      */
     const visible = () => document.visibilityState === "visible";
-    const runIfVisible = () => { if (visible()) void run(); };
+    /**
+     * Focus and visibility fire together, and on every return to the window — switching to a
+     * terminal or taking a screenshot. Each fired a status read, and each read spends the MCP
+     * rate-limit budget the investigation needs: 25 Sep, live, a burst of ~20 status reads in
+     * 20s left `aquarius_pool_reserves` failing with rate_limited. One read per
+     * AUTO_SIGN_STATUS_MIN_GAP_MS is plenty; enable and disable write the state directly.
+     */
+    let lastRead = Date.now();
+    const runIfVisible = () => {
+      if (!visible() || Date.now() - lastRead < AUTO_SIGN_STATUS_MIN_GAP_MS) return;
+      lastRead = Date.now();
+      void run();
+    };
     const poll = window.setInterval(runIfVisible, 45_000);
     const onFocus = () => runIfVisible();
     window.addEventListener("focus", onFocus);
@@ -6280,6 +6295,8 @@ export function CopilotWorkspace() {
               </div>
             )}
             {openQuestionnaire && (
+              /* Docked where the chat box is, so it must not grow over the thread: capped, with its own scroll. */
+              <div style={{ maxHeight: "min(58vh, 540px)", overflowY: "auto", overscrollBehavior: "contain", borderRadius: 16 }}>
               <ClarifyQuestionnaire
                 questionnaire={openQuestionnaire}
                 busy={investigation.loading}
@@ -6293,6 +6310,7 @@ export function CopilotWorkspace() {
                   run(text);
                 }}
               />
+              </div>
             )}
             {/* The pill is styled inline for the reason recorded in globals.css: a custom
                 class declared there did not survive into the served stylesheet, and the
