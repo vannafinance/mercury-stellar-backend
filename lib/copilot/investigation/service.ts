@@ -14,6 +14,7 @@ import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchore
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, type CandidateSet } from "./candidates";
 import { venueCoveragePlans } from "./coverage";
+import { askForUnstatedAmounts } from "./unstated-amount";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { touchesMarginAccount } from "../workflow/types";
@@ -482,7 +483,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     toolCalls: result.usage.toolCalls,
     loopElapsedMs: result.usage.elapsedMs,
   });
-  const outcome = result.outcome;
+  // A stated action the model sized "all idle" is asked, never spent whole (unstated-amount.ts).
+  const outcome = askForUnstatedAmounts(result.outcome);
   /**
    * A conditional or future action is refused as soon as the outcome is known, before any
    * plan read or sizing. Decided from the model's structured `goal.trigger` alone (Grok round
