@@ -323,6 +323,16 @@ export function strategyReply(input: {
       : "";
     return `I compared ${rates} against your position. Best path: ${top.label} for ${money(top.amountUsd)}. ${carry}${floor}${hf}${alt} Approve to run those steps.${ruledOut}`;
   }
+  if (input.statedSteps?.length) {
+    const list = input.statedSteps.map((step) => step.label).join(", then ");
+    const body = list.charAt(0).toUpperCase() + list.slice(1);
+    const ruledOut = input.candidates?.rejected.length
+      ? ` Ruled out: ${input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} — ${entry.reason.replace(/\.$/, "")}`).join("; ")}.`
+      : "";
+    return input.statedSteps.length === 1
+      ? `${body}. Approve to run this step.${ruledOut}`
+      : `${body}. Approve to run these steps.${ruledOut}`;
+  }
   if (input.candidates?.rejected.length) {
     // Say why each shape was ruled out — the reasons are the analysis; there is no stock verdict.
     const reasons = input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} — ${entry.reason.replace(/\.$/, "")}`).join("; ");
@@ -359,13 +369,6 @@ export function strategyReply(input: {
       return "The investigation could not be completed from the reads it made. Nothing was executed — please try again.";
     }
     return "The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed.";
-  }
-  if (input.statedSteps?.length) {
-    const list = input.statedSteps.map((step) => step.label).join(", then ");
-    const body = list.charAt(0).toUpperCase() + list.slice(1);
-    return input.statedSteps.length === 1
-      ? `${body}. Approve to run this step.`
-      : `${body}. Approve to run these steps.`;
   }
   if (input.intent === "strategy") {
     /**

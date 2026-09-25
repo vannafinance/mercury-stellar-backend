@@ -35,7 +35,12 @@ function view(input: {
   server: string;
 }): ResearchView {
   const { facts, warnings } = normalizeResearchFacts(input.observations);
-  const reply = factualAnswer(facts) ?? "I could not read a live figure for that just now.";
+  const healthFailedNoAccount = !input.scope.smartAccount && input.observations.some(
+    (o) => o.capability === "liquidation_snapshot" && o.status === "error" && o.error === "no_account"
+  );
+  const reply = healthFailedNoAccount
+    ? "A margin account is needed to check your health factor and none is connected."
+    : factualAnswer(facts) ?? "I could not read a live figure for that just now.";
   const evidence = compactResearchEvidence(input.observations, null, Date.now());
   evidence.allowedCandidateIds = [];
   return {
@@ -52,7 +57,19 @@ function view(input: {
     question: null,
     facts,
     capacity: null,
-    candidates: null,
+    candidates: healthFailedNoAccount
+      ? {
+          feasible: [],
+          rejected: [
+            {
+              label: "Check health factor",
+              reason: "Check health factor: a margin account is needed for this step and none is connected.",
+              asset: "margin",
+              accountRequired: { code: "accountRequired", actions: ["Check health factor"] },
+            },
+          ],
+        }
+      : null,
     rateComparisons: [],
     checks: input.observations.map((observation) => ({
       id: observation.id,
@@ -64,6 +81,11 @@ function view(input: {
     scope: { wallet: input.scope.trader, smartAccount: input.scope.smartAccount, network: input.scope.network },
     continuation: researchCodec(input.secret, input.server).seal(input.scope, [input.message], null, evidence),
     executionAllowed: false,
+    ...(healthFailedNoAccount ? {
+      choices: [
+        { id: "create_account", label: "Open a margin account", write: "create_account" as const },
+      ],
+    } : {}),
   };
 }
 

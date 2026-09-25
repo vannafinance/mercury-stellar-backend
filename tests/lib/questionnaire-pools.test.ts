@@ -33,9 +33,9 @@ describe("an LP venue disappears when the registry has no such pool", () => {
       }, { asset: "AQUSDC" }),
     ], NOW);
     const ids = built?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.id);
-    expect(ids).toContain("lend");
-    expect(ids).toContain("supply_blend");
-    expect(ids).toContain("add_liquidity:aquarius");
-    expect(ids).not.toContain("add_liquidity:soroswap");
+    expect(ids).toContain("lend:XLM");
+    expect(ids).toContain("supply_blend:XLM");
+    expect(ids).toContain("add_liquidity:aquarius:XLM");
+    expect(ids).not.toContain("add_liquidity:soroswap:XLM");
   });
 });

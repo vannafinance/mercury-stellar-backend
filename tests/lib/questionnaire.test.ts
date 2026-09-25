@@ -83,7 +83,7 @@ describe("questionnaire options come from what is held", () => {
     const { lpPairs } = await import("@/lib/copilot/registry/assets");
     const withoutSoroswap = lpPairs().filter((pair) => pair.venue !== "soroswap");
     expect(withoutSoroswap.every((pair) => pair.venue !== "soroswap")).toBe(true);
-    expect(full?.steps.find((step) => step.slot === "venue")?.options.some((option) => option.id === "add_liquidity:soroswap")).toBe(true);
+    expect(full?.steps.find((step) => step.slot === "venue")?.options.some((option) => option.id === "add_liquidity:soroswap:XLM")).toBe(true);
   });
 
   it("caps an LP amount by the other token when reserves were read", () => {
@@ -91,7 +91,7 @@ describe("questionnaire options come from what is held", () => {
       account([{ symbol: "AQUSDC", balance: "100" }, { symbol: "XLM", balance: "10" }]),
       pool("AQUSDC", "1000", "200"),
     ], NOW);
-    const cap = built?.steps.find((step) => step.slot === "amount")?.max?.["add_liquidity:aquarius"];
+    const cap = built?.steps.find((step) => step.slot === "amount")?.max?.["add_liquidity:aquarius:AQUSDC"];
     // 1000 XLM / 200 AQUSDC = 5 XLM per AQUSDC. 10 XLM covers 2 AQUSDC, which is below the 100 held.
     expect(cap?.amount).toBe("2");
   });
@@ -114,7 +114,7 @@ describe("an answer is checked against the questionnaire that was issued", () =>
   it("refuses a forged venue and an amount over the max", () => {
     const issued = built();
     const over: QuestionnaireAnswers = {
-      questionnaireId: issued.id, asset: "BLUSDC", venue: "lend",
+      questionnaireId: issued.id, asset: "BLUSDC", venue: "lend:BLUSDC",
       amount: { kind: "literal", amount: "9999" }, summary: "Lend 9999 BLUSDC",
     };
     expect(answerProblem(issued, over)).toMatch(/more than/);
@@ -127,7 +127,7 @@ describe("an answer is checked against the questionnaire that was issued", () =>
       ...prices, earn("BLUSDC", "5"),
     ], NOW)!;
     const answers: QuestionnaireAnswers = {
-      questionnaireId: issued.id, asset: "BLUSDC", venue: "lend",
+      questionnaireId: issued.id, asset: "BLUSDC", venue: "lend:BLUSDC",
       amount: { kind: "fraction", percent: "50" },
       summary: "Supply 50% of my BLUSDC to Earn",
     };
@@ -177,5 +177,127 @@ describe("an unsettled asset is asked even when the model only listed the venue"
     // The single held variant is settled by the asset step's one option; the client skips it.
     const assetStep = built?.steps.find((step) => step.slot === "asset");
     expect(assetStep?.options.map((option) => option.id) ?? ["BLUSDC"]).toEqual(["BLUSDC"]);
+  });
+});
+
+const xlmRows = [
+  wallet([{ symbol: "XLM", balance: "2147" }]),
+  account([{ symbol: "XLM", balance: "3716" }, { symbol: "AQUSDC", balance: "94" }, { symbol: "SOUSDC", balance: "1370" }]),
+  ...prices, earn("XLM", "3"), blend,
+  pool("AQUSDC", "1000", "200"),
+  pool("SOUSDC", "800", "100", "soroswap"),
+];
+
+describe("a guessed op does not hide a venue the user did not name", () => {
+  const missing: QuestionnaireMissing = { asset: "XLM", op: "supply_blend", slots: ["venue", "amount"] };
+
+  it("offers every venue for supply xlm, and only Blend when the user named it", () => {
+    const open = buildQuestionnaire(missing, xlmRows, NOW, ["supply xlm"]);
+    expect(open?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.label)).toEqual([
+      "Earn", "Farm · Blend", "Aquarius XLM/AQUSDC pool", "Soroswap XLM/SOUSDC pool",
+    ]);
+    const named = buildQuestionnaire(missing, xlmRows, NOW, ["supply xlm to blend"]);
+    expect(named?.steps.find((step) => step.slot === "venue")?.options.map((option) => option.label)).toEqual(["Farm · Blend"]);
+  });
+
+  it("names the pocket on every option, and gives each USDC Earn option its own max", () => {
+    const open = buildQuestionnaire(missing, xlmRows, NOW, ["supply xlm"])!;
+    for (const option of open.steps.find((step) => step.slot === "venue")!.options) {
+      expect(option.detail, option.label).toMatch(/in your wallet|in your margin account/);
+    }
+    expect(open.steps.find((step) => step.slot === "venue")?.options.find((option) => option.id === "lend:XLM")?.detail).toContain("2147 XLM in your wallet");
+    expect(open.steps.find((step) => step.slot === "venue")?.options.find((option) => option.id === "supply_blend:XLM")?.detail).toContain("3716 XLM in your margin account");
+    const usdc = buildQuestionnaire({ asset: "USDC", op: "lend", slots: ["asset", "venue", "amount"] }, [
+      wallet([{ symbol: "BLUSDC", balance: "680" }, { symbol: "AQUSDC", balance: "10" }, { symbol: "SOUSDC", balance: "24948" }]),
+      ...prices, earn("BLUSDC", "5"), earn("AQUSDC", "4"), earn("SOUSDC", "3"),
+    ], NOW)!;
+    const caps = usdc.steps.find((step) => step.slot === "amount")!.max!;
+    expect(caps["lend:BLUSDC"]?.amount).toBe("680");
+    expect(caps["lend:AQUSDC"]?.amount).toBe("10");
+    expect(caps["lend:SOUSDC"]?.amount).toBe("24948");
+  });
+});
+
+describe("a short margin account is deposited before a farm add", () => {
+  const quote = "add 100 XLM to the Aquarius pool";
+  const observations = [
+    wallet([{ symbol: "XLM", balance: "80" }, { symbol: "AQUSDC", balance: "30" }]),
+    account([{ symbol: "XLM", balance: "40" }, { symbol: "AQUSDC", balance: "10" }]),
+    ...prices,
+    pool("AQUSDC", "1000", "200"),
+  ];
+  const scope = {
+    subject: "user", network: "testnet",
+    trader: "GBH5G2WPAAFZ5MS76GDJ4HKHYXSRGF2MBLYDIRQOHGVS4HPU6NNOFIHA",
+    smartAccount: "CCKITLMKA2VKSWGOTFABSUFA3RMOZHRP5YNP6HLG73JSWMMUUNCTHDMC",
+  };
+  const planCtx = (rows: Observation[] = observations) => ({
+    scope, observations: rows, now: NOW, messages: [quote],
+    capacity: { grossCollateralUsd: "1000", debtUsd: "0", floor: "1.1" },
+    borrowing: "forbidden" as const, comparisons: [],
+  });
+  const sized = (rows?: Observation[]) => {
+    const issued = buildQuestionnaire({ asset: "XLM", op: "add_liquidity", slots: ["amount"] }, rows ?? observations, NOW, [quote])!;
+    const answers: QuestionnaireAnswers = {
+      questionnaireId: issued.id, asset: "XLM", venue: "add_liquidity:aquarius:XLM",
+      amount: { kind: "literal", amount: "100" }, summary: quote,
+    };
+    const fromAnswers = actionFromAnswers(issued, answers);
+    const typed = {
+      op: "add_liquidity" as const, asset: "XLM", assetOut: "AQUSDC", venue: "aquarius" as const,
+      sizing: { kind: "literal" as const, amount: "100", sourceQuote: quote }, sourceQuote: quote,
+    };
+    const ctx = planCtx(rows);
+    return {
+      issued,
+      answered: resolvePlans([planFromStatedActions([fromAnswers], quote)!], ctx),
+      direct: resolvePlans([planFromStatedActions([typed], quote)!], ctx),
+    };
+  };
+
+  it("deposits both shortfalls, and types the same plan", () => {
+    const { answered, direct, issued } = sized();
+    const steps = answered.candidates[0]?.steps?.map((step) => [step.op, step.asset, step.amount]);
+    expect(steps).toEqual([
+      ["deposit_collateral", "XLM", "60"],
+      ["deposit_collateral", "AQUSDC", "10"],
+      ["add_liquidity", "XLM", "100"],
+    ]);
+    expect(direct.candidates[0]?.steps?.map((step) => [step.op, step.asset, step.amount])).toEqual(steps);
+    const note = issued.steps.find((step) => step.slot === "amount")?.pair?.["add_liquidity:aquarius:XLM"]?.note;
+    expect(note).toMatch(/Your margin account has 10 AQUSDC; I'll deposit the other/);
+  });
+
+  it("adds liquidity alone when the account already holds both tokens", () => {
+    const rows = [
+      wallet([{ symbol: "XLM", balance: "5" }, { symbol: "AQUSDC", balance: "5" }]),
+      account([{ symbol: "XLM", balance: "100" }, { symbol: "AQUSDC", balance: "50" }]),
+      ...prices, pool("AQUSDC", "1000", "200"),
+    ];
+    const { answered } = sized(rows);
+    expect(answered.candidates[0]?.steps?.map((step) => step.op)).toEqual(["add_liquidity"]);
+  });
+
+  it("refuses when the wallet cannot cover the pair, with both amounts", () => {
+    const rows = [
+      wallet([{ symbol: "XLM", balance: "80" }, { symbol: "AQUSDC", balance: "5" }]),
+      account([{ symbol: "XLM", balance: "40" }, { symbol: "AQUSDC", balance: "10" }]),
+      ...prices, pool("AQUSDC", "1000", "200"),
+    ];
+    const { answered, direct } = sized(rows);
+    expect(answered.candidates).toHaveLength(0);
+    expect(answered.rejected[0]?.reason).toMatch(/needs 20/);
+    expect(answered.rejected[0]?.reason).toMatch(/wallet has 5/);
+    expect(direct.rejected[0]?.reason).toBe(answered.rejected[0]?.reason);
+  });
+
+  it("keeps the reserves refusal when the pool was not read", () => {
+    const rows = [
+      wallet([{ symbol: "XLM", balance: "80" }, { symbol: "AQUSDC", balance: "30" }]),
+      account([{ symbol: "XLM", balance: "100" }, { symbol: "AQUSDC", balance: "50" }]),
+      ...prices,
+    ];
+    const { answered } = sized(rows);
+    expect(answered.rejected[0]?.reason).toMatch(/no live aquarius pool reserves/);
   });
 });

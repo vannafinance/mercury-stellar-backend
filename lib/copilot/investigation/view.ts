@@ -70,6 +70,8 @@ export interface QuestionnaireSection {
   actionIndex: number;
   /** Position of this action in the user's message, so stated actions can be merged back in order. */
   position?: number;
+  /** The asset this section's action already named, sealed when it was built. */
+  namedAsset?: string | null;
   steps: QuestionnaireStep[];
   sourceQuote?: string;
   op?: string;

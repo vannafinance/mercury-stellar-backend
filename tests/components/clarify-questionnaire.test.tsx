@@ -867,5 +867,136 @@ describe("ClarifyQuestionnaire Component", () => {
         })
       );
     });
+
+    it("typed amount is not overwritten by linked option when earlier section changes, and linked option hides for mismatched asset", () => {
+      const questionnaire: Questionnaire = {
+        id: "q-sync-test",
+        title: "Deposit and Blend",
+        subtitle: "Multi-leg strategy",
+        steps: [],
+        sections: [
+          {
+            id: "sec-deposit",
+            title: "Deposit XLM",
+            op: "deposit_collateral",
+            actionIndex: 0,
+            steps: [
+              {
+                slot: "asset",
+                prompt: "Asset",
+                options: [{ id: "xlm", label: "XLM" }],
+              },
+              {
+                slot: "amount",
+                prompt: "Amount",
+                options: [],
+                max: { xlm: { amount: "1000", asset: "XLM", where: "wallet" } },
+              },
+            ],
+          },
+          {
+            id: "sec-blend",
+            title: "Supply to Blend",
+            op: "supply_blend",
+            actionIndex: 1,
+            steps: [
+              {
+                slot: "asset",
+                prompt: "Asset",
+                options: [
+                  { id: "xlm", label: "XLM" },
+                  { id: "usdc", label: "USDC" },
+                ],
+              },
+              {
+                slot: "amount",
+                prompt: "Amount",
+                options: [
+                  {
+                    id: "link-dep",
+                    sourceSectionId: "sec-deposit",
+                    forAsset: "xlm",
+                    label: "All of earlier deposit",
+                  },
+                ],
+                max: {
+                  xlm: { amount: "1000", asset: "XLM", where: "wallet" },
+                  usdc: { amount: "500", asset: "USDC", where: "wallet" },
+                },
+              },
+            ],
+          },
+        ],
+      };
+
+      const handleSubmit = vi.fn();
+      renderWithTheme(
+        <ClarifyQuestionnaire
+          questionnaire={questionnaire}
+          onSubmit={handleSubmit}
+          onCancel={vi.fn()}
+          onSomethingElse={vi.fn()}
+        />
+      );
+
+      // Section 1: deposit 500
+      const inputDeposit = screen.getByPlaceholderText(/0.0 or 50%/i);
+      fireEvent.change(inputDeposit, { target: { value: "500" } });
+      fireEvent.click(screen.getByTestId("btn-next"));
+
+      // Section 2: select XLM to advance to Amount step
+      fireEvent.click(screen.getByTestId("option-xlm"));
+
+      // Check linked option is visible when asset is XLM
+      expect(screen.getByTestId("option-link-dep")).toBeDefined();
+
+      // Type 30 for Blend
+      const inputBlend = screen.getByPlaceholderText(/0.0 or 50%/i);
+      fireEvent.change(inputBlend, { target: { value: "30" } });
+
+      // Change deposit to 250: click Section 1 tab (section-item-0)
+      fireEvent.click(screen.getByTestId("section-item-0"));
+      const inputDepositAgain = screen.getByPlaceholderText(/0.0 or 50%/i);
+      fireEvent.change(inputDepositAgain, { target: { value: "250" } });
+      fireEvent.click(screen.getByTestId("btn-next"));
+
+      // In Section 2: Blend remains 30!
+      const inputBlendAgain = screen.getByPlaceholderText(/0.0 or 50%/i);
+      expect((inputBlendAgain as HTMLInputElement).value).toBe("30");
+
+      // Verify linked option is hidden if incompatible asset is picked
+      // Click answered asset step in Section 2 to change asset to USDC
+      const answeredAsset = screen.getByTestId("answered-step-0");
+      fireEvent.click(answeredAsset);
+      // Select USDC
+      fireEvent.click(screen.getByTestId("option-usdc"));
+      // Now in amount step, linked option (forAsset: "xlm") should NOT be in the document
+      expect(screen.queryByTestId("option-link-dep")).toBeNull();
+
+      // Switch back to XLM to test submit with typed 30
+      fireEvent.click(screen.getByTestId("answered-step-0"));
+      fireEvent.click(screen.getByTestId("option-xlm"));
+      fireEvent.change(screen.getByPlaceholderText(/0.0 or 50%/i), { target: { value: "30" } });
+
+      // Send submits Blend 30
+      const sendBtn = screen.getByTestId("btn-send");
+      fireEvent.click(sendBtn);
+
+      expect(handleSubmit).toHaveBeenCalledTimes(1);
+      expect(handleSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sections: [
+            expect.objectContaining({
+              sectionId: "sec-deposit",
+              amount: { kind: "literal", amount: "250" },
+            }),
+            expect.objectContaining({
+              sectionId: "sec-blend",
+              amount: { kind: "literal", amount: "30" },
+            }),
+          ],
+        })
+      );
+    });
   });
 });

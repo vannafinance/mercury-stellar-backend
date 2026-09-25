@@ -7,21 +7,12 @@
  * the run itself (settled steps), the rates read for the plan, or the plan's own sized
  * figures. Nothing is re-derived from the user's wording.
  */
-import { OP_FLOW, type WorkflowOp, type WorkflowView } from "../workflow/types";
+import { OP_DONE, OP_FLOW, type WorkflowOp, type WorkflowView } from "../workflow/types";
 import { resolveAssetDef } from "../registry/assets";
 import type { RateComparison } from "./rate-comparison";
 import { pct, shownApyPct } from "./apy";
 
-/**
- * What each op did, in the past tense. One entry per op, and the type makes it exhaustive,
- * so a new op cannot be left out. This is the same per-op copy as `verbOf` in plan.ts, not a
- * list matched against anything the user wrote.
- */
-const DONE: Record<WorkflowOp, string> = {
-  lend: "Lent", redeem: "Redeemed", deposit_collateral: "Deposited", withdraw_collateral: "Withdrew",
-  borrow: "Borrowed", repay: "Repaid", supply_blend: "Supplied", blend_withdraw: "Withdrew",
-  swap: "Swapped", remove_liquidity: "Removed", add_liquidity: "Added",
-};
+const DONE = OP_DONE;
 
 /** Beyond this many steps, the reply names the plan instead of listing every step. */
 const LISTED_STEPS = 3;

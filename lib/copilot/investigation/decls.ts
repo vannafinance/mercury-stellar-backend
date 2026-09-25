@@ -217,13 +217,27 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         question: { type: "string" },
         missing: {
           type: "object",
-          description: "What a direct action still needs. op is the operation when the user named one. asset is the token they named, or a bare family such as USDC when they did not name the variant. slots lists which of asset, venue and amount they did not give. Name only what is missing. Do not list options.",
+          description: "What is still missing, in the user's order. One object, or a list of one object per action. op is the operation when they named one. asset is the token, or a bare family such as USDC. slots lists which of asset, venue and amount they did not give. sourceQuote is the exact substring of their message for that action. Do not list an action they already stated in full, and do not list options.",
           properties: {
             op: { type: "string", enum: [...WORKFLOW_OPS] },
             asset: { type: "string", description: "A registry asset id, or a bare family the user said, such as USDC." },
             slots: { type: "array", items: { type: "string", enum: ["asset", "venue", "amount"] } },
+            sourceQuote: { type: "string" },
           },
           required: ["slots"],
+        },
+        actions: {
+          type: "array",
+          description: "Fully stated actions from the user's message that do not need clarification. Same shape as a plan leg with sourceQuote.",
+          items: legSchema({
+            properties: {
+              sourceQuote: {
+                type: "string",
+                description: "Exact substring of the user's message that states this action.",
+              },
+            },
+            required: ["sourceQuote"],
+          }),
         },
       },
       required: ["question"],
@@ -307,7 +321,7 @@ export function decisionFromFunctionCalls(calls: readonly ModelFunctionCall[]): 
   const control = calls.find((call) => CONTROL_NAMES.has(call.name));
   if (!control) return { kind: "invalid_function" };
   const args = isRecord(control.args) ? control.args : {};
-  if (control.name === "clarify") return { kind: "clarify", question: args.question, ...(args.missing !== undefined ? { missing: args.missing } : {}) };
+  if (control.name === "clarify") return { kind: "clarify", question: args.question, ...(args.missing !== undefined ? { missing: args.missing } : {}), ...(args.actions !== undefined ? { actions: args.actions } : {}) };
   if (control.name === "blocked") return { kind: "blocked", reason: args.reason };
   return wrapComplete(args);
 }

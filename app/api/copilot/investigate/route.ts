@@ -35,10 +35,14 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
   let body: unknown;
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ResearchError("invalid_request", "Invalid research request.", 400); }
   const answers = body && isRecord(body) ? body.answers : undefined;
-  const answersOk = answers == null || (isRecord(answers) && typeof answers.questionnaireId === "string" && typeof answers.asset === "string"
-    && (answers.venue === null || typeof answers.venue === "string")
+  const amountOk = (amount: unknown) => isRecord(amount) && (amount.kind === "fraction" || amount.kind === "literal" || amount.kind === "previous_leg");
+  const sectionOk = (section: unknown) => isRecord(section) && typeof section.sectionId === "string" && typeof section.asset === "string"
+    && (section.venue === null || typeof section.venue === "string") && amountOk(section.amount);
+  const answersOk = answers == null || (isRecord(answers) && typeof answers.questionnaireId === "string"
     && typeof answers.summary === "string" && answers.summary.trim().length > 0 && answers.summary.length <= 2000
-    && isRecord(answers.amount) && (answers.amount.kind === "fraction" || answers.amount.kind === "literal"));
+    && (Array.isArray(answers.sections)
+      ? answers.sections.length > 0 && answers.sections.every(sectionOk)
+      : typeof answers.asset === "string" && (answers.venue === null || typeof answers.venue === "string") && amountOk(answers.amount)));
   if (!answersOk) throw new ResearchError("invalid_answers", "The questionnaire answer is missing an option or an amount.", 400);
   const message = isRecord(body) && typeof body.message === "string" && body.message.trim()
     ? body.message.trim()

@@ -372,6 +372,43 @@ describe("researchTurn fast path", () => {
     expect(result.executionAllowed).toBe(false);
   });
 
+  it("does not nominate requested_actions when a typo was assumed via near match", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    mocks.computeAccountPosition.mockResolvedValue(null);
+    const mcp = { call: vi.fn(async (tool: string) => {
+      if (tool === "vanna_get_wallet_balance") return { assets: [
+        { symbol: "BLUSDC", balance: "100", spendable: "100", min_balance: "0", status: "ok" },
+      ], fee_reserve_xlm: "0" };
+      if (tool === "vanna_get_price") return { price_usd: "1.00" };
+      if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "62.5" };
+      if (tool === "vanna_preview_earn") return { error: "invalid_input", message: "preview unsupported" };
+      throw new Error(`Unexpected tool ${tool}`);
+    }) };
+    const typoModel = vi.fn(async () => ({
+      kind: "research_complete",
+      goal: { intent: "strategy", relation: "new", objective: "lend 1 BLUSD to earn", constraints: [], borrowing: "forbidden",
+        actions: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "lend 1 BLUSD to earn" }, sourceQuote: "lend 1 BLUSD to earn" }] },
+      findings: [{ summary: "User requested lend.", evidenceIds: [] }],
+      openQuestions: [],
+    }));
+    // Typo'd direct action: "BLUSD" is near-match distance 1 to "BLUSDC"
+    const typoResult = await researchTurn({ message: "lend 1 BLUSD to earn", wallet: SCOPE.trader, continuation: null }, deps({ model: typoModel, mcp }));
+    expect(typoResult.status).toBe("researched");
+    expect(typoResult.proposalCandidateId).toBeNull();
+
+    // Exactly typed direct action: "BLUSDC" has no near-match findings
+    const exactModel = vi.fn(async () => ({
+      kind: "research_complete",
+      goal: { intent: "strategy", relation: "new", objective: "lend 1 BLUSDC to earn", constraints: [], borrowing: "forbidden",
+        actions: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "lend 1 BLUSDC to earn" }, sourceQuote: "lend 1 BLUSDC to earn" }] },
+      findings: [{ summary: "User requested lend.", evidenceIds: [] }],
+      openQuestions: [],
+    }));
+    const exactResult = await researchTurn({ message: "lend 1 BLUSDC to earn", wallet: SCOPE.trader, continuation: null }, deps({ model: exactModel, mcp }));
+    expect(exactResult.status).toBe("researched");
+    expect(exactResult.proposalCandidateId).toBe("requested_actions");
+  });
+
   it("answers health from still-fresh carried evidence without another chain read", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
     const now = Date.now();

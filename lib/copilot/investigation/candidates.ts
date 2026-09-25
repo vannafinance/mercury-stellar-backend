@@ -37,6 +37,7 @@ import type { RateAsset, RateComparison } from "./rate-comparison";
 import { candidateId, candidateKindTraits, type CandidateKind } from "./candidate-id";
 import type { ProposalStep } from "../workflow/types";
 import { ASSET_IDS, mentionsBareUsdc, namesAsset, resolveAssetDef, USDC_VARIANTS } from "../registry/assets";
+import { resolveName } from "../intent/resolve-name";
 import { findAsset, findBorrowAmount, findBorrowAsset } from "../router";
 
 const USDC_SET = new Set<string>(USDC_VARIANTS);
@@ -135,7 +136,7 @@ export interface CandidateSet {
    * `acceptable` marks a refusal the user's own acceptance would lift, so the caller can
    * put it to them as a question instead of a verdict they cannot answer.
    */
-  rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true }>;
+  rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] } }>;
 }
 
 function signedWad(value: string): bigint {
@@ -467,6 +468,22 @@ export function onlyNamedAssets(set: CandidateSet | null, messages: readonly str
   if (!set) return set;
   const named = new Set<string>(ASSET_IDS.filter((id) => messages.some((message) => namesAsset(message, id))));
   if (messages.some((message) => mentionsBareUsdc(message))) for (const id of USDC_VARIANTS) named.add(id);
+
+  // Near-matched assets (typos within distance threshold) also count as named
+  for (const message of messages) {
+    const tokens = message.split(/\s+/);
+    for (const token of tokens) {
+      const cleaned = token.replace(/^[^\w]+|[^\w]+$/g, "");
+      if (!cleaned) continue;
+      const res = resolveName(cleaned, ["asset"]);
+      if (res.kind === "near") {
+        for (const candidate of res.candidates) {
+          named.add(candidate.id);
+        }
+      }
+    }
+  }
+
   if (!named.size) return set;
   return {
     feasible: set.feasible.filter((candidate) => named.has(candidate.asset)),
@@ -476,7 +493,7 @@ export function onlyNamedAssets(set: CandidateSet | null, messages: readonly str
 
 export function mergeCandidateSets(
   fixed: CandidateSet | null,
-  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; acceptable?: true; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string } }> },
+  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] }; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string } }> },
   borrowing: CandidateInput["borrowing"] = "unspecified",
 ): CandidateSet {
   // The op sequence a fixed shape compiles to, so it can be matched against a composed plan's steps.
@@ -502,6 +519,7 @@ export function mergeCandidateSets(
         reason: entry.leg ? `${entry.leg}: ${entry.reason}.` : `${entry.reason}.`,
         asset: entry.leg?.split(" ").pop() ?? "",
         ...(entry.acceptable ? { acceptable: true as const } : {}),
+        ...(entry.accountRequired ? { accountRequired: entry.accountRequired } : {}),
         ...(entry.pocket ? { pocket: entry.pocket } : {}),
       })),
     ],

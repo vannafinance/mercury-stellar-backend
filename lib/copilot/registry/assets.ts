@@ -98,7 +98,7 @@ const DEFS: Record<AssetId, AssetDef> = {
   },
   AQUSDC: {
     id: "AQUSDC",
-    aliases: ["AQUSDC", "AQUARIUS_USDC", "AQUARIUSUSDC", "AQUARIUS USDC", "AQUIRESUSDC"],
+    aliases: ["AQUSDC", "AQUARIUS_USDC", "AQUARIUSUSDC", "AQUARIUS USDC"],
     oracleSymbol: "USDC",
     marginSymbol: "AQUSDC",
     earnSymbol: "AQUSDC",
