@@ -254,7 +254,9 @@ function heldInPocketRaw(observations: readonly Observation[], pocket: Pocket, a
       if (observation.capability !== "wallet_balances" || observation.status !== "ok" || !Array.isArray(observation.data?.assets)) continue;
       for (const row of observation.data.assets) {
         if (!isRecord(row) || row.symbol !== asset) continue;
-        return rowBalance(row, ["balance", "spendable"]);
+        // What can be sent, not the raw balance: native XLM keeps a fee reserve, and a Max above
+        // it was offered here and then refused by the sizer (25 Sep: 1,608 offered, 1,604 spendable).
+        return rowBalance(row, ["spendable", "balance"]);
       }
       return null;
     }

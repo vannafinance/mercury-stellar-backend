@@ -2199,8 +2199,15 @@ function applySharedLiteral(legs: PlanLeg[], messages: readonly string[], claime
   const request = requestText(messages);
   const amounts = uniqueAmountsIn(request);
   const shared = amounts.length === 1 ? amounts[0] : null;
+  /**
+   * A shared number reaches only a leg stated in that same message. 25 Sep, live: "lend 2
+   * blusdc and deposit xlm", answered "Deposit 3 XLM to Margin account", lent 3 BLUSDC: the
+   * answer was the latest message, its one number was shared, and it overwrote a lend quoted
+   * from the earlier message. A leg quoted elsewhere keeps the amount its own words state.
+   */
+  const inRequest = (leg: PlanLeg) => leg.sizing.kind === "literal" && request.includes(leg.sizing.sourceQuote);
   let next = legs.map((leg) => {
-    if (leg.sizing.kind !== "literal" || !shared) return leg;
+    if (leg.sizing.kind !== "literal" || !shared || !inRequest(leg)) return leg;
     if (tokenAmountsIn(leg.sizing.sourceQuote).some((n) => sameAmount(n, shared))) {
       return sameAmount(leg.sizing.amount, shared) ? leg : { ...leg, sizing: { ...leg.sizing, amount: formatWad(decimalWad(shared)) } };
     }
@@ -2227,7 +2234,7 @@ function applySharedLiteral(legs: PlanLeg[], messages: readonly string[], claime
   if (shared) {
     const owned = new Set(claimed.map((asset) => asset.toUpperCase()));
     for (const leg of legs) {
-      if (leg.op !== "lend" || leg.sizing.kind !== "literal") continue;
+      if (leg.op !== "lend" || leg.sizing.kind !== "literal" || !inRequest(leg)) continue;
       const legQuote = leg.sizing.sourceQuote;
       const ownQuote = new Set(namedEarnAssetsIn(legQuote));
       for (const asset of namedEarnAssetsIn(request)) {

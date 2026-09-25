@@ -31,3 +31,35 @@ describe("unread balances still give the asset step options", () => {
     expect(problem).not.toBe("That asset was not one of the options.");
   });
 });
+
+import { shareSameOpLiteralActions } from "@/lib/copilot/investigation/plan";
+import { heldInPocket } from "@/lib/copilot/investigation/questionnaire";
+
+describe("an answer's number never rewrites an earlier stated amount (25 Sep, live)", () => {
+  it("lend 2 blusdc stays 2 after the deposit is answered with 3", () => {
+    const messages = ["lend 2 blusdc and deposit xlm", "Deposit 3 XLM to Margin account"];
+    const out = shareSameOpLiteralActions([
+      { op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "2", sourceQuote: "lend 2 blusdc" }, sourceQuote: "lend 2 blusdc" },
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "3", sourceQuote: messages[1] }, sourceQuote: messages[1] },
+    ] as never, messages);
+    const lend = out.find((a) => a.op === "lend");
+    expect(lend?.sizing).toMatchObject({ kind: "literal", amount: "2" });
+    expect(out.filter((a) => a.op === "lend")).toHaveLength(1);
+  });
+
+  it("a number in the same message is still shared: lend 100 xlm and blusdc", () => {
+    const messages = ["lend 100 xlm and blusdc"];
+    const out = shareSameOpLiteralActions([
+      { op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "100 xlm" }, sourceQuote: "100 xlm" },
+    ] as never, messages);
+    expect(out.map((a) => a.asset).sort()).toEqual(["BLUSDC", "XLM"]);
+  });
+});
+
+describe("the wallet cap is what can be sent", () => {
+  it("prefers spendable over the raw balance", () => {
+    const rows = [{ id: "w", capability: "wallet_balances", args: {}, observedAt: 1, status: "ok",
+      data: { assets: [{ symbol: "XLM", balance: "1608.3454972", spendable: "1604.3454972", decimals: 7, status: "ok" }] } }];
+    expect(heldInPocket(rows as never, "wallet", "XLM")).toBe("1604.3454972");
+  });
+});
