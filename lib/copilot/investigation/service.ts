@@ -18,6 +18,7 @@ import { askForUnstatedAmounts } from "./unstated-amount";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { touchesMarginAccount } from "../workflow/types";
+import { missingPositionReads } from "./position-coverage";
 import { actionsFromAnswers, answerProblem, buildQuestionnaireSet, opsInPlay, readsForQuestionnaire } from "./questionnaire";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
@@ -616,6 +617,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       value: null, failed: true as const,
       reason: error instanceof Error ? error.message : "unavailable",
     }));
+  // An answer that read one position pocket reads them all (position-coverage.ts).
+  if (outcome.kind === "research_complete" && outcome.goal.intent !== "strategy" && !outcome.plans?.length && !outcome.goal.actions?.length) {
+    const coverage = missingPositionReads(result.observations);
+    if (coverage.length) {
+      result.observations.push(...await collectStrategyReads(scope, scopedMcp, dependencies.signal, Date.now(), coverage, "pc"));
+      logPhase("position_coverage", { requested: coverage.length });
+    }
+  }
   const { facts, warnings } = normalizeResearchFacts(result.observations);
   /**
    * Deterministic headroom, from the contract liquidation_snapshot once it agrees

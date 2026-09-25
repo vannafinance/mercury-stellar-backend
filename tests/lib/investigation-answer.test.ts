@@ -223,7 +223,7 @@ describe("strategyReply", () => {
       originalRequest: "what are the debt tokens currently i am holding",
       findings: [{ summary: "Your reported margin debt is $3,312.43." }],
     });
-    expect(reply).toBe("Debt: XLM 14,113.4967211 ($2,540.43), BLUSDC 772 ($772.00); total $3,312.43.");
+    expect(reply).toBe("Debt (total $3,312.43):\n- XLM 14,113.4967211 · $2,540.43\n- BLUSDC 772 · $772.00");
   });
 
   it("rounds a health factor to two decimals without changing the stored fact", () => {

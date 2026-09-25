@@ -63,3 +63,33 @@ describe("the wallet cap is what can be sent", () => {
     expect(heldInPocket(rows as never, "wallet", "XLM")).toBe("1604.3454972");
   });
 });
+
+describe("spendable edge cases", () => {
+  it("a zero spendable is zero, not the raw balance", () => {
+    const rows = [{ id: "w", capability: "wallet_balances", args: {}, observedAt: 1, status: "ok",
+      data: { assets: [{ symbol: "XLM", balance: "1.5", spendable: "0", decimals: 7, status: "ok" }] } }];
+    expect(heldInPocket(rows as never, "wallet", "XLM")).toBeNull();
+  });
+  it("uses the balance when spendable is absent", () => {
+    const rows = [{ id: "w", capability: "wallet_balances", args: {}, observedAt: 1, status: "ok",
+      data: { assets: [{ symbol: "BLUSDC", balance: "12", decimals: 7, status: "ok" }] } }];
+    expect(heldInPocket(rows as never, "wallet", "BLUSDC")).toBe("12");
+  });
+});
+
+import { missingPositionReads } from "@/lib/copilot/investigation/position-coverage";
+import { catalogEntry } from "@/lib/copilot/investigation/catalog";
+
+describe("an answer about positions reads every position pocket (25 Sep, live)", () => {
+  it("adds Earn and LP reads for every asset their catalog accepts once any position was read", () => {
+    const wanted = missingPositionReads([{ id: "c", capability: "account_collateral", args: {}, observedAt: 1, status: "ok", data: {} }] as never);
+    const earn = catalogEntry("earn_position")!.modelArgs.asset as { values: readonly string[] };
+    const lp = catalogEntry("farm_lp_position")!.modelArgs.asset as { values: readonly string[] };
+    expect(wanted.filter((r) => r.capability === "earn_position").map((r) => r.args.asset)).toEqual([...earn.values]);
+    expect(wanted.filter((r) => r.capability === "farm_lp_position").map((r) => r.args.asset)).toEqual([...lp.values]);
+    expect(wanted.some((r) => r.capability === "account_collateral")).toBe(false);
+  });
+  it("adds nothing when no position was read", () => {
+    expect(missingPositionReads([{ id: "p", capability: "asset_price", args: { asset: "XLM" }, observedAt: 1, status: "ok", data: {} }] as never)).toEqual([]);
+  });
+});

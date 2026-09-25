@@ -1,7 +1,7 @@
 import type { ResearchFact, ResearchView } from "./view";
 import type { CandidateSet } from "./candidates";
 import type { ResearchCapacity } from "./view";
-import { ASSET_IDS } from "../registry/assets";
+import { ASSET_IDS, resolveAssetDef } from "../registry/assets";
 import { blendSupplyApyFromApr } from "../../rate-display";
 import { deploysIntoPosition } from "../workflow/types";
 
@@ -56,7 +56,7 @@ function isDebtTotal(fact: ResearchFact): boolean {
  * spelling, not the wire's), the money by the unit. Nothing is named here by capability.
  */
 function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: string; sentence: string }> {
-  interface Row { asset: string; amounts: string[]; usd: string | null }
+  interface Row { asset: string; amounts: string[]; amountValues: number[]; usdValues: number[]; usd: string | null }
   const groups = new Map<string, { evidenceId: string; name: string; rows: Map<string, Row>; total: string | null }>();
   const money = (value: string) => `$${Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const tokens = (value: string) => Number(value).toLocaleString("en-US", { maximumFractionDigits: 7 });
@@ -72,7 +72,7 @@ function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: strin
     const name = words.slice(1).filter((w) => !fieldWords.includes(w.toLowerCase())).join(" ").trim();
     const key = `${fact.evidenceId}:${list}`;
     const group = groups.get(key) ?? { evidenceId: fact.evidenceId, name: name || list.replaceAll("_", " "), rows: new Map<string, Row>(), total: null };
-    const entry = group.rows.get(`${index}:${asset}`) ?? { asset, amounts: [], usd: null };
+    const entry = group.rows.get(`${index}:${asset}`) ?? { asset, amounts: [], amountValues: [], usdValues: [], usd: null };
     /**
      * Only an amount of the row's own token may become the row's number.
      *
@@ -86,14 +86,33 @@ function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: strin
      * health factor or percentage can never be mistaken for a balance again — including
      * ones nobody has enumerated, because it is decided by how the unit was built.
      */
-    if (fact.unit === "USD") entry.usd = entry.usd ?? money(fact.value);
-    else if (fact.quantity) entry.amounts.push(tokens(fact.value));
+    if (fact.unit === "USD") entry.usdValues.push(Number(fact.value));
+    else if (fact.quantity) { entry.amounts.push(tokens(fact.value)); entry.amountValues.push(Number(fact.value)); }
     group.rows.set(`${index}:${asset}`, entry);
     groups.set(key, group);
   }
   for (const fact of facts) {
     if (!/^total_.*usd$/i.test(fact.sourcePath) || !Number.isFinite(Number(fact.value))) continue;
     for (const group of groups.values()) if (group.evidenceId === fact.evidenceId && group.total === null) group.total = money(fact.value);
+  }
+  /**
+   * Which USD figure is the row's VALUE. A row can carry a per-token price beside its value
+   * (`price_usd`, `value_usd`), and taking the first one printed "XLM 11,903 ($0.22)" (25 Sep,
+   * live): the price. Decided by arithmetic, not by field names: when amount × one USD figure
+   * equals another, the other is the value. A single USD figure is the value only when it is not
+   * that product's factor, which a lone figure cannot show, so it is kept as today.
+   */
+  for (const group of groups.values()) {
+    for (const row of group.rows.values()) {
+      const amount = row.amountValues[0];
+      const usds = row.usdValues.filter(Number.isFinite);
+      let value: number | undefined = usds[0];
+      if (usds.length > 1 && Number.isFinite(amount)) {
+        const product = usds.find((price) => usds.some((other) => other !== price && Math.abs(amount * price - other) <= Math.max(0.01, other * 0.005)));
+        if (product !== undefined) value = usds.find((other) => other !== product && Math.abs(amount * product - other) <= Math.max(0.01, other * 0.005));
+      }
+      row.usd = value !== undefined ? money(String(value)) : null;
+    }
   }
   for (const group of groups.values()) {
     // A row left with neither a token amount nor a USD value has nothing to report. It
@@ -102,10 +121,11 @@ function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: strin
     // still cover what was read.
     for (const [key, row] of group.rows) if (!row.amounts.length && !row.usd) group.rows.delete(key);
   }
+  // One heading per group and one bullet per token: a list, not a run-on sentence (owner, 25 Sep).
   return [...groups.values()].filter((group) => group.rows.size).map((group) => {
-    const rows = [...group.rows.values()].map((row) => `${row.asset} ${row.amounts[0] ?? ""}${row.usd ? ` (${row.usd})` : ""}`.trim());
+    const rows = [...group.rows.values()].map((row) => `- ${`${row.asset} ${row.amounts[0] ?? ""}`.trim()}${row.usd ? ` · ${row.usd}` : ""}`);
     const name = group.name.charAt(0).toUpperCase() + group.name.slice(1);
-    return { evidenceId: group.evidenceId, sentence: `${name}: ${rows.join(", ")}${group.total ? `; total ${group.total}` : ""}.` };
+    return { evidenceId: group.evidenceId, sentence: `${name}${group.total ? ` (total ${group.total})` : ""}:\n${rows.join("\n")}` };
   });
 }
 
@@ -152,6 +172,32 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
    */
   const rowLines = rowSentences(selected.filter((f) => f.venue !== "wallet"));
   sentences.push(...rowLines.map((line) => line.sentence));
+  /**
+   * A position read that returned one amount, not rows (an Earn pool, one LP pair): one bullet
+   * per read, grouped by venue. Only a quantity of the read's own token counts (`quantity`), and
+   * only a held amount, so an empty pool read adds nothing. 25 Sep: Earn and LP were missing.
+   */
+  const rowEvidence = new Set(rowLines.map((line) => line.evidenceId));
+  const flat = new Map<string, ResearchFact>();
+  // An amount in a registry token (Earn's redeemable XLM) beats a receipt token (VXLM) from the same read.
+  const inRegistryToken = (fact: ResearchFact) => resolveAssetDef(fact.unit)?.id === fact.unit;
+  for (const fact of selected) {
+    if (!fact.quantity || rowEvidence.has(fact.evidenceId) || /\[\d+\]/.test(fact.sourcePath)) continue;
+    if (fact.venue === "wallet" || fact.venue === "oracle" || !(Number(fact.value) > 0)) continue;
+    const kept = flat.get(fact.evidenceId);
+    if (!kept || (!inRegistryToken(kept) && inRegistryToken(fact))) flat.set(fact.evidenceId, fact);
+  }
+  // Two reads of one position (the model's own, then the coverage read) report the same amount:
+  // shown once, with the later read's label, which names the pair the way the registry does.
+  const unique = new Map<string, ResearchFact>();
+  for (const fact of flat.values()) unique.set(`${fact.venue}:${fact.value}`, fact);
+  const byVenue = new Map<string, ResearchFact[]>();
+  for (const fact of unique.values()) byVenue.set(fact.venue, [...(byVenue.get(fact.venue) ?? []), fact]);
+  for (const [venue, list] of byVenue) {
+    // Every LP read is tagged with the `aquarius` venue, Soroswap pairs included, so that group is named by what it holds.
+    const heading = venue === "aquarius" ? "LP pools" : venue.charAt(0).toUpperCase() + venue.slice(1);
+    sentences.push(`${heading}:\n${list.map((fact) => `- ${fact.label}: ${amount(fact)}`).join("\n")}`);
+  }
   const debt = selected.find(f => f.sourcePath === "total_debt_usd") ?? selected.find(isDebtTotal);
   if (debt && !rowLines.some((line) => line.evidenceId === debt.evidenceId)) sentences.push(`Your reported margin debt is ${amount(debt)}.`);
   const prices = selected.filter(f => f.venue === "oracle");
@@ -179,7 +225,8 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
     return `${pct.toFixed(2)}% APY`;
   };
   if (rates.length) sentences.push(`Supply APY: ${rates.map(f => `${f.label.replace(" supply APR", "")} ${shownApy(f)}`).join("; ")}.`);
-  return sentences.length ? sentences.join(" ") : null;
+  // A list section needs its own lines; plain sentences still read as one paragraph.
+  return sentences.length ? sentences.join(sentences.some((line) => line.includes("\n")) ? "\n\n" : " ") : null;
 }
 
 /** What the wallet holds that a plan could use, from the wallet read's own rows — spendable where the read states it. */

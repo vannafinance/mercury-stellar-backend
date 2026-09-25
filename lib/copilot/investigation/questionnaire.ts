@@ -213,6 +213,10 @@ function candidateAssets(missing: QuestionnaireMissing, ops: readonly WorkflowOp
   return accepted;
 }
 
+function wadOrNull(value: string | number): bigint | null {
+  try { return decimalWad(String(value)); } catch { return null; }
+}
+
 function positive(value: unknown): string | null {
   if (typeof value !== "string" && typeof value !== "number") return null;
   try {
@@ -256,7 +260,9 @@ function heldInPocketRaw(observations: readonly Observation[], pocket: Pocket, a
         if (!isRecord(row) || row.symbol !== asset) continue;
         // What can be sent, not the raw balance: native XLM keeps a fee reserve, and a Max above
         // it was offered here and then refused by the sizer (25 Sep: 1,608 offered, 1,604 spendable).
-        return rowBalance(row, ["spendable", "balance"]);
+        // A stated spendable wins even at zero; the balance is used only when spendable is absent.
+        const spendable = typeof row.spendable === "string" || typeof row.spendable === "number" ? wadOrNull(row.spendable) : null;
+        return spendable !== null ? positive(row.spendable) : rowBalance(row, ["balance"]);
       }
       return null;
     }
@@ -697,7 +703,11 @@ function writeBalance(observations: readonly Observation[], pocket: Pocket, asse
   if (pocket === "wallet") {
     const assets = Array.isArray(target.data.assets) ? target.data.assets : [];
     const row = assets.find((item) => isRecord(item) && item.symbol === asset);
-    if (isRecord(row)) row.balance = amount;
+    if (isRecord(row)) {
+      row.balance = amount;
+      // The projection is already net of the reserve, so a later read must not see the old spendable.
+      if (row.spendable !== undefined) row.spendable = amount;
+    }
     else assets.push({ symbol: asset, balance: amount, decimals: 7, status: "ok" });
     target.data.assets = assets;
   } else {
