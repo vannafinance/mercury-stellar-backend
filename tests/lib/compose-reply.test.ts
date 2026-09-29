@@ -79,6 +79,8 @@ describe("composing a reply", () => {
     expect(composable(view({ understanding: { intent: "strategy", objective: "x", constraints: [], borrowing: "unspecified" } }))).toBe(false);
     expect(composable(view({ facts: [] }))).toBe(false);
     expect(composable(view({ proposalCandidateId: "requested_actions" }))).toBe(false);
+    // The contract-basis health read keeps its own reply: the composer must never state 1.83.
+    expect(composable(view({ facts: [...FACTS, fact("e0:posted_health_factor", "Posted-collateral health factor", "1.83", "HF")] }))).toBe(false);
   });
 
   it("is off when the flag says so", async () => {

@@ -1,5 +1,6 @@
 import { copilotConfig } from "../config";
 import { generateInvestigationJson } from "../vertex";
+import { healthOnContractBasis } from "./answer";
 import { bindSegments, formatFactValue } from "./answer-prose";
 import type { ReplyBlock, ReplySegment, ResearchFact, ResearchView } from "./view";
 
@@ -40,6 +41,9 @@ export function composable(view: ResearchView): boolean {
   return view.status === "researched"
     && view.understanding?.intent === "answer"
     && view.facts.length > 0
+    // Live, 29 Sep: given the contract-basis read, the model told the user "1.83" — the figure
+    // the owner ruled out. Those facts are never handed to the composer.
+    && !healthOnContractBasis(view.facts)
     && !view.warnings.length
     && !view.questionnaire
     && !view.pendingWrite

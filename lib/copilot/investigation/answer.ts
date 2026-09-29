@@ -129,6 +129,15 @@ function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: strin
   });
 }
 
+/**
+ * The health read came from the risk engine, not the Margin page: its ratio and collateral are
+ * the contract's basis, which the user is not told as their health factor (owner, 29 Sep).
+ * `factualAnswer` words that case itself; anything else composing an answer must stand aside.
+ */
+export function healthOnContractBasis(facts: readonly ResearchFact[]): boolean {
+  return facts.some((fact) => fact.sourcePath === "posted_health_factor");
+}
+
 /** Conversational factual answers use audited fields; model prose cannot invent balances. */
 export function factualAnswer(facts: readonly ResearchFact[], request?: string): string | null {
   const amount = (fact: ResearchFact) => {
