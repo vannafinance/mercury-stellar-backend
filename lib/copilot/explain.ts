@@ -107,10 +107,11 @@ export function groundedReadSentence(tool: string, data: Record<string, unknown>
       const col = num(pick(data, ["collateral_usd", "total_collateral_usd", "collateral", "gross_collateral_usd"]));
       const debt = num(pick(data, ["debt_usd", "total_debt_usd", "debt"]));
       const ltv = num(pick(data, ["ltv_ratio", "ltv"]));
-      const lt = num(pick(data, ["liquidation_threshold"])) ?? 0.909;
       let hf = num(pick(data, ["health_factor", "hf", "avg_health_factor"]));
+      // The product's HF is the plain ratio (lib/margin-health.ts). `liquidation_threshold`
+      // is an LTV bound (~0.909 = 1/1.1); multiplying by it reported HF / 1.1.
       if (hf == null && col != null && debt != null && debt > 0) {
-        hf = (col * lt) / debt;
+        hf = col / debt;
       } else if (hf == null && (debt == null || debt === 0)) {
         hf = null; // ∞
       }
@@ -378,9 +379,8 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
   const col = num(pick(data, ["collateral_usd", "total_collateral_usd", "total_value_usd"]));
   const debt = num(pick(data, ["debt_usd", "total_debt_usd"]));
   const ltv = num(pick(data, ["ltv_ratio", "ltv"]));
-  const lt = num(pick(data, ["liquidation_threshold"])) ?? 0.909;
   let hf = num(pick(data, ["health_factor", "hf", "avg_health_factor"]));
-  if (hf == null && col != null && debt != null && debt > 0) hf = (col * lt) / debt;
+  if (hf == null && col != null && debt != null && debt > 0) hf = col / debt; // plain ratio, as above
   if (hf != null) out["health factor"] = Number(hf.toFixed(3));
   else if (debt === 0 || (debt == null && col != null)) out["health factor"] = "∞";
   if (col != null) out["collateral usd"] = Number(col.toFixed(2));

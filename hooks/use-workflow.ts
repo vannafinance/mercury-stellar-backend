@@ -20,6 +20,11 @@ async function postJson(url: string, body: unknown, signal: AbortSignal): Promis
   return payload as WorkflowView;
 }
 
+/** A plan that will do nothing more on its own: finished, cancelled or refused before it ran. */
+export function finished(view: Pick<WorkflowView, "status">): boolean {
+  return view.status === "completed" || view.status === "cancelled" || view.status === "blocked";
+}
+
 function running(view: WorkflowView): boolean {
   return view.status === "approved" || view.status === "running";
 }
@@ -72,6 +77,16 @@ export function useWorkflow(wallet: string | null = null) {
         const response = await fetch(`/api/copilot/workflow/${id}`, { headers, signal: controller.signal, cache: "no-store" });
         if (!response.ok) return;
         const view = await response.json() as WorkflowView;
+        /**
+         * A reload starts a new chat (owner, 25 Sep), so a run that already finished is not
+         * put back on the blank screen: its receipt lives in its own conversation in History.
+         * A run still in progress IS shown, because hiding a transaction mid-flight would leave
+         * the user unable to see it land or sign its next step.
+         */
+        if (finished(view)) {
+          try { if (storageKey) localStorage.removeItem(storageKey); } catch { /* storage unavailable */ }
+          return;
+        }
         if (!controller.signal.aborted) setState({ view, loading: false, error: null, restored: true });
       } catch { /* user can start a fresh investigation */ }
     })();

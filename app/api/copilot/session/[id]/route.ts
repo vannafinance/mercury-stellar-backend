@@ -29,6 +29,7 @@ function isReceipt(value: unknown): value is ExecutionReceiptSnapshot {
     if (!value || typeof value !== "object") return false;
     const step = value as Record<string, unknown>;
     return typeof step.operation === "string" && WORKFLOW_OPERATIONS.has(step.operation)
+      && (step.label == null || typeof step.label === "string" && step.label.length <= 200)
       && typeof step.asset === "string" && step.asset.length > 0 && step.asset.length <= 128
       && typeof step.amount === "string" && step.amount.length > 0 && step.amount.length <= 128
       && typeof step.status === "string" && STEP_STATUSES.has(step.status as StepStatus)

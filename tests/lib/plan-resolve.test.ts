@@ -683,14 +683,17 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
   it.each([
     ["borrowing forbidden", { borrowing: "forbidden" as const }, [{ op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } }], "borrow XLM", "you said no new borrowing"],
     ["floor at the liquidation line", { capacity: { ...CAPACITY, floor: "1.1" } }, [{ op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } }], null, /floor at or below 1.1 is the liquidation line/],
-    ["Blend supply from the wallet directly", {}, [{ op: "supply_blend", asset: "XLM", sizing: { kind: "all_idle" } }], "supply blend XLM", /deposit the idle tokens as collateral first/],
+    // 23 Sep (owner): "supply my idle XLM to Blend" is no longer refused; it becomes deposit +
+    // supply, as a repay from idle already was. Pinned in idle-into-account-ops.test.ts.
     ["a literal Blend supply with nothing put in before it", { messages: ["supply 100 XLM to Blend"] }, [{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "supply 100 XLM" } }], "supply blend XLM", /add that leg before it/],
     ["a literal Blend supply larger than the deposit before it", { messages: ["deposit 100 XLM and supply 200 XLM to Blend"] }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } }, { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "200", sourceQuote: "supply 200 XLM" } }], "supply blend XLM", "only 100 XLM is in the margin account after the legs before it"],
     ["nothing idle", {}, [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_idle" } }], "lend AQUSDC", "AQUSDC is not in the connected wallet"],
     ["previous_leg across assets", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }, { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } }], "supply blend BLUSDC", /preceding leg in the same asset/],
     ["margin position not read", { capacity: null }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin position was not read/],
     ["no margin account", { scope: { ...SCOPE, smartAccount: null } }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin account is needed/],
-    ["no price read", {}, [{ op: "lend", asset: "AQUA", sizing: { kind: "all_idle" } }], "lend AQUA", "no AQUA price was read this investigation"],
+    // 23 Sep: AQUA has no Earn pool, which is now the reason given for it (the registry is checked first).
+    // The missing-price path is exercised with an asset that is held and has a pool, minus its price read.
+    ["no price read", { observations: OBSERVATIONS.filter((o) => !(o.capability === "asset_price" && o.args.asset === "XLM")) }, [{ op: "lend", asset: "XLM", sizing: { kind: "all_idle" } }], "lend XLM", "no XLM price was read this investigation"],
     ["to_floor on a deposit", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "to_floor" } }], "deposit collateral XLM", /only a withdraw or a borrow can be sized to the health-factor floor/],
   ])("rejects with a readable reason: %s", (_name, over, legs, leg, reason) => {
     const { candidates, rejected } = resolvePlans([plan("Try", legs as ProposedPlan["legs"])], ctx(over as Partial<Parameters<typeof resolvePlans>[1]>));
@@ -1245,7 +1248,7 @@ describe("resolvePlans — redeem and withdraw", () => {
     ]);
     expect(c.steps![0].args).toEqual({ symbol: "AQUSDC", redeem_all: true, lender: SCOPE.trader });
     expect(c.steps![0].sizing).toEqual({ basis: "whole_position", read: "earn_position" });
-    expect(c.steps![0].label).toMatch(/Redeem 4918.2651397 AQUSDC vTokens from Earn \(≈ 5000.78/);
+    expect(c.steps![0].label).toMatch(/Redeem 4918.2651397 VAQUSDC from Earn \(≈ 5000.78/);
     expect(c.steps![1].args).toEqual({ smart_account: SCOPE.smartAccount, symbol: "AQUSDC", amount: "5000.786863", trader: SCOPE.trader });
     // One sum of money passes through two legs: deployed is what lands, not twice that.
     expect(Number(c.amountUsd)).toBeCloseTo(5000.79, 1);
@@ -1254,12 +1257,46 @@ describe("resolvePlans — redeem and withdraw", () => {
     expect(c.borrows).toBe(false);
   });
 
+  it("uses vtoken_symbol from the mocked on-chain read in the redeem step label", () => {
+    const customEarn = withEarn.map((o) =>
+      o.capability === "earn_position"
+        ? { ...o, data: { ...(o.data as Record<string, unknown>), vtoken_symbol: "vXYZ" } }
+        : o
+    );
+    const { candidates, rejected } = resolvePlans([plan("Redeem custom vToken", [
+      { op: "redeem", asset: "AQUSDC", sizing: { kind: "all_position" } },
+    ])], ctx({ observations: customEarn }));
+    expect(rejected).toEqual([]);
+    expect(candidates[0].steps![0].label).toMatch(/^Redeem 4918.2651397 vXYZ from Earn \(≈ 5000.78/);
+  });
+
+  it("falls back to '{tokens} {asset} vTokens' when the on-chain read carried no vtoken_symbol", () => {
+    const noSymbolEarn = withEarn.map((o) => {
+      if (o.capability !== "earn_position") return o;
+      const { vtoken_symbol: _, ...restData } = o.data as Record<string, unknown>;
+      return { ...o, data: restData };
+    });
+    const { candidates, rejected } = resolvePlans([plan("Redeem fallback", [
+      { op: "redeem", asset: "AQUSDC", sizing: { kind: "all_position" } },
+    ])], ctx({ observations: noSymbolEarn }));
+    expect(rejected).toEqual([]);
+    expect(candidates[0].steps![0].label).toMatch(/^Redeem 4918.2651397 AQUSDC vTokens from Earn \(≈ 5000.78/);
+  });
+
   it("converts a literal redeem amount from the underlying the user named into vTokens", () => {
     const { candidates } = resolvePlans([plan("Redeem some", [
       { op: "redeem", asset: "AQUSDC", sizing: { kind: "literal", amount: "1000", sourceQuote: "redeem 1000 AQUSDC" } },
     ])], ctx({ observations: withEarn, messages: ["redeem 1000 AQUSDC from earn"] }));
     // 1000 / 5000.79 of the position → 983.5 vTokens.
     expect(Number(candidates[0].steps![0].amount)).toBeCloseTo(983.50, 1);
+  });
+
+  it("formats user-facing refusal amounts to the token's own decimals rather than 18-decimal WAD", () => {
+    const { rejected } = resolvePlans([plan("Redeem too much", [
+      { op: "redeem", asset: "AQUSDC", sizing: { kind: "literal", amount: "6000", sourceQuote: "redeem 6000 AQUSDC" } },
+    ])], ctx({ observations: withEarn, messages: ["redeem 6000 AQUSDC from earn"] }));
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toBe("only 5000.786863 AQUSDC is redeemable from Earn");
   });
 
   it("withdraws the posted collateral against the stated floor, and refuses when it would breach it", () => {
@@ -1413,6 +1450,51 @@ describe("previous_leg follows the asset, not the line above", () => {
      */
     expect(candidates).toHaveLength(0);
     expect(rejected).not.toHaveLength(0);
+  });
+});
+
+/**
+ * One "2x" written once covers every borrow the same deposit funds.
+ *
+ * "borrow 2x BLUSDC and SOUSDC" was refused on dev for the second asset: the model quoted
+ * only "SOUSDC" for that leg, and the quote had no "2". The owner's reading (24 Sep) is one
+ * 2x in total, split between the assets, so the multiple is anchored once per group of
+ * siblings. A sibling can lend its anchor only for the SAME multiple.
+ */
+describe("a leverage multiple is anchored once for the borrows one deposit funds", () => {
+  const messages = ["deposit 100 XLM and borrow 2x BLUSDC and XLM"];
+  const legs = (second: { multiple: string; sourceQuote: string }): ProposedPlan["legs"] => [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x BLUSDC" } },
+    { op: "borrow", asset: "XLM", sizing: { kind: "leverage", ...second } },
+  ];
+
+  it("sizes the second borrow from the multiple the first one quoted, split between them", () => {
+    const { candidates, rejected } = resolvePlans([plan("Dual borrow", legs({ multiple: "2", sourceQuote: "XLM" }))], ctx({ messages }));
+    expect(rejected[0]?.reason ?? "").not.toMatch(/leverage does not appear/);
+    expect(candidates).toHaveLength(1);
+    // One ceiling of deposit x (2 - 1), shared: the BLUSDC borrow is half of what the same
+    // 2x buys alone, and the XLM borrow is half the deposit (a 1x ceiling, in XLM).
+    const alone = resolvePlans([plan("Single borrow", legs({ multiple: "2", sourceQuote: "XLM" }).slice(0, 2))], ctx({ messages }));
+    const single = Number(alone.candidates[0].steps![1].amount);
+    const steps = candidates[0].steps!;
+    expect(Number(steps[1].amount)).toBeCloseTo(single / 2, 5);
+    expect(Number(steps[2].amount)).toBeCloseTo(50, 5);
+  });
+
+  it("does not let a sibling's quote anchor a different multiple", () => {
+    const { candidates, rejected } = resolvePlans([plan("Dual borrow", legs({ multiple: "3", sourceQuote: "XLM" }))], ctx({ messages }));
+    expect(candidates).toHaveLength(0);
+    expect(rejected[0]?.reason).toMatch(/the 3x leverage does not appear in your request/);
+  });
+
+  it("still refuses a lone borrow whose quote states no multiple", () => {
+    const lone: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+      { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "BLUSDC" } },
+    ];
+    const { rejected } = resolvePlans([plan("Lone borrow", lone)], ctx({ messages: ["deposit 100 XLM and borrow BLUSDC"] }));
+    expect(rejected[0]?.reason).toMatch(/the 2x leverage does not appear in your request/);
   });
 });
 

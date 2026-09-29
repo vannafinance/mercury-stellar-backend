@@ -22,8 +22,9 @@ describe("Flash research adapter", () => {
     const signal = new AbortController().signal;
     vi.mocked(generateInvestigationJson).mockResolvedValue({ kind: "clarify", question: "Which objective?" });
     await model(turn, signal);
+    const { capabilities: _capabilities, ...turnForModel } = turn;
     expect(generateInvestigationJson).toHaveBeenCalledWith(
-      "gemini-3.8-flash", expect.stringContaining("Permission to borrow is optional"), JSON.stringify(turn), signal,
+      "gemini-3.8-flash", expect.stringContaining("Permission to borrow is optional"), JSON.stringify(turnForModel), signal,
       "LOW",
       expect.arrayContaining([
         expect.objectContaining({ name: "research_complete" }),

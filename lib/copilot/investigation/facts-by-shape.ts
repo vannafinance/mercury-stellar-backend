@@ -15,7 +15,7 @@
  * `<field>_untrusted`. Never invent a unit.
  */
 
-import { ASSET_IDS, assetDef, assetForVenueSpelling, type AssetDef } from "../registry/assets";
+import { ASSET_IDS, assetDef, assetForVenueSpelling, lpVenues, type AssetDef } from "../registry/assets";
 import { isRecord } from "./decision";
 import type { Observation } from "./types";
 import type { ResearchFact } from "./view";
@@ -195,9 +195,9 @@ const VENUE_LABEL: Partial<Record<Venue, string>> = { earn: "Earn", blend: "Blen
  * "XLM/USDC Aquarius LP shares", "Total debt". The parent collection name is kept
  * when it says what the number is a part of ("XLM collateral value").
  */
-function labelFor(capability: string, identity: string | null, venue: Venue, parents: readonly string[], field: string): string {
+function labelFor(capability: string, identity: string | null, venue: Venue, parents: readonly string[], field: string, venueName?: string): string {
   const parent = parents.length ? parents[parents.length - 1] : null;
-  const venueWord = VENUE_LABEL[venue];
+  const venueWord = venueName ?? VENUE_LABEL[venue];
   /**
    * The parent collection's name is kept only for the words that add meaning: venue
    * words are already in the label, a symbol-keyed record (`prices.XLM`) is the identity,
@@ -262,6 +262,10 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
     const informational = rowInformational(node);
     const venue = venueFrom(observation.capability, segments, node);
     const here = identityOf(node, identity, requested, venue);
+    // A row naming a registry LP venue ("soroswap") is labelled by it; the fact's venue type has
+    // no Soroswap, and "XLM/SOUSDC Aquarius LP shares" named the wrong DEX (25 Sep, live).
+    const lpName = typeof node.venue === "string" && (lpVenues() as readonly string[]).includes(node.venue.toLowerCase())
+      ? node.venue.charAt(0).toUpperCase() + node.venue.slice(1).toLowerCase() : undefined;
     for (const [key, raw] of Object.entries(node)) {
       if (facts.length >= MAX_FACTS) return;
       if (depth === 0 && consumed.has(key)) continue;
@@ -283,20 +287,20 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
       if (typeof raw === "boolean") {
         if (key.startsWith("has_") || key === "allowed" && depth === 0) continue;
         // A yes/no is never an amount of anything.
-        facts.push({ path: childPath, label: labelFor(observation.capability, here, venue, segments, key.replace(/^is_/, "")), value: raw ? "yes" : "no", unit: "", venue, quantity: false });
+        facts.push({ path: childPath, label: labelFor(observation.capability, here, venue, segments, key.replace(/^is_/, ""), lpName), value: raw ? "yes" : "no", unit: "", venue, quantity: false });
         continue;
       }
       const pct = percentString(raw);
       if (pct !== null) {
         const unit = /apy/.test(key) ? "% APY" : /apr/.test(key) ? "% APR" : "%";
-        push(childPath, labelFor(observation.capability, here, venue, segments, key), pct, unit, venue);
+        push(childPath, labelFor(observation.capability, here, venue, segments, key, lpName), pct, unit, venue);
         continue;
       }
       const meta = unitFor(key, here, node, requested, venue);
       if (!meta) continue;
       const value = decimalOf(raw);
       if (value === null) continue;
-      push(childPath, labelFor(observation.capability, here, venue, segments, meta.field), value, meta.unit, venue, meta.quantity === true);
+      push(childPath, labelFor(observation.capability, here, venue, segments, meta.field, lpName), value, meta.unit, venue, meta.quantity === true);
     }
   };
 

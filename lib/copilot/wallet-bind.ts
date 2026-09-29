@@ -15,12 +15,10 @@
  * the gateway ships no CORS headers, so the browser cannot make that call — which is
  * the only reason the "open the authorization page" detour existed at all.
  *
- * A server-to-server POST has no CORS to satisfy, so this module makes step 3 from
- * the Next server instead. The gateway's register route is deliberately public — its
- * guards are the unguessable single-use nonce and the server-side
- * `verifyQuorumIsSigner` on the main service, not the caller's identity — so
- * forwarding it changes no security property. The main service still decides
- * success, still re-verifies against Privy, and still fails closed.
+ * Step 3 normally goes through the authenticated MCP channel. The gateway POST stays
+ * as a temporary compatibility path for an MCP deployment that has not registered
+ * the action yet. The origin lookup below is used only for that path and for reading
+ * the signer id advertised by the same connect page.
  *
  * ## What this module refuses to do
  *
@@ -31,6 +29,7 @@
  */
 
 import { copilotConfig } from "./config";
+import { MCPError, type MCPClient } from "./mcp-client";
 
 /** How long a minted connect request's origin stays resolvable. Matches the request TTL. */
 const ORIGIN_TTL_MS = 30 * 60_000;
@@ -62,7 +61,8 @@ function configuredOrigin(): string | null {
 }
 
 /**
- * Record where a freshly minted connect request came from.
+ * Record where a freshly minted connect request came from. This supports resolving
+ * the public signer id and the temporary gateway compatibility path.
  *
  * Derived from the Sign Service's own `connect_url`, so it needs no configuration
  * and cannot point anywhere the Sign Service did not name.
@@ -184,15 +184,57 @@ export type RegisterBindResult =
       expired: boolean;
     };
 
-/**
- * Complete step 3: tell the Sign Service the user has authorized the quorum.
- *
- * Sends only public data — `request_id` and the G-address — exactly the body the
- * connect page sends. No key material, no assertion: the main service re-derives the
- * identity from the sub it stamped at start, which is why a hostile caller who
- * guessed a request id still cannot bind a wallet to someone else.
- */
-export async function registerWalletBind(opts: {
+const REGISTER_FAILURE_MESSAGE =
+  "The wallet-authorization service could not complete the request.";
+
+function safeErrorCode(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const code = value.trim().toLowerCase();
+  return /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : null;
+}
+
+/** Older composite dispatchers report an unavailable action as this structured shape. */
+function isRegisterActionAbsent(result: Record<string, unknown>): boolean {
+  const code = safeErrorCode(result.code);
+  if (code === "unknown_action" || code === "unknown_tool" || code === "tool_not_found") {
+    return true;
+  }
+
+  // Before the dispatcher returned a distinct code, its missing-action result was the
+  // only `invalid_input` response with a top-level message and no operation status.
+  // This call supplies both required arguments, so a service refusal has a status and
+  // an error code instead and cannot take this compatibility path.
+  return result.error === "invalid_input" && !result.status && typeof result.message === "string";
+}
+
+function isRegisterToolAbsentError(error: unknown): boolean {
+  if (!(error instanceof MCPError)) return false;
+  return ["unknown_action", "unknown_tool", "tool_not_found"].includes(error.code ?? "");
+}
+
+function registerFailure(code: unknown, expiredStatus?: number): RegisterBindResult {
+  const safeCode = safeErrorCode(code) ?? "register_failed";
+  return {
+    ok: false,
+    code: safeCode,
+    message: REGISTER_FAILURE_MESSAGE,
+    expired: expiredStatus === 410 || safeCode === "expired",
+  };
+}
+
+function registerSuccess(result: Record<string, unknown>): RegisterBindResult {
+  const bindingError = safeErrorCode(result.identity_binding_error);
+  return {
+    ok: true,
+    bindingWritten:
+      typeof result.identity_binding_written === "boolean"
+        ? result.identity_binding_written
+        : null,
+    ...(bindingError ? { bindingError } : {}),
+  };
+}
+
+async function registerViaGateway(opts: {
   requestId: string;
   walletAddress: string;
   origin: string;
@@ -203,9 +245,7 @@ export async function registerWalletBind(opts: {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // The gateway 403s an absent Origin only when CONNECT_ORIGIN_ALLOWLIST is
-        // set. Sent when we know our own public origin so that deployment keeps
-        // working; harmless when the allowlist is empty.
+        // The compatibility gateway still enforces its browser-origin allowlist.
         ...(copilotConfig.publicOrigin ? { Origin: copilotConfig.publicOrigin } : {}),
       },
       body: JSON.stringify({
@@ -214,45 +254,66 @@ export async function registerWalletBind(opts: {
       }),
       signal: AbortSignal.timeout(20_000),
     });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return {
-      ok: false,
-      code: "gateway_unreachable",
-      message: `Could not reach the wallet-authorization service (${msg}).`,
-      expired: false,
-    };
-  }
-
-  if (res.ok) {
-    // Read the outcome the service reports rather than inferring it from the status.
-    // See RegisterBindResult.bindingWritten: a 200 alone does not mean a row was written.
-    try {
-      const j = (await res.json()) as {
-        identity_binding_written?: unknown;
-        identity_binding_error?: unknown;
-      };
-      return {
-        ok: true,
-        bindingWritten:
-          typeof j.identity_binding_written === "boolean" ? j.identity_binding_written : null,
-        ...(typeof j.identity_binding_error === "string"
-          ? { bindingError: j.identity_binding_error }
-          : {}),
-      };
-    } catch {
-      return { ok: true, bindingWritten: null };
-    }
-  }
-
-  let code = `http_${res.status}`;
-  let message = `HTTP ${res.status}`;
-  try {
-    const j = (await res.json()) as { error?: string; message?: string };
-    code = j.error || code;
-    message = j.message || j.error || message;
   } catch {
-    /* keep defaults */
+    return registerFailure("gateway_unreachable");
   }
-  return { ok: false, code, message, expired: res.status === 410 };
+
+  let payload: Record<string, unknown> = {};
+  try {
+    const parsed = (await res.json()) as unknown;
+    if (parsed && typeof parsed === "object") payload = parsed as Record<string, unknown>;
+  } catch {
+    /* A malformed body is represented as a generic failure below. */
+  }
+
+  if (res.ok) return registerSuccess(payload);
+  return registerFailure(payload.error, res.status);
+}
+
+export function registerWalletBind(
+  mcp: MCPClient,
+  opts: {
+    requestId: string;
+    walletAddress: string;
+    origin?: string | null;
+  },
+  userId: string,
+): Promise<RegisterBindResult> {
+  if (!userId) return Promise.resolve(registerFailure("invalid_input"));
+  return registerWalletBindViaMcp(mcp, opts, userId);
+}
+
+/**
+ * Complete step 3 through the authenticated MCP register action. An older server that
+ * reports the action itself as absent uses the existing gateway request as a temporary
+ * compatibility path. Other MCP failures never fall back.
+ */
+async function registerWalletBindViaMcp(
+  mcp: MCPClient,
+  opts: { requestId: string; walletAddress: string; origin?: string | null },
+  userId: string,
+): Promise<RegisterBindResult> {
+  let result: Record<string, unknown>;
+  try {
+    result = await mcp.call(
+      "vanna_connect_wallet_register",
+      { request_id: opts.requestId, wallet_address: opts.walletAddress },
+      userId,
+    );
+  } catch (e) {
+    if (isRegisterToolAbsentError(e)) {
+      return opts.origin
+        ? registerViaGateway({ ...opts, origin: opts.origin })
+        : registerFailure("register_tool_unavailable");
+    }
+    return registerFailure(e instanceof MCPError ? e.code : "register_failed");
+  }
+
+  if (isRegisterActionAbsent(result)) {
+    return opts.origin
+      ? registerViaGateway({ ...opts, origin: opts.origin })
+      : registerFailure("register_tool_unavailable");
+  }
+  if (result.status === "ok" || result.status === "connected") return registerSuccess(result);
+  return registerFailure(result.error, result.http_status === 410 ? 410 : undefined);
 }

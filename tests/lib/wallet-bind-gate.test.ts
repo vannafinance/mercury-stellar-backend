@@ -70,10 +70,11 @@ let realFetch: typeof fetch;
 /** What the fake Sign Service (behind MCP) should answer for enable_auto_sign. */
 let bound = false;
 
-/** Non-MCP HTTP the copilot server made: the gateway page read + register forward. */
+/** Non-MCP HTTP: signer-page read plus register only when the MCP action is absent. */
 let gatewayCalls: Array<{ url: string; method: string; body: string; origin: string | null }> = [];
-/** Status the fake gateway's register proxy returns. */
+/** Status the fake MCP register action returns. */
 let registerStatus = 200;
+let registerActionAvailable = true;
 
 function structured(payload: unknown) {
   return new Response(
@@ -221,6 +222,31 @@ function installFakeNetwork() {
         poll_schedule_seconds: [2, 4, 8, 16, 32],
       });
     }
+    if (name === "vanna_wallet" && action === "connect_register") {
+      if (!registerActionAvailable) {
+        return structured({
+          error: "invalid_input",
+          code: "unknown_action",
+          message: "The older dispatcher does not expose this action.",
+        });
+      }
+      if (parsed.params?.arguments?.kwargs?.request_id === "req_never_started_by_us") {
+        return structured({ status: "error", error: "unknown_request" });
+      }
+      if (registerStatus === 200) {
+        bound = true;
+        return structured({
+          status: "ok",
+          connected: true,
+          identity_binding_written: true,
+        });
+      }
+      return structured({
+        status: "error",
+        error: registerStatus === 410 ? "expired" : "quorum_not_signer",
+        http_status: registerStatus,
+      });
+    }
     if (name === "vanna_wallet" && action === "connect_status") {
       // Consent completed → the Sign Service wrote the binding at register.
       bound = true;
@@ -303,6 +329,7 @@ beforeEach(async () => {
   gatewayCalls = [];
   bound = false;
   registerStatus = 200;
+  registerActionAvailable = true;
   installFakeNetwork();
   const { resetMcpClient } = await import("@/lib/copilot/mcp-client");
   resetMcpClient();
@@ -512,15 +539,11 @@ describe("the in-app silent bind is the primary path", () => {
       retry_action: "use_defaults",
     });
 
-    const register = gatewayCalls.filter(
-      (c) => c.url === `${GATEWAY}/wallets/connect/register` && c.method === "POST",
-    );
-    expect(register).toHaveLength(1);
-    // Only public data crosses — the same body the connect page sends.
-    expect(JSON.parse(register[0].body)).toEqual({
-      request_id: REQUEST_ID,
-      walletAddress: TRADER,
-    });
+    const [register] = callsTo("vanna_wallet", "connect_register");
+    expect(register).toBeDefined();
+    expect(register.kwargs).toEqual({ request_id: REQUEST_ID, wallet_address: TRADER });
+    expect(register.assertion).toBe(PRIVY_TOKEN);
+    expect(gatewayCalls.some((c) => c.url === `${GATEWAY}/wallets/connect/register`)).toBe(false);
 
     expect(done.kind).toBe("answer");
     expect(done.message).toMatch(/auto-sign/i);
@@ -543,6 +566,28 @@ describe("the in-app silent bind is the primary path", () => {
     // Fails CLOSED: never reached the enable, so no session exists.
     expect(callsTo("vanna_sign", "enable_auto_sign")).toHaveLength(1); // only the first probe
     expect(callsTo("vanna_wallet", "connect_status")).toHaveLength(0);
+    expect(gatewayCalls.some((c) => c.url === `${GATEWAY}/wallets/connect/register`)).toBe(false);
+  });
+
+  it("falls back to the gateway only when the MCP register action is absent", async () => {
+    registerActionAvailable = false;
+    const started = await postCopilot({ action: "use_defaults" });
+    const out = await postCopilot({
+      action: "bind_register",
+      request_id: started.wallet_bind?.request_id,
+      wallet_address: TRADER,
+      retry_action: "use_defaults",
+    });
+
+    const gatewayRegister = gatewayCalls.filter(
+      (c) => c.url === `${GATEWAY}/wallets/connect/register` && c.method === "POST",
+    );
+    expect(gatewayRegister).toHaveLength(1);
+    expect(JSON.parse(gatewayRegister[0].body)).toEqual({
+      request_id: REQUEST_ID,
+      walletAddress: TRADER,
+    });
+    expect(out.kind).toBe("answer");
   });
 
   it("an expired request is reported as expired, not as a generic failure", async () => {
@@ -610,6 +655,7 @@ describe("the identity-scoped binding read must carry the identity", () => {
   it("connect_start is never treated as an anonymous read", async () => {
     const { callNeedsUserToken } = await import("@/lib/copilot/user-context");
     expect(callNeedsUserToken("vanna_connect_wallet_start")).toBe(true);
+    expect(callNeedsUserToken("vanna_connect_wallet_register")).toBe(true);
   });
 
   it("plain chain reads still stay on the shared M2M credential", async () => {
@@ -620,7 +666,7 @@ describe("the identity-scoped binding read must carry the identity", () => {
 });
 
 describe("the transport maps the connect tools onto the consolidated API", () => {
-  it("connect_start / connect_status become vanna_wallet actions", async () => {
+  it("connect tools become vanna_wallet actions with their exact arguments", async () => {
     const { toServerCall } = await import("@/lib/copilot/mcp-client");
     expect(toServerCall("vanna_connect_wallet_start", {})).toEqual({
       name: "vanna_wallet",
@@ -629,6 +675,16 @@ describe("the transport maps the connect tools onto the consolidated API", () =>
     expect(toServerCall("vanna_connect_wallet_status", { request_id: REQUEST_ID })).toEqual({
       name: "vanna_wallet",
       arguments: { action: "connect_status", kwargs: { request_id: REQUEST_ID } },
+    });
+    expect(toServerCall("vanna_connect_wallet_register", {
+      request_id: REQUEST_ID,
+      wallet_address: TRADER,
+    })).toEqual({
+      name: "vanna_wallet",
+      arguments: {
+        action: "connect_register",
+        kwargs: { request_id: REQUEST_ID, wallet_address: TRADER },
+      },
     });
   });
 });

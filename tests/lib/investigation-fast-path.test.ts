@@ -151,7 +151,7 @@ describe("researchTurn fast path", () => {
     expect(mocks.resolveInvestigationScope).not.toHaveBeenCalled();
   });
 
-  it("answers health from liquidation_snapshot without waiting on a hung snapshot", async () => {
+  it("answers without waiting on a hung snapshot, and never states the contract figure as the HF", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
     mocks.computeAccountPosition.mockResolvedValue(null);
     const mcp = {
@@ -173,8 +173,9 @@ describe("researchTurn fast path", () => {
       expect.objectContaining({ smart_account: SCOPE.smartAccount }),
       SCOPE.trader,
     );
-    expect(result.message).toMatch(/3\.42/);
-    expect(result.message).toMatch(/posted collateral/);
+    // Owner, 29 Sep: the HF told is the Margin page's; with that read hung, no other number stands in.
+    expect(result.message).toMatch(/could not read a live figure/);
+    expect(result.message).not.toMatch(/3\.42/);
     expect(result.message).not.toMatch(/can read higher/);
     expect(result.executionAllowed).toBe(false);
   });
@@ -296,17 +297,16 @@ describe("researchTurn fast path", () => {
     expect(result.status).toBe("researched");
   });
 
-  it("offers a standing-order mandate and does not execute", async () => {
+  it("stores no standing-order mandate from wording and executes nothing (25 Sep)", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
     mocks.computeAccountPosition.mockResolvedValue(null);
     const result = await researchTurn(
       { message: "when my health factor drops below 1.2 repay 10 XLM", wallet: SCOPE.trader, continuation: null },
-      deps({}),
+      deps({ mcp: { call: vi.fn(async () => ({})) }, model: async () => ({ kind: "blocked", reason: "not now" }) }),
     );
-    expect(result.status).toBe("blocked");
-    expect(result.message).toContain(STANDING_ORDER_OFFER);
+    expect(result.message).not.toContain(STANDING_ORDER_OFFER);
+    expect(result.message).not.toMatch(/Mandate /);
     expect(result.executionAllowed).toBe(false);
-    expect(result.message).toMatch(/Mandate /);
   });
 
   it("sizes a stated write from live reads and refuses it with the wallet's own figures when nothing is spendable (14 Sep: 'lend 1 xlm to earn')", async () => {
@@ -370,6 +370,43 @@ describe("researchTurn fast path", () => {
     expect(result.message).toMatch(/^Lend 1 XLM to Earn\. Approve to run this step\./);
     expect(result.candidates?.feasible ?? []).toEqual([]);
     expect(result.executionAllowed).toBe(false);
+  });
+
+  it("does not nominate requested_actions when a typo was assumed via near match", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    mocks.computeAccountPosition.mockResolvedValue(null);
+    const mcp = { call: vi.fn(async (tool: string) => {
+      if (tool === "vanna_get_wallet_balance") return { assets: [
+        { symbol: "BLUSDC", balance: "100", spendable: "100", min_balance: "0", status: "ok" },
+      ], fee_reserve_xlm: "0" };
+      if (tool === "vanna_get_price") return { price_usd: "1.00" };
+      if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "62.5" };
+      if (tool === "vanna_preview_earn") return { error: "invalid_input", message: "preview unsupported" };
+      throw new Error(`Unexpected tool ${tool}`);
+    }) };
+    const typoModel = vi.fn(async () => ({
+      kind: "research_complete",
+      goal: { intent: "strategy", relation: "new", objective: "lend 1 BLUSD to earn", constraints: [], borrowing: "forbidden",
+        actions: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "lend 1 BLUSD to earn" }, sourceQuote: "lend 1 BLUSD to earn" }] },
+      findings: [{ summary: "User requested lend.", evidenceIds: [] }],
+      openQuestions: [],
+    }));
+    // Typo'd direct action: "BLUSD" is near-match distance 1 to "BLUSDC"
+    const typoResult = await researchTurn({ message: "lend 1 BLUSD to earn", wallet: SCOPE.trader, continuation: null }, deps({ model: typoModel, mcp }));
+    expect(typoResult.status).toBe("researched");
+    expect(typoResult.proposalCandidateId).toBeNull();
+
+    // Exactly typed direct action: "BLUSDC" has no near-match findings
+    const exactModel = vi.fn(async () => ({
+      kind: "research_complete",
+      goal: { intent: "strategy", relation: "new", objective: "lend 1 BLUSDC to earn", constraints: [], borrowing: "forbidden",
+        actions: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "lend 1 BLUSDC to earn" }, sourceQuote: "lend 1 BLUSDC to earn" }] },
+      findings: [{ summary: "User requested lend.", evidenceIds: [] }],
+      openQuestions: [],
+    }));
+    const exactResult = await researchTurn({ message: "lend 1 BLUSDC to earn", wallet: SCOPE.trader, continuation: null }, deps({ model: exactModel, mcp }));
+    expect(exactResult.status).toBe("researched");
+    expect(exactResult.proposalCandidateId).toBe("requested_actions");
   });
 
   it("answers health from still-fresh carried evidence without another chain read", async () => {

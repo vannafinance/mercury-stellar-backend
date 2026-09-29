@@ -251,6 +251,8 @@ export async function appendSessionTurn(input: {
         role: "assistant" as const,
         text: input.result.message,
         question: input.result.question ?? null,
+        // The server's own composed reply, so a reopened chat reads as it did live.
+        ...(input.result.replyBlocks?.length ? { blocks: input.result.replyBlocks } : {}),
         ...(input.executionReceipt !== undefined ? { executionReceipt: input.executionReceipt } : {}),
       },
     ].slice(-TURN_LIMIT),
@@ -388,7 +390,10 @@ export async function updateSessionAssistantText(input: {
     const index = reversed.find(({ turn }) => turn.role === "assistant")?.i;
     if (index == null) return false;
     const turns = [...stored.value.turns];
-    turns[index] = { ...turns[index], text: input.text.trim() };
+    // New text from the browser replaces the reply; the server's composed blocks for the old
+    // text would draw over it, so they are dropped (browser-sent blocks are never stored).
+    const { blocks: _replaced, ...turn } = turns[index];
+    turns[index] = { ...turn, text: input.text.trim() };
     const updated: CopilotConversation = { ...stored.value, turns, updatedAt: Date.now() };
     if (!await stores().conversation.write(input.conversationId, stored.version, updated)) continue;
     return true;

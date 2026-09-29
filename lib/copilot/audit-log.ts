@@ -8,6 +8,7 @@
 
 import { appendFile, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 
 export type AuditAction = "proposed" | "approved" | "executed" | "blocked" | "cancelled";
 
@@ -25,7 +26,15 @@ export interface AuditEvent {
   reason?: string;
 }
 
+/**
+ * Where the audit rows go. `COPILOT_AUDIT_DIR` wins when set. Under vitest (which sets
+ * `VITEST` itself) the default is a temp folder, so test runs stop appending rows to the
+ * real `.local/copilot-audit` a developer reads (23 Sep: 8 test "proposed" rows landed in
+ * the day's log beside real runs). Normal runs are unchanged.
+ */
 function directory(): string {
+  if (process.env.COPILOT_AUDIT_DIR) return resolve(process.env.COPILOT_AUDIT_DIR);
+  if (process.env.VITEST) return join(tmpdir(), "vanna-copilot-audit-test");
   return resolve(process.cwd(), ".local", "copilot-audit");
 }
 

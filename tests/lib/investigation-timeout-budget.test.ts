@@ -47,7 +47,7 @@ describe("investigation timeout budgets", () => {
   );
   const clientMs = onlyNumber(
     read("hooks/use-investigation.ts"),
-    /setTimeout\(\(\) => \{ timedOut = true; controller\.abort\(\); \},\s*([\d_]+)\)/,
+    /setTimeout\(\(\) => \{ timedOut = true; controller\.abort\([^)]*\); \},\s*([\d_]+)\)/,
     "client backstop",
   );
 

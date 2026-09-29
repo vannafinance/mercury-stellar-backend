@@ -233,15 +233,25 @@ export function createFlashResearchModel(): ResearchModel {
   // Snapshot one explicit deployment for the whole run; no silent fallback on failure.
   const model = process.env.VERTEX_RESEARCH_MODEL?.trim() || copilotConfig.vertexModel;
   assertFlashModel(model);
-  return (turn, signal) =>
-    generateInvestigationJson(
+
+  return (turn, signal) => {
+    // The declarations below already carry every capability's name, description,
+    // cost and argument enums — readDecl() rebuilds them from the catalog and
+    // reads only `name` from this list. Repeating the same list as text in the
+    // user turn costs ~1.6k tokens per turn and tells the model nothing new.
+    const { capabilities, ...turnForModel } = turn;
+    return generateInvestigationJson(
       model,
       RESEARCH_SYSTEM,
-      JSON.stringify(turn),
+      JSON.stringify(turnForModel),
       signal,
       researchThinkingLevel(turn),
-      investigationFunctionDeclarations(turn.capabilities),
+      investigationFunctionDeclarations(capabilities),
     );
+  };
+
+
+
 }
 
 /**

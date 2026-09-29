@@ -29,13 +29,15 @@
  */
 
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
+import { pct, planApy, shownApyPct } from "./apy";
 import { isRecord } from "./decision";
 import type { Observation } from "./types";
-import { sizeLegs, type SizedLeg } from "./sizing";
+import { displayHealthFactors, sizeLegs, type SizedLeg } from "./sizing";
 import type { RateAsset, RateComparison } from "./rate-comparison";
 import { candidateId, candidateKindTraits, type CandidateKind } from "./candidate-id";
 import type { ProposalStep } from "../workflow/types";
-import { resolveAssetDef, USDC_VARIANTS } from "../registry/assets";
+import { ASSET_IDS, mentionsBareUsdc, namesAsset, resolveAssetDef, USDC_VARIANTS } from "../registry/assets";
+import { resolveName } from "../intent/resolve-name";
 import { findAsset, findBorrowAmount, findBorrowAsset } from "../router";
 
 const USDC_SET = new Set<string>(USDC_VARIANTS);
@@ -63,6 +65,10 @@ export interface CandidateInput {
    */
   requestedBorrowUsd?: string | null;
   comparisons: readonly RateComparison[];
+  /** Contract-basis health factor before this plan is executed, when known. */
+  initialHealthFactor?: string | null;
+  /** The Margin page's figures; the card's health factor is shown on them. Sizing never uses them. */
+  site?: { grossCollateralUsd: string; debtUsd: string } | null;
 }
 
 export interface Candidate {
@@ -79,8 +85,18 @@ export interface Candidate {
   netAprPct: string | null;
   /** Null when a supply leg's rate was not read — the option is still sized; the label says so. */
   supplyAprPct: string | null;
+  /**
+   * The same two figures as each venue's page shows them (`apy.ts`): what the card and the
+   * reply quote. The APR fields above stay what the sizer and the carry guard judge by.
+   * Optional so a candidate built before this field existed still renders.
+   */
+  supplyApyPct?: string | null;
+  netApyPct?: string | null;
   legs: SizedLeg[];
   finalHealthFactor: string | null;
+  /** The contract-basis health factor before this plan, when known. */
+  initialHealthFactor?: string | null;
+  healthFactorBefore?: string | null;
   amountUsd: string;
   evidenceIds: string[];
   /**
@@ -122,7 +138,7 @@ export interface CandidateSet {
    * `acceptable` marks a refusal the user's own acceptance would lift, so the caller can
    * put it to them as a question instead of a verdict they cannot answer.
    */
-  rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true }>;
+  rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] } }>;
 }
 
 function signedWad(value: string): bigint {
@@ -206,10 +222,17 @@ function variantDecision(winner: Candidate, runnerUp: Candidate | undefined): Ca
     const net = winner.borrows
       ? `Net ${formatApr(winnerApr)} after borrow cost.`
       : `Net ${formatApr(winnerApr)}.`;
+    // Whether the runner-up needs a swap is read off its own holding, never assumed: an
+    // idle candidate exists only for a held balance (live: "you'd swap 675 first" about
+    // 675 BLUSDC already in the wallet), while a model plan can name one not held.
+    const runnerOwned = runnerUp.heldAmount != null && decimalWad(runnerUp.heldAmount) > ZERO;
+    const tradeOff = runnerOwned
+      ? `but you hold only ${formatHeld(runnerUp.heldAmount!)} of it, so it returns less at your size.`
+      : `but you'd swap ${formatHeld(runnerUp.amountUsd)} into it first, which costs more than it gains.`;
     return {
       factor: "already_held",
       runnerUpId: runnerUp.id,
-      reason: `Using ${winner.asset} — you hold ${formatHeld(winner.heldAmount ?? winner.amountUsd)} of it, so no swap is needed. ${net} ${runnerUp.asset} pays ${formatApr(extra)} more but you'd swap ${formatHeld(runnerUp.heldAmount ?? runnerUp.amountUsd)} first, which costs more than it gains.`,
+      reason: `Using ${winner.asset} — you hold ${formatHeld(winner.heldAmount ?? winner.amountUsd)} of it, so no swap is needed. ${net} ${runnerUp.asset} pays ${formatApr(extra)} more ${tradeOff}`,
     };
   }
   return {
@@ -221,21 +244,30 @@ function variantDecision(winner: Candidate, runnerUp: Candidate | undefined): Ca
 
 /**
  * Coerce ranking intent from the typed goal, not from re-reading prose.
- * A borrow leg on `actions` or `plans` is an instruction even when the model tagged
- * borrowing as allowed or unspecified. Forbidden stays forbidden.
+ *
+ * A borrow the USER stated (a leg on `actions`, their own words) is an instruction even
+ * when the model tagged borrowing as allowed or unspecified. A borrow the MODEL proposed
+ * (a leg on one of its `plans`) is a suggestion, not an instruction: owner, 24 Sep, "yes",
+ * permission to borrow is not an instruction to borrow. Counting model plans here made one
+ * levered suggestion hide every no-debt option (the two long-standing
+ * investigation-plans-e2e failures). Forbidden stays forbidden.
+ *
+ * Whether a live borrow capacity must be READ is a different question, answered by
+ * `plansBorrow` below: a model plan that borrows still needs it to be sized.
  */
 export function rankingBorrowing(
   borrowing: CandidateInput["borrowing"] = "unspecified",
   actions?: ReadonlyArray<{ op: string }> | null,
-  plans?: ReadonlyArray<{ legs: ReadonlyArray<{ op: string }> }> | null,
 ): NonNullable<CandidateInput["borrowing"]> {
   if (borrowing === "forbidden") return "forbidden";
-  const typedBorrow = Boolean(
-    actions?.some((action) => action.op === "borrow")
-    || plans?.some((plan) => plan.legs.some((leg) => leg.op === "borrow")),
-  );
-  if (borrowing === "required" || typedBorrow) return "required";
+  const statedBorrow = Boolean(actions?.some((action) => action.op === "borrow"));
+  if (borrowing === "required" || statedBorrow) return "required";
   return borrowing ?? "unspecified";
+}
+
+/** Any model plan with a borrow leg: its sizing needs the live borrow capacity. */
+export function plansBorrow(plans?: ReadonlyArray<{ legs: ReadonlyArray<{ op: string }> }> | null): boolean {
+  return Boolean(plans?.some((plan) => plan.legs.some((leg) => leg.op === "borrow")));
 }
 
 export function rankFeasible(
@@ -304,6 +336,8 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
             label: `Supply idle ${comparison.asset} to Blend — no new borrowing`,
             netAprPct: null,
             supplyAprPct: formatWad(supply),
+            supplyApyPct: pct(shownApyPct("blend_supply", formatWad(supply))),
+            netApyPct: null,
             // Supplying idle wallet value does not touch margin collateral or debt.
             legs: [],
             finalHealthFactor: null,
@@ -328,6 +362,8 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
                 label: `Lend idle ${comparison.asset} to Earn — no new borrowing`,
                 netAprPct: null,
                 supplyAprPct: formatWad(earn),
+                supplyApyPct: pct(shownApyPct("earn_supply", formatWad(earn))),
+                netApyPct: null,
                 legs: [],
                 finalHealthFactor: null,
                 amountUsd: formatWad(idle),
@@ -404,8 +440,24 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
         : `Borrow ${comparison.asset} to the ${input.floor} floor and supply it to Blend`,
       netAprPct: formatWad(supply - borrow),
       supplyAprPct: formatWad(supply),
+      // The borrowed amount is what is supplied, so both legs carry the same USD.
+      ...(() => {
+        const usd = Number(sized.legs[0]?.amountUsd ?? "0");
+        const apy = planApy([
+          { kind: "blend_supply", usd, aprPct: formatWad(supply) },
+          { kind: "earn_borrow", usd, aprPct: formatWad(borrow) },
+        ], usd);
+        return { supplyApyPct: apy.supplyApyPct === null ? null : pct(apy.supplyApyPct), netApyPct: apy.netApyPct === null ? null : pct(apy.netApyPct) };
+      })(),
       legs: sized.legs,
-      finalHealthFactor: sized.finalHealthFactor,
+      ...(() => {
+        const shown = displayHealthFactors(input, input.site, sized.legs);
+        const before = shown ? shown.before : input.initialHealthFactor ?? null;
+        return {
+          finalHealthFactor: shown && sized.finalHealthFactor !== null ? shown.after : sized.finalHealthFactor,
+          ...(before ? { initialHealthFactor: before, healthFactorBefore: before } : {}),
+        };
+      })(),
       amountUsd: sized.legs[0]?.amountUsd ?? "0",
       evidenceIds: [...comparison.evidenceIds],
       amountBasis: requested ? "stated" : "derived_max_at_floor",
@@ -420,9 +472,43 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
  * reached two ways are one option: the composed copy wins because it carries the
  * rationale the card shows. Rejections from both sides are listed with their reasons.
  */
+/**
+ * The fixed "supply idle X" options, narrowed to the assets the user actually named. Asked
+ * about one asset, the user was being offered every other asset they hold: 23 Sep, "lend my
+ * AQUA" (no Earn pool) was answered "Best path: Supply idle XLM to Blend" with five unrelated
+ * options. Names come from the registry's own aliases; a bare "USDC" names all three
+ * variants. A request that names no asset keeps every option ("use my whole wallet").
+ */
+export function onlyNamedAssets(set: CandidateSet | null, messages: readonly string[]): CandidateSet | null {
+  if (!set) return set;
+  const named = new Set<string>(ASSET_IDS.filter((id) => messages.some((message) => namesAsset(message, id))));
+  if (messages.some((message) => mentionsBareUsdc(message))) for (const id of USDC_VARIANTS) named.add(id);
+
+  // Near-matched assets (typos within distance threshold) also count as named
+  for (const message of messages) {
+    const tokens = message.split(/\s+/);
+    for (const token of tokens) {
+      const cleaned = token.replace(/^[^\w]+|[^\w]+$/g, "");
+      if (!cleaned) continue;
+      const res = resolveName(cleaned, ["asset"]);
+      if (res.kind === "near") {
+        for (const candidate of res.candidates) {
+          named.add(candidate.id);
+        }
+      }
+    }
+  }
+
+  if (!named.size) return set;
+  return {
+    feasible: set.feasible.filter((candidate) => named.has(candidate.asset)),
+    rejected: set.rejected.filter((row) => named.has(row.asset)),
+  };
+}
+
 export function mergeCandidateSets(
   fixed: CandidateSet | null,
-  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; acceptable?: true; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string } }> },
+  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] }; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string } }> },
   borrowing: CandidateInput["borrowing"] = "unspecified",
 ): CandidateSet {
   // The op sequence a fixed shape compiles to, so it can be matched against a composed plan's steps.
@@ -448,6 +534,7 @@ export function mergeCandidateSets(
         reason: entry.leg ? `${entry.leg}: ${entry.reason}.` : `${entry.reason}.`,
         asset: entry.leg?.split(" ").pop() ?? "",
         ...(entry.acceptable ? { acceptable: true as const } : {}),
+        ...(entry.accountRequired ? { accountRequired: entry.accountRequired } : {}),
         ...(entry.pocket ? { pocket: entry.pocket } : {}),
       })),
     ],
@@ -500,6 +587,56 @@ export function requestedBorrowFrom(
  * fundable when it is not. Returns null when nothing could be priced at all, which the
  * caller renders as "no non-borrowing option shown" rather than "you have nothing idle".
  */
+/**
+ * What the wallet can spend once the user's stated reserves are set aside. Applied where
+ * the balance is read, not per sizing word, so "all idle", "half of it" and a stated
+ * amount are all bounded by the same figure. A reserve at or above the balance leaves
+ * nothing spendable in that token; the entry stays, at zero, so a refusal can name the
+ * reserve instead of claiming the token is not held.
+ */
+export function holdingsAfterReserves(
+  holdings: ReturnType<typeof idleWalletHoldingsFrom>,
+  reserves: readonly { asset: string; amount: string }[] | undefined,
+): ReturnType<typeof idleWalletHoldingsFrom> {
+  if (!reserves?.length) return holdings;
+  const out = { ...holdings };
+  for (const { asset, amount } of reserves) {
+    const held = out[asset as keyof typeof out];
+    if (!held) continue;
+    const tokens = decimalWad(held.tokens);
+    const left = tokens > decimalWad(amount) ? tokens - decimalWad(amount) : ZERO;
+    const usd = tokens > ZERO ? (decimalWad(held.usd) * left) / tokens : ZERO;
+    out[asset as keyof typeof out] = { tokens: formatWad(left), usd: formatWad(usd) };
+  }
+  return out;
+}
+
+/**
+ * The idle-wallet figures the fixed shapes size from, with the user's stated reserves set
+ * aside: the same subtraction the plan sizer applies, so a "supply idle XLM" option cannot
+ * offer the XLM the user said to keep.
+ */
+export function idleWalletAfterReserves(
+  observations: readonly Observation[],
+  now: number,
+  reserves: readonly { asset: string; amount: string }[] | undefined,
+): { idleWalletUsd: string | null; idleWalletByAssetUsd: Partial<Record<RateComparison["asset"], string>>; idleWalletByAssetTokens: Partial<Record<RateComparison["asset"], string>> } {
+  const before = idleWalletHoldingsFrom(observations, now);
+  const after = holdingsAfterReserves(before, reserves);
+  const idleWalletByAssetUsd: Partial<Record<RateComparison["asset"], string>> = {};
+  const idleWalletByAssetTokens: Partial<Record<RateComparison["asset"], string>> = {};
+  let setAside = ZERO;
+  for (const [asset, held] of Object.entries(after) as Array<[RateAsset, { usd: string; tokens: string }]>) {
+    idleWalletByAssetUsd[asset] = held.usd;
+    idleWalletByAssetTokens[asset] = held.tokens;
+    const was = before[asset];
+    if (was) setAside += decimalWad(was.usd) - decimalWad(held.usd);
+  }
+  const total = idleWalletUsdFrom(observations, now);
+  const idleWalletUsd = total === null ? null : formatWad(decimalWad(total) > setAside ? decimalWad(total) - setAside : ZERO);
+  return { idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens };
+}
+
 export function idleWalletByAssetUsdFrom(observations: readonly Observation[], now: number): Partial<Record<RateComparison["asset"], string>> {
   const holdings = idleWalletHoldingsFrom(observations, now);
   const result: Partial<Record<RateComparison["asset"], string>> = {};

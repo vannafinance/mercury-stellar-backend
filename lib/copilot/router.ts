@@ -15,7 +15,7 @@
 import type { RoutedIntent } from "./types";
 import { findAmountFraction, findBalanceFraction } from "./amount-intent";
 import { matchFastPath } from "./investigation/read-cache";
-import { ASSET_SCAN_ORDER } from "./registry/assets";
+import { ASSET_SCAN_ORDER, resolveAssetDef } from "./registry/assets";
 import { needsUsdcVariant, usdcVariantClarifyMessage } from "./mcp-write";
 import { namesEarnPoolMetric } from "./earn-pool-copy";
 import { contradictsStatedSource } from "./leg-direction";
@@ -1150,24 +1150,15 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   /**
-   * "What is Collateral Left Before Liquidation of my margin account?" was refused
-   * outright as a restricted keeper action — it contains "liquidation of", which the
-   * old bare-substring check could not tell apart from an actual command. A genuine
-   * liquidate instruction ("liquidate my account", "liquidate G...") does not open
-   * with a question word; a question about the user's OWN liquidation threshold
-   * always does. This is a read the margin snapshot already answers
-   * (`collateralLeftBeforeLiquidation`), not a keeper action to refuse.
+   * Liquidating another account is not a plan op and not an allowlisted write
+   * (`PLAN_OPS` / `workflow/allowlist.ts` `TOOLS`). There is nothing here to refuse
+   * by the word "liquidate": "liquidate my XLM position" goes to investigation.
+   * This flag only marks a question about the user's own threshold, which the
+   * margin-figure read below answers.
    */
   const asksAboutOwnLiquidationThreshold =
     /\b(what|how much|how many|show me)\b[\s\S]{0,40}\bliquidat/i.test(text) ||
     /\b(before|until|left before|distance to|buffer before)\b[\s\S]{0,10}\bliquidat/i.test(text);
-  if (!asksAboutOwnLiquidationThreshold && any(text, "liquidate", "liquidation of")) {
-    return {
-      kind: "restricted",
-      template_id: "liquidate",
-      reason: "Liquidation of other accounts is a restricted keeper/protocol action — the copilot won't run it.",
-    };
-  }
 
   /**
    * "I have to Faucet AQUSDC" (also matches the "Fucet" typo, a plausible dropped-letter
@@ -1601,8 +1592,11 @@ export function routeMessage(message: string): RoutedIntent {
      * Farm add-liquidity form auto-fills the paired amount from one input.
      */
     const venueOtherToken = any(text, "soroswap") ? "SOUSDC" : any(text, "aquarius") ? "AQUSDC" : null;
+    // A named venue outranks an asset the registry cannot pin to one token (bare "USDC"):
+    // the pool fixes the variant. With no venue the ambiguous form is kept, so it is asked.
+    const specificAsset = asset && asset !== "XLM" && resolveAssetDef(asset) ? asset : null;
     const token_b =
-      dual?.token_b ?? single?.otherToken ?? (asset && asset !== "XLM" ? asset : venueOtherToken) ?? "AQUSDC";
+      dual?.token_b ?? single?.otherToken ?? specificAsset ?? venueOtherToken ?? (asset && asset !== "XLM" ? asset : null) ?? "AQUSDC";
     return {
       kind: "write",
       op: "add_liquidity",

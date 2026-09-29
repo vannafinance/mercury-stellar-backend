@@ -48,10 +48,10 @@ describe("a liquidation-threshold question is a read, not a restricted liquidate
     }
   });
 
-  it("still refuses a genuine liquidate command", () => {
-    for (const ask of ["liquidate my account", "please liquidate this position", "liquidate G" + "A".repeat(55)]) {
+  it("does not refuse liquidate at the router, because no plan op liquidates another account", () => {
+    for (const ask of ["liquidate my account", "please liquidate this position", "liquidate my XLM position", "liquidate G" + "A".repeat(55)]) {
       const r = routeMessage(ask);
-      expect(r.kind, ask).toBe("restricted");
+      expect(r.kind, ask).not.toBe("restricted");
     }
   });
 });

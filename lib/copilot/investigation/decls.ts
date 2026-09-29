@@ -120,6 +120,30 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           properties: { value: { type: "string" }, sourceQuote: { type: "string" } },
           required: ["value", "sourceQuote"],
         },
+        planRelation: {
+          type: "object",
+          description: "Only when you return more than one plan. kind \"parts\" when the user asked for all of them together (one request covering several assets or venues), \"alternatives\" when they are different ways to do the same thing. sourceQuote is the exact substring of the user's message that decides it.",
+          properties: { kind: { type: "string", enum: ["alternatives", "parts"] }, sourceQuote: { type: "string" } },
+          required: ["kind", "sourceQuote"],
+        },
+        trigger: {
+          type: "object",
+          description: "Whether the user gated the action on a future event. kind \"none\" when the words only size the action (\"borrow until HF is 1.5\"). kind \"future_condition\" only when they asked to act later, when a price or a moment arrives; sourceQuote is the exact substring of their message that states that future event. Omit the field when there is no condition.",
+          properties: {
+            kind: { type: "string", enum: ["none", "future_condition"] },
+            sourceQuote: { type: "string" },
+          },
+          required: ["kind"],
+        },
+        walletReserves: {
+          type: "array",
+          description: "Only when the user said to leave a stated amount of a token in the wallet, untouched by the plan. asset is the token; amount is their exact decimal; sourceQuote is the exact substring of their message that contains it. Never invent one.",
+          items: {
+            type: "object",
+            properties: { asset: { type: "string" }, amount: { type: "string" }, sourceQuote: { type: "string" } },
+            required: ["asset", "amount", "sourceQuote"],
+          },
+        },
         findings: {
           type: "array",
           items: {
@@ -189,7 +213,49 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
       "Ask ONE material question that no read can settle and that changes what would be executed.",
     parameters: {
       type: "object",
-      properties: { question: { type: "string" } },
+      properties: {
+        question: { type: "string" },
+        missing: {
+          type: "array",
+          description: "What is still missing, in the user's order: one entry per action. op is the operation when they named one. asset is the token, or a bare family such as USDC. slots lists which of asset, venue and amount they did not give. sourceQuote is the exact substring of their message for that action. Do not list an action they already stated in full, and do not list options.",
+          items: {
+            type: "object",
+            properties: {
+              op: { type: "string", enum: [...WORKFLOW_OPS] },
+              asset: { type: "string", description: "A registry asset id, or a bare family the user said, such as USDC." },
+              slots: { type: "array", items: { type: "string", enum: ["asset", "venue", "amount"] } },
+              sourceQuote: { type: "string" },
+            },
+            required: ["slots"],
+          },
+        },
+        actions: {
+          type: "array",
+          description: "Fully stated actions from the user's message that do not need clarification. Same shape as a plan leg with sourceQuote.",
+          items: legSchema({
+            properties: {
+              sourceQuote: {
+                type: "string",
+                description: "Exact substring of the user's message that states this action.",
+              },
+            },
+            required: ["sourceQuote"],
+          }),
+        },
+        intent: {
+          type: "string", enum: ["action", "strategy"],
+          description: "action when the user stated what to do and only an input is missing; strategy when they asked you to choose what to do (a goal, not an instruction).",
+        },
+        trigger: {
+          type: "object",
+          description: "Carry the user's future-event gate even when another input is missing. kind future_condition means do not act now; sourceQuote is the exact substring that states the event. Omit when there is no future condition.",
+          properties: {
+            kind: { type: "string", enum: ["none", "future_condition"] },
+            sourceQuote: { type: "string" },
+          },
+          required: ["kind"],
+        },
+      },
       required: ["question"],
     },
   },
@@ -226,6 +292,9 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.actions !== undefined) goal.actions = source.actions;
   if (source.write !== undefined) goal.write = source.write;
   if (source.healthFactorFloor !== undefined) goal.healthFactorFloor = source.healthFactorFloor;
+  if (source.walletReserves !== undefined) goal.walletReserves = source.walletReserves;
+  if (source.planRelation !== undefined) goal.planRelation = source.planRelation;
+  if (source.trigger !== undefined) goal.trigger = source.trigger;
   // Copied by name, like every field above it. A field the model answers and this does not
   // forward is a field that silently does not exist: 16 Sep, the card read "Understood as:
   // Swap 100 XLM for SOUSDC with explicit slippage acceptance" while the sizer refused the
@@ -268,7 +337,7 @@ export function decisionFromFunctionCalls(calls: readonly ModelFunctionCall[]): 
   const control = calls.find((call) => CONTROL_NAMES.has(call.name));
   if (!control) return { kind: "invalid_function" };
   const args = isRecord(control.args) ? control.args : {};
-  if (control.name === "clarify") return { kind: "clarify", question: args.question };
+  if (control.name === "clarify") return { kind: "clarify", question: args.question, ...(args.missing !== undefined ? { missing: args.missing } : {}), ...(args.actions !== undefined ? { actions: args.actions } : {}), ...(args.trigger !== undefined ? { trigger: args.trigger } : {}), ...(args.intent !== undefined ? { intent: args.intent } : {}) };
   if (control.name === "blocked") return { kind: "blocked", reason: args.reason };
   return wrapComplete(args);
 }

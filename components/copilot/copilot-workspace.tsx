@@ -69,6 +69,8 @@ import {
 } from "./resume-policy";
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
 import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { completionReply } from "@/lib/copilot/investigation/completion";
+import { REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { buildRunReceipt } from "./run-receipt";
 import { answerToText } from "@/lib/copilot/answer-schema";
 import { shortWriteLabel } from "@/lib/copilot/execution-copy";
@@ -92,10 +94,13 @@ import { CopilotShell } from "./copilot-shell";
 import { CopilotRailTop, CopilotRailBody, CopilotRailMini } from "./copilot-rail";
 import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useLiveWorkflow } from "@/contexts/workflow-context";
+import { finished as finishedWorkflow } from "@/hooks/use-workflow";
+import { fetchComposedCompletion } from "@/hooks/composed-completion";
 import { InvestigationCard } from "./investigation-card";
+import { ClarifyQuestionnaire } from "./clarify-questionnaire";
 import { ConversationMenu } from "./conversation-menu";
 import { AutoApproveMenu } from "./auto-approve-menu";
-import { shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
+import { runIsOnEarlierTurn, shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
   status: string;
@@ -232,6 +237,44 @@ interface ChatResponse {
     tx_hash?: string | null;
     steps?: Array<{ tool: string; label: string; status: string; message: string }>;
   } | null;
+}
+
+/** Keep the bind panel's last actionable state when a later poll is less informative. */
+export function preserveWalletBindPanelResponse(
+  previous: ChatResponse | null,
+  incoming: ChatResponse,
+): ChatResponse {
+  if (previous?.kind !== "needs_wallet_bind" || incoming.kind !== "needs_wallet_bind") {
+    return incoming;
+  }
+  const priorBind = previous.wallet_bind;
+  const nextBind = incoming.wallet_bind;
+  if (
+    !priorBind?.request_id ||
+    !nextBind?.request_id ||
+    priorBind.request_id !== nextBind.request_id
+  ) {
+    return incoming;
+  }
+
+  const keepTerminalReason =
+    nextBind.status === "pending" &&
+    (priorBind.status === "unavailable" || priorBind.status === "expired");
+  const connectUrl =
+    nextBind.status === "expired"
+      ? (nextBind.connect_url ?? null)
+      : (nextBind.connect_url ?? priorBind.connect_url);
+
+  return {
+    ...incoming,
+    ...(keepTerminalReason ? { message: previous.message } : {}),
+    wallet_bind: {
+      ...priorBind,
+      ...nextBind,
+      ...(keepTerminalReason ? { status: priorBind.status } : {}),
+      connect_url: connectUrl,
+    },
+  };
 }
 
 /**
@@ -1445,6 +1488,12 @@ function ImpactPanel({ sim: served }: { sim: Simulation }) {
   );
 }
 
+
+/** The fewest milliseconds between two background auto-sign status reads (focus, visibility, poll). */
+const AUTO_SIGN_STATUS_MIN_GAP_MS = 20_000;
+
+/** How long switching auto-approve on or off may take before the toggle is released again. */
+const AUTO_SIGN_SWITCH_TIMEOUT_MS = 30_000;
 export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
   // Lives in the root layout, not here: an in-flight run must survive leaving this page.
@@ -1687,7 +1736,7 @@ export function CopilotWorkspace() {
     setResponse(null);
     setLoading(false);
     cancelledRef.current = false;
-    abortRef.current?.abort();
+    abortRef.current?.abort("workspace reset");
     abortRef.current = null;
   }, [workflow]);
   const startNewChat = useCallback(() => { leavePlanCard(); investigation.newChat(); }, [leavePlanCard, investigation]);
@@ -1984,7 +2033,19 @@ export function CopilotWorkspace() {
      * rail is never stale by the time it is looked at.
      */
     const visible = () => document.visibilityState === "visible";
-    const runIfVisible = () => { if (visible()) void run(); };
+    /**
+     * Focus and visibility fire together, and on every return to the window — switching to a
+     * terminal or taking a screenshot. Each fired a status read, and each read spends the MCP
+     * rate-limit budget the investigation needs: 25 Sep, live, a burst of ~20 status reads in
+     * 20s left `aquarius_pool_reserves` failing with rate_limited. One read per
+     * AUTO_SIGN_STATUS_MIN_GAP_MS is plenty; enable and disable write the state directly.
+     */
+    let lastRead = Date.now();
+    const runIfVisible = () => {
+      if (!visible() || Date.now() - lastRead < AUTO_SIGN_STATUS_MIN_GAP_MS) return;
+      lastRead = Date.now();
+      void run();
+    };
     const poll = window.setInterval(runIfVisible, 45_000);
     const onFocus = () => runIfVisible();
     window.addEventListener("focus", onFocus);
@@ -2511,7 +2572,7 @@ export function CopilotWorkspace() {
       }
       const ac = new AbortController();
       if (!quiet) {
-        abortRef.current?.abort();
+        abortRef.current?.abort("workspace superseded");
         abortRef.current = ac;
       }
 
@@ -2657,7 +2718,7 @@ export function CopilotWorkspace() {
             };
           });
         } else if (!quiet || data.kind === "needs_wallet_bind") {
-          setResponse(data);
+          setResponse((previous) => preserveWalletBindPanelResponse(previous, data));
         }
         // Agent-chain hops (pending_write / explicit chain) fold into the parent log row.
         // Full multi_leg payloads create/refresh the parent strategy row.
@@ -2743,7 +2804,7 @@ export function CopilotWorkspace() {
 
   const cancelInFlight = useCallback(() => {
     cancelledRef.current = true;
-    abortRef.current?.abort();
+    abortRef.current?.abort("cancel pressed");
     abortRef.current = null;
     setLoading(false);
     setSigning(false);
@@ -2828,6 +2889,10 @@ export function CopilotWorkspace() {
    */
   const proposePlan = workflow.propose;
   const confirmWorkflow = workflow.confirm;
+  /** Set when a prepared plan should be approved as soon as it arrives (see approveCandidate). */
+  const approveWhenProposedRef = useRef(false);
+  /** Which candidate the running plan came from, so the finished reply can quote its rate and health. */
+  const approvedCandidateRef = useRef<string | null>(null);
   const updateExecutionReceipt = investigation.updateExecutionReceipt;
   useEffect(() => {
     const view = workflow.view;
@@ -2890,8 +2955,22 @@ export function CopilotWorkspace() {
     if (investigation.resultOrigin !== "live") return;
     const proposeKey = `propose:${view.continuation}:${candidateId}`;
     if (!claimDispatch(address, proposeKey)) return;
+    /**
+     * Owner rule (24 Sep, via Sanujit): an action the user STATED (single or multi-leg) gets
+     * no plan card. It is prepared and approved here, and the execution card shows it running.
+     * With auto-approve ON the session signer submits each leg; with it OFF every leg still
+     * waits for the user's own wallet signature, so nothing is signed without them. A strategy
+     * the model chose is nominated by its own candidate id, never REQUESTED_ACTIONS_ID, and
+     * keeps its plan card. A swap still stops at its review card (the approve effect below).
+     */
+    const direct = candidateId === REQUESTED_ACTIONS_ID;
+    approveWhenProposedRef.current = direct;
+    approvedCandidateRef.current = candidateId;
     void proposePlan(view.continuation, candidateId).then((prepared) => {
-      if (!prepared) releaseDispatch(address, proposeKey);
+      if (!prepared) {
+        approveWhenProposedRef.current = false;
+        releaseDispatch(address, proposeKey);
+      }
     });
   }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, workflow.error, address]);
   useEffect(() => {
@@ -2962,6 +3041,40 @@ export function CopilotWorkspace() {
     });
   }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.restored, workflow.stale, workflow.approve, address]);
 
+  /**
+   * A plan card's Approve (owner layout, 23 Sep): one click prepares the plan and, once it
+   * is prepared, approves it. The server still re-checks funds, prices and health at
+   * Approve, exactly as a second click would have. A swap is the exception: it keeps its
+   * own review card and Confirm (another developer's design), so it stops at prepared.
+   */
+  const approveCandidate = useCallback((candidateId: string) => {
+    const continuation = investigation.result?.continuation;
+    if (!continuation) return;
+    const proposeKey = `propose:${continuation}:${candidateId}`;
+    if (!claimDispatch(address, proposeKey)) return;
+    approveWhenProposedRef.current = true;
+    approvedCandidateRef.current = candidateId;
+    void proposePlan(continuation, candidateId).then((prepared) => {
+      if (!prepared) {
+        approveWhenProposedRef.current = false;
+        releaseDispatch(address, proposeKey);
+      }
+    });
+  }, [investigation.result?.continuation, proposePlan, address]);
+  useEffect(() => {
+    if (!approveWhenProposedRef.current) return;
+    const view = workflow.view;
+    if (!view || workflow.loading) return;
+    approveWhenProposedRef.current = false;
+    if (workflow.error || workflow.stale || view.status !== "proposed") return;
+    if (view.swap || view.steps.some((step) => step.op === "swap")) return;
+    const approveKey = `approve:${view.id}:${view.revision}`;
+    if (!claimDispatch(address, approveKey)) return;
+    void workflow.approve().then((approved) => {
+      if (!approved) releaseDispatch(address, approveKey);
+    });
+  }, [workflow.view, workflow.loading, workflow.error, workflow.stale, workflow.approve, address]);
+
   useEffect(() => {
     if (!sessionSigning) return;
     const view = workflow.view;
@@ -2978,7 +3091,7 @@ export function CopilotWorkspace() {
      */
     cancelledRef.current = false;
     if (loading) {
-      abortRef.current?.abort();
+      abortRef.current?.abort("superseded by a new send");
       abortRef.current = null;
       setLoading(false);
     }
@@ -3241,7 +3354,9 @@ export function CopilotWorkspace() {
             : null,
         },
         label,
-        opts?.quiet ? { background: true } : undefined,
+        // A background switch gets a deadline, so a request that never answers releases the
+        // toggle instead of holding `autoApprovePending` forever.
+        opts?.quiet ? { background: true, signal: AbortSignal.timeout(AUTO_SIGN_SWITCH_TIMEOUT_MS) } : undefined,
       );
       // Sync local auto-approve with the Sign Service session. Caps that only
       // live in this browser are not a policy — applyAutoSignOutcome refuses to
@@ -3258,6 +3373,11 @@ export function CopilotWorkspace() {
       } else if (address && !data && action !== "disable") {
         setAutoApprove(address, false);
       }
+      // No answer at all (the deadline passed, or the request failed): say so, rather than
+      // leaving the toggle looking switched while nothing changed on the server.
+      if (!data && opts?.quiet) {
+        toast.error(action === "disable" ? "Auto-approve did not switch off. Try again." : "Auto-approve did not switch on. Try again.");
+      }
     },
     [
       postCopilot,
@@ -3272,7 +3392,19 @@ export function CopilotWorkspace() {
   );
 
   const handleAutoApproveToggle = useCallback(() => {
-    if (loading || autoApprovePending) return;
+    /**
+     * A click while the previous switch is still in flight used to vanish without a word,
+     * and that request had no deadline — one that hung left the toggle dead until a server
+     * restart (24 Sep, live: turned off, could not turn back on). Say why nothing happened.
+     */
+    if (autoApprovePending) {
+      toast("Still switching auto-approve. One moment.");
+      return;
+    }
+    if (loading) {
+      toast("Wait for the current reply to finish, then switch auto-approve.");
+      return;
+    }
     if (!address) {
       toast.error("Connect a wallet first.");
       return;
@@ -4825,7 +4957,7 @@ export function CopilotWorkspace() {
   /** Clear current answer / staged action but keep session log. */
   const reset = () => {
     cancelledRef.current = true;
-    abortRef.current?.abort();
+    abortRef.current?.abort("composer reset");
     abortRef.current = null;
     setLoading(false);
     setSigning(false);
@@ -4846,7 +4978,7 @@ export function CopilotWorkspace() {
 
   const stopRemainingLegs = useCallback(() => {
     cancelledRef.current = true;
-    abortRef.current?.abort();
+    abortRef.current?.abort("remaining legs stopped");
     abortRef.current = null;
     setLoading(false);
     setSigning(false);
@@ -5411,6 +5543,62 @@ export function CopilotWorkspace() {
     investigation.prompt &&
     lastUserTurn !== investigation.prompt
   );
+  /**
+   * Owner layout (23 Sep): the plan card becomes the execution card in the same place. While
+   * the investigation card draws this run, the thread leaves the run's receipt out, so one
+   * run is one card. Once the user moves on, the card stops drawing it and the thread's
+   * receipt keeps the run's final state on the past turn.
+   */
+  /**
+   * The questionnaire docks where the chat box is (owner, 24 Sep; mockup boards 10–16), for
+   * the reply that issued it and only while that reply is the latest, live one. Closing it
+   * brings the chat box back for that reply; a new reply can issue a new one.
+   */
+  const [closedQuestionnaire, setClosedQuestionnaire] = useState<string | null>(null);
+  const openQuestionnaire = !investigation.loading && investigation.resultOrigin === "live" &&
+    investigation.turns[investigation.turns.length - 1]?.role === "assistant" &&
+    investigation.result?.questionnaire && investigation.result.questionnaire.id !== closedQuestionnaire
+    ? investigation.result.questionnaire : null;
+  /** The run finished on an earlier reply: it is history, drawn by the thread on its own turn. */
+  const runIsPast = runIsOnEarlierTurn(investigation.turns, workflow.view ? { id: workflow.view.id, finished: finishedWorkflow(workflow.view) } : null);
+  const cardDrawsRun = !isStaleInvestigation && !!workflow.view && !runIsPast &&
+    workflow.view.status !== "proposed" && workflow.view.status !== "validating" &&
+    investigation.turns[investigation.turns.length - 1]?.role !== "user";
+  /**
+   * "Once tx is settled, the same response shows the completed response" (owner layout).
+   * The reply written before approval ended in an instruction to approve; once the run has
+   * finished, that turn's text is replaced with what happened, built from the legs
+   * themselves (localExecutionAnswer), not from any wording in the old reply.
+   */
+  const completedTextRef = useRef<string | null>(null);
+  const updateLastAssistantText = investigation.updateLastAssistantText;
+  useEffect(() => {
+    const view = workflow.view;
+    if (!view || !cardDrawsRun) return;
+    const settledCount = view.steps.filter((step) => step.status === "settled").length;
+    const finished = view.status === "completed" ||
+      ((view.status === "blocked" || view.status === "cancelled") && settledCount > 0);
+    if (!finished) return;
+    const key = `${view.id}:${view.status}:${settledCount}`;
+    if (completedTextRef.current === key) return;
+    completedTextRef.current = key;
+    const result = investigation.result;
+    const candidate = result?.candidates?.feasible.find((entry) => entry.id === approvedCandidateRef.current);
+    const reply = completionReply(view, {
+      title: candidate?.label ?? null,
+      comparisons: result?.rateComparisons ?? [],
+      healthFactorAfter: candidate?.finalHealthFactor ?? null,
+      repaysAllDebt: !!candidate?.repaysAllDebt,
+    });
+    if (!reply) return;
+    void updateLastAssistantText(reply);
+    // Then the same reply in the model's words, around the run's own server-side facts; the
+    // "Done." above stays if that does not arrive, and a newer finish supersedes it (the key).
+    // Not aborted on cleanup: this effect re-runs on every poll, which would cancel it.
+    void fetchComposedCompletion(view.id, result?.continuation ?? null, new AbortController().signal).then((composed) => {
+      if (composed && completedTextRef.current === key) void updateLastAssistantText(composed.message, composed.replyBlocks);
+    });
+  }, [workflow.view, cardDrawsRun, updateLastAssistantText, investigation.result]);
   const liveWriteUi =
     multiLeg ||
     phase === "plan" ||
@@ -5455,6 +5643,7 @@ export function CopilotWorkspace() {
         collapsed={railCollapsed}
         onToggleCollapsed={() => setRailCollapsed((v) => !v)}
         empty={stageEmpty}
+        conversationId={investigation.conversationId}
         justSubmitted={Boolean(pendingUser && loading)}
         scrollKey={`${investigation.turns.length}-${pendingUser}-${liveReply}-${loading}-${response?.request_id}`}
         railTop={
@@ -5527,6 +5716,7 @@ export function CopilotWorkspace() {
               liveNote={!isError ? response?.answer?.note : null}
               liveTone={isError ? "error" : "default"}
               sessionSigning={sessionSigning}
+              hideReceiptFor={cardDrawsRun ? workflow.view?.id ?? null : null}
             />
             {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
               <div className="flex items-start gap-2.5 max-w-[85%]">
@@ -5562,7 +5752,7 @@ export function CopilotWorkspace() {
                       void workflow.propose(continuation, candidateId);
                     }
                   : undefined}
-                workflow={workflow.view}
+                workflow={runIsPast ? null : workflow.view}
                 planWithdrawn={workflow.stale}
                 planLiveFloor={workflow.quote}
                 workflowError={workflow.error}
@@ -5573,6 +5763,14 @@ export function CopilotWorkspace() {
                 onSign={() => { void signJournalXdr(false); }}
                 wallet={address}
                 autoSign={sessionSigning}
+                onApproveCandidate={investigation.result?.continuation ? approveCandidate : undefined}
+                onReply={(text) => { void run(text); }}
+                onWrite={(op) => {
+                  const request = investigation.result?.originalRequest ?? "";
+                  // Only this click opens an account; the server never creates one unasked.
+                  void postCopilot({ pending_write: { op }, message: request }, request);
+                }}
+                threadDefersReceipt={cardDrawsRun}
               />
             )}
             <div
@@ -6104,10 +6302,28 @@ export function CopilotWorkspace() {
                 </div>
               </div>
             )}
+            {openQuestionnaire && (
+              /* Docked where the chat box is, so it must not grow over the thread: capped, with its own scroll. */
+              <div style={{ maxHeight: "min(46vh, 440px)", overflowY: "auto", overscrollBehavior: "contain", borderRadius: 16 }}>
+              <ClarifyQuestionnaire
+                questionnaire={openQuestionnaire}
+                busy={investigation.loading}
+                onSubmit={(answers) => {
+                  setClosedQuestionnaire(openQuestionnaire.id);
+                  // The answer is this turn's user message; left on the earlier prompt, the thread
+                  // redrew that prompt as a pending bubble under the answer.
+                  setSubmitted(answers.summary);
+                  void investigation.run(answers.summary, undefined, answers);
+                }}
+                onCancel={() => setClosedQuestionnaire(openQuestionnaire.id)}
+              />
+              </div>
+            )}
             {/* The pill is styled inline for the reason recorded in globals.css: a custom
                 class declared there did not survive into the served stylesheet, and the
                 composer must never render as an unstyled row. */}
             <div
+              hidden={!!openQuestionnaire}
               className="cp-composer"
               style={{
                 minWidth: 0,
@@ -6193,19 +6409,15 @@ export function CopilotWorkspace() {
                     : undefined
                 }
                 aria-label={loading || signing || investigation.loading || entry.loading ? "Cancel" : "Send"}
-                className={
-                  loading || signing || investigation.loading || entry.loading
-                    ? `shrink-0 rounded-full px-4 py-2 text-[13px] ${BTN_QUIET}`
-                    : "flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-100"
-                }
-                style={
-                  loading || signing || investigation.loading || entry.loading
-                    ? undefined
-                    : { background: "var(--gradient, linear-gradient(135deg, #FC5457 10%, #703AE6 80%))" }
-                }
+                // One round button in the pill: Send, or while a reply runs, Stop (the square).
+                className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-100"
+                style={{ background: "var(--gradient, linear-gradient(135deg, #FC5457 10%, #703AE6 80%))" }}
+                title={loading || signing || investigation.loading || entry.loading ? "Stop" : "Send"}
               >
                 {loading || signing || investigation.loading || entry.loading ? (
-                  "Cancel"
+                  <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden>
+                    <rect x="5" y="5" width="14" height="14" rx="2.5" fill="currentColor" />
+                  </svg>
                 ) : (
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <path d="M12 19V5" /><path d="m5 12 7-7 7 7" />

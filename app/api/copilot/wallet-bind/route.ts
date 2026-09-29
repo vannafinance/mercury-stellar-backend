@@ -18,8 +18,10 @@
  * cure, which is precisely the permission that user had declined.
  *
  * So the bind gets its own endpoint, with no auto-sign semantics attached: no retry
- * action, no session enable, no policy. The client runs it on connect. Whether the user
- * later wants auto-approve is a separate, unrelated decision.
+ * action, no session enable, no policy. The client runs it on connect. Registration
+ * uses the authenticated MCP action; the old gateway is a compatibility fallback only
+ * when MCP structurally reports that action as absent. Whether the user later wants
+ * auto-approve is a separate, unrelated decision.
  *
  * ## What it does not change
  *
@@ -46,7 +48,16 @@ export const dynamic = "force-dynamic";
 
 /** A refusal the client can act on, never an exception it has to parse out of prose. */
 function refuse(reason: string, status = 200) {
-  return NextResponse.json({ ok: false, reason }, { status });
+  return NextResponse.json(
+    { ok: false, status: "error", error: reason, reason },
+    { status },
+  );
+}
+
+function safeReasonCode(value: unknown, fallback: string): string {
+  return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(value)
+    ? value
+    : fallback;
 }
 
 export async function POST(req: NextRequest) {
@@ -71,14 +82,14 @@ export async function POST(req: NextRequest) {
       started = await withBoundUser(bound, () =>
         getMcpClient().call("vanna_connect_wallet_start", {}, bound.sub),
       );
-    } catch (e) {
-      return refuse(`start_failed: ${e instanceof Error ? e.message : String(e)}`);
+    } catch {
+      return refuse("start_failed");
     }
 
     const connectUrl = typeof started.connect_url === "string" ? started.connect_url : null;
     const requestId = typeof started.request_id === "string" ? started.request_id : null;
     if (!connectUrl || !requestId || started.error) {
-      return refuse(String(started.message || started.error || "no_connect_url"));
+      return refuse(safeReasonCode(started.error, "no_connect_url"));
     }
 
     // Record where this request was minted so `register` can complete it without ever
@@ -90,7 +101,13 @@ export async function POST(req: NextRequest) {
     // to grant is exactly the mistake this must not make.
     if (!signerId) return refuse("no_signer_id");
 
-    return NextResponse.json({ ok: true, request_id: requestId, signer_id: signerId });
+    return NextResponse.json({
+      ok: true,
+      status: "ok",
+      error: null,
+      request_id: requestId,
+      signer_id: signerId,
+    });
   }
 
   if (action === "register") {
@@ -100,18 +117,34 @@ export async function POST(req: NextRequest) {
     if (!requestId || !walletAddress) return refuse("missing_request_or_wallet", 400);
 
     const origin = resolveConnectOrigin(requestId);
-    if (!origin) return refuse("origin_expired");
-
-    const result = await registerWalletBind({ requestId, walletAddress, origin });
+    const result = await withBoundUser(bound, () =>
+      registerWalletBind(
+        getMcpClient(),
+        { requestId, walletAddress, origin },
+        bound.sub,
+      ),
+    );
     if (!result.ok) {
-      return NextResponse.json({ ok: false, reason: result.code, expired: result.expired });
+      const error = safeReasonCode(result.code, "register_failed");
+      return NextResponse.json({
+        ok: false,
+        status: "error",
+        error,
+        reason: error,
+        expired: result.expired,
+      });
     }
+    const error = result.bindingError
+      ? safeReasonCode(result.bindingError, "binding_incomplete")
+      : null;
     // `bound` reports what the Sign Service actually wrote, not merely that the call
     // succeeded — the distinction this whole flow exists to stop losing.
     return NextResponse.json({
       ok: true,
+      status: "ok",
+      error,
       bound: result.bindingWritten,
-      ...(result.bindingError ? { reason: result.bindingError } : {}),
+      ...(error ? { reason: error } : {}),
     });
   }
 

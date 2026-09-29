@@ -6,9 +6,9 @@
  */
 
 import type { MCPClient } from "../mcp-client";
-import { allAssets, ASSET_SYMBOL_PATTERN, poolVenueFor } from "../registry/assets";
+import { allAssets, ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor } from "../registry/assets";
 import { resolveRead } from "./capabilities";
-import { interruptible } from "./runtime";
+import { interruptible, readFailureText } from "./runtime";
 import { isRecord } from "./decision";
 import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { InvestigationScope, Observation, ProposedPlan } from "./types";
@@ -88,6 +88,12 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
           leg.asset === "XLM" ? leg.assetOut : leg.asset,
         );
       }
+      // Leaving an LP position is valued from the same pool read (plan.ts `lpExitUsd`): the
+      // shares' slice of each reserve. Keyed off the op's source pocket, not a list of ops.
+      if (flow.from === "lp") {
+        const pools = lpPairs().filter(({ tokens }) => tokens.includes(leg.asset as never));
+        if (pools.length === 1) want(pools[0].venue === "soroswap" ? "soroswap_pool_reserves" : "aquarius_pool_reserves", pools[0].tokens[1]);
+      }
       // A lend is funded from the wallet; the account read is how a wrong-pocket
       // sibling becomes a withdraw-then-lend offer instead of a silent skip.
       if (leg.op === "lend") want("account_collateral");
@@ -126,10 +132,11 @@ export async function collectStrategyReads(
   }));
   await Promise.all(prepared.map(async (entry, offset) => {
     const observation = observations[offset];
+    const readTimeout = AbortSignal.timeout(15_000);
     try {
       const response = await interruptible(
         () => mcp.call(entry.read.tool, entry.read.args, scope.trader ?? undefined),
-        AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+        AbortSignal.any([signal, readTimeout]),
       );
       if (!isRecord(response) || response.error || response.isError === true || response.ok === false) {
         observation.error = "MCP returned unavailable or failed data; do not use it as a financial fact.";
@@ -137,8 +144,8 @@ export async function collectStrategyReads(
       }
       observation.data = response;
       observation.status = "ok";
-    } catch {
-      observation.error = "MCP read failed. No value was inferred.";
+    } catch (error) {
+      observation.error = readFailureText(error, readTimeout.aborted && !signal.aborted);
     }
   }));
   return observations;

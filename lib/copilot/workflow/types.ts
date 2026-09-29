@@ -11,6 +11,24 @@ export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_c
 export type WorkflowOp = (typeof WORKFLOW_OPS)[number];
 
 /**
+ * What each op did, in the past tense. One entry per op, exhaustive, so a new op cannot
+ * be left out. The single canonical source for past tenses across the copilot.
+ */
+export const OP_DONE: Record<WorkflowOp, string> = {
+  lend: "Lent",
+  redeem: "Redeemed",
+  deposit_collateral: "Deposited",
+  withdraw_collateral: "Withdrew",
+  borrow: "Borrowed",
+  repay: "Repaid",
+  supply_blend: "Supplied",
+  blend_withdraw: "Withdrew",
+  swap: "Swapped",
+  remove_liquidity: "Removed",
+  add_liquidity: "Added",
+};
+
+/**
  * The ops whose leg names a SECOND asset — `assetOut` — because `asset` alone does not
  * describe the whole leg: a swap changes to a different asset, add_liquidity spends a
  * paired token too. Every other op's `asset` is the entire leg. One list, so a leg
@@ -44,6 +62,12 @@ export const POSITION_POCKETS: readonly Pocket[] = ["earn", "blend", "lp"];
 export function deploysIntoPosition(op: WorkflowOp): boolean {
   const { from, to } = OP_FLOW[op];
   return POSITION_POCKETS.includes(to) && !POSITION_POCKETS.includes(from);
+}
+
+/** True when the op moves tokens into or out of the margin account. Earn (wallet ↔ earn) does not. */
+export function touchesMarginAccount(op: WorkflowOp): boolean {
+  const flow = OP_FLOW[op];
+  return flow.from === "account" || flow.to === "account";
 }
 
 /**
@@ -101,6 +125,13 @@ export interface OpFlow {
  * venue list and the propose-time simulation all derive from these rows — one truth, so
  * the sizer and the validator cannot disagree about what a step does.
  */
+/**
+ * The most steps one approval may sign. The journal enforces it; the plan parser and sizer
+ * read it from here, so no second, stricter limit can drift in (23 Sep, XS5: the parser capped
+ * plans at 6 legs and silently dropped a legitimate 7-leg unwind).
+ */
+export const MAX_WORKFLOW_STEPS = 8;
+
 export const OP_FLOW = Object.freeze({
   lend:                { venue: "earn",   from: "wallet",  to: "earn",    positionRead: null,                 health: "neutral", rate: "earn_supply" },
   redeem:              { venue: "earn",   from: "earn",    to: "wallet",  positionRead: "earn_position",      health: "neutral", rate: null },
@@ -152,7 +183,12 @@ export const WALLET_OPS: readonly WorkflowOp[] = WORKFLOW_OPS.filter((op) =>
 export type SizedOp = { [K in WorkflowOp]: (typeof OP_FLOW)[K]["health"] extends "neutral" ? never : K }[WorkflowOp];
 export const SIZED_OPS: readonly SizedOp[] = WORKFLOW_OPS.filter((op): op is SizedOp => OP_FLOW[op].health !== "neutral");
 /** The pockets that hold tokens a later leg can take as "what the previous leg produced". */
-const TOKEN_POCKETS: readonly Pocket[] = ["wallet", "account"];
+export const TOKEN_POCKETS: readonly Pocket[] = ["wallet", "account"];
+
+/** True when the pocket holds loose tokens rather than an earning position or debt. */
+export function holdsTokens(pocket: Pocket): boolean {
+  return !POSITION_POCKETS.includes(pocket) && pocket !== "debt";
+}
 /**
  * Whether what `earlier` leaves behind is what `later` spends — the whole meaning of
  * `previous_leg`. Only tokens hand over: a position (Earn vTokens, a Blend receipt, a
@@ -188,7 +224,13 @@ export type StepSizing =
    * lets the write tell "876.38, the number they asked for" from "876.38, which was all of
    * it at the time".
    */
-  | { basis: "whole_position"; read: string };
+  | { basis: "whole_position"; read: string }
+  /**
+   * The amount is the pool-read estimate of what a removal pays in `asset`.
+   * Execute replaces the sent amount with the measured account balance change
+   * after `fromStep` settles. The proposal amount stays the approved estimate.
+   */
+  | { basis: "settled_payout"; fromStep: string; asset: string };
 
 export interface ProposalStep {
   id: string;
@@ -275,6 +317,11 @@ export interface WorkflowStepState {
    * rather than by editing the approved artifact.
    */
   executedAmountUsd?: string;
+  /**
+   * Margin-account balances read immediately before this removal was submitted,
+   * keyed by registry id. Runtime state only: the approved proposal is not edited.
+   */
+  balancesBefore?: Record<string, string>;
   txHash?: string;
   unsignedXdr?: string;
   signedXdr?: string;

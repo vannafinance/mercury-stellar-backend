@@ -10,7 +10,7 @@ import { allowedInvocation } from "../workflow/allowlist";
 import { isRecord } from "./decision";
 import { interruptible } from "./runtime";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
-import { constantProductOut, isDangerousFill, poolReservesFrom, reservesForDirection, slippageFloor, type PoolReserves } from "./pool-quote";
+import { constantProductOut, isDangerousFill, poolReservesFrom, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
 import { WorkflowConflict, type StepReadiness } from "../workflow/journal";
 import { workflowView, type WorkflowProposal, type WorkflowView, type ProposalStep } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
@@ -288,6 +288,154 @@ export async function stalePositionAmount(
   };
 }
 
+/** What measuring a removal's settled payout decided, immediately before the next write. */
+export type SettledPayoutVerdict =
+  | { kind: "unchanged" }
+  | { kind: "adjusted"; amount: string; note: string }
+  | { kind: "refuse"; message: string };
+
+/** What reading the margin account immediately before a removal is submitted decided. */
+export type RemovalBaselineVerdict =
+  | { kind: "unchanged" }
+  | { kind: "recorded"; balances: Record<string, string> }
+  | { kind: "refuse"; message: string };
+
+const PAYOUT_UNREAD_BEFORE = "The margin account balance could not be read before removing liquidity, so the payout cannot be measured. Nothing was submitted. Approve a new proposal to try again.";
+const PAYOUT_UNREAD_AFTER = "The margin account balance could not be read after the removal settled, so this step was not submitted. Approve a new proposal to continue.";
+const PAYOUT_UNRECORDED = "The balance from before the removal was not recorded, so this step was not submitted. Approve a new proposal to continue.";
+
+function payoutDependents(proposal: WorkflowProposal, removalId: string): ProposalStep[] {
+  return proposal.steps.filter((entry) => entry.sizing?.basis === "settled_payout" && entry.sizing.fromStep === removalId);
+}
+
+/**
+ * One collateral read, parsed the same way the sizer reads a posted balance.
+ * A missing row on a well-formed read is zero. An untrusted row or a failed call is a failure.
+ */
+async function readAccountBalances(
+  assets: readonly string[],
+  mcp: Pick<MCPClient, "call">,
+  scope: InvestigationScope,
+  signal: AbortSignal,
+): Promise<{ ok: true; balances: Record<string, string> } | { ok: false }> {
+  const trader = scope.trader;
+  if (!trader || !scope.smartAccount || assets.length === 0) return { ok: false };
+  let data: Record<string, unknown>;
+  try {
+    const read = resolveRead("account_collateral", {}, scope);
+    const payload = await interruptible(
+      () => mcp.call(read.tool, read.args, trader),
+      AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
+    );
+    if (!isRecord(payload) || payload.error || !Array.isArray(payload.collateral)) return { ok: false };
+    data = payload;
+  } catch {
+    return { ok: false };
+  }
+  const balances: Record<string, string> = {};
+  for (const asset of assets) {
+    const def = resolveAssetDef(asset);
+    if (!def?.marginSymbol) return { ok: false };
+    const rows = data.collateral as unknown[];
+    const untrusted = rows.some((entry) => isRecord(entry)
+      && (entry.symbol === def.marginSymbol || entry.symbol === def.id)
+      && entry.balance_untrusted === true);
+    if (untrusted) return { ok: false };
+    const amount = positionRowIn(data, POSITION_ROWS.account_collateral, def.marginSymbol, def.id) ?? "0";
+    try { decimalWad(amount); } catch { return { ok: false }; }
+    balances[asset] = amount;
+  }
+  return { ok: true, balances };
+}
+
+/**
+ * Read the margin-account balances a later leg will difference, immediately before
+ * the removal is submitted. Planning reads are not reused. A removal with no
+ * settled-payout dependent is left alone.
+ */
+export async function removalBalanceBaseline(
+  step: ProposalStep,
+  proposal: WorkflowProposal,
+  mcp: Pick<MCPClient, "call">,
+  scope: InvestigationScope,
+  signal: AbortSignal,
+): Promise<RemovalBaselineVerdict> {
+  if (step.op !== "remove_liquidity") return { kind: "unchanged" };
+  const dependents = payoutDependents(proposal, step.id);
+  if (!dependents.length) return { kind: "unchanged" };
+  const assets = [...new Set(dependents.map((entry) => entry.sizing?.basis === "settled_payout" ? entry.sizing.asset : entry.asset))];
+  const read = await readAccountBalances(assets, mcp, scope, signal);
+  if (!read.ok) return { kind: "refuse", message: PAYOUT_UNREAD_BEFORE };
+  return { kind: "recorded", balances: read.balances };
+}
+
+/**
+ * Spend what the removal actually paid in this leg's asset.
+ *
+ * The approved amount stays the pool-read estimate. The sent amount is the rise in
+ * the margin-account balance of that asset since the read taken just before the
+ * removal was submitted. The band is `SWAP_SLIPPAGE_BPS` on either side of the
+ * estimate, the same margin `slippageFloor` applies below a quote. Outside that
+ * band the leg is not submitted.
+ *
+ * Fails closed. A missing or unreadable balance does not fall back to the estimate.
+ */
+export async function settledRemovalPayout(
+  step: ProposalStep,
+  states: ReadonlyArray<{ id: string; balancesBefore?: Record<string, string> }>,
+  args: Record<string, unknown>,
+  mcp: Pick<MCPClient, "call">,
+  scope: InvestigationScope,
+  signal: AbortSignal,
+): Promise<SettledPayoutVerdict> {
+  const unchanged: SettledPayoutVerdict = { kind: "unchanged" };
+  const sizing = step.sizing;
+  if (!sizing || sizing.basis !== "settled_payout") return unchanged;
+  if (typeof args.amount !== "string") return { kind: "refuse", message: PAYOUT_UNREAD_AFTER };
+  const before = states.find((entry) => entry.id === sizing.fromStep)?.balancesBefore?.[sizing.asset];
+  if (before === undefined) return { kind: "refuse", message: PAYOUT_UNRECORDED };
+  const read = await readAccountBalances([sizing.asset], mcp, scope, signal);
+  if (!read.ok) return { kind: "refuse", message: PAYOUT_UNREAD_AFTER };
+  let beforeWad: bigint, afterWad: bigint, estimateWad: bigint;
+  try {
+    beforeWad = decimalWad(before);
+    afterWad = decimalWad(read.balances[sizing.asset]);
+    estimateWad = decimalWad(step.amount);
+  } catch {
+    return { kind: "refuse", message: PAYOUT_UNREAD_AFTER };
+  }
+  const label = resolveAssetDef(sizing.asset)?.displayLabel ?? sizing.asset;
+  if (afterWad < beforeWad) {
+    return {
+      kind: "refuse",
+      message: `The margin account balance of ${label} did not increase when liquidity was removed. Nothing was submitted. Approve a new proposal to continue.`,
+    };
+  }
+  const payoutWad = afterWad - beforeWad;
+  // `SWAP_SLIPPAGE_BPS` (0.5%) is the margin a quote is already held to. The same width sits on either side of the estimate.
+  const band = (estimateWad * SWAP_SLIPPAGE_BPS) / BigInt(10_000);
+  const lower = estimateWad > band ? estimateWad - band : ZERO;
+  const upper = estimateWad + band;
+  if (payoutWad < lower || payoutWad > upper) {
+    return {
+      kind: "refuse",
+      message: `The removal paid ${tokenAmount(payoutWad)} ${label}, outside the approved estimate of ${step.amount} ${label}. Approve a new proposal for the amount that arrived. Nothing was submitted.`,
+    };
+  }
+  const amount = tokenAmount(payoutWad);
+  let sent: bigint;
+  try { sent = decimalWad(amount); } catch { return { kind: "refuse", message: PAYOUT_UNREAD_AFTER }; }
+  if (sent <= ZERO) {
+    return { kind: "refuse", message: `The removal's payout of ${label} rounds to nothing, so this step was not submitted.` };
+  }
+  if (sent === estimateWad) return unchanged;
+  return {
+    kind: "adjusted",
+    amount,
+    note: `The removal paid ${amount} ${label}. The approved estimate was ${step.amount} ${label}, so this step spends the measured payout.`,
+  };
+}
+
 /**
  * Refresh an LP leg's token ratio and share floor immediately before invoking the MCP.
  *
@@ -314,6 +462,10 @@ export async function staleLiquidityAmounts(
   if (!tokenA || !tokenB || !approvedA || !approvedB) return unchanged;
 
   let reserves: PoolReserves | null = null;
+  // Why the refresh failed. The refusal below is unchanged; this only keeps the cause, which
+  // was swallowed: 23 Sep, X10 leg 5 said "reserves could not be refreshed" and the reason
+  // (a swapped token_0 and an empty fee in the MCP payload) had to be dug out of the MCP.
+  let why = "";
   try {
     const payload = await interruptible(
       () => mcp.call(
@@ -324,8 +476,13 @@ export async function staleLiquidityAmounts(
       AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
     );
     reserves = poolReservesFrom(payload);
-  } catch { /* handled below */ }
+    // MCP errors often arrive as a 200 with an error body, so an unreadable payload is kept too.
+    if (!reserves) why = `unusable payload: ${JSON.stringify(payload).slice(0, 400)}`;
+  } catch (error) {
+    why = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  }
   if (!reserves) {
+    console.warn("[copilot] LP reserves refresh failed", { venue, tokenA, tokenB, why });
     return { kind: "refuse", message: "The pool's live reserves could not be refreshed, so stale liquidity amounts were not submitted. Prepare the plan again." };
   }
 
@@ -425,6 +582,15 @@ export async function advanceWorkflow(input: {
   lookupTx?: LedgerLookup;
 }): Promise<WorkflowView> {
   const journal = workflowJournal(input.secret);
+  // Where an execution's seconds go (25 Sep: a card sat on its in-flight line long enough to
+  // be reported). One line per phase, keyed by workflow, so a slow run can be read back.
+  const startedAt = Date.now();
+  let lastAt = startedAt;
+  const phase = (name: string, extra?: Record<string, unknown>) => {
+    const now = Date.now();
+    console.info("[copilot] workflow phase", { id: input.id, phase: name, ms: now - lastAt, total: now - startedAt, ...extra });
+    lastAt = now;
+  };
   const stored = await journal.lookup(input.id, input.subject);
   const expected = stored.value.proposal.scope;
   if (stored.value.proposal.server !== input.server || expected.network !== input.network)
@@ -436,9 +602,11 @@ export async function advanceWorkflow(input: {
     scope.smartAccount !== expected.smartAccount || scope.network !== expected.network) {
     throw new ResearchError("context_expired", "This investigation has expired or the connected account changed. Start a new investigation to refresh its context.");
   }
+  phase("scope");
   const identity = identityOf(stored.value.proposal);
   const lookup = input.lookupTx ?? lookupTransaction;
   let record = await settleSubmitted(journal, input.id, identity, lookup);
+  phase("settle_previous");
   if (record.steps.some(s => ["submitted", "invoking", "submitting"].includes(s.status))) return workflowView(record);
   if (["completed", "blocked", "cancelled", "uncertain", "awaiting_signature"].includes(record.status)) {
     return workflowView(record);
@@ -450,6 +618,7 @@ export async function advanceWorkflow(input: {
   let step: ProposalStep;
   try {
     step = await journal.claimNext(input.id, identity, input.ready ?? readyForStep);
+    phase("claim", { tool: step.tool });
   } catch (error) {
     if (error instanceof WorkflowConflict && error.message === "no_pending_step") {
       return workflowView((await journal.read(input.id, identity)).value);
@@ -513,21 +682,38 @@ export async function advanceWorkflow(input: {
     : swapAdjustedArgs;
   // Tell the MCP a human was shown this fill and took it. Its own impact gate withholds
   // auto-sign otherwise, which for an accepted trade is the same confirmation twice.
+  const live = await journal.read(input.id, identity);
+  const payout = await settledRemovalPayout(step, live.value.steps, adjustedArgs, input.mcp, scope, input.signal);
+  if (payout.kind === "refuse") {
+    return workflowView(await journal.pauseForReapproval(input.id, identity, step.id, payout.message));
+  }
+  const payoutArgs = payout.kind === "adjusted" ? { ...adjustedArgs, amount: payout.amount } : adjustedArgs;
   const invocationArgs = acceptedLoss && step.op === "swap"
-    ? { ...adjustedArgs, acknowledged_price_impact: true }
-    : adjustedArgs;
+    ? { ...payoutArgs, acknowledged_price_impact: true }
+    : payoutArgs;
   const note = [
     stale.kind === "adjusted" ? stale.note : null,
     liquidity.kind === "adjusted" ? liquidity.note : null,
     position.kind === "adjusted" ? position.note : null,
+    payout.kind === "adjusted" ? payout.note : null,
   ].filter((value): value is string => !!value).join(" ") || null;
 
+  const baseline = await removalBalanceBaseline(step, live.value.proposal, input.mcp, scope, input.signal);
+  if (baseline.kind === "refuse") {
+    return workflowView(await journal.pauseForReapproval(input.id, identity, step.id, baseline.message));
+  }
+  if (baseline.kind === "recorded") {
+    await journal.noteBalancesBefore(input.id, identity, step.id, baseline.balances);
+  }
+
+  phase("prewrite_checks");
   let build: Record<string, unknown>;
   try {
     const raw = await interruptible(() => input.mcp.call(invocation.tool, invocationArgs, scope.trader!),
       AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]));
     if (!isRecord(raw)) throw new Error("invalid_write_result");
     build = raw;
+    phase("mcp_write", { tool: invocation.tool });
   } catch (error) {
     // This catch used to be silent: a step went "uncertain" with nothing in any log
     // explaining why, so a timeout, a transport error and a malformed payload were
@@ -579,6 +765,7 @@ export async function advanceWorkflow(input: {
     }
     record = await journal.invocationResult(input.id, identity, step.id, { kind: "submitted", txHash, note: note ?? undefined });
     record = await settleSubmitted(journal, input.id, identity, lookup, note ?? undefined);
+    phase("settle", { settled: record.steps.find(s => s.id === step.id)?.status === "settled" });
     persistRun(record, input.subject);
     return workflowView(record);
   }
@@ -726,6 +913,9 @@ export async function submitWorkflow(input: {
   const reason = await validateWorkflowRisk({ ...expected, steps: [step] }, input.mcp,
     AbortSignal.any([input.signal, AbortSignal.timeout(25_000)]));
   if (reason) throw new ResearchError("risk_validation_failed", reason);
+  const baseline = await removalBalanceBaseline(step, expected, input.mcp, scope, input.signal);
+  if (baseline.kind === "refuse") throw new ResearchError("step_not_ready", baseline.message);
+  if (baseline.kind === "recorded") await journal.noteBalancesBefore(input.id, identity, step.id, baseline.balances);
   const record = await journal.acceptSignedEnvelope(input.id, identity, step.id, input.signedXdr);
   try {
     const [sdk, config] = await Promise.all([import("@stellar/stellar-sdk"), import("@/lib/stellar-utils")]);

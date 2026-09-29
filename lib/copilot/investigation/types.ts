@@ -59,6 +59,14 @@ export interface GoalUnderstanding {
    */
   healthFactorFloor?: { value: string; sourceQuote: string };
   /**
+   * Amounts the user said to leave in the wallet ("keep 100 XLM liquid"), each with the
+   * substring of their message that states it. Same contract as the floor: the model finds
+   * the sentence, code checks the user really wrote it, and the sizer never spends into it.
+   * 23 Sep, XS7: the constraint was in the conversation and an all-idle XLM leg spent all
+   * 2152 XLM, because nothing structured carried it to the sizer.
+   */
+  walletReserves?: { asset: string; amount: string; sourceQuote: string }[];
+  /**
    * The user accepting a bad price, in their own words — "i dont care if i lose",
    * "swap anyway". Structural, because the model already understood it: on 16 Sep it
    * wrote "User explicitly accepts potential loss/slippage" into `constraints`, a
@@ -67,6 +75,20 @@ export interface GoalUnderstanding {
    * decision in beats re-deriving that decision from its prose.
    */
   slippageAccepted?: { accepted: boolean; sourceQuote: string };
+  /**
+   * Whether the plans the model returned are ALTERNATIVES (pick one) or PARTS of one request
+   * ("withdraw all funds", "use my whole wallet"), with the words that say so. Parts are joined
+   * into one plan when that is safe (plan.ts `joinPlanParts`); anything else stays as options.
+   * 23 Sep, XS6: "use my whole wallet" came back as one option per asset, and Approve could
+   * only run one of them.
+   */
+  planRelation?: { kind: "alternatives" | "parts"; sourceQuote: string };
+  /**
+   * Whether the user asked to act when something happens later. `none` is a sizing
+   * limit ("borrow until HF is 1.5"). `future_condition` is an action held for a
+   * later event, and only that is refused — after the quote is found in their words.
+   */
+  trigger?: { kind: "none" | "future_condition"; sourceQuote?: string };
 }
 
 /** The write operations a plan may be composed from: exactly the ones the workflow can execute. */
@@ -197,7 +219,7 @@ export type ResearchDecision =
    * observation so far, making input cost grow quadratically in the number of reads.
    */
   | { kind: "inspect"; reads: ReadRequest[] }
-  | { kind: "clarify"; question: string }
+  | { kind: "clarify"; question: string; missing?: import("./questionnaire").QuestionnaireMissing[]; actions?: StatedAction[]; trigger?: GoalUnderstanding["trigger"]; carried?: CarriedGoal; intent?: "action" | "strategy" }
   | { kind: "blocked"; reason: string }
   | {
       kind: "research_complete";
@@ -208,6 +230,8 @@ export type ResearchDecision =
       plans?: ProposedPlan[];
       /** Plans the model sent that did not fit the contract and were dropped, so the card can say so. */
       droppedPlans?: number;
+      /** Why each dropped plan was dropped, in the validator's terms. Diagnostics only, never shown as is. */
+      droppedPlanReasons?: string[];
       /** Findings that stated a figure with no read behind it; left out, and the card says so. */
       droppedFindings?: number;
       /**
@@ -284,6 +308,14 @@ export interface InvestigationResult {
   outcome: InvestigationOutcome;
   observations: Observation[];
   usage: { modelTurns: number; toolCalls: number; elapsedMs: number };
+  /** For a stopped outcome, the validator's own words for why, when it has them. Diagnostics only. */
+  stopDetail?: string;
   /** Phase 1 output is internal research, not a safe-to-execute proposal. */
   executionAllowed: false;
 }
+
+/**
+ * The user's own limits on a goal (a wallet reserve, a health-factor floor, an accepted loss),
+ * kept when a completed goal is turned back into a question so the answer is sized under them.
+ */
+export type CarriedGoal = Pick<GoalUnderstanding, "walletReserves" | "healthFactorFloor" | "slippageAccepted">;

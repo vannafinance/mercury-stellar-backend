@@ -6,7 +6,7 @@ import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
 import { walletSessionStatus } from "@/lib/copilot/establish-wallet-session";
 import { consumeResearchStream } from "@/lib/copilot/investigation/stream";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
-import type { ResearchView } from "@/lib/copilot/investigation/view";
+import type { QuestionnaireAnswers, ReplyBlock, ResearchView } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import {
   type ConversationSummary,
@@ -225,13 +225,13 @@ export function useInvestigation(wallet: string | null) {
 
   useEffect(() => {
     const wallet = effectiveWallet;
-    abort.current?.abort();
+    abort.current?.abort("wallet changed");
     sequence.current += 1;
     const listed = wallet ? readStoredConversations(wallet) : [];
     const stored = wallet ? readStoredThread(wallet) : null;
     const liveId = stored?.conversationId && !isLocalConversationId(stored.conversationId)
       ? stored.conversationId : LIVE_CONVERSATION_ID;
-    const seeded = stored?.turns.some((turn) => turn.role === "user")
+    let seeded = stored?.turns.some((turn) => turn.role === "user")
       ? upsertConversation(listed, {
           id: liveId,
           title: titleFromTurns(stored.turns),
@@ -239,13 +239,27 @@ export function useInvestigation(wallet: string | null) {
           updatedAt: Date.now(),
         })
       : listed;
-    setConversations(seeded);
+    /**
+     * A reload starts a NEW chat (owner, 25 Sep), the same as pressing New chat: the chat that
+     * was on screen goes into History, where opening it brings back every turn and its
+     * execution cards, and the screen starts blank. It used to reopen the last chat, so a
+     * refresh could never get a clean start. A chat the server recorded is already in its list;
+     * one it never recorded is kept in this tab's cache under a local id, exactly as New chat
+     * keeps it.
+     */
+    let keptId = liveId;
     if (stored?.turns.length) {
-      applyThread(wallet, { turns: stored.turns, continuation: stored.continuation, result: stored.result, conversationId: stored.conversationId ?? null });
-    } else {
-      applyBlank(wallet);
+      if (!stored.conversationId || isLocalConversationId(stored.conversationId)) {
+        keptId = stored.conversationId && isLocalConversationId(stored.conversationId) ? stored.conversationId : `local:${Date.now()}`;
+        writeStoredLocalThread(wallet!, keptId, { ...stored, conversationId: keptId });
+        seeded = seeded.map((item) => (item.id === LIVE_CONVERSATION_ID ? { ...item, id: keptId } : item));
+        writeStoredConversations(wallet!, seeded);
+      }
+      clearStoredThread(wallet!);
     }
-    if (!wallet) return () => { abort.current?.abort(); sequence.current += 1; };
+    setConversations(seeded);
+    applyBlank(wallet);
+    if (!wallet) return () => { abort.current?.abort("wallet cleared"); sequence.current += 1; };
     // The server holds the list and, when this tab has nothing, the open conversation.
     const restore = new AbortController();
     void (async () => {
@@ -257,28 +271,25 @@ export function useInvestigation(wallet: string | null) {
         const remote = await response.json() as SessionPayload;
         if (Array.isArray(remote.conversations)) {
           const remoteConversations = remote.conversations;
-          const live = seeded.find((item) => item.id === liveId);
+          const live = seeded.find((item) => item.id === keptId);
           const merged = live && !remoteConversations.some((item) => item.id === live.id)
             ? upsertConversation(remoteConversations, live)
             : sortedByActivity(remoteConversations);
           setConversations(merged);
           writeStoredConversations(wallet, merged);
         }
-        if (stored?.turns.length) return;
-        if (!Array.isArray(remote.turns) || !remote.turns.length) return;
-        const thread = {
-          turns: remote.turns, continuation: remote.continuation ?? null, result: remote.result ?? null,
-          conversationId: remote.activeId ?? null,
-        };
-        writeStoredThread(wallet, { wallet, ...thread });
-        applyThread(wallet, thread);
+        // The server's "open conversation" is not reopened on load either: it stays in the list.
+        // Clearing the pointer keeps the next turn from being appended to that old chat.
+        if (remote.activeId) {
+          await fetch("/api/copilot/session", { method: "DELETE", headers, cache: "no-store" }).catch(() => undefined);
+        }
       } catch { /* sessionStorage remains the live thread; the list appears on the next load */ }
     })();
-    return () => { restore.abort(); abort.current?.abort(); sequence.current += 1; };
+    return () => { restore.abort("wallet effect cleanup"); abort.current?.abort(); sequence.current += 1; };
   }, [effectiveWallet, applyBlank, applyThread]);
 
   const cancel = useCallback(() => {
-    abort.current?.abort();
+    abort.current?.abort("cancel pressed");
     sequence.current += 1;
     const message = "Investigation cancelled. No transactions were requested.";
     const owner = activeWallet.current;
@@ -364,7 +375,7 @@ export function useInvestigation(wallet: string | null) {
 
   /** Start a new chat: the screen clears; the conversation stays in the list; nothing is created until the first turn. */
   const newChat = useCallback(() => {
-    abort.current?.abort();
+    abort.current?.abort("new chat");
     sequence.current += 1;
     const owner = activeWallet.current;
     if (owner) {
@@ -420,7 +431,7 @@ export function useInvestigation(wallet: string | null) {
     }
 
     if (isLocalConversationId(id)) {
-      abort.current?.abort();
+      abort.current?.abort("opened another chat");
       sequence.current += 1;
       const stored = readStoredLocalThread(owner, id);
       if (stored) {
@@ -436,7 +447,7 @@ export function useInvestigation(wallet: string | null) {
       }
       return;
     }
-    abort.current?.abort();
+    abort.current?.abort("opened another chat");
     sequence.current += 1;
     try {
       const headers = await requestHeaders(AbortSignal.timeout(8_000), owner);
@@ -461,7 +472,7 @@ export function useInvestigation(wallet: string | null) {
       return next;
     });
     if (id === conversationId.current || id === LIVE_CONVERSATION_ID && !conversationId.current) {
-      abort.current?.abort();
+      abort.current?.abort("chat deleted");
       sequence.current += 1;
       clearStoredThread(owner);
       applyBlank(owner);
@@ -536,7 +547,11 @@ export function useInvestigation(wallet: string | null) {
    * When a chained action (e.g. deposit after asset setup) completes and settles,
    * this replaces the pre-setup text with the actual settled action message.
    */
-  const updateLastAssistantText = useCallback(async (newText: string): Promise<boolean> => {
+  /**
+   * `blocks` replaces the turn's composed reply; without it any earlier blocks are dropped, or
+   * a plan reply's blocks would keep drawing over the "Done." text that replaced it.
+   */
+  const updateLastAssistantText = useCallback(async (newText: string, blocks?: ReplyBlock[]): Promise<boolean> => {
     const owner = activeWallet.current;
     const clean = newText.trim();
     if (!clean) return false;
@@ -547,7 +562,8 @@ export function useInvestigation(wallet: string | null) {
       if (idx == null) return previous;
       found = true;
       const updatedTurns = [...previous.turns];
-      updatedTurns[idx] = { ...updatedTurns[idx], text: clean };
+      const { blocks: _stale, ...turn } = updatedTurns[idx];
+      updatedTurns[idx] = { ...turn, text: clean, ...(blocks?.length ? { blocks } : {}) };
       transcript.current = updatedTurns.map((t) => ({ role: t.role, text: t.text }));
       if (owner) {
         writeStoredThread(owner, {
@@ -576,13 +592,26 @@ export function useInvestigation(wallet: string | null) {
     }
   }, [rememberLive]);
 
-  const run = useCallback(async (message: string, signal?: AbortSignal) => {
+  /**
+   * `answers`: the user filled in the questionnaire the last reply issued. They travel with
+   * THAT reply's continuation, which seals the options the server checks them against; the
+   * summary is only what the thread shows as the user's turn, never what is executed.
+   */
+  const run = useCallback(async (message: string, signal?: AbortSignal, answers?: QuestionnaireAnswers) => {
     const prompt = message.trim();
     if (!prompt) return;
-    abort.current?.abort();
+    abort.current?.abort("replaced by a newer prompt");
     const controller = new AbortController();
     abort.current = controller;
     const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+    /**
+     * Name what ended the run. 23 Sep: replies were cut off (XS7 "blend" ended ERR_ABORTED,
+     * leaving a summary with no card) and "Cancelled" appeared without a press. Every abort
+     * site passes a label; this reaches the dev terminal as a [browser] line.
+     */
+    combined.addEventListener("abort", () => {
+      console.warn("[copilot] investigation aborted", { reason: String(combined.reason ?? "unlabelled"), prompt: prompt.slice(0, 60) });
+    }, { once: true });
     const id = ++sequence.current;
     const owner = wallet;
     const current = () => sequence.current === id && activeWallet.current === owner && !combined.aborted;
@@ -590,7 +619,7 @@ export function useInvestigation(wallet: string | null) {
     // is a backstop for a dead connection rather than the normal end of a slow run.
     // The composer keeps a 130s outer deadline so this 120s timer is the one that fires.
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 120_000);
+    const timer = setTimeout(() => { timedOut = true; controller.abort("120s client deadline"); }, 120_000);
     /**
      * Two different things end a run early and they must not share a sentence: the
      * deadline (time really ran out) and an abort (this request was replaced, cancelled,
@@ -599,7 +628,8 @@ export function useInvestigation(wallet: string | null) {
     const abortedCopy = () => timedOut
       ? "The investigation ran out of time before it could finish. Nothing was executed — please try again."
       : "This investigation was cancelled or replaced before it finished. Nothing was executed — run it again.";
-    const followUp = shouldContinueInvestigation(prompt, lastResult.current) ? continuation.current : null;
+    const followUp = answers ? continuation.current
+      : shouldContinueInvestigation(prompt, lastResult.current) ? continuation.current : null;
     const session = continuation.current;
     const history = transcript.current.slice(-8);
     const startedIn = conversationId.current && !isLocalConversationId(conversationId.current)
@@ -639,6 +669,7 @@ export function useInvestigation(wallet: string | null) {
         body: JSON.stringify({
           message: prompt, wallet: owner, continuation: followUp, session, history,
           ...(startedIn ? { conversationId: startedIn } : {}),
+          ...(answers ? { answers } : {}),
         }),
       });
       await consumeResearchStream(response, (event) => {
@@ -663,7 +694,10 @@ export function useInvestigation(wallet: string | null) {
               : [...previous.turns, { role: "user" as const, text: prompt }];
             const turns: ThreadTurn[] = [
               ...priorTurns,
-              { role: "assistant" as const, text: event.result.message, question: event.result.question },
+              {
+                role: "assistant" as const, text: event.result.message, question: event.result.question,
+                ...(event.result.replyBlocks?.length ? { blocks: event.result.replyBlocks } : {}),
+              },
             ].slice(-16);
             writeStoredThread(owner, {
               wallet: owner ?? "",

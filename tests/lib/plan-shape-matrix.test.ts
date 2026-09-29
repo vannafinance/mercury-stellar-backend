@@ -102,9 +102,11 @@ function observations(asset: AssetId, world: World): Observation[] {
   // Live reserves for any asset paired with XLM on Aquarius, keyed the way `plan.ts` reads
   // them — by the pool's non-XLM side — so add_liquidity can size the paired amount here
   // exactly as it would from the real MCP read, in every world, not just a hand-picked one.
+  // Deep enough that a sized swap clears the 5% price-impact gate (3e55b06, which postdates
+  // this matrix); reserves and total_share scale together, so every LP payout is unchanged.
   if (poolVenueFor("XLM", asset) === "aquarius") {
     rows.push(obs("res", "aquarius_pool_reserves",
-      { found: true, pool: { available: true, reserves: { XLM: "10000", [asset]: "1800" }, total_share: "5000", fee: "0.0030" } },
+      { found: true, pool: { available: true, reserves: { XLM: "1000000", [asset]: "180000" }, total_share: "500000", fee: "0.0030" } },
       { asset }));
   }
   return rows;

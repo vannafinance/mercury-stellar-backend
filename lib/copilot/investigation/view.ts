@@ -48,7 +48,86 @@ export interface ResearchCapacity {
   maxBorrowUsd: string;
 }
 
+export interface QuestionnaireOption {
+  id: string;
+  label: string;
+  detail?: string;
+  forAsset?: string;
+  op?: string;
+  /** The op's own verb ("Deposit", "Supply", "Lend"), so a summary says what the choice does. */
+  verb?: string;
+  sourceSectionId?: string;
+}
+export interface QuestionnaireStep {
+  slot: "asset" | "venue" | "amount";
+  prompt: string;
+  options: QuestionnaireOption[];
+  max?: Record<string, { amount: string; asset: string; where: string; note?: string; bound?: "upper"; starting?: string }>;
+  presets?: { id: string; label: string; percent: string }[];
+  pair?: Record<string, { asset: string; perUnit: string | null; note?: string }>;
+}
+export interface QuestionnaireSection {
+  id: string;
+  title: string;
+  actionIndex: number;
+  /** Position of this action in the user's message, so stated actions can be merged back in order. */
+  position?: number;
+  /** The asset this section's action already named, sealed when it was built. */
+  namedAsset?: string | null;
+  steps: QuestionnaireStep[];
+  sourceQuote?: string;
+  op?: string;
+  /** Sealed when the section was built. A later summary cannot change it. */
+  assetOut?: string;
+}
+export interface SealedAction {
+  position: number;
+  action: import("./types").StatedAction;
+}
+export interface Questionnaire {
+  id: string;
+  title: string;
+  subtitle: string;
+  steps: QuestionnaireStep[];
+  /** One entry per action that was missing something, in the order the user said them. */
+  sections?: QuestionnaireSection[];
+  /** Fully stated actions, sealed with their position so Send runs them too. */
+  stated?: SealedAction[];
+  namedAsset?: string | null;
+  op?: string | null;
+  /** A future-event gate from the decision, sealed so answers cannot turn it into an immediate action. */
+  trigger?: import("./types").GoalUnderstanding["trigger"];
+  /** The user's reserve, floor and accepted loss, sealed so the answered goal keeps them. */
+  carried?: import("./types").CarriedGoal;
+}
+export interface QuestionnaireSectionAnswer {
+  sectionId: string;
+  asset: string;
+  venue: string | null;
+  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" };
+}
+export interface QuestionnaireAnswers {
+  questionnaireId: string;
+  asset: string;
+  venue: string | null;
+  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" };
+  summary: string;
+  sections?: QuestionnaireSectionAnswer[];
+}
+
+/** A run of reply text; `figure` marks a value code substituted from an audited fact. */
+export interface ReplySegment { text: string; figure?: true }
+/** A model-written reply, bound to audited facts (compose.ts). Plain text only: no markup. */
+export type ReplyBlock =
+  | { type: "paragraph" | "heading"; segments: ReplySegment[] }
+  | { type: "bullets"; items: ReplySegment[][] };
+
 export interface ResearchView {
+  /** Why a run stopped or plans were dropped, in validator terms. Never rendered; read from the response. */
+  diagnostics?: {
+    stopReason?: string; stopDetail?: string; droppedPlanReasons?: string[];
+    failedReads?: { capability: string; args: Record<string, unknown>; error: string }[];
+  };
   /**
    * `replied` is a turn answered without investigating — a greeting, or an off-domain
    * refusal. Distinct from `researched` so the record never claims reads that never ran.
@@ -71,6 +150,19 @@ export interface ResearchView {
   rateComparisons?: import("./rate-comparison").RateComparison[];
   checks: Array<{ id: string; label: string; status: "ok" | "error"; readAt: number }>;
   warnings: string[];
+  /**
+   * Answers to `question` the user can pick with one tap. `send` is sent as the user's
+   * next turn through the existing continuation. Built in code from the user's own words
+   * (round 2 contract, docs/copilot/AGENT-TASKS.md), never invented by the model.
+   */
+  choices?: { id: string; label: string; send?: string; write?: "create_account" }[];
+  /** Present when a direct action is missing inputs. The issued options are sealed in the continuation. */
+  questionnaire?: Questionnaire;
+  /**
+   * The answers named one direct action. The client runs it under the direct-action
+   * approval rule: no plan card. Strategy turns leave this unset.
+   */
+  directAction?: boolean;
   scope: { wallet: string | null; smartAccount: string | null; network: string };
   continuation: string;
   proposalCandidateId?: string | null;
@@ -82,6 +174,8 @@ export interface ResearchView {
   executionAllowed: false;
   /** Server wall time for this turn. Optional so older clients stay valid. */
   elapsedMs?: number;
+  /** The reply as the model wrote it around audited figures; `message` is its plain-text form. */
+  replyBlocks?: ReplyBlock[];
 }
 
 export type ResearchStreamEvent =

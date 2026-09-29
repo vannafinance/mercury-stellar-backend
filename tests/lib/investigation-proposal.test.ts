@@ -241,6 +241,60 @@ const SWAP_STEP = {
 };
 
 describe("proposeWorkflow requested_actions", () => {
+  it("asks when the investigation and routeMessage disagree about creating new debt", async () => {
+    const codec = researchCodec(SECRET, SERVER, () => NOW);
+    const evidence = compactResearchEvidence([], null, NOW);
+    evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
+    evidence.requestedSteps = [{
+      id: "requested-0",
+      op: "borrow",
+      asset: "XLM",
+      amount: "50",
+      label: "borrow 50 XLM",
+      tool: "vanna_borrow",
+      sizing: { basis: "stated" },
+      args: { symbol: "XLM", amount: "50", trader: SCOPE.trader, smart_account: SCOPE.smartAccount },
+    }];
+
+    await expect(proposeWorkflow({
+      continuation: codec.seal(SCOPE, ["lend me 50xlm"], null, evidence),
+      candidateId: REQUESTED_ACTIONS_ID,
+      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp: { call: vi.fn() }, signal: new AbortController().signal, now: NOW,
+    })).rejects.toMatchObject({ code: "debt_reading_ambiguous", status: 409 });
+    expect(await harness.store.read("")).toBeNull();
+  });
+
+  it.each([
+    ["lend 50 XLM", "lend"],
+    ["borrow 50 XLM", "borrow"],
+  ] as const)("keeps matching %s intent executable", async (message, op) => {
+    const codec = researchCodec(SECRET, SERVER, () => NOW);
+    const evidence = compactResearchEvidence([], null, NOW);
+    evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
+    evidence.requestedSteps = [{
+      id: "requested-0",
+      op,
+      asset: "XLM",
+      amount: "50",
+      label: `${op} 50 XLM`,
+      tool: op === "borrow" ? "vanna_borrow" : "vanna_lend",
+      sizing: { basis: "stated" },
+      args: op === "lend"
+        ? { symbol: "XLM", amount: "50", lender: SCOPE.trader }
+        : { symbol: "XLM", amount: "50", trader: SCOPE.trader, smart_account: SCOPE.smartAccount },
+    }];
+
+    const view = await proposeWorkflow({
+      continuation: codec.seal(SCOPE, [message], null, evidence),
+      candidateId: REQUESTED_ACTIONS_ID,
+      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp: { call: vi.fn() }, signal: new AbortController().signal, now: NOW,
+    });
+    expect(view.status).toBe("proposed");
+    expect(view.steps[0].op).toBe(op);
+  });
+
   it("creates the journal from sealed steps without MCP or risk validation", async () => {
     const codec = researchCodec(SECRET, SERVER, () => NOW);
     const evidence = compactResearchEvidence([], null, NOW);

@@ -2,10 +2,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { InvestigationCard } from "@/components/copilot/investigation-card";
-import { generateCandidates } from "@/lib/copilot/investigation/candidates";
+import { generateCandidates, type Candidate } from "@/lib/copilot/investigation/candidates";
 import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
+import { strategyReply } from "@/lib/copilot/investigation/answer";
 
 /**
  * The Options block, rendered.
@@ -72,25 +73,31 @@ describe("investigation card / options", () => {
     });
     card(view({ candidates }));
 
-    expect(screen.getByRole("heading", { name: /^Options?$/ })).toBeTruthy();
+    // Owner layout (23 Sep): plan cards, named Plan A / B when there are several; no "Options" heading.
+    expect(screen.getByRole("region", { name: /^Plans?$/ })).toBeTruthy();
     expect(screen.getByText(/Borrow BLUSDC to the 1.30 floor and supply it to Blend/)).toBeTruthy();
-    expect(screen.getByText("+6.00% net APR")).toBeTruthy();
+    // Quoted as APY (23 Sep, owner): the figure is the candidate's own, not a restated constant.
+    const levered = candidates.feasible.find((c) => c.borrows)!;
+    expect(screen.getByText(`+${Number(levered.netApyPct).toFixed(2)}% net APY`)).toBeTruthy();
     // The full-precision $6,541.043333… reads at the precision a person uses, and the
     // projected floor is shown next to it — a size with no health consequence beside it
     // is the number that gets approved without being understood.
     expect(screen.getByText("$6,537.46")).toBeTruthy();
-    expect(screen.getAllByText("Health factor after")[0].nextElementSibling?.textContent).toBe("1.30");
+    // The plan card says where health goes (mockup board 5), ending at the projected floor.
+    expect(screen.getAllByText("Health factor")[0].nextElementSibling?.textContent).toMatch(/(^|→ )1\.30$/);
   });
 
-  it("shows a ruled-out shape WITH its reason, never as a silent omission", () => {
+  it("says a ruled-out shape WITH its reason in the reply, never as a silent omission", () => {
     const candidates = generateCandidates({
       grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", idleWalletUsd: null,
       comparisons: [comparison({ blendSupplyApr: "3", marginBorrowApr: "7", spreadApr: "-4", verdict: "cost_exceeds_supply" })],
     });
     card(view({ candidates }));
-
-    expect(screen.getByText(/Ruled out: Borrow BLUSDC to supply to Blend/)).toBeTruthy();
-    expect(screen.getByText(/loses money before any fees/)).toBeTruthy();
+    // UI-FIX-LIST 12/16 (owner): no "Ruled out" card; the reply states it once.
+    expect(screen.queryByText(/Ruled out: Borrow BLUSDC to supply to Blend/)).toBeNull();
+    const reply = strategyReply({ status: "researched", facts: [], candidates, capacity: null, question: null });
+    expect(reply).toMatch(/Borrow BLUSDC to supply to Blend/);
+    expect(reply).toMatch(/loses money before any fees/);
   });
 
   it("renders the non-borrowing alternative without inventing a health-factor change", () => {
@@ -103,11 +110,15 @@ describe("investigation card / options", () => {
 
     expect(screen.getByText(/Supply idle BLUSDC to Blend — no new borrowing/)).toBeTruthy();
     expect(screen.getByText(/Lend idle BLUSDC to Earn — no new borrowing/)).toBeTruthy();
-    expect(screen.getByText("25.41% APR")).toBeTruthy();
-    expect(screen.getByText("10.00% APR")).toBeTruthy();
+    for (const idle of candidates.feasible.filter((c) => !c.borrows)) {
+      expect(screen.getByText(`${Number(idle.supplyApyPct).toFixed(2)}% APY`)).toBeTruthy();
+    }
+    expect(screen.queryByText(/% APR$/)).toBeNull();
     expect(screen.getAllByText("$680.00")).toHaveLength(2);
     // Two idle options leave health untouched; the levered third is the only one with a figure.
-    expect(screen.getAllByText("Health factor after").map((dt) => dt.nextElementSibling?.textContent)).toEqual(["unchanged", "unchanged", "1.30"]);
+    const health = screen.getAllByText("Health factor").map((dt) => dt.nextElementSibling?.textContent ?? "");
+    expect(health.slice(0, 2)).toEqual(["unchanged", "unchanged"]);
+    expect(health[2]).toMatch(/(^|→ )1\.30$/);
   });
 
   it("renders only the no-debt option when the user forbade borrowing", () => {
@@ -120,7 +131,7 @@ describe("investigation card / options", () => {
     expect(screen.getByText(/Supply idle BLUSDC to Blend — no new borrowing/)).toBeTruthy();
     // "Do not borrow" must not surface a borrow shape at all — not even ruled out, which
     // still reads as a suggestion the user already declined.
-    expect(screen.queryByText(/net APR/)).toBeNull();
+    expect(screen.queryByText(/net AP[RY]/)).toBeNull();
     expect(screen.queryByText(/Ruled out/)).toBeNull();
   });
 
@@ -136,8 +147,10 @@ describe("investigation card / options", () => {
 
     const order = [...container.querySelectorAll("p")]
       .map((node) => node.textContent ?? "")
-      .filter((text) => text.includes("net APR"));
-    expect(order).toEqual(["+16.00% net APR", "+2.00% net APR"]);
+      .filter((text) => text.includes("net APY"));
+    // The better carry (XLM, +16 points of APR) renders first; each figure is its candidate's APY.
+    expect(candidates.feasible.map((c) => c.asset)).toEqual(["XLM", "BLUSDC"]);
+    expect(order).toEqual(candidates.feasible.map((c) => `+${Number(c.netApyPct).toFixed(2)}% net APY`));
   });
 
   it("omits the block entirely when no floor was stated, rather than showing an empty heading", () => {
@@ -179,8 +192,10 @@ describe("investigation card / options", () => {
         }}
       />,
     );
-    expect(screen.getByRole("heading", { name: /^Options?$/ })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Running" })).toBeTruthy();
+    // The chosen plan has become its execution card: the set of plans is gone (owner layout).
+    expect(screen.queryByRole("region", { name: /^Plans?$/ })).toBeNull();
+    expect(screen.getByRole("region", { name: /execution progress/i })).toBeTruthy();
+    expect(screen.getByText("Executing")).toBeTruthy();
   });
 
   it("offers Approve and run on a proposed plan, and Sign in wallet when an XDR is waiting", () => {
@@ -238,6 +253,7 @@ describe("investigation card / options", () => {
         onSign={onSign}
       />,
     );
+    expect(screen.getByText("Approve the transaction in your wallet to continue.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign in wallet" }));
     expect(onSign).toHaveBeenCalledTimes(1);
   });
@@ -255,7 +271,7 @@ describe("investigation card / options", () => {
     expect(screen.getByRole("status").textContent).toMatch(/Reading can withdraw/);
   });
 
-  it("offers Switch as one action when a runner-up decided the ranking", () => {
+  it("gives each plan its own Approve when a runner-up decided the ranking", () => {
     const onPropose = vi.fn();
     const candidates = generateCandidates({
       grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", borrowingAllowed: false,
@@ -284,13 +300,15 @@ describe("investigation card / options", () => {
       />,
     );
     expect(screen.getByText(/Using SOUSDC/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Use the other option" }));
+    expect(screen.getByText("Plan A")).toBeTruthy();
+    expect(screen.getByText("Plan B")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "Approve" })[1]);
     expect(onPropose).toHaveBeenCalledWith(candidateId("lend_idle", "AQUSDC"));
   });
 
-  it("shows the server-measured duration on a finished investigation", () => {
+  it("shows no duration line under a finished reply (owner, 29 Sep)", () => {
     card(view({ elapsedMs: 12_400, message: "Your reported health factor is 3.90." }));
-    expect(screen.getByText(/Checked in 12s/)).toBeTruthy();
+    expect(screen.queryByText(/Checked in/)).toBeNull();
   });
 });
 
@@ -319,7 +337,7 @@ describe("investigation card / historical receipts", () => {
     const link = screen.getByRole("link", { name: new RegExp(hash) });
     expect(link.getAttribute("href")).toBe(`https://stellar.expert/explorer/testnet/tx/${hash}`);
     expect(screen.getByText("Settled")).toBeTruthy();
-    expect(screen.getByText(/ledger #42/)).toBeTruthy();
+    expect(screen.getByText(/Ledger 42/)).toBeTruthy();
   });
 });
 
@@ -335,5 +353,61 @@ describe("investigation card / in-flight state", () => {
         workflow={{ id: "w", revision: 1, digest: "d", status: "proposed", objective: "o", expiresAt: 0, assumptions: [], constraints: [], slippageAccepted: false, message: "m", steps: [] }} />,
     );
     expect(screen.getByTestId("workflow-progress").textContent).toMatch(/Checking funds, prices and projected health/);
+  });
+});
+
+describe("investigation card / plan health factor before and after", () => {
+  const baseCandidate = (over: Partial<Candidate> = {}): Candidate => ({
+    id: "plan-1",
+    kind: "borrow_supply",
+    label: "Borrow BLUSDC and supply to Blend",
+    borrows: true,
+    asset: "BLUSDC",
+    venue: "blend",
+    netAprPct: "6.00",
+    supplyAprPct: "10.00",
+    legs: [],
+    finalHealthFactor: "2.02",
+    amountUsd: "5000",
+    evidenceIds: [],
+    amountBasis: "stated",
+    ...over,
+  });
+
+  it("renders '1.80 → 2.02' for a candidate with before and after", () => {
+    const candidate = baseCandidate({ initialHealthFactor: "1.80", finalHealthFactor: "2.02" });
+    card(view({ candidates: { feasible: [candidate], rejected: [] } }));
+    expect(screen.getByText("Health factor")).toBeTruthy();
+    expect(screen.getByText("1.80 → 2.02")).toBeTruthy();
+  });
+
+  it("renders '→ No debt' when candidate repays all debt", () => {
+    const candidate = baseCandidate({ repaysAllDebt: true, finalHealthFactor: null, initialHealthFactor: "2.33" });
+    card(view({ candidates: { feasible: [candidate], rejected: [] } }));
+    expect(screen.getByText("Health factor")).toBeTruthy();
+    expect(screen.getByText("2.33 → No debt")).toBeTruthy();
+  });
+
+  it("keeps 'after' only when candidate has no before figure", () => {
+    const candidate = baseCandidate({ finalHealthFactor: "2.02" });
+    card(view({ candidates: { feasible: [candidate], rejected: [] }, capacity: null }));
+    expect(screen.getByText("Health factor")).toBeTruthy();
+    expect(screen.getByText("2.02")).toBeTruthy();
+  });
+
+  it("uses result.capacity.healthFactor as before when candidate does not carry it directly", () => {
+    const candidate = baseCandidate({ finalHealthFactor: "2.02" });
+    card(view({
+      candidates: { feasible: [candidate], rejected: [] },
+      capacity: {
+        floor: "1.30",
+        grossCollateralUsd: "4000",
+        debtUsd: "2222.22",
+        healthFactor: "1.80",
+        maxBorrowUsd: "1000",
+      },
+    }));
+    expect(screen.getByText("Health factor")).toBeTruthy();
+    expect(screen.getByText("1.80 → 2.02")).toBeTruthy();
   });
 });

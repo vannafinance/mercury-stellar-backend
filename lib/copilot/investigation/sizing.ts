@@ -69,6 +69,14 @@ export interface LegRequest {
   amountUsd: string | "max";
   /** For "max": what the pocket actually holds (a withdraw cannot take more than is posted). */
   capUsd?: string;
+  /**
+   * The amount was already bounded by this asset's own position read (a repay checked
+   * against what is owed in that token). Then the account-level USD total is only a
+   * projection, and a repay that clears it pays it to zero instead of failing. 23 Sep, X12:
+   * four repays, each within its own debt, summed a few cents above the contract snapshot's
+   * total, and the last ("repay SOUSDC") was refused as larger than the outstanding debt.
+   */
+  withinPosition?: boolean;
 }
 
 export interface SizedLeg {
@@ -191,10 +199,10 @@ export function sizeLegs(base: SizingBase, legs: readonly LegRequest[], floor: s
         debt = checked(debt + amount);
         break;
       case "repay":
-        if (amount > debt) return fail("repay_exceeds_debt", leg.label);
+        if (amount > debt && !leg.withinPosition) return fail("repay_exceeds_debt", leg.label);
         if (amount > gross) return fail("repay_exceeds_collateral", leg.label);
         gross = gross - amount;
-        debt = debt - amount;
+        debt = amount > debt ? ZERO : debt - amount;
         break;
       case "withdraw_collateral":
         if (amount > gross) return fail("withdraw_exceeds_collateral", leg.label);
@@ -217,4 +225,31 @@ export function sizeLegs(base: SizingBase, legs: readonly LegRequest[], floor: s
 
   const finalHf = healthFactorWad(gross, debt);
   return { ok: true, legs: sized, finalHealthFactor: finalHf === null ? null : formatWad(finalHf) };
+}
+
+/**
+ * The health factor a plan card SHOWS: the Margin page's own figures (owner, 29 Sep: the
+ * page's 2.32 is the health factor, not the contract-basis 1.83), moved by exactly the
+ * collateral and debt the sized legs move. Sizing and its floor checks stay on `basis`;
+ * only the displayed before/after follow the page. Null without page figures.
+ */
+export function displayHealthFactors(
+  basis: SizingBase,
+  site: SizingBase | null | undefined,
+  legs: readonly SizedLeg[],
+): { before: string | null; after: string | null } | null {
+  if (!site) return null;
+  try {
+    const siteGross = decimalWad(site.grossCollateralUsd);
+    const siteDebt = decimalWad(site.debtUsd);
+    const beforeWad = healthFactorWad(siteGross, siteDebt);
+    const last = legs[legs.length - 1];
+    if (!last) return { before: beforeWad === null ? null : formatWad(beforeWad), after: beforeWad === null ? null : formatWad(beforeWad) };
+    const gross = siteGross + decimalWad(last.grossAfterUsd) - decimalWad(basis.grossCollateralUsd);
+    const debt = siteDebt + decimalWad(last.debtAfterUsd) - decimalWad(basis.debtUsd);
+    const afterWad = debt <= ZERO || gross < ZERO ? null : healthFactorWad(gross, debt);
+    return { before: beforeWad === null ? null : formatWad(beforeWad), after: afterWad === null ? null : formatWad(afterWad) };
+  } catch {
+    return null;
+  }
 }

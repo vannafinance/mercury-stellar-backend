@@ -6,8 +6,10 @@ import { getMcpClient } from "@/lib/copilot/mcp-client";
 import { copilotConfig } from "@/lib/copilot/config";
 import { createFlashResearchModel } from "@/lib/copilot/investigation/flash";
 import { researchTurn, type ResearchInput } from "@/lib/copilot/investigation/service";
+import { composeReply } from "@/lib/copilot/investigation/compose";
 import "@/lib/copilot/investigation/proposal";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
+import { INVESTIGATION_MESSAGE_LIMIT } from "@/lib/copilot/domain-classifier";
 import { isRecord } from "@/lib/copilot/investigation/decision";
 import { logUnexpected } from "@/lib/copilot/log";
 import { appendSessionTurn } from "@/lib/copilot/session-store";
@@ -33,8 +35,22 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
   } finally { reader.releaseLock(); }
   let body: unknown;
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ResearchError("invalid_request", "Invalid research request.", 400); }
-  if (!isRecord(body) || Object.keys(body).some((key) => !["message", "wallet", "continuation", "session", "history", "conversationId"].includes(key)) ||
-    typeof body.message !== "string" || !body.message.trim() || body.message.length > 8000 ||
+  const answers = body && isRecord(body) ? body.answers : undefined;
+  const amountOk = (amount: unknown) => isRecord(amount) && (amount.kind === "fraction" || amount.kind === "literal" || amount.kind === "previous_leg");
+  const sectionOk = (section: unknown) => isRecord(section) && typeof section.sectionId === "string" && typeof section.asset === "string"
+    && (section.venue === null || typeof section.venue === "string") && amountOk(section.amount);
+  const answersOk = answers == null || (isRecord(answers) && typeof answers.questionnaireId === "string"
+    && typeof answers.summary === "string" && answers.summary.trim().length > 0 && answers.summary.length <= 2000
+    && (Array.isArray(answers.sections)
+      ? answers.sections.length > 0 && answers.sections.every(sectionOk)
+      : typeof answers.asset === "string" && (answers.venue === null || typeof answers.venue === "string") && amountOk(answers.amount)));
+  if (!answersOk) throw new ResearchError("invalid_answers", "The questionnaire answer is missing an option or an amount.", 400);
+  const message = isRecord(body) && typeof body.message === "string" && body.message.trim()
+    ? body.message.trim()
+    : isRecord(answers) && typeof answers.summary === "string" ? answers.summary.trim() : "";
+  if (!isRecord(body) || Object.keys(body).some((key) => !["message", "wallet", "continuation", "session", "history", "conversationId", "answers"].includes(key)) ||
+    !message || message.length > INVESTIGATION_MESSAGE_LIMIT ||
+    (answers != null && (typeof body.continuation !== "string" || !body.continuation.trim())) ||
     !(body.wallet == null || typeof body.wallet === "string" && body.wallet.length <= 56) ||
     !(body.continuation == null || typeof body.continuation === "string" && body.continuation.length <= 65_536) ||
     !(body.session == null || typeof body.session === "string" && body.session.length <= 65_536) ||
@@ -50,9 +66,10 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
       }))
     : undefined;
   return {
-    message: body.message.trim(),
+    message,
     wallet: body.wallet as string | null ?? null,
     continuation: body.continuation as string | null ?? null,
+    ...(isRecord(answers) ? { answers: answers as unknown as NonNullable<ResearchInput["answers"]> } : {}),
     session: body.session as string | null ?? null,
     history,
     conversationId: body.conversationId as string | null ?? null,
@@ -148,11 +165,13 @@ export async function POST(req: NextRequest) {
         }
         void withBoundUser(bound, () => withTokenSubject(subject, async () => {
           try {
-            const result = await researchTurn(input, {
+            const researched = await researchTurn(input, {
               subject, server: copilotConfig.mcpBaseUrl, network, secret,
               mcp: getMcpClient(), model: createFlashResearchModel(), signal,
               onProgress: (event) => send({ type: "progress", event }),
             });
+            // The model words a factual answer around the audited figures; unchanged if it cannot.
+            const result = await composeReply(researched, signal);
             // The turn is recorded before the result goes out, so the client learns which
             // conversation it landed in and carries that id on the next turn.
             // A store that cannot record the turn must not cost the user their answer — but a

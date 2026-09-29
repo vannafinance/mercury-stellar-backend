@@ -162,6 +162,30 @@ describe("what the table decides downstream", () => {
     });
   });
 
+  it("names each blocked lend once: one refusal per asset, not per repeated leg", () => {
+    const lit = (asset: string) => ({ op: "lend" as const, asset, sizing: { kind: "literal" as const, amount: "10", sourceQuote: `lend 10 ${asset}` } });
+    const empty = ctx(rows("0", "0", "0"), ["lend 10 XLM and 10 XLM"]);
+    expect(resolvePlans([plan([lit("XLM"), lit("XLM")])], empty).rejected).toHaveLength(1);
+    const twoAssets = resolvePlans([plan([lit("XLM"), lit("AQUSDC")])], ctx(rows("0", "0", "0"), ["lend 10 XLM and 10 AQUSDC"]));
+    expect(new Set(twoAssets.rejected.map((entry) => entry.leg)).size).toBe(twoAssets.rejected.length);
+    expect(twoAssets.rejected.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps a confirmed empty Blend position apart from a failed read on an all-position exit", () => {
+    const base: Observation[] = [
+      obs("w", "wallet_balances", { assets: [{ symbol: "XLM", balance: "1", decimals: 7, status: "ok" }], fee_reserve_xlm: "0.5" }),
+      obs("p", "asset_price", { price_usd: "0.18" }, { asset: "XLM" }),
+    ];
+    const exit = [plan([{ op: "blend_withdraw", asset: "XLM", sizing: { kind: "all_position" } }])];
+    const zero = resolvePlans(exit, ctx([...base, obs("bp", "blend_position", { positions: [{ symbol: "XLM", underlying_value: "0" }] })], ["remove my XLM position from Blend"]));
+    const failed = resolvePlans(exit, ctx([...base, { id: "bp", capability: "blend_position", args: {}, observedAt: NOW, status: "error", error: "timeout" } as Observation], ["remove my XLM position from Blend"]));
+    expect(zero.candidates).toEqual([]);
+    expect(failed.candidates).toEqual([]);
+    // Moved here from blend-full-position-direct (keyword path, unreachable under investigate-first).
+    expect(zero.rejected[0]?.reason).toBe("you have no XLM supplied to Blend");
+    expect(failed.rejected[0]?.reason).toBe("no XLM Blend supply was read this investigation");
+  });
+
   it("a stated lend is funded from the wallet: the shape matrix found 'lend 100 XLM' offered from an empty wallet", () => {
     const empty = resolvePlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "lend 100 XLM" } }])], ctx(rows("0", "0", "0"), ["lend 100 XLM"]));
     expect(empty.candidates).toEqual([]);
@@ -238,7 +262,9 @@ describe("what the table decides downstream", () => {
     expect(rejected).toEqual([]);
     expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["supply_blend", "100"]]);
     const over = resolvePlans([plan([{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "900", sourceQuote: "supply 900 XLM" } }])], ctx(rows("0", "800", "0"), ["supply 900 XLM to Blend"]));
-    expect(over.rejected[0]?.reason).toBe("only 800 XLM is in the margin account");
+    // 24 Sep owner decision: the shortfall is named and topped up from the wallet when it can be;
+    // here the wallet is empty, so it is refused with both balances.
+    expect(over.rejected[0]?.reason).toBe("Your margin account has 800 XLM and this needs 900. Your wallet has 0 XLM, which does not cover the other 100.");
   });
 
   it("a stated repay comes from the account when it holds enough, else the wallet puts it in first", () => {

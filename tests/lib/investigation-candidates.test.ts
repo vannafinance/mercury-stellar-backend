@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateCandidates, idleWalletUsdFrom, rankingBorrowing, requestedBorrowFrom } from "@/lib/copilot/investigation/candidates";
+import { generateCandidates, idleWalletUsdFrom, plansBorrow, rankFeasible, rankingBorrowing, requestedBorrowFrom } from "@/lib/copilot/investigation/candidates";
 import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
 
@@ -140,7 +140,11 @@ describe("candidate generation", () => {
 
   it("treats a typed borrow leg as required even when the goal said allowed", () => {
     expect(rankingBorrowing("allowed", [{ op: "borrow" }])).toBe("required");
-    expect(rankingBorrowing("unspecified", null, [{ legs: [{ op: "borrow" }] }])).toBe("required");
+    // Owner, 24 Sep: a borrow the MODEL proposed is a suggestion, not an instruction, so the
+    // no-debt options stay listed; its sizing still reads the capacity (plansBorrow).
+    expect(rankingBorrowing("unspecified", null)).toBe("unspecified");
+    expect(plansBorrow([{ legs: [{ op: "borrow" }] }])).toBe(true);
+    expect(plansBorrow([{ legs: [{ op: "lend" }] }])).toBe(false);
     expect(rankingBorrowing("forbidden", [{ op: "borrow" }])).toBe("forbidden");
     expect(rankingBorrowing("allowed", [{ op: "lend" }])).toBe("allowed");
   });
@@ -370,7 +374,26 @@ describe("an amount the user named outright", () => {
     expect(feasible[0].decision?.reason).toMatch(/SOUSDC/);
     expect(feasible[0].decision?.reason).toMatch(/74,985/);
     expect(feasible[0].decision?.reason).toMatch(/AQUSDC/);
-    expect(feasible[0].decision?.reason).toMatch(/swap/);
+    // AQUSDC is held (2,680): the reason is its smaller size, never a swap into it.
+    expect(feasible[0].decision?.reason).toMatch(/hold only 2,680 of it/);
+    expect(feasible[0].decision?.reason).not.toMatch(/swap .* into it/);
+  });
+
+  it("names a swap only for a runner-up the user does not hold", () => {
+    const { feasible } = generateCandidates({
+      ...BASE, borrowingAllowed: false, idleWalletUsd: "77665",
+      idleWalletByAssetUsd: { SOUSDC: "74985", AQUSDC: "2680" },
+      idleWalletByAssetTokens: { SOUSDC: "74985", AQUSDC: "2680" },
+      comparisons: [
+        comparison({ asset: "SOUSDC", earnSupplyApr: "4.2", blendSupplyApr: null, marginBorrowApr: null, spreadApr: null, verdict: "earn_only" }),
+        comparison({ asset: "AQUSDC", earnSupplyApr: "4.5", blendSupplyApr: null, marginBorrowApr: null, spreadApr: null, verdict: "earn_only" }),
+      ],
+    });
+    // The same runner-up as a composed plan naming a balance the wallet does not hold.
+    const unheld = feasible.map((c) => c.asset === "AQUSDC" ? { ...c, heldAmount: null } : c);
+    const [top] = rankFeasible(unheld);
+    expect(top.asset).toBe("SOUSDC");
+    expect(top.decision?.reason).toMatch(/swap 2,680 into it first/);
   });
 
   it("names a thin APR margin instead of claiming the yield decided it", () => {

@@ -68,3 +68,20 @@ describe("a follow-up turn keeps the amounts the user already stated", () => {
     expect(literalAmountAnchored(swap.sizing, ctx3, { legs: [swap] } as any, swap)).toBe(false);
   });
 });
+
+/**
+ * 23 Sep, X5 live: after "i accept the loss" the model quoted the earlier turn with a capital
+ * S ("Swap 50 XLM to AQUSDC" for "swap 50 XLM…"). The user's own words state 50 for that swap,
+ * read independently, so the amount stands however the quote was cased.
+ */
+describe("the user's own earlier words anchor the amount, whatever the model's quote", () => {
+  const convo = ["swap 50 XLM to AQUSDC and add it as liquidity with XLM on aquarius,", "i accept the loss"];
+  it("accepts a re-cased quote when the earlier turn states the amount", () => {
+    const swap = leg("swap", "XLM", "50", "Swap 50 XLM to AQUSDC");
+    expect(literalAmountAnchored(swap.sizing, { messages: convo } as any, { legs: [swap] } as any, swap)).toBe(true);
+  });
+  it("still refuses an amount no turn states, with an invented quote", () => {
+    const swap = leg("swap", "XLM", "70", "Swap 70 XLM to AQUSDC");
+    expect(literalAmountAnchored(swap.sizing, { messages: convo } as any, { legs: [swap] } as any, swap)).toBe(false);
+  });
+});

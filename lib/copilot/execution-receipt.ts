@@ -120,6 +120,8 @@ export function singleWriteReceiptAnswer(opts: {
 /** A durable, machine-readable workflow receipt; never reconstructed from prose. */
 export type ExecutionReceiptStep = {
   operation: WorkflowOp;
+  /** The step's own card label ("Supply 1 XLM to Blend"); a restored card showed the op code without it. */
+  label?: string;
   asset: string;
   amount: string;
   status: StepStatus;
@@ -145,6 +147,7 @@ export function executionReceiptFromWorkflowView(
     network,
     steps: view.steps.map((step) => ({
       operation: step.op,
+      ...(step.label ? { label: step.label } : {}),
       asset: step.asset,
       amount: step.amount,
       status: step.status,

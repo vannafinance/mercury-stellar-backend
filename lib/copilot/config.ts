@@ -27,10 +27,11 @@ export const copilotConfig = {
   /**
    * This app's own public origin, when it is known.
    *
-   * Only consumer today is the wallet-bind register forward: the Connect Gateway
-   * rejects a missing `Origin` header if it has an allowlist configured, and a
-   * server-to-server fetch has no Origin unless we set one. Empty is fine — the
-   * gateway allows absent Origin when its allowlist is empty (its dev posture).
+   * Only consumer today is the wallet-bind register compatibility fallback: the
+   * Connect Gateway rejects a missing `Origin` header if it has an allowlist
+   * configured, and a server-to-server fetch has no Origin unless we set one. Empty
+   * is fine — the gateway allows absent Origin when its allowlist is empty (its dev
+   * posture).
    */
   get publicOrigin(): string {
     const raw = env("COPILOT_PUBLIC_ORIGIN") || env("NEXT_PUBLIC_APP_URL");

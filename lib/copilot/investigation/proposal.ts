@@ -12,7 +12,7 @@ import { capacityFromBasis, computeSizingBasis, type SizingBasis } from "./capac
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { interruptible } from "./runtime";
 import {
-  generateCandidates, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, idleWalletUsdFrom, requestedBorrowFrom,
+  generateCandidates, idleWalletAfterReserves, requestedBorrowFrom,
 } from "./candidates";
 import { collectStrategyReads, readsForPlans, STRATEGY_READS } from "./strategy-reads";
 import { parseCandidateId, requiresMarginAccount, REQUESTED_ACTIONS_ID } from "./candidate-id";
@@ -26,7 +26,7 @@ import { resolveInvestigationScope, ResearchError } from "./scope";
 import { WorkflowJournal, WorkflowConflict } from "../workflow/journal";
 import { workflowStore } from "../workflow/store";
 import { disagreesOnNewDebt, drawsNewDebt } from "../leg-direction";
-import { clauseToStep } from "../step-extractor";
+import { routeMessage } from "../router";
 import { workflowView, type WorkflowProposal, type WorkflowRecord, type WorkflowView } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
 import { validateWorkflowRisk } from "../workflow/risk";
@@ -35,6 +35,38 @@ import { appendAudit } from "../audit-log";
 
 export function workflowJournal(secret: string): WorkflowJournal {
   return new WorkflowJournal(workflowStore<WorkflowRecord>(secret));
+}
+
+/**
+ * Stop a proposal when the deterministic router and the investigation chose opposite
+ * answers on whether the action creates new debt. The router is only consulted here,
+ * during investigation proposal preparation; its normal routing behavior is unchanged.
+ */
+function assertDebtIntentAgrees(message: string, chosenOps: string[]): void {
+  if (chosenOps.length !== 1) return;
+
+  const routed = routeMessage(message);
+  const routedOps = routed.kind === "write"
+    ? [routed.op]
+    : routed.kind === "plan"
+      ? routed.steps.flatMap((step) => step.kind === "write" && step.op ? [step.op] : [])
+      : [];
+  if (routedOps.length !== 1) return;
+
+  const spokenOp = routedOps[0];
+  const chosenOp = chosenOps[0];
+  if (!disagreesOnNewDebt(spokenOp, chosenOp)) return;
+
+  const borrowing = drawsNewDebt(chosenOp) ? chosenOp : spokenOp;
+  const funded = drawsNewDebt(chosenOp) ? spokenOp : chosenOp;
+  throw new ResearchError(
+    "debt_reading_ambiguous",
+    `I read two different things in that, and they disagree about borrowing: one is ` +
+      `${String(funded).replace(/_/g, " ")} using funds you already hold, the other is ` +
+      `${String(borrowing).replace(/_/g, " ")}, which takes on new debt. Say which you meant ` +
+      `and I will prepare it.`,
+    409,
+  );
 }
 
 export async function proposeWorkflow(input: {
@@ -72,6 +104,7 @@ export async function proposeWorkflow(input: {
   if (parsed.kind === REQUESTED_ACTIONS_ID) {
     const steps = prior.evidence?.requestedSteps;
     if (!steps?.length) throw new ResearchError("candidate_unavailable", "The requested actions are unavailable. Investigate again.");
+    assertDebtIntentAgrees(prior.messages[prior.messages.length - 1] ?? "", steps.map((step) => step.op));
     for (const step of steps) allowedInvocation(step, scope);
     const floor = prior.evidence?.capacity?.floor ?? null;
     /**
@@ -177,9 +210,9 @@ export async function proposeWorkflow(input: {
     : liveBasis && liveFloor ? capacityFromBasis(liveBasis, liveFloor) : null;
   const requestedBorrow = requestedBorrowFrom(prior.messages, observations, now);
   const comparisons = compareObservedRates(observations, now);
-  const idleWalletUsd = idleWalletUsdFrom(observations, now);
-  const idleWalletByAssetUsd = idleWalletByAssetUsdFrom(observations, now);
-  const idleWalletByAssetTokens = idleWalletByAssetTokensFrom(observations, now);
+  // The reserves sealed with the research; the same subtraction the investigation sized with.
+  const walletReserves = prior.evidence?.walletReserves;
+  const { idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens } = idleWalletAfterReserves(observations, now, walletReserves);
   const idleOnly = sealedPlan ? !sealedPlan.legs.some((leg) => leg.op === "borrow") : !parsed.traits.borrows;
   /**
    * Same gates as `researchTurn`: an unvalued stated amount must not fall through to
@@ -225,6 +258,7 @@ export async function proposeWorkflow(input: {
          * the loss" — the sizer and the card never saw the word.
          */
         goal: prior.evidence?.slippageAccepted ? { slippageAccepted: { accepted: true, sourceQuote: "" } } : undefined,
+        walletReserves,
       })
     : null;
   const candidate = resolved
@@ -247,21 +281,7 @@ export async function proposeWorkflow(input: {
   }
 
 
-  /**
-   * Two readings of one sentence that disagree about creating debt stop here.
-   *
-   * The investigation's reading and the deterministic extractor's reading of the SAME words
-   * are compared on one axis — does this draw new debt — taken from `OP_FLOW` rather than
-   * from any verb list. Live, 23 Sep: "lend me 50xlm" compiled a `borrow`, while the
-   * extractor read `lend`. Auto-approve was on and the card offered "Approve and run".
-   *
-   * It stops at propose rather than during research so a wrong reading is never the thing
-   * a click executes, while answers, comparisons and refusals are untouched. Both readings
-   * are defensible English, so neither is chosen here: the disagreement is handed back.
-   */
   const spoken = prior.messages[prior.messages.length - 1] ?? "";
-  const extracted = clauseToStep(spoken, { leverage: null, minHf: null });
-  const spokenOp = extracted?.kind === "write" ? extracted.op : null;
   /**
    * Only a SINGLE-action reading can disagree with itself.
    *
@@ -272,22 +292,7 @@ export async function proposeWorkflow(input: {
    * one-step plan is this sentence read back, and only there does "the other reading" mean
    * anything.
    */
-  const soleStep = compiled.steps.length === 1 ? compiled.steps[0] : null;
-  if (spokenOp && soleStep) {
-    const conflicting = disagreesOnNewDebt(spokenOp, soleStep.op) ? soleStep : null;
-    if (conflicting) {
-      const borrowing = drawsNewDebt(conflicting.op) ? conflicting.op : spokenOp;
-      const funded = drawsNewDebt(conflicting.op) ? spokenOp : conflicting.op;
-      throw new ResearchError(
-        "debt_reading_ambiguous",
-        `I read two different things in that, and they disagree about borrowing: one is ` +
-          `${String(funded).replace(/_/g, " ")} using funds you already hold, the other is ` +
-          `${String(borrowing).replace(/_/g, " ")}, which takes on new debt. Say which you meant ` +
-          `and I will prepare it.`,
-        409,
-      );
-    }
-  }
+  assertDebtIntentAgrees(spoken, compiled.steps.map((step) => step.op));
   const derived = compiled.steps.find((step) => step.sizing?.basis === "derived_max_at_floor");
   const assumptions = [
     "Token amounts use the oracle price read for this proposal, not a ticker peg.",

@@ -44,7 +44,24 @@ const CEILINGS: Readonly<InvestigationLimits> = Object.freeze({
   maxObservationBytes: 16_384,
 });
 
-function boundedLimits(overrides: Partial<InvestigationLimits> = {}): InvestigationLimits {
+/**
+ * A failed read, described by facts that cannot carry a secret: whether it ran out of time,
+ * the error class, and the MCP code and HTTP status. Never the exception message, which can
+ * hold upstream credentials. 23 Sep: every failure read "MCP read failed. No value was
+ * inferred.", so a timeout, a 5xx and a refused call looked identical and could not be told
+ * apart from the diagnostics.
+ */
+export function readFailureText(error: unknown, timedOut: boolean): string {
+  if (timedOut) return "MCP read exceeded its time limit. No value was inferred.";
+  const parts = [
+    error instanceof Error ? error.name : "unknown",
+    error instanceof MCPError && error.code ? `code ${error.code}` : null,
+    error instanceof MCPError && error.httpStatus ? `HTTP ${error.httpStatus}` : null,
+  ].filter(Boolean);
+  return `MCP read failed (${parts.join(", ")}). No value was inferred.`;
+}
+
+export function boundedLimits(overrides: Partial<InvestigationLimits> = {}): InvestigationLimits {
   const limits = { ...CEILINGS };
   for (const key of Object.keys(CEILINGS) as Array<keyof InvestigationLimits>) {
     const value = overrides[key] ?? CEILINGS[key];
@@ -214,8 +231,8 @@ export async function runInvestigation(
   const timer = setTimeout(() => controller.abort("deadline"), limits.maxDurationMs);
   const signal = dependencies.signal
     ? AbortSignal.any([controller.signal, dependencies.signal]) : controller.signal;
-  const finish = (outcome: InvestigationOutcome): InvestigationResult => ({
-    outcome, observations,
+  const finish = (outcome: InvestigationOutcome, stopDetail?: string): InvestigationResult => ({
+    outcome, observations, ...(stopDetail ? { stopDetail } : {}),
     usage: { modelTurns, toolCalls, elapsedMs: Math.max(0, now() - startedAt) },
     executionAllowed: false,
   });
@@ -322,7 +339,7 @@ export async function runInvestigation(
           return null;
         }
         console.warn("[copilot] investigation decision refused", { turn: modelTurns, reason: refusal, keys: isRecord(raw) ? Object.keys(raw) : typeof raw });
-        return finish({ kind: "stopped", reason: "invalid_decision" });
+        return finish({ kind: "stopped", reason: "invalid_decision" }, refusal);
       }
       span.setAttribute("vanna.investigation.decision", decision.kind);
       if (decision.kind === "research_complete") {
@@ -345,7 +362,7 @@ export async function runInvestigation(
         }
         if (!rejects.length) return finish(decision);
         console.warn("[copilot] investigation evidence refused", { turn: modelTurns, rejects: rejects.slice(0, 8) });
-        return finish({ kind: "stopped", reason: "invalid_evidence" });
+        return finish({ kind: "stopped", reason: "invalid_evidence" }, rejects.slice(0, 8).join("; "));
       }
       if (decision.kind !== "inspect") return finish(decision);
       if (toolCalls >= limits.maxToolCalls) return finish({ kind: "stopped", reason: "tool_budget" });
@@ -477,9 +494,7 @@ export async function runInvestigation(
             code: error instanceof MCPError ? error.code : undefined,
             httpStatus: error instanceof MCPError ? error.httpStatus : undefined,
           });
-          observation.error = timeout
-            ? "MCP read exceeded its time limit. No value was inferred."
-            : "MCP read failed. No value was inferred.";
+          observation.error = readFailureText(error, timeout);
         }).finally(() => {
           finishRead("mcp");
         });

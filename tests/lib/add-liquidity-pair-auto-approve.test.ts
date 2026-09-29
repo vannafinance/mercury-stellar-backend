@@ -17,6 +17,19 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
+/**
+ * The pool ratio is a direct on-chain read (`getAquariusPoolStats`). Left live, a dropped RPC
+ * connection blocked the leg and this test failed 2 runs in 5 on the baseline too (29 Sep), a
+ * result about the network rather than the switch. Pinned to a recorded pool instead.
+ */
+vi.mock("@/lib/aquarius-utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/aquarius-utils")>();
+  return {
+    ...actual,
+    AquariusService: { ...actual.AquariusService, getAquariusPoolStats: vi.fn(async () => ({ reserveA: "88000", reserveB: "1000" })) },
+  };
+});
+
 vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/copilot/vertex")>();
   return { ...actual, vertexSelectTool: vi.fn().mockRejectedValue(new Error("no network in test")) };

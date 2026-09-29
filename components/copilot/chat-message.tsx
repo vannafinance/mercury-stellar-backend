@@ -1,7 +1,9 @@
 "use client";
 
+import { Fragment } from "react";
 import { CircleAlert } from "lucide-react";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
+import type { ReplyBlock, ReplySegment } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 
@@ -13,9 +15,23 @@ import { ExecutionStepper, type StepperStep } from "@/components/copilot/executi
  * lines; those stay in storage and are stripped here for display.
  */
 
+
+/**
+ * Where an assistant turn's TEXT starts: the 18px mark plus the 10px gap beside it. Lines that
+ * belong to the reply but sit outside it (the "Checked in" clock, the progress line) use this
+ * so they line up under the words, not under the logo.
+ */
+export const ASSISTANT_TEXT_INDENT = "pl-7";
+/**
+ * The one gap between a reply and the card that belongs to it (execution, plans, questionnaire),
+ * whichever component draws the card, so the space never depends on which path rendered it
+ * (owner, 29 Sep: the thread-drawn execution card sat 8px under the reply, the card-drawn one 20px).
+ */
+export const REPLY_CARD_GAP_PX = 20;
 export function UserBubble({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+    // The shell pins the latest of these to the top of the view on send (copilot-shell.tsx).
+    <div data-cp-user-bubble="" style={{ display: "flex", justifyContent: "flex-end" }}>
       <p
         style={{
           maxWidth: "82%",
@@ -40,14 +56,19 @@ export function AssistantMessage({
   children,
   note,
   tone = "default",
+  blocks,
 }: {
   children: React.ReactNode;
   note?: string | null;
   tone?: "default" | "error";
+  /** A composed reply (compose.ts); drawn in place of the plain text when present. */
+  blocks?: ReplyBlock[];
 }) {
   return (
     <div>
-      {typeof children === "string" ? (
+      {blocks?.length && tone !== "error" ? (
+        <ReplyBlocksBody blocks={blocks} />
+      ) : typeof children === "string" ? (
         <AssistantBody text={children} color={tone === "error" ? "var(--z-danger, #c23d3d)" : null} />
       ) : (
         <p
@@ -237,6 +258,63 @@ function FactTable({ rows }: { rows: string[][] }) {
   );
 }
 
+/** A run of reply text; audited figures are set a touch heavier so the numbers read first. */
+function Segments({ segments }: { segments: readonly ReplySegment[] }) {
+  return (
+    <>
+      {segments.map((segment, i) => segment.figure
+        ? <strong key={i} style={{ fontWeight: 600, color: "var(--g900)" }}>{segment.text}</strong>
+        : <Fragment key={i}>{segment.text}</Fragment>)}
+    </>
+  );
+}
+
+/**
+ * A reply the model wrote around audited figures (compose.ts). Plain blocks only — the
+ * figures inside are code's, bound before they reach here — so nothing is parsed from text.
+ */
+export function ReplyBlocksBody({ blocks }: { blocks: readonly ReplyBlock[] }) {
+  return (
+    <>
+      {blocks.map((block, i) => {
+        const lead = i === 0;
+        const gap = lead ? 0 : "10px 0 0";
+        if (block.type === "heading") {
+          return (
+            <p key={i} style={{ margin: lead ? 0 : "16px 0 0", fontSize: 14, lineHeight: "22px", fontWeight: 600, color: "var(--g900)" }}>
+              <Segments segments={block.segments} />
+            </p>
+          );
+        }
+        if (block.type === "bullets") {
+          return (
+            <ul key={i} style={{ margin: gap, paddingLeft: 20, listStyle: "disc", fontSize: 16, lineHeight: "26px", color: "var(--g800)" }}>
+              {block.items.map((item, j) => (
+                <li key={j} style={{ marginTop: j === 0 ? 0 : 2 }}><Segments segments={item} /></li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <p
+            key={i}
+            style={{
+              // One voice: every paragraph at the reply's size (a smaller second line read as a footnote).
+              margin: gap,
+              fontSize: 16,
+              lineHeight: "26px",
+              color: "var(--g800)",
+              textWrap: "pretty",
+            }}
+          >
+            <Segments segments={block.segments} />
+          </p>
+        );
+      })}
+    </>
+  );
+}
+
 /** Every block the turn actually carries — prose, figures, tables. */
 export function AssistantBody({ text, color = null }: { text: string; color?: string | null }) {
   const blocks = chatBlocksFromStored(text);
@@ -285,12 +363,13 @@ export function groupChatTurns(turns: ThreadTurn[]): Array<{ user?: ThreadTurn; 
 function receiptStepperSteps(receipt: ExecutionReceiptSnapshot): StepperStep[] {
   return receipt.steps.map((step, index) => ({
     id: `${receipt.workflowId}-${index}`,
-    label: "",
+    label: step.label ?? "",
     op: step.operation,
     asset: step.asset,
     amount: step.amount,
     status: step.status === "settled" ? "settled"
-      : step.status === "failed" || step.status === "uncertain" ? "failed"
+      : step.status === "uncertain" ? "uncertain"
+        : step.status === "failed" ? "failed"
         : step.status === "awaiting_signature" ? "signing"
           : step.status === "submitted" || step.status === "submitting" ? "submitting"
             : step.status === "invoking" ? "claiming" : "pending",
@@ -301,12 +380,14 @@ function receiptStepperSteps(receipt: ExecutionReceiptSnapshot): StepperStep[] {
 
 function AssistantTurn({
   text,
+  blocks,
   receipt,
   note,
   tone = "default",
   sessionSigning,
 }: {
   text: string;
+  blocks?: ReplyBlock[];
   receipt?: ThreadTurn["executionReceipt"];
   note?: string | null;
   tone?: "default" | "error";
@@ -314,7 +395,7 @@ function AssistantTurn({
 }) {
   if (/^Investigation cancelled\./i.test(text)) {
     return (
-      <div className="flex items-start gap-2.5 max-w-[85%]">
+      <div className="flex items-start gap-2.5 w-full">
         <img
           src="/logos/vanna-icon.png"
           alt="Vanna"
@@ -330,7 +411,7 @@ function AssistantTurn({
     );
   }
   return (
-    <div className="flex items-start gap-2.5 max-w-[85%]">
+    <div className="flex items-start gap-2.5 w-full">
       <img
         src="/logos/vanna-icon.png"
         alt="Vanna"
@@ -338,8 +419,8 @@ function AssistantTurn({
         height={18}
         className="h-[18px] w-[18px] shrink-0 mt-1 rounded-full"
       />
-      <div className="flex flex-col gap-2 min-w-0 w-full">
-        <AssistantMessage note={note} tone={tone}>{text}</AssistantMessage>
+      <div className="flex flex-col min-w-0 w-full" style={{ gap: REPLY_CARD_GAP_PX }}>
+        <AssistantMessage note={note} tone={tone} blocks={blocks}>{text}</AssistantMessage>
         {receipt ? (
           <div className="w-full">
             <ExecutionStepper
@@ -365,7 +446,10 @@ export function ChatTurns({
   liveNote,
   liveTone = "default",
   sessionSigning,
+  hideReceiptFor,
 }: {
+  /** A run the investigation card is drawing in place; the thread leaves its receipt out. */
+  hideReceiptFor?: string | null;
   turns: ThreadTurn[];
   hideAssistantText?: string | null;
   pendingUser?: string | null;
@@ -386,7 +470,10 @@ export function ChatTurns({
             {group.assistant && !hideStaleAssistant ? (
               <AssistantTurn
                 text={group.assistant.text}
-                receipt={group.assistant.executionReceipt}
+                blocks={group.assistant.blocks}
+                receipt={hideReceiptFor && group.assistant.executionReceipt?.workflowId === hideReceiptFor
+                  ? undefined
+                  : group.assistant.executionReceipt}
                 sessionSigning={sessionSigning}
               />
             ) : null}
@@ -404,7 +491,7 @@ export function ChatTurns({
               sessionSigning={sessionSigning}
             />
           ) : working ? (
-            <div className="flex items-start gap-2.5 max-w-[85%]">
+            <div className="flex items-start gap-2.5 w-full">
               <img
                 src="/logos/vanna-icon.png"
                 alt="Vanna"
