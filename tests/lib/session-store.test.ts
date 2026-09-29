@@ -97,6 +97,16 @@ describe.each(BACKENDS)("copilot conversation store (%s backend)", (backend) => 
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
+  it("keeps the server's composed reply, and drops it once new text replaces the reply", async () => {
+    const blocks = [{ type: "paragraph" as const, segments: [{ text: "Your health factor is " }, { text: "2.32", figure: true as const }] }];
+    const first = await store.appendSessionTurn({ subject: "alice", user: "hf?", result: { ...view("Your health factor is 2.32"), replyBlocks: blocks } });
+    expect((await store.readConversation("alice", first.id))?.turns[1]?.blocks).toEqual(blocks);
+    expect(await store.updateSessionAssistantText({ subject: "alice", conversationId: first.id, text: "Done. Supplied 1 XLM to Blend." })).toBe(true);
+    const turn = (await store.readConversation("alice", first.id))?.turns[1];
+    expect(turn?.text).toBe("Done. Supplied 1 XLM to Blend.");
+    expect(turn?.blocks).toBeUndefined();
+  });
+
   it("starts a conversation on the first turn, titled by the prompt, and appends later turns to it", async () => {
     const first = await store.appendSessionTurn({ subject: "alice", user: "what's my health?", result: view("1.46") });
     const second = await store.appendSessionTurn({ subject: "alice", conversationId: first.id, user: "and my debt?", result: view("$3,312", "r2.token") });

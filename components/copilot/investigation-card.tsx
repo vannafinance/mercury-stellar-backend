@@ -11,7 +11,7 @@ import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap
 import { PlanReviewCard } from "@/components/copilot/plan-review-card";
 import { finished, inFlight } from "@/hooks/use-workflow";
 import { formatRunClock } from "@/lib/copilot/investigation/duration";
-import { ChatTurns } from "@/components/copilot/chat-message";
+import { ChatTurns, REPLY_CARD_GAP_PX } from "@/components/copilot/chat-message";
 
 export interface InvestigationCardProps {
   prompt: string;
@@ -359,7 +359,7 @@ export function InvestigationCard({
           </p>
         </div>
       ) : (
-        <div className="space-y-5">
+        <div className="flex flex-col" style={{ gap: REPLY_CARD_GAP_PX }}>
           {!omitTranscript && (
             <ChatTurns
               turns={turns}
@@ -390,7 +390,7 @@ export function InvestigationCard({
             * spinner is the only thing under the new question.
             */}
           {result && resultIsLatest && !(loading && !workflow) && hasCardContent && (
-            <article aria-label="Copilot reply" className="space-y-5">
+            <article aria-label="Copilot reply" className="flex flex-col" style={{ gap: REPLY_CARD_GAP_PX }}>
 
               {/*
                 No "Understood as" block and no constraint chips (owner, 24 Sep, live): the plan card

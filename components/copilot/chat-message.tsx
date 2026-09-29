@@ -22,6 +22,12 @@ import { ExecutionStepper, type StepperStep } from "@/components/copilot/executi
  * so they line up under the words, not under the logo.
  */
 export const ASSISTANT_TEXT_INDENT = "pl-7";
+/**
+ * The one gap between a reply and the card that belongs to it (execution, plans, questionnaire),
+ * whichever component draws the card, so the space never depends on which path rendered it
+ * (owner, 29 Sep: the thread-drawn execution card sat 8px under the reply, the card-drawn one 20px).
+ */
+export const REPLY_CARD_GAP_PX = 20;
 export function UserBubble({ children }: { children: React.ReactNode }) {
   return (
     // The shell pins the latest of these to the top of the view on send (copilot-shell.tsx).
@@ -357,7 +363,7 @@ export function groupChatTurns(turns: ThreadTurn[]): Array<{ user?: ThreadTurn; 
 function receiptStepperSteps(receipt: ExecutionReceiptSnapshot): StepperStep[] {
   return receipt.steps.map((step, index) => ({
     id: `${receipt.workflowId}-${index}`,
-    label: "",
+    label: step.label ?? "",
     op: step.operation,
     asset: step.asset,
     amount: step.amount,
@@ -413,7 +419,7 @@ function AssistantTurn({
         height={18}
         className="h-[18px] w-[18px] shrink-0 mt-1 rounded-full"
       />
-      <div className="flex flex-col gap-2 min-w-0 w-full">
+      <div className="flex flex-col min-w-0 w-full" style={{ gap: REPLY_CARD_GAP_PX }}>
         <AssistantMessage note={note} tone={tone} blocks={blocks}>{text}</AssistantMessage>
         {receipt ? (
           <div className="w-full">
