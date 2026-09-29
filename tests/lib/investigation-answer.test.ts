@@ -240,7 +240,7 @@ describe("strategyReply", () => {
     expect(fact.value).toBe("3.898658825216954744");
   });
 
-  it("names posted-collateral health as the risk-engine figure, not the page snapshot", () => {
+  it("never states the contract-basis figure as the health factor when the site figure was not read", () => {
     const reply = strategyReply({
       status: "researched",
       facts: [{
@@ -250,7 +250,8 @@ describe("strategyReply", () => {
       }],
       candidates: null, capacity: null, question: null, intent: "answer",
     });
-    expect(reply).toBe("3.42 on posted collateral, the base the risk engine uses.");
+    expect(reply).toBe("I could not read a live figure for that just now.");
+    expect(reply).not.toMatch(/3\.42/);
   });
 
   it("refuses the panel figure when debt does not match the risk engine", () => {

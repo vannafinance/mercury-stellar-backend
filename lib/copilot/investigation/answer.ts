@@ -149,8 +149,16 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
   const posted = selected.find(f => f.sourcePath === "posted_health_factor");
   const pageHealth = selected.find(f => f.sourcePath === "health_factor" && f.venue === "margin");
   const pageMismatch = selected.find(f => f.sourcePath === "page_debt_mismatch");
+  /**
+   * The health factor the user is told is the site's own (owner, 29 Sep: the Margin page's
+   * 2.32 is correct, the contract-basis 1.83 is not what to say). The posted ratio is stated
+   * only beside a panel shown to be stale by its debt; when the panel figure simply was not
+   * read, no other number stands in for it.
+   */
   if (pageHealth && !posted && !pageMismatch) {
     sentences.push(`Your reported health factor is ${formatHealthFactor(pageHealth.value)}.`);
+  } else if (posted && !pageMismatch) {
+    sentences.push("I could not read a live figure for that just now.");
   } else if (posted) {
     sentences.push(`${formatHealthFactor(posted.value)} on posted collateral, the base the risk engine uses.`);
     if (pageMismatch) {

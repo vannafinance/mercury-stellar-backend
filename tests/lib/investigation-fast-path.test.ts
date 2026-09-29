@@ -151,7 +151,7 @@ describe("researchTurn fast path", () => {
     expect(mocks.resolveInvestigationScope).not.toHaveBeenCalled();
   });
 
-  it("answers health from liquidation_snapshot without waiting on a hung snapshot", async () => {
+  it("answers without waiting on a hung snapshot, and never states the contract figure as the HF", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
     mocks.computeAccountPosition.mockResolvedValue(null);
     const mcp = {
@@ -173,8 +173,9 @@ describe("researchTurn fast path", () => {
       expect.objectContaining({ smart_account: SCOPE.smartAccount }),
       SCOPE.trader,
     );
-    expect(result.message).toMatch(/3\.42/);
-    expect(result.message).toMatch(/posted collateral/);
+    // Owner, 29 Sep: the HF told is the Margin page's; with that read hung, no other number stands in.
+    expect(result.message).toMatch(/could not read a live figure/);
+    expect(result.message).not.toMatch(/3\.42/);
     expect(result.message).not.toMatch(/can read higher/);
     expect(result.executionAllowed).toBe(false);
   });
