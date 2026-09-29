@@ -29,7 +29,7 @@ describe("supply my usdc answered with an LP pool", () => {
   it("passes the server check", () => {
     const issued = buildQuestionnaireSet([{ asset: "USDC", slots: ["asset", "venue", "amount"], sourceQuote: "supply my usdc" }], rows, NOW, ["supply my usdc"])!;
     const onSubmit = vi.fn();
-    render(<ThemeProvider><ClarifyQuestionnaire questionnaire={issued} onSubmit={onSubmit} onCancel={vi.fn()} onSomethingElse={vi.fn()} /></ThemeProvider>);
+    render(<ThemeProvider><ClarifyQuestionnaire questionnaire={issued} onSubmit={onSubmit} onCancel={vi.fn()} /></ThemeProvider>);
     fireEvent.click(screen.getByText("SOUSDC"));
     const lp = screen.getAllByText(/Soroswap/)[0];
     fireEvent.click(lp);
@@ -47,7 +47,7 @@ describe("supply my usdc answered with an LP pool", () => {
   it("deposit xlm offers the margin account and says Deposit 5 XLM, not 'asset'", () => {
     const issued = buildQuestionnaireSet([{ op: "deposit_collateral", asset: "XLM", slots: ["venue", "amount"], sourceQuote: "deposit xlm" }], rows, NOW, ["deposit xlm"])!;
     const onSubmit = vi.fn();
-    render(<ThemeProvider><ClarifyQuestionnaire questionnaire={issued} onSubmit={onSubmit} onCancel={vi.fn()} onSomethingElse={vi.fn()} /></ThemeProvider>);
+    render(<ThemeProvider><ClarifyQuestionnaire questionnaire={issued} onSubmit={onSubmit} onCancel={vi.fn()} /></ThemeProvider>);
     fireEvent.click(screen.getByText("Margin account"));
     fireEvent.change(screen.getByPlaceholderText("0.0 or 50%"), { target: { value: "5" } });
     fireEvent.click(screen.getByTestId("btn-send"));

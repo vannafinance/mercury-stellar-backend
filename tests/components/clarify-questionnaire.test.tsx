@@ -146,7 +146,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -161,7 +160,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -183,7 +181,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -229,7 +226,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={singleAssetQuestionnaire}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -246,7 +242,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -277,7 +272,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -304,7 +298,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={mockQuestionnaire}
         onSubmit={handleSubmit}
         onCancel={vi.fn()}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -344,7 +337,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={mockQuestionnaire}
         onSubmit={handleSubmit}
         onCancel={vi.fn()}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -374,7 +366,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -397,7 +388,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
         onCancel={handleCancel}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -407,25 +397,16 @@ describe("ClarifyQuestionnaire Component", () => {
     expect(handleCancel).toHaveBeenCalledTimes(1);
   });
 
-  it("Something else calls onSomethingElse", () => {
-    const handleSomethingElse = vi.fn();
+  it("offers no \"Something else\" box: a new request is typed in the composer (owner, 29 Sep)", () => {
     renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
-        onSomethingElse={handleSomethingElse}
       />
     );
-
-    const input = screen.getByTestId("input-something-else");
-    fireEvent.change(input, { target: { value: "I want to deposit into margin instead" } });
-
-    const btn = screen.getByTestId("btn-something-else");
-    fireEvent.click(btn);
-
-    expect(handleSomethingElse).toHaveBeenCalledTimes(1);
-    expect(handleSomethingElse).toHaveBeenCalledWith("I want to deposit into margin instead");
+    expect(screen.queryByTestId("input-something-else")).toBeNull();
+    expect(screen.queryByPlaceholderText(/something else/i)).toBeNull();
   });
 
   it("keyboard navigation moves with ArrowDown/ArrowUp and selects with Enter", () => {
@@ -434,7 +415,6 @@ describe("ClarifyQuestionnaire Component", () => {
         questionnaire={mockQuestionnaire}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
-        onSomethingElse={vi.fn()}
       />
     );
 
@@ -476,7 +456,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={mockQuestionnaire}
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 
@@ -501,7 +480,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={mockQuestionnaire}
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 
@@ -521,7 +499,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={mockQuestionnaire}
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 
@@ -549,7 +526,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={mockQuestionnaire}
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 
@@ -578,7 +554,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={mockQuestionnaire}
           onSubmit={handleSubmit}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 
@@ -595,8 +570,6 @@ describe("ClarifyQuestionnaire Component", () => {
       expect(sendBtn.hasAttribute("disabled")).toBe(true);
       const amountInput = screen.getByPlaceholderText(/0.0 or 50%/i);
       expect(amountInput.hasAttribute("disabled")).toBe(true);
-      const somethingElseInput = screen.getByTestId("input-something-else");
-      expect(somethingElseInput.hasAttribute("disabled")).toBe(true);
     });
   });
 
@@ -608,7 +581,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={mockMultiSectionQuestionnaire}
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 
@@ -626,7 +598,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={mockMultiSectionQuestionnaire}
           onSubmit={handleSubmit}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 
@@ -685,7 +656,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={mockMultiSectionQuestionnaire}
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 
@@ -761,7 +731,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={questionnaireWithNotes}
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 
@@ -830,7 +799,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={qWithSourceSectionId}
           onSubmit={handleSubmit}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 
@@ -939,7 +907,6 @@ describe("ClarifyQuestionnaire Component", () => {
           questionnaire={questionnaire}
           onSubmit={handleSubmit}
           onCancel={vi.fn()}
-          onSomethingElse={vi.fn()}
         />
       );
 

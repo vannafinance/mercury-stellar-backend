@@ -33,7 +33,7 @@ function submitThroughComponent(questionnaire: Questionnaire, pick: () => void):
   const onSubmit = vi.fn();
   render(
     <ThemeProvider>
-      <ClarifyQuestionnaire questionnaire={questionnaire} onSubmit={onSubmit} onCancel={vi.fn()} onSomethingElse={vi.fn()} />
+      <ClarifyQuestionnaire questionnaire={questionnaire} onSubmit={onSubmit} onCancel={vi.fn()} />
     </ThemeProvider>,
   );
   pick();

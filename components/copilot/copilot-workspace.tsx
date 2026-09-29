@@ -6316,10 +6316,6 @@ export function CopilotWorkspace() {
                   void investigation.run(answers.summary, undefined, answers);
                 }}
                 onCancel={() => setClosedQuestionnaire(openQuestionnaire.id)}
-                onSomethingElse={(text) => {
-                  setClosedQuestionnaire(openQuestionnaire.id);
-                  run(text);
-                }}
               />
               </div>
             )}

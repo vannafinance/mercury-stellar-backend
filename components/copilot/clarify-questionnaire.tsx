@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import { Check, X, ArrowLeft, ArrowRight, CornerDownLeft } from "lucide-react";
+import { Check, X, ArrowLeft, ArrowRight } from "lucide-react";
 import { useTheme } from "@/contexts/theme-context";
 import { decimalWad } from "@/lib/copilot/investigation/fixed";
 import type {
@@ -17,7 +17,6 @@ export interface ClarifyQuestionnaireProps {
   questionnaire: Questionnaire;
   onSubmit(answers: QuestionnaireAnswers): void;
   onCancel(): void;
-  onSomethingElse(text: string): void;
   busy?: boolean;
 }
 
@@ -104,7 +103,6 @@ export function ClarifyQuestionnaire({
   questionnaire,
   onSubmit,
   onCancel,
-  onSomethingElse,
   busy = false,
 }: ClarifyQuestionnaireProps) {
   const { isDark } = useTheme();
@@ -160,7 +158,6 @@ export function ClarifyQuestionnaire({
   });
 
   const [activeSectionIdx, setActiveSectionIdx] = useState<number>(0);
-  const [somethingElseText, setSomethingElseText] = useState<string>("");
   const [focusedOptionIdx, setFocusedOptionIdx] = useState<number>(0);
   const [submitted, setSubmitted] = useState<boolean>(false);
 
@@ -865,14 +862,6 @@ export function ClarifyQuestionnaire({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (submitted) return;
 
-    if (e.target instanceof HTMLInputElement && e.target.id === "something-else-input") {
-      if (e.key === "Enter" && somethingElseText.trim()) {
-        e.preventDefault();
-        onSomethingElse(somethingElseText.trim());
-      }
-      return;
-    }
-
     if (e.key === "Escape") {
       e.preventDefault();
       onCancel();
@@ -1142,34 +1131,6 @@ export function ClarifyQuestionnaire({
                   </button>
                 );
               })}
-              {/* "Something else" is the list's last row, typed in place (CoinFello), not a separate section. */}
-              <div className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 ${isDark ? "border-[#2A2A2A] bg-[#1A1A1A]" : "border-vgray-100 bg-white"}`}>
-                <input
-                  type="text"
-                  aria-label="Something else"
-                  placeholder="Something else…"
-                  value={somethingElseText}
-                  onChange={(e) => setSomethingElseText(e.target.value)}
-                  onKeyDown={(e) => {
-                    // Typing here must not trigger the list's 1-9 / arrow shortcuts.
-                    e.stopPropagation();
-                    if (e.key === "Enter" && somethingElseText.trim()) onSomethingElse(somethingElseText.trim());
-                  }}
-                  disabled={busy || submitted}
-                  className="min-w-0 flex-1 bg-transparent py-1 text-[13px] text-vgray-900 placeholder:text-vgray-400 outline-none"
-                  data-testid="input-something-else"
-                />
-                <button
-                  type="button"
-                  aria-label="Send something else"
-                  onClick={() => { if (somethingElseText.trim()) onSomethingElse(somethingElseText.trim()); }}
-                  disabled={!somethingElseText.trim() || busy || submitted}
-                  className="rounded p-1 text-vgray-500 hover:text-violet-500 disabled:opacity-40"
-                  data-testid="btn-something-else"
-                >
-                  <CornerDownLeft size={13} aria-hidden="true" />
-                </button>
-              </div>
             </div>
           )}
 
@@ -1412,34 +1373,6 @@ export function ClarifyQuestionnaire({
         </div>
       </div>
 
-      {/* "Something else" input escape hatch: kept only on the amount step, where there is no option list. */}
-      {currentStep?.slot === "amount" && (
-      <div className="flex items-center gap-2 pt-3">
-        <input
-          id="something-else-input"
-          type="text"
-          placeholder="Something else..."
-          value={somethingElseText}
-          onChange={(e) => setSomethingElseText(e.target.value)}
-          disabled={busy || submitted}
-          className="flex-1 rounded-lg border border-vgray-200 bg-transparent px-3 py-1.5 text-[12px] placeholder:text-vgray-400 outline-none focus:border-violet-500 transition-colors"
-          data-testid="input-something-else"
-        />
-        <button
-          type="button"
-          onClick={() => {
-            if (somethingElseText.trim()) {
-              onSomethingElse(somethingElseText.trim());
-            }
-          }}
-          disabled={!somethingElseText.trim() || busy || submitted}
-          className="rounded-lg border border-vgray-200 px-2.5 py-1.5 text-[12px] font-semibold text-vgray-700 hover:border-violet-400 hover:text-violet-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          data-testid="btn-something-else"
-        >
-          <CornerDownLeft size={13} aria-hidden="true" />
-        </button>
-      </div>
-      )}
 
       {/* Keyboard hint */}
       <div className="flex items-center justify-between text-[11px] text-vgray-400 mt-2 px-0.5">
