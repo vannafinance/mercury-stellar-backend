@@ -15,7 +15,7 @@
 import type { RoutedIntent } from "./types";
 import { findAmountFraction, findBalanceFraction } from "./amount-intent";
 import { matchFastPath } from "./investigation/read-cache";
-import { ASSET_SCAN_ORDER } from "./registry/assets";
+import { ASSET_SCAN_ORDER, resolveAssetDef } from "./registry/assets";
 import { needsUsdcVariant, usdcVariantClarifyMessage } from "./mcp-write";
 import { namesEarnPoolMetric } from "./earn-pool-copy";
 import { contradictsStatedSource } from "./leg-direction";
@@ -1592,8 +1592,11 @@ export function routeMessage(message: string): RoutedIntent {
      * Farm add-liquidity form auto-fills the paired amount from one input.
      */
     const venueOtherToken = any(text, "soroswap") ? "SOUSDC" : any(text, "aquarius") ? "AQUSDC" : null;
+    // A named venue outranks an asset the registry cannot pin to one token (bare "USDC"):
+    // the pool fixes the variant. With no venue the ambiguous form is kept, so it is asked.
+    const specificAsset = asset && asset !== "XLM" && resolveAssetDef(asset) ? asset : null;
     const token_b =
-      dual?.token_b ?? single?.otherToken ?? (asset && asset !== "XLM" ? asset : venueOtherToken) ?? "AQUSDC";
+      dual?.token_b ?? single?.otherToken ?? specificAsset ?? venueOtherToken ?? (asset && asset !== "XLM" ? asset : null) ?? "AQUSDC";
     return {
       kind: "write",
       op: "add_liquidity",
