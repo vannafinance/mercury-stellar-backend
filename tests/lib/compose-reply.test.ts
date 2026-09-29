@@ -4,7 +4,7 @@
  * deterministic reply, and so does a model that fails or runs late.
  */
 import { describe, expect, it, vi } from "vitest";
-import { bindBlocks, composable, composeReply, plainReply } from "@/lib/copilot/investigation/compose";
+import { bindBlocks, composable, composablePlans, composeReply, planFacts, plainReply } from "@/lib/copilot/investigation/compose";
 import type { ResearchFact, ResearchView } from "@/lib/copilot/investigation/view";
 
 const fact = (id: string, label: string, value: string, unit: string, venue: ResearchFact["venue"] = "margin"): ResearchFact =>
@@ -99,5 +99,40 @@ describe("composing a reply", () => {
     expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
     expect(generate).not.toHaveBeenCalled();
     delete process.env.COPILOT_COMPOSED_REPLIES;
+  });
+});
+
+describe("composing the words above plan cards", () => {
+  const plan = (over: Record<string, unknown>) => ({
+    id: "x", kind: "lend_idle", borrows: false, venue: "earn", netAprPct: null, legs: [], evidenceIds: [], amountBasis: "stated",
+    label: "Lend idle SOUSDC to Earn", asset: "SOUSDC", amountUsd: "1370.21", supplyAprPct: "6.1", supplyApyPct: "6.29",
+    finalHealthFactor: "2.3244", initialHealthFactor: "2.3244", ...over,
+  });
+  const strategy = (over: Partial<ResearchView> = {}) => view({
+    understanding: { intent: "strategy", objective: "idle", constraints: [], borrowing: "unspecified" },
+    facts: [fact("e0:posted_health_factor", "Posted-collateral health factor", "1.83", "HF")],
+    candidates: { feasible: [plan({ decision: { factor: "already_held", reason: "", runnerUpId: null } }), plan({ label: "Repay XLM", repaysAllDebt: true, borrows: false })], rejected: [] },
+    ...over,
+  } as Partial<ResearchView>);
+
+  it("offers the model only the plans' own figures, lettered as the cards are", () => {
+    const { facts, plans, lead } = planFacts(strategy());
+    expect(plans.map((p) => p.plan)).toEqual(["A", "B"]);
+    expect(lead).toBe("already_held");
+    expect(plans[0].facts.find((f) => f.id === "planA:rate")?.shown).toBe("6.29% APY");
+    expect(plans[1].facts.find((f) => f.id === "planB:hf_after")?.shown).toBe("no debt left");
+    // The raw reads (here a contract-basis health factor) never reach a plan reply.
+    expect(facts.some((f) => f.value === "1.83")).toBe(false);
+  });
+
+  it("composes a strategy's plans but leaves a direct action's execution alone", async () => {
+    expect(composablePlans(strategy())).toBe(true);
+    expect(composablePlans(strategy({ proposalCandidateId: "requested_actions" }))).toBe(false);
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "Plan A leads at {{planA:rate}}; nothing runs until you approve a plan." }] }));
+    const out = await composeReply(strategy(), new AbortController().signal, generate);
+    expect(out.message).toBe("Plan A leads at 6.29% APY; nothing runs until you approve a plan.");
+    // Citing a raw read's id on a plan turn is refused: only plan facts are bindable there.
+    const leak = await composeReply(strategy(), new AbortController().signal, async () => ({ blocks: [{ type: "paragraph", text: "Your HF is {{e0:posted_health_factor}}." }] }));
+    expect(leak.replyBlocks).toBeUndefined();
   });
 });
