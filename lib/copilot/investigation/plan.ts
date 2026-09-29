@@ -565,8 +565,9 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
      * When that asset can be withdrawn first, that path is offered too — shown, not silent.
      */
     const bridged = withLendPocketBridge(plan, ctx);
+    let bridgedResolved = false;
     if (bridged) {
-      try { remember(resolvePlan(bridged, ctx)); }
+      try { remember(resolvePlan(bridged, ctx)); bridgedResolved = true; }
       catch (error) {
         if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}) });
         else rejected.push({ title: bridged.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
@@ -594,11 +595,23 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
       remember(resolvePlan(candidatePlan, ctx));
       if (partial && !bridged) rejected.push(...partial.rejected.map((entry) => ({ title: plan.title, ...entry })));
     } catch (error) {
+      // The bridged path already answers this plan's unfunded leg; its plain attempt failing
+      // for want of those same funds is not a second outcome (shape matrix: 1 plan, 2 results).
+      if (bridgedResolved) continue;
       if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}) });
       else rejected.push({ title: plan.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
     }
   }
-  return { candidates, rejected };
+  // Two legs refused for the same reason from the same pocket ("lend + lend XLM" from an empty
+  // wallet) are one refusal, not two; legs on different assets keep their own entries.
+  const said = new Set<string>();
+  const distinct = rejected.filter((entry) => {
+    const key = JSON.stringify([entry.title, entry.leg, entry.reason]);
+    if (said.has(key)) return false;
+    said.add(key);
+    return true;
+  });
+  return { candidates, rejected: distinct };
 }
 
 /**

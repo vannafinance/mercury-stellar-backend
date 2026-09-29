@@ -162,6 +162,15 @@ describe("what the table decides downstream", () => {
     });
   });
 
+  it("names each blocked lend once: one refusal per asset, not per repeated leg", () => {
+    const lit = (asset: string) => ({ op: "lend" as const, asset, sizing: { kind: "literal" as const, amount: "10", sourceQuote: `lend 10 ${asset}` } });
+    const empty = ctx(rows("0", "0", "0"), ["lend 10 XLM and 10 XLM"]);
+    expect(resolvePlans([plan([lit("XLM"), lit("XLM")])], empty).rejected).toHaveLength(1);
+    const twoAssets = resolvePlans([plan([lit("XLM"), lit("AQUSDC")])], ctx(rows("0", "0", "0"), ["lend 10 XLM and 10 AQUSDC"]));
+    expect(new Set(twoAssets.rejected.map((entry) => entry.leg)).size).toBe(twoAssets.rejected.length);
+    expect(twoAssets.rejected.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("keeps a confirmed empty Blend position apart from a failed read on an all-position exit", () => {
     const base: Observation[] = [
       obs("w", "wallet_balances", { assets: [{ symbol: "XLM", balance: "1", decimals: 7, status: "ok" }], fee_reserve_xlm: "0.5" }),
