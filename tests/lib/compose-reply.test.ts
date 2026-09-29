@@ -4,7 +4,8 @@
  * deterministic reply, and so does a model that fails or runs late.
  */
 import { describe, expect, it, vi } from "vitest";
-import { bindBlocks, composable, composablePlans, composeReply, planFacts, plainReply } from "@/lib/copilot/investigation/compose";
+import { bindBlocks, completionFacts, composable, composablePlans, composeCompletion, composeReply, planFacts, plainReply } from "@/lib/copilot/investigation/compose";
+import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import type { ResearchFact, ResearchView } from "@/lib/copilot/investigation/view";
 
 const fact = (id: string, label: string, value: string, unit: string, venue: ResearchFact["venue"] = "margin"): ResearchFact =>
@@ -134,5 +135,41 @@ describe("composing the words above plan cards", () => {
     // Citing a raw read's id on a plan turn is refused: only plan facts are bindable there.
     const leak = await composeReply(strategy(), new AbortController().signal, async () => ({ blocks: [{ type: "paragraph", text: "Your HF is {{e0:posted_health_factor}}." }] }));
     expect(leak.replyBlocks).toBeUndefined();
+  });
+});
+
+describe("composing the reply once a run has finished", () => {
+  const run = (status: WorkflowView["status"], steps: Array<Record<string, unknown>>) => ({
+    id: "11111111-1111-1111-1111-111111111111", revision: 1, digest: "d", status, objective: "supply 5 xlm to blend",
+    expiresAt: 0, assumptions: [], constraints: [], message: "", slippageAccepted: false, steps,
+  }) as unknown as WorkflowView;
+  const settled = { id: "s1", op: "supply_blend", asset: "XLM", amount: "5", label: "Supply 5 XLM to Blend", status: "settled" };
+  const comparisons = [{ asset: "XLM", blendSupplyApr: "12" }] as never;
+
+  it("states the settled step in the past tense, its rate, and the health factor read after the run", () => {
+    const facts = completionFacts(run("completed", [settled]), comparisons, "2.41");
+    const byId = Object.fromEntries(facts.map((f) => [f.id, f.value]));
+    expect(byId["stepA:done"]).toBe("Supplied 5 XLM to Blend");
+    expect(byId["stepA:amount"]).toBe("5");
+    expect(Number(byId["stepA:rate"])).toBeGreaterThan(12); // APY from the read APR
+    expect(byId["account:health_now"]).toBe("2.41");
+  });
+
+  it("counts only settled steps, and says a stopped run stopped", async () => {
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "{{stepA:done}}; the rest was not submitted." }] }));
+    const view = run("blocked", [settled, { ...settled, id: "s2", label: "Lend 5 XLM to Earn", op: "lend", status: "failed" }]);
+    const out = await composeCompletion({ view, request: "x", draft: "1 of 2 steps went through.", comparisons, healthNow: null }, new AbortController().signal, generate);
+    expect(out?.message).toBe("Supplied 5 XLM to Blend; the rest was not submitted.");
+    const user = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
+    expect(user.stopped).toMatch(/blocked/);
+    expect(user.facts.some((f: { id: string }) => f.id.startsWith("stepB"))).toBe(false);
+  });
+
+  it("keeps the deterministic reply when the model writes a figure or fails", async () => {
+    const view = run("completed", [settled]);
+    expect(await composeCompletion({ view, request: "x", draft: "Done.", comparisons, healthNow: null }, new AbortController().signal,
+      async () => ({ blocks: [{ type: "paragraph", text: "Supplied 5 XLM." }] }))).toBeNull();
+    expect(await composeCompletion({ view, request: "x", draft: "Done.", comparisons, healthNow: null }, new AbortController().signal,
+      async () => { throw new Error("503"); })).toBeNull();
   });
 });

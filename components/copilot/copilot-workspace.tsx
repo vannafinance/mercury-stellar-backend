@@ -95,6 +95,7 @@ import { CopilotRailTop, CopilotRailBody, CopilotRailMini } from "./copilot-rail
 import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useLiveWorkflow } from "@/contexts/workflow-context";
 import { finished as finishedWorkflow } from "@/hooks/use-workflow";
+import { fetchComposedCompletion } from "@/hooks/composed-completion";
 import { InvestigationCard } from "./investigation-card";
 import { ClarifyQuestionnaire } from "./clarify-questionnaire";
 import { ConversationMenu } from "./conversation-menu";
@@ -5589,7 +5590,14 @@ export function CopilotWorkspace() {
       healthFactorAfter: candidate?.finalHealthFactor ?? null,
       repaysAllDebt: !!candidate?.repaysAllDebt,
     });
-    if (reply) void updateLastAssistantText(reply);
+    if (!reply) return;
+    void updateLastAssistantText(reply);
+    // Then the same reply in the model's words, around the run's own server-side facts; the
+    // "Done." above stays if that does not arrive, and a newer finish supersedes it (the key).
+    // Not aborted on cleanup: this effect re-runs on every poll, which would cancel it.
+    void fetchComposedCompletion(view.id, result?.continuation ?? null, new AbortController().signal).then((composed) => {
+      if (composed && completedTextRef.current === key) void updateLastAssistantText(composed.message, composed.replyBlocks);
+    });
   }, [workflow.view, cardDrawsRun, updateLastAssistantText, investigation.result]);
   const liveWriteUi =
     multiLeg ||

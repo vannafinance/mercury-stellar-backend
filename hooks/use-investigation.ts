@@ -6,7 +6,7 @@ import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
 import { walletSessionStatus } from "@/lib/copilot/establish-wallet-session";
 import { consumeResearchStream } from "@/lib/copilot/investigation/stream";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
-import type { QuestionnaireAnswers, ResearchView } from "@/lib/copilot/investigation/view";
+import type { QuestionnaireAnswers, ReplyBlock, ResearchView } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import {
   type ConversationSummary,
@@ -547,7 +547,11 @@ export function useInvestigation(wallet: string | null) {
    * When a chained action (e.g. deposit after asset setup) completes and settles,
    * this replaces the pre-setup text with the actual settled action message.
    */
-  const updateLastAssistantText = useCallback(async (newText: string): Promise<boolean> => {
+  /**
+   * `blocks` replaces the turn's composed reply; without it any earlier blocks are dropped, or
+   * a plan reply's blocks would keep drawing over the "Done." text that replaced it.
+   */
+  const updateLastAssistantText = useCallback(async (newText: string, blocks?: ReplyBlock[]): Promise<boolean> => {
     const owner = activeWallet.current;
     const clean = newText.trim();
     if (!clean) return false;
@@ -558,7 +562,8 @@ export function useInvestigation(wallet: string | null) {
       if (idx == null) return previous;
       found = true;
       const updatedTurns = [...previous.turns];
-      updatedTurns[idx] = { ...updatedTurns[idx], text: clean };
+      const { blocks: _stale, ...turn } = updatedTurns[idx];
+      updatedTurns[idx] = { ...turn, text: clean, ...(blocks?.length ? { blocks } : {}) };
       transcript.current = updatedTurns.map((t) => ({ role: t.role, text: t.text }));
       if (owner) {
         writeStoredThread(owner, {

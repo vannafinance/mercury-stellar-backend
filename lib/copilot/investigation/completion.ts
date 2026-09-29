@@ -24,7 +24,7 @@ type Step = WorkflowView["steps"][number];
  * as "<verb> <amount> <asset> <where>"), so swapping its first word for the past tense keeps
  * the amount and venue exactly as the card showed them.
  */
-function doneClause(step: Step): string {
+export function doneClause(step: Step): string {
   const rest = step.label.trim().split(/\s+/).slice(1).join(" ");
   return `${DONE[step.op as WorkflowOp] ?? step.op} ${rest}`.trim();
 }

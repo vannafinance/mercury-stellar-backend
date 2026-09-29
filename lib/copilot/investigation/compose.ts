@@ -3,6 +3,11 @@ import { generateInvestigationJson } from "../vertex";
 import { healthOnContractBasis } from "./answer";
 import { bindSegments, formatFactValue } from "./answer-prose";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
+import { OP_FLOW, type WorkflowOp, type WorkflowView } from "../workflow/types";
+import { resolveAssetDef } from "../registry/assets";
+import { pct, shownApyPct } from "./apy";
+import type { RateComparison } from "./rate-comparison";
+import { doneClause } from "./completion";
 import type { ReplyBlock, ReplySegment, ResearchFact, ResearchView } from "./view";
 
 /**
@@ -39,6 +44,13 @@ Figures: every number, amount, rate, or health factor MUST appear as {{factId}} 
 Shape: two short paragraphs. The first says which plan leads and why, using "lead" (the sizer's reason: already_held = it uses a token the user already holds, thin_margin = the rates are within noise so the held token wins, net_return = the best return at the user's size). The second says how the other plans differ, in a sentence or two, and that nothing runs until they approve a plan. Use a bullet list instead of the second paragraph only when there are four or more plans.
 Plain text only: no markdown symbols, asterisks, hashes, underscores, backticks or links. Do not invent risks, venues, or reasons. "draft" is the current plain reply, given for meaning only.
 Return JSON: {"blocks":[{"type":"paragraph","text":"..."},{"type":"paragraph","text":"..."}]}`;
+
+const COMPLETION_SYSTEM = `You write the reply shown once a user's transactions have finished, in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). Say what happened and what it means now, the way a helpful analyst would confirm a completed trade in a chat app.
+You are given the user's request and FACTS: each settled step (what was done, the amount), the rate a step now earns or costs, and, when it was read after the run, the account's health factor now.
+Figures: every number, amount, rate, or health factor MUST appear as {{factId}} using an id from FACTS, and nothing else. Each {{factId}} is replaced by exactly that fact's "shown" text, unit and currency sign included, so never write the unit again beside it. Never type a digit yourself.
+Shape: ONE paragraph of one to three sentences. Open by confirming what was done. Then what it now earns or costs, and the health factor now if given. If some steps did not go through ("stopped" is given), say plainly which part ran and that the rest was not submitted. Add a bullet list only when four or more steps settled.
+Plain text only: no markdown symbols, asterisks, hashes, underscores, backticks or links. Do not invent outcomes, rates, or next steps. "draft" is the current plain reply, given for meaning only.
+Return JSON: {"blocks":[{"type":"paragraph","text":"..."}]}`;
 
 type Generate = (system: string, user: string, signal: AbortSignal) => Promise<unknown>;
 
@@ -108,6 +120,78 @@ export function planFacts(view: ResearchView): {
     return { plan: letter, borrows: candidate.borrows, facts: own.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact) })) };
   });
   return { facts, plans, lead: feasible[0]?.decision?.factor ?? null };
+}
+
+/**
+ * A finished run's facts: each settled step from the journal (never the browser's copy), the
+ * rate it earns or costs from the sealed reads, and the health factor read after it ran.
+ */
+export function completionFacts(view: WorkflowView, comparisons: readonly RateComparison[], healthNow: string | null): ResearchFact[] {
+  const facts: ResearchFact[] = [];
+  const add = (id: string, label: string, value: string, unit: string) =>
+    facts.push({ id, label, value, unit, venue: "margin", evidenceId: "run", sourcePath: id, readAt: 0 });
+  view.steps.filter((step) => step.status === "settled").forEach((step, index) => {
+    const n = index + 1;
+    const def = resolveAssetDef(step.asset);
+    add(`step${String.fromCharCode(64 + n)}:done`, "what was done", doneClause(step), "");
+    if (step.amount) add(`step${String.fromCharCode(64 + n)}:amount`, "amount settled", step.amount, def?.displayLabel ?? step.asset);
+    const kind = OP_FLOW[step.op as WorkflowOp]?.rate;
+    const row = kind ? comparisons.find((comparison) => comparison.asset === step.asset) : undefined;
+    const apr = kind === "earn_supply" ? row?.earnSupplyApr : kind === "blend_supply" ? row?.blendSupplyApr : kind === "earn_borrow" ? row?.marginBorrowApr : null;
+    if (kind && apr != null && Number.isFinite(Number(apr))) {
+      add(`step${String.fromCharCode(64 + n)}:rate`, kind === "earn_borrow" ? "borrow cost now" : "earning now", pct(shownApyPct(kind, apr)), kind === "earn_borrow" ? "% a year" : "% APY");
+    }
+  });
+  if (healthNow) add("account:health_now", "health factor now", healthNow, "HF");
+  return facts;
+}
+
+/**
+ * The finished reply composed around the run's own facts, or null to keep the deterministic
+ * one. Never throws.
+ */
+export async function composeCompletion(input: {
+  view: WorkflowView;
+  request: string;
+  draft: string;
+  comparisons: readonly RateComparison[];
+  healthNow: string | null;
+}, signal: AbortSignal, generate: Generate = defaultGenerate): Promise<{ message: string; blocks: ReplyBlock[] } | null> {
+  if (process.env.COPILOT_COMPOSED_REPLIES === "off") return null;
+  const facts = completionFacts(input.view, input.comparisons, input.healthNow);
+  if (!facts.length) return null;
+  const stopped = input.view.status !== "completed";
+  const user = JSON.stringify({
+    request: input.request,
+    facts: facts.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact) })),
+    ...(stopped ? { stopped: `${input.view.status}; later steps were not submitted` } : {}),
+    draft: input.draft,
+  });
+  const bound = await boundReply(COMPLETION_SYSTEM, user, facts, signal, generate);
+  return bound ? { message: plainReply(bound), blocks: bound } : null;
+}
+
+/** One budgeted model call, bound to `facts`, or null. Shared by every composed reply. */
+async function boundReply(system: string, user: string, facts: readonly ResearchFact[], signal: AbortSignal, generate: Generate): Promise<ReplyBlock[] | null> {
+  try {
+    const budget = AbortSignal.any([signal, AbortSignal.timeout(COMPOSE_BUDGET_MS)]);
+    const raw = await Promise.race([
+      generate(system, user, budget),
+      new Promise<never>((_, reject) => {
+        if (budget.aborted) reject(new DOMException("compose budget", "TimeoutError"));
+        budget.addEventListener("abort", () => reject(new DOMException("compose budget", "TimeoutError")), { once: true });
+      }),
+    ]);
+    const bound = bindBlocks(raw, facts);
+    if (!bound.ok) {
+      console.info("[copilot] composed reply refused", { reason: bound.reason });
+      return null;
+    }
+    return bound.blocks;
+  } catch (error) {
+    console.info("[copilot] composed reply unavailable", { error: error instanceof Error ? error.name : "unknown" });
+    return null;
+  }
 }
 
 /** A factual answer the composer may rewrite. Everything else keeps its own reply. */
@@ -199,26 +283,9 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
   } else {
     return view;
   }
-  try {
-    // Raced, not only signalled: a step before the model call (the access token) does not
-    // listen to the signal, and a reset there held a reply for 34 s (29 Sep, local).
-    const budget = AbortSignal.any([signal, AbortSignal.timeout(COMPOSE_BUDGET_MS)]);
-    const raw = await Promise.race([
-      generate(system, user, budget),
-      new Promise<never>((_, reject) => {
-        if (budget.aborted) reject(new DOMException("compose budget", "TimeoutError"));
-        budget.addEventListener("abort", () => reject(new DOMException("compose budget", "TimeoutError")), { once: true });
-      }),
-    ]);
-    const bound = bindBlocks(raw, facts);
-    if (!bound.ok) {
-      console.info("[copilot] composed reply refused", { reason: bound.reason });
-      return view;
-    }
-    return { ...view, message: plainReply(bound.blocks), replyBlocks: bound.blocks };
-  } catch (error) {
-    // Class only: provider errors can carry upstream detail (HANDOFF rule 11).
-    console.info("[copilot] composed reply unavailable", { error: error instanceof Error ? error.name : "unknown" });
-    return view;
-  }
+  // Raced, not only signalled, in `boundReply`: a step before the model call (the access token)
+  // does not listen to the signal, and a reset there held a reply for 34 s (29 Sep, local).
+  // Errors are logged by class only: provider errors can carry upstream detail (HANDOFF rule 11).
+  const blocks = await boundReply(system, user, facts, signal, generate);
+  return blocks ? { ...view, message: plainReply(blocks), replyBlocks: blocks } : view;
 }
