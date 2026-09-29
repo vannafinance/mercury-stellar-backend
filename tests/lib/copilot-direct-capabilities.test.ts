@@ -23,7 +23,7 @@ afterAll(() => {
   resetMcpClient();
 });
 
-describe("Copilot plain actions use the direct capability path", () => {
+describe("Copilot plain actions go through investigation", () => {
   it.each([
     ["margin deposit", "deposit 101 XLM as collateral"],
     ["explicit multi-action", "deposit 100 XLM as collateral and borrow 20 XLM"],
@@ -32,7 +32,7 @@ describe("Copilot plain actions use the direct capability path", () => {
     ["Blend withdrawal", "withdraw 100 XLM from Blend"],
     ["liquidity", "add liquidity 15 XLM in Aquarius"],
     ["account read", "what is my health factor?"],
-  ])("does not strategy-block %s", async (_name, message) => {
+  ])("hands %s to investigation instead of keyword-planning it", async (_name, message) => {
     const response = await handleChat({
       user_id: TRADER,
       tier: "paid",
@@ -42,8 +42,10 @@ describe("Copilot plain actions use the direct capability path", () => {
       message,
     });
 
-    expect(response.intent?.template_id).not.toBe("investigation_owns_planning");
-    expect(response.kind).not.toBe("plan_preview");
+    // Investigate-first (2ca1c3c): the Copilot page researches every stated action before it
+    // runs, so the keyword path must neither plan nor stage it.
+    expect(response.intent?.template_id).toBe("investigation_owns_planning");
+    expect(response.kind).toBe("blocked");
   });
 
   it.each([
