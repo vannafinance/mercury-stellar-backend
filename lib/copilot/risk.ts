@@ -7,21 +7,21 @@ import { copilotConfig } from "./config";
 import type { MCPClient } from "./mcp-client";
 import type { CopilotAction, RiskResult, Simulation } from "./types";
 import { OP_FLOW } from "./workflow/types";
+import { LIQUIDATION_THRESHOLD } from "../margin-health";
 
-const LIQ_THRESHOLD = 1.0; // HF < 1.0 = liquidatable
+/**
+ * The product's liquidation line on its own plain-ratio health factor (lib/margin-health.ts).
+ * The RiskEngine requires HF strictly above it, so a projection AT the line is liquidatable.
+ */
+const LIQ_THRESHOLD = LIQUIDATION_THRESHOLD;
 /**
  * The product's own health factor is a plain ratio — `avgHealthFactor =
  * grossCollateralValue / effectiveDebtValue` in lib/margin-health.ts, confirmed by the
- * Margin page's own displayed number ("Collateral / Debt", no discount). This constant
- * used to be 0.9, silently multiplying collateral by 90% in every before→after
- * projection — since `hf_before` almost always comes straight from a real MCP/snapshot
- * read (bypassing this), only `hf_after` ever hit the discount, so EVERY write's
- * projected health factor after a deposit/withdraw/borrow/repay was ~10% off from what
- * the exact same formula would show once the write actually landed — e.g. a deposit
- * projected to WORSEN health factor (1.50 → 1.35) when adding collateral can only ever
- * help or leave it unchanged. No test caught it because this module had zero coverage.
+ * Margin page's own displayed number ("Collateral / Debt", no discount). A discount
+ * applied to one side only made projections lie: first a 0.9 default on `hf_after` (a
+ * deposit projected to WORSEN health, 1.50 → 1.35), then the MCP's `liquidation_threshold`
+ * (~0.909) on `hf_before` alone. `hfFrom` is the one formula for both sides.
  */
-const DEFAULT_LT = 1.0;
 
 function n(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -93,10 +93,11 @@ async function fetchHealth(
       n(r.collateral) ??
       0;
     const debt = n(r.debt_usd) ?? n(r.total_debt_usd) ?? n(r.debt) ?? 0;
-    const lt = n(r.liquidation_threshold) ?? DEFAULT_LT;
     let hf = n(r.health_factor) ?? n(r.hf) ?? n(r.avg_health_factor);
-    // Live MCP often omits health_factor and only returns collateral/debt/ltv.
-    if (hf == null && debt > 0 && collateral > 0) hf = (collateral * lt) / debt;
+    // Live MCP omits health_factor. Its `liquidation_threshold` is an LTV bound (~0.909 =
+    // 1/1.1), not a collateral discount: multiplying by it reported HF / 1.1 (1.78 where the
+    // sidebar showed the real ratio).
+    if (hf == null && debt > 0 && collateral > 0) hf = hfFrom(collateral, debt);
 
     /**
      * A Soroban budget overrun arrives as a SUCCESSFUL response carrying an error field —
@@ -146,9 +147,9 @@ async function fetchHealth(
   }
 }
 
-function hfFrom(collateral: number, debt: number, lt = DEFAULT_LT): number | null {
+function hfFrom(collateral: number, debt: number): number | null {
   if (debt <= 0) return null; // ∞
-  return (collateral * lt) / debt;
+  return collateral / debt;
 }
 
 export interface RiskSimInput {
@@ -315,7 +316,7 @@ export async function evaluateWriteRisk(
       ? action.min_hf
       : null;
   const policyFloor = copilotConfig.minHealthFactor;
-  const hardFloor = 1.0;
+  const hardFloor = LIQ_THRESHOLD;
 
   // Already close to liquidation — warn before any debt-increasing write.
   if (
@@ -329,9 +330,9 @@ export async function evaluateWriteRisk(
     reasons.unshift(
       `Account HF is already ${hfBefore.toFixed(2)} (near liquidation). Prefer repay or add collateral before increasing risk.`,
     );
-    if (hfBefore < hardFloor) {
+    if (hfBefore <= hardFloor) {
       decision = "block";
-      reasons.unshift(`HF ${hfBefore.toFixed(2)} < 1.00 — liquidatable now. Repay debt or deposit collateral first.`);
+      reasons.unshift(`HF ${hfBefore.toFixed(2)} is at or below the ${hardFloor.toFixed(2)} liquidation line — liquidatable now. Repay debt or deposit collateral first.`);
     } else {
       // No `decision !== "block"` guard: nothing above this point can have set "block",
       // so TS narrows it away and the comparison fails `next build`. The escalation is
@@ -340,10 +341,10 @@ export async function evaluateWriteRisk(
     }
   }
 
-  if (hfAfter != null && hfAfter < hardFloor) {
+  if (hfAfter != null && hfAfter <= hardFloor) {
     decision = "block";
     reasons.unshift(
-      `projected health factor ${hfAfter.toFixed(2)} < 1.00 — would be instantly liquidatable`,
+      `projected health factor ${hfAfter.toFixed(2)} is at or below the ${hardFloor.toFixed(2)} liquidation line — would be instantly liquidatable`,
     );
   } else if (userFloor != null && hfAfter != null && hfAfter < userFloor) {
     decision = "block";
