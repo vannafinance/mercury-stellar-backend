@@ -306,9 +306,9 @@ describe("investigation card / options", () => {
     expect(onPropose).toHaveBeenCalledWith(candidateId("lend_idle", "AQUSDC"));
   });
 
-  it("shows the server-measured duration on a finished investigation", () => {
+  it("shows no duration line under a finished reply (owner, 29 Sep)", () => {
     card(view({ elapsedMs: 12_400, message: "Your reported health factor is 3.90." }));
-    expect(screen.getByText(/Checked in 12s/)).toBeTruthy();
+    expect(screen.queryByText(/Checked in/)).toBeNull();
   });
 });
 

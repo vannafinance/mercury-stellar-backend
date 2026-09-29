@@ -10,8 +10,8 @@ import { ExecutionStepper, type StepperStep } from "@/components/copilot/executi
 import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap-review-card";
 import { PlanReviewCard } from "@/components/copilot/plan-review-card";
 import { finished, inFlight } from "@/hooks/use-workflow";
-import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
-import { ASSISTANT_TEXT_INDENT, ChatTurns } from "@/components/copilot/chat-message";
+import { formatRunClock } from "@/lib/copilot/investigation/duration";
+import { ChatTurns } from "@/components/copilot/chat-message";
 
 export interface InvestigationCardProps {
   prompt: string;
@@ -320,18 +320,9 @@ export function InvestigationCard({
     const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt.current) / 1000)), 1000);
     return () => clearInterval(id);
   }, [loading]);
-  const serverClock = result?.elapsedMs != null ? formatElapsedMs(result.elapsedMs) : null;
+  // The running clock beside the progress line. A finished reply carries no "Checked in" line
+  // (owner, 29 Sep); the server's timing stays on the view (`elapsedMs`) for diagnostics.
   const deviceClock = elapsedSec > 0 ? formatRunClock(elapsedSec) : null;
-  /**
-   * The server's time and the device's time are one figure unless they differ enough to
-   * mean something — then the gap is the fact worth stating (14 Sep: 9 s on the server,
-   * 1 m 59 s on the device, the difference spent in the browser before the request left).
-   */
-  const clock = serverClock
-    ? deviceClock && elapsedSec >= 30 && result?.elapsedMs != null && elapsedSec * 1000 > result.elapsedMs * 2
-      ? `Checked in ${serverClock}, though it took ${deviceClock} to reach you`
-      : `Checked in ${serverClock}`
-    : !loading && deviceClock ? `Checked in ${deviceClock}` : null;
 
   const lastTurn = turns[turns.length - 1];
   /**
@@ -400,7 +391,6 @@ export function InvestigationCard({
             */}
           {result && resultIsLatest && !(loading && !workflow) && hasCardContent && (
             <article aria-label="Copilot reply" className="space-y-5">
-              {clock && <p className={`${ASSISTANT_TEXT_INDENT} text-[12px] tabular-nums text-vgray-400`}>{clock}</p>}
 
               {/*
                 No "Understood as" block and no constraint chips (owner, 24 Sep, live): the plan card

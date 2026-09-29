@@ -275,14 +275,14 @@ export function ReplyBlocksBody({ blocks }: { blocks: readonly ReplyBlock[] }) {
         const gap = lead ? 0 : "10px 0 0";
         if (block.type === "heading") {
           return (
-            <p key={i} style={{ margin: lead ? 0 : "14px 0 0", fontSize: 13, lineHeight: "20px", fontWeight: 600, color: "var(--g800)" }}>
+            <p key={i} style={{ margin: lead ? 0 : "16px 0 0", fontSize: 14, lineHeight: "22px", fontWeight: 600, color: "var(--g900)" }}>
               <Segments segments={block.segments} />
             </p>
           );
         }
         if (block.type === "bullets") {
           return (
-            <ul key={i} style={{ margin: gap, paddingLeft: 18, listStyle: "disc", fontSize: 14, lineHeight: "22px", color: "var(--g700)" }}>
+            <ul key={i} style={{ margin: gap, paddingLeft: 20, listStyle: "disc", fontSize: 16, lineHeight: "26px", color: "var(--g800)" }}>
               {block.items.map((item, j) => (
                 <li key={j} style={{ marginTop: j === 0 ? 0 : 2 }}><Segments segments={item} /></li>
               ))}
@@ -293,10 +293,11 @@ export function ReplyBlocksBody({ blocks }: { blocks: readonly ReplyBlock[] }) {
           <p
             key={i}
             style={{
+              // One voice: every paragraph at the reply's size (a smaller second line read as a footnote).
               margin: gap,
-              fontSize: lead ? 16 : 14,
-              lineHeight: lead ? "26px" : "22px",
-              color: lead ? "var(--g800)" : "var(--g700)",
+              fontSize: 16,
+              lineHeight: "26px",
+              color: "var(--g800)",
               textWrap: "pretty",
             }}
           >
