@@ -149,6 +149,23 @@ function placesTokens(op: WorkflowOp): boolean {
   return deploysIntoPosition(op) || (flow.from === "wallet" && flow.to === "account");
 }
 
+/**
+ * The mirror of `placesTokens`: an op that answers "where from?", taking tokens out of a
+ * position (Earn, Blend, a pool) or out of the margin account back to the wallet. Read off
+ * OP_FLOW, so a new exit op joins without being listed.
+ */
+function takesTokensOut(op: WorkflowOp): boolean {
+  const { from, to } = OP_FLOW[op];
+  return (POSITION_POCKETS.includes(from) && !POSITION_POCKETS.includes(to)) || (from === "account" && to === "wallet");
+}
+
+/** A named place is where an exit op takes tokens FROM: its source pocket, venue or pool. */
+function opLeavesPlace(op: WorkflowOp, places: Set<string>): boolean {
+  const flow = OP_FLOW[op];
+  if (places.has(flow.from) || places.has(flow.venue)) return true;
+  return flow.from === "lp" && lpPairs().some((pair) => places.has(pair.venue));
+}
+
 function capitalised(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
@@ -169,6 +186,17 @@ export function opsInPlay(missing: QuestionnaireMissing, messages: readonly stri
   // While the venue is open the op is a guess, so every place the tokens can go is offered.
   const deploy = WORKFLOW_OPS.filter((op) => placesTokens(op));
   const { sources, destinations } = namedPlaces(messages);
+  /**
+   * A guessed exit op carries only its direction: "withdraw all funds" asks where FROM, so
+   * every place holding the tokens is offered, each with its own balance. It used to offer
+   * that one guessed op (or, with no op, the deposit ops), hiding the other holdings.
+   */
+  if (missing.slots.includes("venue") && missing.op && takesTokensOut(missing.op)) {
+    const exits = WORKFLOW_OPS.filter((op) => takesTokensOut(op));
+    const named = new Set<string>([...sources, ...destinations]);
+    const matched = named.size > 0 ? exits.filter((op) => opLeavesPlace(op, named)) : [];
+    return matched.length ? matched : exits;
+  }
   if (missing.slots.includes("venue") && (sources.size > 0 || destinations.size > 0)) {
     const matched = deploy.filter((op) => {
       const flow = OP_FLOW[op];

@@ -44,6 +44,26 @@ describe("a questionnaire is only for missing inputs", () => {
 });
 
 describe("questionnaire options come from what is held", () => {
+  it("asks where FROM for a guessed exit, listing every place that holds the asset with its balance", () => {
+    // "withdraw all my xlm": the model guessed redeem, but the XLM sits in three places.
+    const exit: QuestionnaireMissing = { asset: "XLM", op: "redeem", slots: ["venue", "amount"] };
+    const rows = [
+      wallet([{ symbol: "XLM", balance: "50" }]),
+      account([{ symbol: "XLM", balance: "900" }]),
+      obs("ep", "earn_position", { redeemable_human: "40" }, { asset: "XLM" }),
+      obs("bp", "blend_position", { positions: [{ symbol: "XLM", underlying_value: "120" }] }),
+      ...prices,
+    ];
+    const reads = readsForQuestionnaire(exit, [], NOW).map((read) => read.capability);
+    expect(reads).toEqual(expect.arrayContaining(["earn_position", "blend_position", "account_collateral"]));
+    const options = buildQuestionnaire(exit, rows, NOW)?.steps.find((step) => step.slot === "venue")?.options ?? [];
+    expect(options.map((option) => option.op).sort()).toEqual(["blend_withdraw", "redeem", "withdraw_collateral"]);
+    expect(options.every((option) => option.detail && /\d/.test(option.detail))).toBe(true);
+    // No deposit op is offered for an exit, and a place holding nothing is not offered.
+    expect(options.some((option) => ["lend", "deposit_collateral", "supply_blend", "add_liquidity"].includes(String(option.op)))).toBe(false);
+    expect(options.some((option) => option.op === "remove_liquidity")).toBe(false);
+  });
+
   it("offers only the USDC variants the balances name", () => {
     const built = buildQuestionnaire(supply, [
       wallet([{ symbol: "BLUSDC", balance: "680" }, { symbol: "AQUSDC", balance: "10" }, { symbol: "XLM", balance: "50" }]),
