@@ -220,10 +220,17 @@ function variantDecision(winner: Candidate, runnerUp: Candidate | undefined): Ca
     const net = winner.borrows
       ? `Net ${formatApr(winnerApr)} after borrow cost.`
       : `Net ${formatApr(winnerApr)}.`;
+    // Whether the runner-up needs a swap is read off its own holding, never assumed: an
+    // idle candidate exists only for a held balance (live: "you'd swap 675 first" about
+    // 675 BLUSDC already in the wallet), while a model plan can name one not held.
+    const runnerOwned = runnerUp.heldAmount != null && decimalWad(runnerUp.heldAmount) > ZERO;
+    const tradeOff = runnerOwned
+      ? `but you hold only ${formatHeld(runnerUp.heldAmount!)} of it, so it returns less at your size.`
+      : `but you'd swap ${formatHeld(runnerUp.amountUsd)} into it first, which costs more than it gains.`;
     return {
       factor: "already_held",
       runnerUpId: runnerUp.id,
-      reason: `Using ${winner.asset} — you hold ${formatHeld(winner.heldAmount ?? winner.amountUsd)} of it, so no swap is needed. ${net} ${runnerUp.asset} pays ${formatApr(extra)} more but you'd swap ${formatHeld(runnerUp.heldAmount ?? runnerUp.amountUsd)} first, which costs more than it gains.`,
+      reason: `Using ${winner.asset} — you hold ${formatHeld(winner.heldAmount ?? winner.amountUsd)} of it, so no swap is needed. ${net} ${runnerUp.asset} pays ${formatApr(extra)} more ${tradeOff}`,
     };
   }
   return {
