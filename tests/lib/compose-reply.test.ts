@@ -83,6 +83,15 @@ describe("composing a reply", () => {
     expect(composable(view({ facts: [...FACTS, fact("e0:posted_health_factor", "Posted-collateral health factor", "1.83", "HF")] }))).toBe(false);
   });
 
+  it("gives up at its budget even when the model call never listens to the signal", async () => {
+    vi.useFakeTimers();
+    const original = view();
+    const pending = composeReply(original, new AbortController().signal, () => new Promise(() => {}));
+    await vi.advanceTimersByTimeAsync(6_001);
+    expect(await pending).toBe(original);
+    vi.useRealTimers();
+  });
+
   it("is off when the flag says so", async () => {
     process.env.COPILOT_COMPOSED_REPLIES = "off";
     const generate = vi.fn();

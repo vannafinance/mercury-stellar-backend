@@ -587,6 +587,8 @@ export async function generateInvestigationJson(
   signal: AbortSignal,
   thinkingLevel: "LOW" | "MEDIUM" | "HIGH" = "MEDIUM",
   functionDeclarations: FunctionDeclaration[] = [],
+  /** Constrained decoding for the JSON form (no tools): the model can only emit this shape. */
+  responseSchema?: Record<string, unknown>,
 ): Promise<unknown> {
   assertFlashModel(model);
   const useTools = functionDeclarations.length > 0;
@@ -610,7 +612,7 @@ export async function generateInvestigationJson(
         toolConfig: { functionCallingConfig: { mode: "ANY" } },
       } : {}),
       generationConfig: {
-        ...(useTools ? {} : { responseMimeType: "application/json" }),
+        ...(useTools ? {} : { responseMimeType: "application/json", ...(responseSchema ? { responseSchema } : {}) }),
         maxOutputTokens: 4096,
         // 3.8 retires sampling knobs; reasoning level is set per turn by the caller.
         ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel } } : { temperature: 0 }),

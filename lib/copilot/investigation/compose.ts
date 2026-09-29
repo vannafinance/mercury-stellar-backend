@@ -2,6 +2,7 @@ import { copilotConfig } from "../config";
 import { generateInvestigationJson } from "../vertex";
 import { healthOnContractBasis } from "./answer";
 import { bindSegments, formatFactValue } from "./answer-prose";
+import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import type { ReplyBlock, ReplySegment, ResearchFact, ResearchView } from "./view";
 
 /**
@@ -15,8 +16,9 @@ import type { ReplyBlock, ReplySegment, ResearchFact, ResearchView } from "./vie
  * Anything refused, late, or out of scope keeps the deterministic reply unchanged — so a
  * composed answer can only ever say what the reads already said, in better words.
  *
- * Scope for now: factual answers (a question about the account, prices, positions). Plans,
- * questionnaires, refusals, warnings and executions keep their own replies.
+ * Scope: factual answers (a question about the account, prices, positions) and the words
+ * above a strategy's plan cards. Questionnaires, refusals, warnings, direct actions and
+ * executions keep their own replies.
  */
 
 const COMPOSE_BUDGET_MS = 6_000;
@@ -31,10 +33,82 @@ Shape: answer in ONE paragraph of one to three sentences that leads with the dir
 Plain text only: no markdown symbols, asterisks, hashes, underscores, backticks or links. Mention only facts that answer the question. Do not invent reasons, venues, or events. "draft" is the current plain answer, given for meaning only.
 Return JSON: {"blocks":[{"type":"paragraph","text":"..."},{"type":"bullets","items":["...","..."]},{"type":"heading","text":"..."}]}`;
 
+const PLANS_SYSTEM = `You write the reply shown above a set of plan cards in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). The cards already show every step and figure; your words help the user choose, the way a thoughtful analyst would explain options in a chat app.
+You are given the user's request and PLANS, each with facts computed by the sizer. Plans are named by letter, exactly as the cards label them: "Plan A", "Plan B" and so on.
+Figures: every number, amount, rate, or health factor MUST appear as {{factId}} using an id from PLANS, and nothing else. Each {{factId}} is replaced by exactly that fact's "shown" text, unit and currency sign included, so never write the unit again beside it. Never type a digit yourself. If a figure you want is not given, leave it out.
+Shape: two short paragraphs. The first says which plan leads and why, using "lead" (the sizer's reason: already_held = it uses a token the user already holds, thin_margin = the rates are within noise so the held token wins, net_return = the best return at the user's size). The second says how the other plans differ, in a sentence or two, and that nothing runs until they approve a plan. Use a bullet list instead of the second paragraph only when there are four or more plans.
+Plain text only: no markdown symbols, asterisks, hashes, underscores, backticks or links. Do not invent risks, venues, or reasons. "draft" is the current plain reply, given for meaning only.
+Return JSON: {"blocks":[{"type":"paragraph","text":"..."},{"type":"paragraph","text":"..."}]}`;
+
 type Generate = (system: string, user: string, signal: AbortSignal) => Promise<unknown>;
 
+/** The only shapes a reply may take, enforced by the decoder rather than asked for in words. */
+const REPLY_SCHEMA = {
+  type: "object",
+  properties: {
+    blocks: {
+      type: "array",
+      minItems: 1,
+      maxItems: MAX_BLOCKS,
+      items: {
+        type: "object",
+        properties: {
+          type: { type: "string", enum: ["paragraph", "heading", "bullets"] },
+          text: { type: "string" },
+          items: { type: "array", items: { type: "string" }, maxItems: MAX_ITEMS },
+        },
+        required: ["type"],
+      },
+    },
+  },
+  required: ["blocks"],
+};
+
 const defaultGenerate: Generate = (system, user, signal) =>
-  generateInvestigationJson(copilotConfig.vertexModel, system, user, signal, "LOW");
+  generateInvestigationJson(copilotConfig.vertexModel, system, user, signal, "LOW", [], REPLY_SCHEMA);
+
+/** Plan cards the composer may introduce: a strategy's own options, not a direct action. */
+export function composablePlans(view: ResearchView): boolean {
+  return view.status === "researched"
+    && view.understanding?.intent === "strategy"
+    && Boolean(view.candidates?.feasible?.length)
+    && !view.questionnaire
+    && !view.pendingWrite
+    && !view.choices?.length
+    && view.proposalCandidateId !== REQUESTED_ACTIONS_ID;
+}
+
+/**
+ * Each plan's figures as the sizer computed them, keyed by the letter its card shows. Only
+ * these reach the model on a strategy turn, never the raw reads, so every figure it can
+ * cite is one the card itself shows.
+ */
+export function planFacts(view: ResearchView): {
+  facts: ResearchFact[];
+  plans: Array<{ plan: string; borrows: boolean; facts: Array<{ id: string; label: string; shown: string }> }>;
+  lead: string | null;
+} {
+  const feasible = (view.candidates?.feasible ?? []).slice(0, 6);
+  const facts: ResearchFact[] = [];
+  const plans = feasible.map((candidate, index) => {
+    const letter = String.fromCharCode(65 + index);
+    const own: ResearchFact[] = [];
+    const add = (key: string, label: string, value: string | null | undefined, unit: string) => {
+      if (value == null || value === "") return;
+      own.push({ id: `plan${letter}:${key}`, label, value: String(value), unit, venue: "margin", evidenceId: `plan${letter}`, sourcePath: key, readAt: 0 });
+    };
+    add("name", "what the plan does", candidate.label, "");
+    add("amount", "amount the plan places, in USD", candidate.amountUsd, "USD");
+    add("rate", candidate.supplyApyPct != null ? "supply APY" : "supply APR", candidate.supplyApyPct ?? candidate.supplyAprPct, candidate.supplyApyPct != null ? "% APY" : "% APR");
+    if (candidate.borrows) add("net_rate", "net rate after borrow cost", candidate.netApyPct ?? candidate.netAprPct, candidate.netApyPct != null ? "% APY" : "% APR");
+    add("hf_before", "health factor before", candidate.initialHealthFactor ?? candidate.healthFactorBefore, "HF");
+    if (candidate.repaysAllDebt) add("hf_after", "health factor after", "no debt left", "");
+    else add("hf_after", "health factor after", candidate.finalHealthFactor, "HF");
+    facts.push(...own);
+    return { plan: letter, borrows: candidate.borrows, facts: own.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact) })) };
+  });
+  return { facts, plans, lead: feasible[0]?.decision?.factor ?? null };
+}
 
 /** A factual answer the composer may rewrite. Everything else keeps its own reply. */
 export function composable(view: ResearchView): boolean {
@@ -103,16 +177,40 @@ export function bindBlocks(raw: unknown, facts: readonly ResearchFact[]): { ok: 
  * unchanged. Never throws: a composed reply is an improvement, never a dependency.
  */
 export async function composeReply(view: ResearchView, signal: AbortSignal, generate: Generate = defaultGenerate): Promise<ResearchView> {
-  if (process.env.COPILOT_COMPOSED_REPLIES === "off" || !composable(view)) return view;
+  if (process.env.COPILOT_COMPOSED_REPLIES === "off") return view;
   const request = [view.originalRequest, ...view.refinements].filter(Boolean).join("\n");
-  const user = JSON.stringify({
-    question: request,
-    facts: view.facts.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact), venue: fact.venue })),
-    draft: view.message,
-  });
+  let system: string;
+  let user: string;
+  let facts: readonly ResearchFact[];
+  if (composable(view)) {
+    system = SYSTEM;
+    facts = view.facts;
+    user = JSON.stringify({
+      question: request,
+      facts: view.facts.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact), venue: fact.venue })),
+      draft: view.message,
+    });
+  } else if (composablePlans(view)) {
+    const plans = planFacts(view);
+    if (!plans.facts.length) return view;
+    system = PLANS_SYSTEM;
+    facts = plans.facts;
+    user = JSON.stringify({ request, plans: plans.plans, lead: plans.lead, draft: view.message });
+  } else {
+    return view;
+  }
   try {
-    const raw = await generate(SYSTEM, user, AbortSignal.any([signal, AbortSignal.timeout(COMPOSE_BUDGET_MS)]));
-    const bound = bindBlocks(raw, view.facts);
+    // Raced, not only signalled: a step before the model call (the access token) does not
+    // listen to the signal, and a reset there held a reply for 34 s (29 Sep, local).
+    const budget = AbortSignal.any([signal, AbortSignal.timeout(COMPOSE_BUDGET_MS)]);
+    const raw = await Promise.race([
+      generate(system, user, budget),
+      new Promise<never>((_, reject) => {
+        if (budget.aborted) reject(new DOMException("compose budget", "TimeoutError"));
+        budget.addEventListener("abort", () => reject(new DOMException("compose budget", "TimeoutError")), { once: true });
+      }),
+    ]);
+    const bound = bindBlocks(raw, facts);
     if (!bound.ok) {
       console.info("[copilot] composed reply refused", { reason: bound.reason });
       return view;

@@ -44,6 +44,8 @@ export function formatFactValue(fact: ResearchFact): string {
   const n = Number(fact.value);
   // A health factor reads as the Margin page shows it: two places, no unit.
   if (fact.unit === "HF") return Number.isFinite(n) ? n.toFixed(2) : fact.value;
+  // A rate reads as a rate: "5.12% APY", not "5.123456 % APY".
+  if (fact.unit.startsWith("%")) return Number.isFinite(n) ? `${n.toFixed(2)}${fact.unit}` : fact.value;
   const usd = fact.unit === "USD";
   // Cents hide a sub-dollar price (XLM at $0.2278 read as $0.23): below a dollar, four places.
   const places = usd ? (Math.abs(n) < 1 ? 4 : 2) : 7;

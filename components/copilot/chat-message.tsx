@@ -389,7 +389,7 @@ function AssistantTurn({
 }) {
   if (/^Investigation cancelled\./i.test(text)) {
     return (
-      <div className="flex items-start gap-2.5 max-w-[85%]">
+      <div className="flex items-start gap-2.5 w-full">
         <img
           src="/logos/vanna-icon.png"
           alt="Vanna"
@@ -405,7 +405,7 @@ function AssistantTurn({
     );
   }
   return (
-    <div className="flex items-start gap-2.5 max-w-[85%]">
+    <div className="flex items-start gap-2.5 w-full">
       <img
         src="/logos/vanna-icon.png"
         alt="Vanna"
@@ -485,7 +485,7 @@ export function ChatTurns({
               sessionSigning={sessionSigning}
             />
           ) : working ? (
-            <div className="flex items-start gap-2.5 max-w-[85%]">
+            <div className="flex items-start gap-2.5 w-full">
               <img
                 src="/logos/vanna-icon.png"
                 alt="Vanna"
