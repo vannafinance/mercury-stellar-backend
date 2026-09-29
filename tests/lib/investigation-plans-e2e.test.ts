@@ -422,8 +422,11 @@ describe("model proposes, code disposes — end to end", () => {
     );
     const deposit = view.candidates?.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM");
     expect(deposit).toBeTruthy();
-    // Projected on the contract's figures, not the page's: (6457.32 + 1837.14) / 5110.67.
-    expect(Number(deposit!.finalHealthFactor)).toBeCloseTo(1.6229, 3);
+    // Sized on the contract's figures: (6457.32 + 1837.14) / 5110.67 = 1.6229 ...
+    expect(Number(deposit!.legs.at(-1)?.healthFactorAfter)).toBeCloseTo(1.6229, 3);
+    // ... and shown on the Margin page's (owner, 29 Sep): (6605.84 + 1837.14) / 5102.54.
+    expect(Number(deposit!.initialHealthFactor)).toBeCloseTo(6605.84 / 5102.54, 3);
+    expect(Number(deposit!.finalHealthFactor)).toBeCloseTo(1.6547, 3);
     /**
      * The disagreement no longer refuses the borrow: the app counts what the account holds
      * and the contract counts what is posted, so they disagree permanently on any account
@@ -432,7 +435,10 @@ describe("model proposes, code disposes — end to end", () => {
      */
     const levered = view.candidates?.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM");
     expect(levered).toBeTruthy();
-    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.2, 3);
+    const last = levered!.legs.at(-1)!;
+    expect(Number(last.healthFactorAfter)).toBeCloseTo(1.2, 3);
+    const shownAfter = (6605.84 + Number(last.grossAfterUsd) - 6457.32) / (5102.54 + Number(last.debtAfterUsd) - 5110.67);
+    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(shownAfter, 3);
     // The gap is stated as what it is — $6,605.84 − $6,457.32 of unposted collateral.
     expect(view.warnings).toContainEqual(expect.stringMatching(/^\$148\.52 in your account is not posted as collateral/));
   });

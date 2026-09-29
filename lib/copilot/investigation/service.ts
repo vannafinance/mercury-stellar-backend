@@ -837,6 +837,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           requestedBorrowUsd:
             capacity && !capacityResult.failed ? (requestedBorrow?.usd ?? null) : null,
           comparisons: rateComparisons,
+          site: position ? { grossCollateralUsd: position.grossCollateralUsd, debtUsd: position.debtUsd } : null,
         })
       : null;
   } catch (error) {
@@ -1062,6 +1063,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         planPosition = {
           grossCollateralUsd: basis.grossCollateralUsd, debtUsd: basis.debtUsd, floor: statedFloor,
           issue: basis.issue ? { reason: basis.issue, app: basis.app, contract: basis.contract } : null,
+          site: basis.issue === "sizing_app_unavailable" ? null : basis.app,
         };
         if (basis.issue === "sizing_sources_disagree") {
           const note = unpostedCollateralNote(basis.app, basis.contract ?? basis.app);

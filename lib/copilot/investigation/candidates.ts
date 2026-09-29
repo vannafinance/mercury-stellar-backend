@@ -32,7 +32,7 @@ import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { pct, planApy, shownApyPct } from "./apy";
 import { isRecord } from "./decision";
 import type { Observation } from "./types";
-import { sizeLegs, type SizedLeg } from "./sizing";
+import { displayHealthFactors, sizeLegs, type SizedLeg } from "./sizing";
 import type { RateAsset, RateComparison } from "./rate-comparison";
 import { candidateId, candidateKindTraits, type CandidateKind } from "./candidate-id";
 import type { ProposalStep } from "../workflow/types";
@@ -67,6 +67,8 @@ export interface CandidateInput {
   comparisons: readonly RateComparison[];
   /** Contract-basis health factor before this plan is executed, when known. */
   initialHealthFactor?: string | null;
+  /** The Margin page's figures; the card's health factor is shown on them. Sizing never uses them. */
+  site?: { grossCollateralUsd: string; debtUsd: string } | null;
 }
 
 export interface Candidate {
@@ -448,8 +450,14 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
         return { supplyApyPct: apy.supplyApyPct === null ? null : pct(apy.supplyApyPct), netApyPct: apy.netApyPct === null ? null : pct(apy.netApyPct) };
       })(),
       legs: sized.legs,
-      finalHealthFactor: sized.finalHealthFactor,
-      ...(input.initialHealthFactor ? { initialHealthFactor: input.initialHealthFactor, healthFactorBefore: input.initialHealthFactor } : {}),
+      ...(() => {
+        const shown = displayHealthFactors(input, input.site, sized.legs);
+        const before = shown ? shown.before : input.initialHealthFactor ?? null;
+        return {
+          finalHealthFactor: shown && sized.finalHealthFactor !== null ? shown.after : sized.finalHealthFactor,
+          ...(before ? { initialHealthFactor: before, healthFactorBefore: before } : {}),
+        };
+      })(),
       amountUsd: sized.legs[0]?.amountUsd ?? "0",
       evidenceIds: [...comparison.evidenceIds],
       amountBasis: requested ? "stated" : "derived_max_at_floor",

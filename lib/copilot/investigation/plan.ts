@@ -25,7 +25,7 @@ import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { pct, planApy, type RateKind } from "./apy";
 import type { RateComparison } from "./rate-comparison";
-import { LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
+import { displayHealthFactors, LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
 import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
 import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan, StatedAction } from "./types";
@@ -99,6 +99,8 @@ export interface PlanContext {
      * health is sized until the sources agree — an owner rule, never a silent preference.
      */
     issue?: { reason: "sizing_sources_disagree" | "sizing_contract_unavailable" | "sizing_app_unavailable"; app: { grossCollateralUsd: string; debtUsd: string }; contract: { grossCollateralUsd: string; debtUsd: string } | null } | null;
+    /** The Margin page's figures: what the card's health factor is shown on (sizing never uses them). */
+    site?: { grossCollateralUsd: string; debtUsd: string } | null;
   } | null;
   borrowing: "unspecified" | "allowed" | "required" | "forbidden";
   comparisons: readonly RateComparison[];
@@ -1829,9 +1831,15 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
   const borrows = borrowed > ZERO;
   const lastSupply = [...drafts].reverse().find((d) => suppliesAtRate(d.leg.op));
   const first = drafts[0];
-  const initialHealthFactor = ctx.capacity && decimalWad(ctx.capacity.debtUsd) > ZERO
+  let initialHealthFactor = ctx.capacity && decimalWad(ctx.capacity.debtUsd) > ZERO
     ? formatWad((decimalWad(ctx.capacity.grossCollateralUsd) * WAD) / decimalWad(ctx.capacity.debtUsd))
     : null;
+  // Shown on the Margin page's basis (owner, 29 Sep); a plan that clears all debt stays "No debt".
+  const shown = ctx.capacity ? displayHealthFactors(ctx.capacity, ctx.capacity.site, sized) : null;
+  if (shown) {
+    initialHealthFactor = shown.before;
+    if (finalHealthFactor !== null) finalHealthFactor = shown.after;
+  }
 
   return {
     id: planCandidateId(plan),
