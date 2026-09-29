@@ -19,6 +19,8 @@ export type ThreadTurn = {
   question?: string | null;
   /** Structured workflow facts, when this assistant turn has an execution receipt. */
   executionReceipt?: ExecutionReceiptSnapshot | null;
+  /** The composed reply (compose.ts); `text` stays its plain form for history and older views. */
+  blocks?: import("./view").ReplyBlock[];
 };
 
 export type LastInvestigation = {

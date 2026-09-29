@@ -115,6 +115,13 @@ export interface QuestionnaireAnswers {
   sections?: QuestionnaireSectionAnswer[];
 }
 
+/** A run of reply text; `figure` marks a value code substituted from an audited fact. */
+export interface ReplySegment { text: string; figure?: true }
+/** A model-written reply, bound to audited facts (compose.ts). Plain text only: no markup. */
+export type ReplyBlock =
+  | { type: "paragraph" | "heading"; segments: ReplySegment[] }
+  | { type: "bullets"; items: ReplySegment[][] };
+
 export interface ResearchView {
   /** Why a run stopped or plans were dropped, in validator terms. Never rendered; read from the response. */
   diagnostics?: {
@@ -167,6 +174,8 @@ export interface ResearchView {
   executionAllowed: false;
   /** Server wall time for this turn. Optional so older clients stay valid. */
   elapsedMs?: number;
+  /** The reply as the model wrote it around audited figures; `message` is its plain-text form. */
+  replyBlocks?: ReplyBlock[];
 }
 
 export type ResearchStreamEvent =

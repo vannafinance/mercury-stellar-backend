@@ -1,7 +1,9 @@
 "use client";
 
+import { Fragment } from "react";
 import { CircleAlert } from "lucide-react";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
+import type { ReplyBlock, ReplySegment } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 
@@ -48,14 +50,19 @@ export function AssistantMessage({
   children,
   note,
   tone = "default",
+  blocks,
 }: {
   children: React.ReactNode;
   note?: string | null;
   tone?: "default" | "error";
+  /** A composed reply (compose.ts); drawn in place of the plain text when present. */
+  blocks?: ReplyBlock[];
 }) {
   return (
     <div>
-      {typeof children === "string" ? (
+      {blocks?.length && tone !== "error" ? (
+        <ReplyBlocksBody blocks={blocks} />
+      ) : typeof children === "string" ? (
         <AssistantBody text={children} color={tone === "error" ? "var(--z-danger, #c23d3d)" : null} />
       ) : (
         <p
@@ -245,6 +252,62 @@ function FactTable({ rows }: { rows: string[][] }) {
   );
 }
 
+/** A run of reply text; audited figures are set a touch heavier so the numbers read first. */
+function Segments({ segments }: { segments: readonly ReplySegment[] }) {
+  return (
+    <>
+      {segments.map((segment, i) => segment.figure
+        ? <strong key={i} style={{ fontWeight: 600, color: "var(--g900)" }}>{segment.text}</strong>
+        : <Fragment key={i}>{segment.text}</Fragment>)}
+    </>
+  );
+}
+
+/**
+ * A reply the model wrote around audited figures (compose.ts). Plain blocks only — the
+ * figures inside are code's, bound before they reach here — so nothing is parsed from text.
+ */
+export function ReplyBlocksBody({ blocks }: { blocks: readonly ReplyBlock[] }) {
+  return (
+    <>
+      {blocks.map((block, i) => {
+        const lead = i === 0;
+        const gap = lead ? 0 : "10px 0 0";
+        if (block.type === "heading") {
+          return (
+            <p key={i} style={{ margin: lead ? 0 : "14px 0 0", fontSize: 13, lineHeight: "20px", fontWeight: 600, color: "var(--g800)" }}>
+              <Segments segments={block.segments} />
+            </p>
+          );
+        }
+        if (block.type === "bullets") {
+          return (
+            <ul key={i} style={{ margin: gap, paddingLeft: 18, listStyle: "disc", fontSize: 14, lineHeight: "22px", color: "var(--g700)" }}>
+              {block.items.map((item, j) => (
+                <li key={j} style={{ marginTop: j === 0 ? 0 : 2 }}><Segments segments={item} /></li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <p
+            key={i}
+            style={{
+              margin: gap,
+              fontSize: lead ? 16 : 14,
+              lineHeight: lead ? "26px" : "22px",
+              color: lead ? "var(--g800)" : "var(--g700)",
+              textWrap: "pretty",
+            }}
+          >
+            <Segments segments={block.segments} />
+          </p>
+        );
+      })}
+    </>
+  );
+}
+
 /** Every block the turn actually carries — prose, figures, tables. */
 export function AssistantBody({ text, color = null }: { text: string; color?: string | null }) {
   const blocks = chatBlocksFromStored(text);
@@ -310,12 +373,14 @@ function receiptStepperSteps(receipt: ExecutionReceiptSnapshot): StepperStep[] {
 
 function AssistantTurn({
   text,
+  blocks,
   receipt,
   note,
   tone = "default",
   sessionSigning,
 }: {
   text: string;
+  blocks?: ReplyBlock[];
   receipt?: ThreadTurn["executionReceipt"];
   note?: string | null;
   tone?: "default" | "error";
@@ -348,7 +413,7 @@ function AssistantTurn({
         className="h-[18px] w-[18px] shrink-0 mt-1 rounded-full"
       />
       <div className="flex flex-col gap-2 min-w-0 w-full">
-        <AssistantMessage note={note} tone={tone}>{text}</AssistantMessage>
+        <AssistantMessage note={note} tone={tone} blocks={blocks}>{text}</AssistantMessage>
         {receipt ? (
           <div className="w-full">
             <ExecutionStepper
@@ -398,6 +463,7 @@ export function ChatTurns({
             {group.assistant && !hideStaleAssistant ? (
               <AssistantTurn
                 text={group.assistant.text}
+                blocks={group.assistant.blocks}
                 receipt={hideReceiptFor && group.assistant.executionReceipt?.workflowId === hideReceiptFor
                   ? undefined
                   : group.assistant.executionReceipt}

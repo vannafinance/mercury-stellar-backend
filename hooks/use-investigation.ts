@@ -689,7 +689,10 @@ export function useInvestigation(wallet: string | null) {
               : [...previous.turns, { role: "user" as const, text: prompt }];
             const turns: ThreadTurn[] = [
               ...priorTurns,
-              { role: "assistant" as const, text: event.result.message, question: event.result.question },
+              {
+                role: "assistant" as const, text: event.result.message, question: event.result.question,
+                ...(event.result.replyBlocks?.length ? { blocks: event.result.replyBlocks } : {}),
+              },
             ].slice(-16);
             writeStoredThread(owner, {
               wallet: owner ?? "",

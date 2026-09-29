@@ -6,6 +6,7 @@ import { getMcpClient } from "@/lib/copilot/mcp-client";
 import { copilotConfig } from "@/lib/copilot/config";
 import { createFlashResearchModel } from "@/lib/copilot/investigation/flash";
 import { researchTurn, type ResearchInput } from "@/lib/copilot/investigation/service";
+import { composeReply } from "@/lib/copilot/investigation/compose";
 import "@/lib/copilot/investigation/proposal";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
 import { INVESTIGATION_MESSAGE_LIMIT } from "@/lib/copilot/domain-classifier";
@@ -164,11 +165,13 @@ export async function POST(req: NextRequest) {
         }
         void withBoundUser(bound, () => withTokenSubject(subject, async () => {
           try {
-            const result = await researchTurn(input, {
+            const researched = await researchTurn(input, {
               subject, server: copilotConfig.mcpBaseUrl, network, secret,
               mcp: getMcpClient(), model: createFlashResearchModel(), signal,
               onProgress: (event) => send({ type: "progress", event }),
             });
+            // The model words a factual answer around the audited figures; unchanged if it cannot.
+            const result = await composeReply(researched, signal);
             // The turn is recorded before the result goes out, so the client learns which
             // conversation it landed in and carries that id on the next turn.
             // A store that cannot record the turn must not cost the user their answer — but a
