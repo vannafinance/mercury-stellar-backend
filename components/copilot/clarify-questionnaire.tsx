@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { Check, X, ArrowLeft, ArrowRight, CornerDownLeft } from "lucide-react";
 import { useTheme } from "@/contexts/theme-context";
+import { decimalWad } from "@/lib/copilot/investigation/fixed";
 import type {
   Questionnaire,
   QuestionnaireOption,
@@ -77,6 +78,11 @@ interface SectionInternalState {
   amountRaw: string;
   activeStepIdx: number;
   linkedOptionId?: string | null;
+}
+
+/** True when the server's own decimal reader accepts it: the box refuses exactly what the server would. */
+export function isDecimalAmount(text: string): boolean {
+  try { return decimalWad(text) > BigInt(0); } catch { return false; }
 }
 
 /** `percent`% of a decimal amount, exact to 7 places, trailing zeros trimmed. Null when unreadable. */
@@ -312,8 +318,9 @@ export function ClarifyQuestionnaire({
         };
       }
 
+      // "12abc" or "12,5" used to pass here (parseFloat reads the leading 12) and fail on Send.
+      if (!isDecimalAmount(trimmed)) return { kind: "error", error: "Invalid amount" };
       const num = parseFloat(trimmed);
-      if (!Number.isFinite(num) || num <= 0) return { kind: "error", error: "Invalid amount" };
       if (maxAmountNum !== null && num > maxAmountNum) {
         return {
           kind: "error",

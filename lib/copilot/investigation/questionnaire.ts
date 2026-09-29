@@ -562,6 +562,8 @@ export function buildQuestionnaire(
 
   const venueAssets = chosen ? [chosen] : assets;
   const venueOptions: QuestionnaireOption[] = [];
+  /** Distinct destinations on offer (op and pool), across assets: two or more is a choice the user makes. */
+  const places = new Set<string>();
   const pair: Record<string, { asset: string; perUnit: string | null; note?: string }> = {};
   const max: NonNullable<QuestionnaireStep["max"]> = {};
   for (const asset of venueAssets) {
@@ -572,6 +574,7 @@ export function buildQuestionnaire(
       const own = spendsAccount ? sumKnown([accountHeld, walletHeld]) : heldInPocket(observations, choice.pocket, asset);
       if (!own || own === "0") continue;
       venueOptions.push(choice.option);
+      places.add(`${choice.option.op ?? ""}|${choice.pool?.venue ?? ""}`);
       const where = spendsAccount && walletHeld && walletHeld !== "0"
         ? "your margin account and your wallet"
         : pocketPhrase(choice.pocket).replace(/^in /, "");
@@ -607,7 +610,12 @@ export function buildQuestionnaire(
       if (!max[asset]) max[asset] = { amount: own, asset, where, starting };
     }
   }
-  if (missing.slots.includes("venue") || venueOptions.length === 1) {
+  /**
+   * Asked whenever more than one place is really on offer, whatever the model listed as
+   * missing. Without this a clarify that left "venue" out of its slots sealed `ops[0]` as the
+   * op, so the first deposit op in OP_FLOW (an Earn lend) ran unasked.
+   */
+  if (missing.slots.includes("venue") || venueOptions.length === 1 || places.size > 1) {
     steps.push({ slot: "venue", prompt: "Where should it go?", options: venueOptions });
   }
   /**

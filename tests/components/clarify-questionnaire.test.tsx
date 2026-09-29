@@ -5,8 +5,16 @@ import { ThemeProvider } from "@/contexts/theme-context";
 import {
   ClarifyQuestionnaire,
   buildQuestionnaireSummary,
+  isDecimalAmount,
 } from "@/components/copilot/clarify-questionnaire";
 import type { Questionnaire } from "@/lib/copilot/investigation/view";
+
+describe("the amount box accepts what the server accepts", () => {
+  it("refuses trailing text, commas and zero that parseFloat used to wave through", () => {
+    for (const bad of ["12abc", "12,5", "0", "1e3", "-4", ".5", "12."]) expect(isDecimalAmount(bad), bad).toBe(false);
+    for (const good of ["12", "12.5", "0.0000001", "1604.1234567"]) expect(isDecimalAmount(good), good).toBe(true);
+  });
+});
 
 function renderWithTheme(ui: React.ReactElement) {
   return render(<ThemeProvider>{ui}</ThemeProvider>);

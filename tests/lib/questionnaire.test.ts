@@ -44,6 +44,22 @@ describe("a questionnaire is only for missing inputs", () => {
 });
 
 describe("questionnaire options come from what is held", () => {
+  it("asks where when several places are on offer, even if the model did not list the venue as missing", () => {
+    // The model left "venue" out and named no op: sealing ops[0] would have run an Earn lend unasked.
+    const unplaced: QuestionnaireMissing = { asset: "XLM", slots: ["amount"] };
+    const rows = [
+      wallet([{ symbol: "XLM", balance: "50" }]),
+      account([{ symbol: "XLM", balance: "40" }]),
+      ...prices, earn("XLM", "3"), blend,
+    ];
+    const built = buildQuestionnaire(unplaced, rows, NOW);
+    const venue = built?.steps.find((step) => step.slot === "venue");
+    expect(venue).toBeTruthy();
+    expect(new Set(venue!.options.map((option) => option.op)).size).toBeGreaterThan(1);
+    // An answer must name the place: without one it is refused, not defaulted.
+    expect(answerProblem(built!, { amount: { kind: "literal", amount: "5" } } as unknown as QuestionnaireAnswers)).toBeTruthy();
+  });
+
   it("asks where FROM for a guessed exit, listing every place that holds the asset with its balance", () => {
     // "withdraw all my xlm": the model guessed redeem, but the XLM sits in three places.
     const exit: QuestionnaireMissing = { asset: "XLM", op: "redeem", slots: ["venue", "amount"] };
