@@ -6430,25 +6430,25 @@ export function CopilotWorkspace() {
           {entry.error && <p role="alert" className="mt-3 text-[13px] text-imperial-500">{entry.error}</p>}
 
         </div>
-            <p className="mt-1.5 text-center text-[11px] leading-[17px] text-vgray-400">
-              {autoApproveUiOn
-                ? "Auto-approve on · writes inside the limits run without a prompt"
-                : "Auto-approve off · every write asks for a signature"}
-            </p>
             {/* Starter prompts, shown only on an empty stage. They run through the same
                 composer path a typed prompt does, so nothing here is a shortcut past the
                 classifier, the reads or any gate. */}
             {stageEmpty && (
               <div style={{ paddingTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
-                {["Price of XLM", "What's my health factor?", "Deposit 5 XLM"].map((text) => (
+                {[
+                  { text: "Price of XLM", needsWallet: false },
+                  { text: "What's my health factor?", needsWallet: false },
+                  { text: "Deposit 5 XLM", needsWallet: true },
+                ].map(({ text, needsWallet }) => (
                   <button
                     key={text}
                     type="button"
                     disabled={loading || signing || investigation.loading || entry.loading}
                     onClick={() => { void run(text); }}
-                    className="w-full cursor-pointer rounded-r2 px-1.5 py-2.5 text-left text-[14px] leading-[21px] text-vgray-500 transition-colors hover:bg-vgray-50 hover:text-vgray-900 disabled:cursor-not-allowed disabled:opacity-50"
+                    className={`flex w-full cursor-pointer items-center justify-between gap-3 rounded-r2 px-1.5 py-2.5 text-left text-[14px] leading-[21px] transition-colors hover:bg-vgray-50 hover:text-vgray-900 disabled:cursor-not-allowed disabled:opacity-50 ${needsWallet && !address ? "text-vgray-300" : "text-vgray-500"}`}
                   >
                     {text}
+                    {needsWallet && !address && <span className="text-[12px] text-vgray-400">Needs a wallet</span>}
                   </button>
                 ))}
               </div>
