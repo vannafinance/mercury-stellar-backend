@@ -1313,3 +1313,35 @@ html.dark .run-card,
 @media (prefers-reduced-motion: reduce) {
   .cp-shell, .cp-shell .cp-panel, .cp-shell .cp-main { transition: none !important; }
 }
+
+/* Copilot WP6: one rail's data and controls, expanded rows or compact hover/click flyouts. */
+.cp-rail-layout { gap: 2px; padding-bottom: 16px; }
+.cp-rail-slot, .cp-rail-body { display: contents; }
+.cp-rail-heading { justify-content: flex-end !important; padding: 12px 16px 2px !important; }
+.cp-rail-section { min-width: 0; padding: 0 16px; }
+.cp-rail-row { min-height: 36px; margin: 0 -8px; padding: 7px 8px; border-radius: 8px; color: var(--g900); transition: background-color 150ms; }
+.cp-rail-row:hover, .cp-rail-row[aria-expanded="true"] { background: var(--g50); }
+.cp-rail-row > svg, .cp-rail-row > .cp-position-stack, .cp-zap-mark { flex: none; color: var(--g400); }
+.cp-rail-auto .cp-rail-row { width: calc(100% + 16px); }
+.cp-position-stack { display: inline-flex; align-items: center; width: 22px; flex: none; }
+.cp-position-stack img { border-radius: 50%; border: 1px solid var(--surface); }
+.cp-position-stack img + img { margin-left: -8px; }
+.cp-zap-mark { position: relative; display: inline-flex; width: 22px; }
+.cp-zap-dot { position: absolute; width: 6px; height: 6px; border-radius: 50%; right: 0; bottom: 0; background: var(--g300); box-shadow: 0 0 0 2px var(--surface); }
+.cp-zap-dot-on { background: var(--cp-ok-fg); }
+.cp-rail-compact { align-items: center; padding-top: 12px; }
+.cp-rail-compact .cp-rail-heading, .cp-rail-compact .cp-rail-new, .cp-legacy-mini > :nth-child(n+3) { display: none !important; }
+.cp-legacy-mini { display: flex; flex-direction: column; align-items: center; gap: 2px; order: 1; }
+.cp-rail-compact .cp-rail-section, .cp-rail-compact .cp-rail-auto { padding: 0 !important; }
+.cp-rail-mix, .cp-auto-mix { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 40px !important; min-height: 40px; margin: 0; padding: 5px; border-radius: 8px; color: var(--g500); cursor: pointer; }
+.cp-auto-mix .cp-auto-label { display: none; }
+.cp-rail-mix:hover, .cp-auto-mix:hover, .cp-rail-mix[aria-expanded="true"], .cp-auto-mix[aria-expanded="true"], .cp-legacy-mini > button:hover { background: var(--g50); color: var(--g900); }
+.cp-rail-flyout { position: fixed; z-index: 100; width: min(264px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; padding: 16px; border: 1px solid var(--g100); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-vanna); scrollbar-width: none; }
+.cp-rail-flyout::-webkit-scrollbar { display: none; }
+.cp-rail-flyout .cp-rail-row { margin-inline: 0; }
+@keyframes cp-zap-wiggle { 0%,100% { transform: rotate(0); } 35% { transform: rotate(-10deg); } 65% { transform: rotate(8deg); } }
+@keyframes cp-coins-shift { 0%,100% { transform: translateX(0); } 50% { transform: translateX(2px); } }
+@media (prefers-reduced-motion: no-preference) {
+  .cp-icon-button:hover .cp-zap-mark svg { animation: cp-zap-wiggle 420ms ease-out; }
+  .cp-icon-button:hover .cp-position-stack img + img { animation: cp-coins-shift 420ms ease-out; }
+}

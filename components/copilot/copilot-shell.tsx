@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useViewportScale } from "@/lib/hooks/useViewportScale";
 import { setAssistantOpen } from "@/store/assistant-session";
 import Image from "next/image";
@@ -34,6 +34,8 @@ const RAIL_FULL = 292;
 const RAIL_MINI = 60;
 /** Breathing room above a pinned message, in px. */
 const PIN_GAP = 12;
+/** Scoped presentation mode, derived from shell props; no financial or persisted state. */
+export const CopilotRailPresentation = createContext(false);
 
 export interface CopilotShellProps {
   collapsed: boolean;
@@ -101,10 +103,10 @@ export function CopilotShell({
     const previousOverflow = document.body.style.overflow;
     const panelButton = panelButtonRef.current;
     document.body.style.overflow = "hidden";
-    const focusable = () => Array.from(panelRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), [tabindex="0"]') ?? []).filter((element) => element.getClientRects().length > 0);
+    const focusable = () => [panelRef.current, ...document.querySelectorAll<HTMLElement>("[data-cp-rail-popup]")].flatMap((root) => Array.from(root?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), [tabindex="0"]') ?? [])).filter((element) => element.getClientRects().length > 0);
     const frame = requestAnimationFrame(() => focusable()[0]?.focus());
     const keydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); setDrawerOpen(false); }
+      if (event.key === "Escape" && !document.querySelector("[data-cp-rail-popup]")) { event.preventDefault(); setDrawerOpen(false); }
       if (event.key !== "Tab") return;
       const elements = focusable();
       const first = elements[0];
@@ -321,7 +323,7 @@ export function CopilotShell({
 
   return (
     <div className="cp-shell-frame">
-      <div className="cp-mobile-toolbar">
+      <div className="cp-mobile-toolbar" inert={narrow && drawerOpen ? true : undefined}>
         <button ref={panelButtonRef} type="button" className="cp-rail-icon" aria-label="Open the panel" aria-expanded={drawerOpen} aria-controls="copilot-panel" onClick={() => setDrawerOpen(true)}><PanelIcon /></button>
         <button type="button" className="cp-mobile-assist" onClick={() => setAssistantOpen(true)}><Image src="/logos/vanna-icon.png" alt="" width={16} height={16} />Assist</button>
       </div>
@@ -361,37 +363,23 @@ export function CopilotShell({
           overflow: "visible",
         }}
       >
-        {compact ? (
+        <CopilotRailPresentation.Provider value={compact}>
           <div
-            style={{
-              position: "absolute",
-              inset: "0 auto 0 0",
-              width: RAIL_MINI,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 10,
-              padding: "14px 0",
-            }}
-          >
-            {railMini}
-          </div>
-        ) : (
-          <div
-            className="cp-rail-scroll"
+            className={`cp-rail-scroll cp-rail-layout ${compact ? "cp-rail-compact" : ""}`}
             style={{
               position: "absolute",
               inset: 0,
-              width: RAIL_FULL,
+              width: compact ? RAIL_MINI : RAIL_FULL,
               display: "flex",
               flexDirection: "column",
               minWidth: 0,
-              overflowX: "hidden",
-              overflowY: "auto",
+              overflowX: compact ? "visible" : "hidden",
+              overflowY: compact ? "visible" : "auto",
               overscrollBehavior: "contain",
             }}
           >
             <div
+              className="cp-rail-heading"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -401,17 +389,6 @@ export function CopilotShell({
                 flex: "none",
               }}
             >
-              <span
-                style={{
-                  fontFamily: "var(--font-plus-jakarta-sans), system-ui, sans-serif",
-                  fontSize: 12,
-                  lineHeight: "18px",
-                  fontWeight: 600,
-                  color: "var(--g900)",
-                }}
-              >
-                Copilot
-              </span>
               <button
                 type="button"
                 onClick={narrow ? () => setDrawerOpen(false) : onToggleCollapsed}
@@ -432,10 +409,11 @@ export function CopilotShell({
                 <PanelIcon />
               </button>
             </div>
-            <div style={{ flex: "none" }}>{railTop}</div>
-            <div style={{ flex: "none", minWidth: 0 }}>{railBody}</div>
+            {compact && <div className="cp-legacy-mini">{railMini}</div>}
+            <div className="cp-rail-slot">{railTop}</div>
+            <div className="cp-rail-slot">{railBody}</div>
           </div>
-        )}
+        </CopilotRailPresentation.Provider>
       </aside>
       {narrow && drawerOpen && <button type="button" className="cp-panel-scrim" aria-label="Close the panel" onClick={() => setDrawerOpen(false)} />}
 

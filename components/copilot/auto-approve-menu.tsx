@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HEADER_CONTROL } from "./conversation-menu";
+import { CopilotRailPresentation } from "./copilot-shell";
 
 export interface AutoApproveMenuProps {
   on: boolean;
@@ -98,10 +99,26 @@ export function AutoApproveMenu({
   const container = useRef<HTMLDivElement | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const compact = useContext(CopilotRailPresentation);
+  const pinned = useRef(false);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverMode = variant === "mini" || (variant === "rail" && compact);
+  const clearHover = () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); };
+  const place = () => {
+    const rect = trigger.current?.getBoundingClientRect();
+    if (rect) setFlyoutPos({ top: Math.max(8, Math.min(rect.top, window.innerHeight - 300)), left: Math.max(8, Math.min(rect.right + 10, window.innerWidth - 256)) });
+  };
+  const preview = () => { if (!hoverMode) return; clearHover(); place(); setOpen(true); };
+  const leave = () => {
+    if (!hoverMode) return;
+    clearHover();
+    hoverTimer.current = setTimeout(() => { if (!pinned.current && !panelRef.current?.contains(document.activeElement)) setOpen(false); }, 160);
+  };
+  useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
 
   useEffect(() => {
     if (!open) return;
-    const close = () => setOpen(false);
+    const close = () => { pinned.current = false; setOpen(false); };
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (container.current?.contains(target) || panelRef.current?.contains(target)) return;
@@ -124,6 +141,12 @@ export function AutoApproveMenu({
   const mini = variant === "mini";
 
   const toggle = () => {
+    if (hoverMode) {
+      clearHover();
+      pinned.current = !pinned.current;
+      if (pinned.current) { place(); setOpen(true); } else setOpen(false);
+      return;
+    }
     if (!open) {
       const rect = trigger.current?.getBoundingClientRect();
       if (rect) {
@@ -142,12 +165,17 @@ export function AutoApproveMenu({
       ref={panelRef}
       role="dialog"
       aria-label="Auto-approve"
+      data-cp-rail-popup
+      onMouseEnter={clearHover}
+      onMouseLeave={leave}
+      onFocus={clearHover}
+      onBlur={leave}
       className={
         rail || mini
           ? "cp-root fixed z-[100] w-[248px] rounded-r2 border border-vgray-100 bg-surface p-3 shadow-lg"
           : "absolute right-0 z-30 mt-2 w-[min(18rem,calc(100vw-2rem))] rounded-r2 border border-vgray-100 bg-surface p-3 shadow-lg"
       }
-      style={rail || mini ? flyoutPos : undefined}
+      style={rail || mini ? { ...flyoutPos, maxHeight: `calc(100dvh - ${flyoutPos.top + 8}px)`, overflowY: "auto", scrollbarWidth: "none" } : undefined}
     >
           <div className="flex items-center justify-between gap-3 px-1 py-1">
             <span className="text-[13px] font-semibold text-vgray-900">Auto-approve</span>
@@ -224,18 +252,22 @@ export function AutoApproveMenu({
   );
 
   return (
-    <div ref={container} className="relative">
+    <div ref={container} className="relative" onMouseEnter={preview} onMouseLeave={leave}>
       {rail ? (
         <button
           ref={trigger}
           type="button"
           onClick={toggle}
+          onFocus={preview}
+          onBlur={leave}
           aria-expanded={open}
           aria-haspopup="dialog"
-          className="flex w-full cursor-pointer items-center justify-between gap-2 py-1.5"
+          aria-label={compact ? `Auto-approve ${on ? "on" : "off"}` : undefined}
+          className={`cp-rail-row cp-icon-button flex w-full cursor-pointer items-center justify-between gap-2 py-1.5 ${compact ? "cp-auto-mix" : ""}`}
         >
-          <span className="text-[14px] leading-[21px] font-semibold text-vgray-900">Auto-approve</span>
-          <span className="flex items-center gap-1.5 text-[12px] leading-[18px] text-vgray-400">
+          <ZapMark on={on} />
+          <span className="cp-auto-label flex-1 text-left text-[14px] leading-[21px] font-semibold text-vgray-900">Auto-approve</span>
+          <span className="cp-auto-label flex items-center gap-1.5 text-[12px] leading-[18px] text-vgray-400">
             {on ? "On" : "Off"}
             <span aria-hidden className="inline-flex flex-none">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M9 6l6 6-6 6" /></svg>
@@ -247,13 +279,15 @@ export function AutoApproveMenu({
           ref={trigger}
           type="button"
           onClick={toggle}
+          onFocus={preview}
+          onBlur={leave}
           aria-expanded={open}
           aria-haspopup="dialog"
           aria-label={`Auto-approve ${on ? "on" : "off"}`}
           title={`Auto-approve ${on ? "on" : "off"}`}
-          className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-r2 text-[12px] leading-[18px] text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
+          className="cp-rail-mix cp-icon-button flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-r2 text-[12px] leading-[18px] text-vgray-500 transition-colors"
         >
-          {on ? "On" : "Off"}
+          <ZapMark on={on} />
         </button>
       ) : (
         <button
@@ -271,4 +305,8 @@ export function AutoApproveMenu({
       {open && (rail || mini) && typeof document !== "undefined" ? createPortal(panel, document.body) : open ? panel : null}
     </div>
   );
+}
+
+function ZapMark({ on }: { on: boolean }) {
+  return <span className="cp-zap-mark" aria-hidden><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="m13 2-9 12h7l-1 8 10-12h-7z" /></svg><span className={`cp-zap-dot ${on ? "cp-zap-dot-on" : ""}`} /></span>;
 }
