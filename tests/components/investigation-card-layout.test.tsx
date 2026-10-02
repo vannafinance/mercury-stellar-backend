@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { InvestigationCard } from "@/components/copilot/investigation-card";
 import { ChatTurns } from "@/components/copilot/chat-message";
 import { generateCandidates } from "@/lib/copilot/investigation/candidates";
@@ -38,7 +38,18 @@ const twoPlans = () => generateCandidates({
 const cardFor = (result: ResearchView, extra: Partial<Parameters<typeof InvestigationCard>[0]> = {}) =>
   render(<InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} {...extra} />);
 
+afterEach(() => vi.useRealTimers());
+
 describe("plan cards", () => {
+  it("keeps progress wording, clock and previous server prose beside the loading mark", () => {
+    vi.useFakeTimers();
+    render(<InvestigationCard prompt="Review my position" result={null} progress={{ kind: "reviewing", turn: 1 }} loading error={null} turns={[{ role: "user", text: "Earlier question" }, { role: "assistant", text: "The server explanation stays in the conversation." }]} />);
+    act(() => vi.advanceTimersByTime(1500));
+    expect(screen.getByRole("status").textContent).toContain("Working out what to check next");
+    expect(screen.getByRole("status").textContent).toMatch(/\(.*\)/);
+    expect(screen.getByText("The server explanation stays in the conversation.")).toBeTruthy();
+  });
+
   it("gives the chosen plan one Approve and Cancel, and no Options heading, Ruled out list or figures explainer", () => {
     cardFor(view({ candidates: twoPlans() }), { onPropose: vi.fn() });
     expect(screen.getAllByRole("radio")).toHaveLength(2);

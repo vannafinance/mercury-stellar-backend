@@ -30,6 +30,13 @@ function healthFactorLabel(value: number | null): string {
   return value >= HEALTH_FACTOR_INFINITY_SENTINEL ? "∞" : value.toFixed(2);
 }
 
+/** A value change remounts only its tint, never the rail or any action controls. */
+function HealthValue({ value }: { value: number | null }) {
+  const [frame, setFrame] = useState({ value, revision: 0 });
+  if (!Object.is(frame.value, value)) setFrame({ value, revision: frame.revision + 1 });
+  return <span key={frame.revision} className={frame.revision ? "cp-hf-value cp-hf-tint" : "cp-hf-value"}>{healthFactorLabel(value)}</span>;
+}
+
 /** One section's two presentations; hover previews, click pins, no account state. */
 function RailFlyout({ label, icon, summary, heading, children, order }: {
   label: string; icon: React.ReactNode; summary?: React.ReactNode;
@@ -179,13 +186,13 @@ export function CopilotRailBody({
     <div className="cp-rail-body">
       {/* Health factor — the number and the zone, nothing else. The dial, the scale and
           the collateral/borrowed strip stay off the rail by design. */}
-      <RailFlyout order={2} label="Health factor" icon={<HealthIcon />} summary={<span className="text-[11px] font-semibold text-vgray-900">{healthFactorLabel(healthFactor)}</span>} heading={
+      <RailFlyout order={2} label="Health factor" icon={<HealthIcon />} summary={<span className="text-[11px] font-semibold text-vgray-900"><HealthValue value={healthFactor} /></span>} heading={
       <div className="cp-rail-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <HealthIcon />
         <div className="flex-1 text-[14px] leading-[21px] font-semibold text-vgray-900">Health factor</div>
         <div style={{ flex: "none", textAlign: "right", minWidth: 0 }}>
           <div className="text-[13px] leading-[20px] font-semibold text-vgray-900" style={{ fontFamily: VANNA_FONT }}>
-            {healthFactorLabel(healthFactor)}
+            <HealthValue value={healthFactor} />
           </div>
           <div className="text-[12px] leading-[18px] text-vgray-500" style={{ textTransform: "capitalize" }}>
             {zoneLabel(zone)}

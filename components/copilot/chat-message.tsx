@@ -65,7 +65,7 @@ export function AssistantMessage({
   blocks?: ReplyBlock[];
 }) {
   return (
-    <div>
+    <div className="cp-reply-rise">
       {blocks?.length && tone !== "error" ? (
         <ReplyBlocksBody blocks={blocks} />
       ) : typeof children === "string" ? (
@@ -206,7 +206,7 @@ function FactRows({ rows }: { rows: Array<{ label: string; value: string }> }) {
       {rows.map((r, i) => (
         <div
           key={i}
-          className="flex items-baseline justify-between gap-4 border-b border-vgray-100 py-1.5"
+          className="cp-fact-rise flex items-baseline justify-between gap-4 border-b border-vgray-100 py-1.5"
         >
           <span className="min-w-0 truncate text-[11px] uppercase tracking-[0.08em] text-vgray-500">
             {r.label}

@@ -8,6 +8,17 @@ import { AutoApproveMenu, type AutoApproveMenuProps } from "@/components/copilot
 afterEach(() => vi.useRealTimers());
 
 describe("compact rail presentation", () => {
+  it("updates the health value without replacing conversation controls or inventing a direction label", () => {
+    const props = { hasWallet: true, positions: [], conversations: [], activeId: null, onOpen: vi.fn(), onRename: vi.fn(), onDelete: vi.fn() };
+    const { rerender } = render(<CopilotRailBody {...props} healthFactor={3} />);
+    const positions = screen.getByRole("button", { name: "Positions" });
+    expect(screen.getByText("3.00")).toBeTruthy();
+    rerender(<CopilotRailBody {...props} healthFactor={1.8} />);
+    expect(screen.getByText("1.80")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Positions" })).toBe(positions);
+    expect(props.onOpen).not.toHaveBeenCalled();
+  });
+
   it("previews positions on hover, pins on click, and retains the account's figures", () => {
     vi.useFakeTimers();
     render(<CopilotRailPresentation.Provider value><p>Server explanation above the card</p><CopilotRailBody hasWallet healthFactor={999} positions={[{ symbol: "XLM", role: "Margin · Collateral", amount: "23.5", usd: "$4.70" }]} conversations={[]} activeId={null} onOpen={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} /></CopilotRailPresentation.Provider>);

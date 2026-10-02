@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CircleAlert, Loader2, Search } from "lucide-react";
+import { CircleAlert, Search } from "lucide-react";
+import Image from "next/image";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
@@ -434,8 +435,7 @@ export function InvestigationCard({
 
           {loading && (
             <p role="status" aria-live="polite" className="flex items-center gap-2.5 text-[13px] text-violet-500">
-              {/* The spinner takes the reply mark's slot (18px, same gap), so the words land where the reply's words will. */}
-              <Loader2 size={18} className="shrink-0 animate-spin" aria-hidden="true" />
+              <span className="cp-loader-mark" aria-hidden="true"><Image src="/logos/vanna-icon.png" alt="" width={18} height={18} /></span>
               {progressLabel}{deviceClock ? ` (${deviceClock})` : ""}
             </p>
           )}

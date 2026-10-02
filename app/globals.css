@@ -1345,3 +1345,17 @@ html.dark .run-card,
   .cp-icon-button:hover .cp-zap-mark svg { animation: cp-zap-wiggle 420ms ease-out; }
   .cp-icon-button:hover .cp-position-stack img + img { animation: cp-coins-shift 420ms ease-out; }
 }
+
+/* Copilot WP8: motion supplements status text and the clock, never replaces them. */
+.cp-loader-mark { position: relative; display: inline-flex; width: 18px; height: 18px; flex: none; }
+.cp-loader-mark::before { content: ""; position: absolute; inset: -5px; border-radius: 50%; background: conic-gradient(from 0deg, transparent 0 55%, var(--imperial-500) 78%, var(--violet-500) 100%); mask: radial-gradient(circle, transparent 62%, black 64%); animation: cp-loader-spin 1100ms linear infinite; }
+.cp-reply-rise, .cp-fact-rise { animation: cp-rise 260ms cubic-bezier(.2,.8,.2,1) both; }
+.cp-hf-value { position: relative; display: inline-block; font-family: var(--font-plus-jakarta-sans), system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+.cp-hf-tint::before { content: ""; position: absolute; inset: -6px -8px; border-radius: 8px; background: color-mix(in srgb, var(--imperial-500) 12%, transparent); pointer-events: none; animation: cp-hf-tint 1600ms ease-out both; }
+@keyframes cp-loader-spin { to { transform: rotate(360deg); } }
+@keyframes cp-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes cp-hf-tint { from { opacity: 1; } to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .cp-loader-mark::before, .cp-reply-rise, .cp-fact-rise { animation: none; }
+  .cp-hf-tint::before { animation: none; background: transparent; }
+}
