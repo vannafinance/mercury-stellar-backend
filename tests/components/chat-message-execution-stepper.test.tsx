@@ -32,23 +32,20 @@ const turns: ThreadTurn[] = [
   { role: "assistant", text: "Paused for signature — finish signing to continue.", executionReceipt: receipt },
 ];
 
-describe("ChatTurns — the execution card's label reflects the real signing state", () => {
-  it("says Autonomous when the session is armed to sign without a click", () => {
-    render(<ChatTurns turns={turns} sessionSigning={true} />);
-    expect(screen.getByText("Signed within your auto-approve limits.")).toBeTruthy();
-    expect(screen.queryByText("Nothing is sent without your signature.")).toBeNull();
-  });
-
-  it("says Step-by-Step Approval when it genuinely is not armed", () => {
-    render(<ChatTurns turns={turns} sessionSigning={false} />);
-    expect(screen.getByText("Nothing is sent without your signature.")).toBeTruthy();
+describe("ChatTurns — the execution card makes no signing claim of its own", () => {
+  // The footer line that used to name the signing state ("Nothing is sent without your signature."
+  // / "Signed within your auto-approve limits.") was removed by design: the header, the wallet mark
+  // and the Sign button already say who acts next. What must never come back is the 21 Sep bug,
+  // where that line contradicted the run beneath it. With no line, there is nothing to contradict.
+  it.each([
+    ["armed", true],
+    ["not armed", false],
+    ["unspecified", undefined],
+  ])("shows neither signing claim when the session is %s", (_name, sessionSigning) => {
+    render(<ChatTurns turns={turns} sessionSigning={sessionSigning} />);
     expect(screen.queryByText("Signed within your auto-approve limits.")).toBeNull();
-  });
-
-  it("defaults to Step-by-Step Approval rather than silently claiming autonomy", () => {
-    // No sessionSigning passed at all — the safe default is the honest one.
-    render(<ChatTurns turns={turns} />);
-    expect(screen.getByText("Nothing is sent without your signature.")).toBeTruthy();
+    expect(screen.queryByText("Nothing is sent without your signature.")).toBeNull();
+    expect(screen.getByLabelText("Settled")).toBeTruthy();
   });
 
   it("renders Vanna icon on the left of assistant replies", () => {

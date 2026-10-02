@@ -1,6 +1,7 @@
 "use client";
 
-import { Check, Loader2, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check } from "lucide-react";
 
 export interface StepperStep {
   id: string;
@@ -54,6 +55,7 @@ export function ExecutionStepper({
   cancelled = false,
 }: ExecutionStepperProps) {
   const total = steps.length;
+  const freshIds = useFreshlySettled(steps);
   const settled = steps.filter((step) => step.status === "settled").length;
   const failedIndex = steps.findIndex((step) => step.status === "failed");
   /** A step whose transaction may or may not have landed: the run is halted until someone checks. */
@@ -119,7 +121,7 @@ export function ExecutionStepper({
           const last = index === steps.length - 1;
           return (
             <li key={step.id || index} className={`flex gap-3.5 py-3 ${last ? "" : "border-b border-vgray-50"}`}>
-              <StepMark status={step.status} delayMs={index * STAGGER_MS} />
+              <StepMark status={step.status} delayMs={index * STAGGER_MS} fresh={freshIds.has(step.id || String(index))} waitsForWallet={waitsHere} />
               <div className="flex min-w-0 grow flex-col gap-1">
                 <div className="flex items-baseline justify-between gap-3">
                   <span className={`text-[14px] leading-5 ${isSettled || isInFlight || isFailed || isUncertain ? "font-semibold text-vgray-900" : "font-medium text-vgray-400"}`}>
@@ -157,6 +159,7 @@ export function ExecutionStepper({
                     {step.status === "claiming" ? "Checking it before it is sent…"
                       : step.status === "signing" ? "Signing…"
                         : "Waiting for the ledger to close…"}
+                    <ElapsedSeconds />
                   </p>
                 )}
 
@@ -164,7 +167,7 @@ export function ExecutionStepper({
                   <div className="mt-1 flex flex-wrap items-center gap-3">
                     {onSign && (
                       <button type="button" onClick={onSign} disabled={busy}
-                        className="rounded-lg bg-[image:var(--cp-gradient)] px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50">
+                        className="min-h-9 rounded-lg bg-[image:var(--cp-gradient)] px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50">
                         Sign in wallet
                       </button>
                     )}
@@ -197,41 +200,97 @@ export function ExecutionStepper({
         })}
       </ol>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className="text-[12px] text-vgray-400">
-          {autoApprove ? "Signed within your auto-approve limits." : "Nothing is sent without your signature."}
-        </span>
-        {onStop && !complete && !stopped && (
+      {onStop && !complete && !stopped && (
+        <div className="flex justify-end">
           <button type="button" onClick={onStop} disabled={busy}
-            className="rounded-lg border border-vgray-100 bg-transparent px-3.5 py-2 text-[13px] font-semibold text-vgray-700 disabled:opacity-50">
+            className="min-h-9 rounded-lg border border-vgray-200 bg-surface px-3.5 py-2 text-[13px] font-semibold text-vgray-700 hover:bg-vgray-50 disabled:opacity-50">
             {autoApprove ? "Stop after this step" : "Cancel remaining steps"}
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function StepMark({ status, delayMs }: { status: StepperStep["status"]; delayMs: number }) {
+/**
+ * Ids of the steps that settled while this card was on screen. Those get the ring-then-tick
+ * finish; a step that was already settled when the card mounted (a restored run) keeps the
+ * staggered pop. Purely a view of the status prop: nothing is stored or sent.
+ */
+function useFreshlySettled(steps: StepperStep[]): ReadonlySet<string> {
+  const statusOf = () => Object.fromEntries(steps.map((step, index) => [step.id || String(index), step.status])) as Record<string, StepperStep["status"]>;
+  const [track, setTrack] = useState(() => ({ statuses: statusOf(), fresh: [] as string[] }));
+  const statuses = statusOf();
+  const newlySettled = Object.keys(statuses).filter((id) => statuses[id] === "settled" && track.statuses[id] !== undefined && track.statuses[id] !== "settled" && !track.fresh.includes(id));
+  if (newlySettled.length > 0 || Object.keys(statuses).some((id) => statuses[id] !== track.statuses[id])) {
+    setTrack({ statuses, fresh: [...track.fresh, ...newlySettled] });
+  }
+  return new Set([...track.fresh, ...newlySettled]);
+}
+
+/** Whole seconds since this line appeared, shown once there is one to show: proof the step is still moving. */
+function ElapsedSeconds() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const started = Date.now();
+    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return seconds > 0 ? <span className="ml-2 text-vgray-400">{seconds}s</span> : null;
+}
+
+const SVG_PROPS = { fill: "none", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true } as const;
+
+/**
+ * One mark per state, no disc behind it: a card sliding into a wallet means the step is waiting
+ * for you; a spinning arc means a transaction is in flight; a ring that closes and a tick that
+ * draws means it settled; an X that draws means it did not go.
+ */
+function StepMark({ status, delayMs, fresh, waitsForWallet }: { status: StepperStep["status"]; delayMs: number; fresh: boolean; waitsForWallet: boolean }) {
+  const box = "mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center";
   if (status === "settled") {
     return (
-      <span style={{ animationDelay: `${delayMs}ms` }} className="cp-exec-pop mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-[var(--cp-ok-bg)] text-[var(--cp-ok-fg)]" aria-label="Settled">
-        <Check size={13} strokeWidth={2.5} />
+      <span aria-label="Settled" className={`${box} text-[var(--cp-emerald)]`}>
+        <svg width="22" height="22" viewBox="0 0 24 24" {...SVG_PROPS} stroke="currentColor" className={fresh ? "" : "cp-exec-pop"} style={fresh ? undefined : { animationDelay: `${delayMs}ms` }}>
+          {fresh && <circle className="cp-exec-ring" cx="12" cy="12" r="9" strokeWidth="2" />}
+          <path className={fresh ? "cp-exec-tick cp-exec-tick-after" : "cp-exec-tick"} strokeWidth={fresh ? 2.4 : 2.6} d={fresh ? "M17 9.5 10.6 16l-3.4-3.4" : "M20 6 9 17l-5-5"} style={fresh ? undefined : { animationDelay: `${delayMs + 60}ms` }} />
+        </svg>
       </span>
     );
   }
   if (status === "failed") {
     return (
-      <span className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-[var(--cp-danger-bg)] text-[var(--cp-danger-fg)]" aria-label="Failed">
-        <X size={13} strokeWidth={2.5} />
+      <span aria-label="Failed" className={`${box} text-[var(--cp-danger-fg)]`}>
+        <svg width="22" height="22" viewBox="0 0 24 24" {...SVG_PROPS} stroke="currentColor">
+          <path className="cp-exec-cross" strokeWidth="2.6" d="M18 6 6 18M6 6l12 12" />
+        </svg>
       </span>
     );
   }
   if (status === "uncertain") {
     return <span className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-[var(--cp-warn-bg)] text-[12px] font-semibold text-[var(--cp-warn-fg)]" aria-label="Outcome unknown">?</span>;
   }
+  if (IN_FLIGHT.has(status) && waitsForWallet) {
+    return (
+      <span aria-label="Waiting for your wallet" className={`${box} text-violet-500`}>
+        <svg width="22" height="22" viewBox="0 0 24 24" {...SVG_PROPS} stroke="currentColor" strokeWidth="1.8">
+          <rect className="cp-exec-wallet-card" x="7.5" y="3" width="9" height="7" rx="1.4" />
+          <path d="M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z" fill="var(--surface)" />
+          <path d="M20 13h-3a1.8 1.8 0 0 0 0 3.6h3" />
+          <circle cx="17.2" cy="14.8" r=".7" fill="currentColor" stroke="none" />
+        </svg>
+      </span>
+    );
+  }
   if (IN_FLIGHT.has(status)) {
-    return <Loader2 size={22} className="mt-px shrink-0 animate-spin text-violet-500" aria-label="In progress" />;
+    return (
+      <span aria-label="In progress" className={`${box} text-violet-500`}>
+        <svg width="22" height="22" viewBox="0 0 24 24" {...SVG_PROPS} strokeWidth="2.4" className="animate-spin">
+          <circle cx="12" cy="12" r="9" stroke="var(--bar-track)" />
+          <path d="M12 3a9 9 0 0 1 9 9" stroke="currentColor" />
+        </svg>
+      </span>
+    );
   }
   return <span className="mt-px h-[22px] w-[22px] shrink-0 rounded-full border-2 border-dashed border-vgray-200" aria-label="Not started" />;
 }

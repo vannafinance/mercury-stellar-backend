@@ -1250,3 +1250,23 @@ html.dark .run-card,
 @media (prefers-reduced-motion: reduce) {
   .cp-exec-live, .cp-exec-fill, .cp-exec-pop, .cp-exec-rise, .cp-exec-breathe { animation: none; }
 }
+
+/* Step marks draw themselves (no disc behind them). A tick that settled while the card was open
+   closes a ring first, then draws; a wallet mark slides its card in while the step waits for you. */
+@keyframes cp-exec-draw { to { stroke-dashoffset: 0; } }
+@keyframes cp-exec-ringfade { to { opacity: 0; } }
+@keyframes cp-exec-walletcard {
+  0%, 12% { transform: translateY(-1.5px); }
+  50%, 66% { transform: translateY(5px); }
+  100% { transform: translateY(-1.5px); }
+}
+.cp-exec-tick { stroke-dasharray: 24; stroke-dashoffset: 24; animation: cp-exec-draw 400ms ease-out forwards; }
+.cp-exec-tick-after { stroke-dasharray: 16; stroke-dashoffset: 16; animation: cp-exec-draw 300ms 300ms ease-out forwards; }
+.cp-exec-ring { stroke-dasharray: 57; stroke-dashoffset: 57; animation: cp-exec-draw 340ms ease-out forwards, cp-exec-ringfade 220ms 340ms ease-out forwards; }
+.cp-exec-cross { stroke-dasharray: 34; stroke-dashoffset: 34; animation: cp-exec-draw 400ms 60ms ease-out forwards; }
+.cp-exec-wallet-card { animation: cp-exec-walletcard 2200ms ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .cp-exec-tick, .cp-exec-tick-after, .cp-exec-cross { animation: none; stroke-dashoffset: 0; }
+  .cp-exec-ring { animation: none; opacity: 0; }
+  .cp-exec-wallet-card { animation: none; }
+}
