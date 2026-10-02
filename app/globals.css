@@ -1278,3 +1278,38 @@ html.dark .run-card,
   .cp-questionnaire-scroll { max-height: min(66dvh, 500px); }
   .cp-questionnaire-step { min-height: 196px; }
 }
+
+/* Copilot WP5: responsive presentation shell. All page-wide selectors require this shell. */
+.cp-mobile-toolbar { display: none; }
+.cp-shell-frame { min-width: 0; }
+.cp-shell *, html:has(.cp-shell), body:has(.cp-shell) { scrollbar-width: none; }
+.cp-shell *::-webkit-scrollbar, html:has(.cp-shell)::-webkit-scrollbar, body:has(.cp-shell)::-webkit-scrollbar { display: none; }
+.cp-shell .cp-stage { overflow-wrap: anywhere; }
+.cp-shell .cp-composer { max-width: 100%; }
+@media (max-width: 860px) {
+  .cp-mobile-toolbar { display: flex; align-items: center; justify-content: space-between; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--g100); }
+  .cp-mobile-toolbar > .cp-rail-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 10px; color: var(--g700); cursor: pointer; }
+  .cp-mobile-assist { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border: 1px solid var(--g100); border-radius: 18px; background: var(--surface); color: var(--g800); font-size: 12px; font-weight: 600; cursor: pointer; }
+  body:has(.cp-shell) button[aria-label="Ask Vanna Assist"] { display: none; }
+  .cp-shell .cp-panel { position: fixed !important; top: var(--cp-panel-top) !important; bottom: 0; left: 0; height: calc(100dvh - var(--cp-panel-top)) !important; width: min(320px, 88vw) !important; z-index: 80; transform: translateX(-100%); visibility: hidden; transition: transform 220ms cubic-bezier(.2,.8,.2,1), visibility 220ms; }
+  .cp-shell .cp-panel-open { transform: none; visibility: visible; box-shadow: var(--shadow-vanna); }
+  .cp-panel > .cp-rail-scroll { width: 100% !important; }
+  .cp-panel-scrim { position: fixed; inset: var(--cp-panel-top) 0 0; z-index: 70; background: color-mix(in srgb, var(--g900) 35%, transparent); cursor: pointer; }
+  .cp-shell .cp-stage { padding: 0 16px !important; }
+  .cp-shell .cp-composer-wrap { padding: 8px 16px calc(12px + env(safe-area-inset-bottom, 0px)) !important; }
+}
+@media (max-width: 600px) {
+  .cp-shell .cp-composer-input { font-size: 16px; line-height: 24px; }
+  .cp-shell .cp-hero > :first-child { font-size: 24px; line-height: 34px; }
+  .cp-shell .cp-hero > :last-child { font-size: 15px; line-height: 22px; }
+  .cp-shell [role="region"][aria-label="Clarify request"] { padding: 12px; }
+  .cp-shell [data-plan-id] { padding-inline: 16px; }
+  .cp-shell .cp-execution-stepper { max-width: 100%; }
+}
+@media (max-width: 380px) {
+  .cp-shell .cp-stage { padding-inline: 12px !important; }
+  .cp-shell .cp-composer-wrap { padding-inline: 12px !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cp-shell, .cp-shell .cp-panel, .cp-shell .cp-main { transition: none !important; }
+}

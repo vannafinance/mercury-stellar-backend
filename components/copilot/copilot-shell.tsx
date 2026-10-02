@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useViewportScale } from "@/lib/hooks/useViewportScale";
+import { setAssistantOpen } from "@/store/assistant-session";
+import Image from "next/image";
 
 /**
  * The chat shell for /copilot: a sticky left rail, and a thread that scrolls with the page.
@@ -80,6 +82,45 @@ export function CopilotShell({
   /** Where the copilot area starts on screen (the navbar's bottom edge), in visual px. */
   const topEdgeRef = useRef(0);
   const zoomRef = useRef(1);
+  const [narrow, setNarrow] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const panelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const compact = collapsed && !narrow;
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 860px)");
+    const update = () => { setNarrow(query.matches); setDrawerOpen(false); };
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!narrow || !drawerOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const panelButton = panelButtonRef.current;
+    document.body.style.overflow = "hidden";
+    const focusable = () => Array.from(panelRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), [tabindex="0"]') ?? []).filter((element) => element.getClientRects().length > 0);
+    const frame = requestAnimationFrame(() => focusable()[0]?.focus());
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); setDrawerOpen(false); }
+      if (event.key !== "Tab") return;
+      const elements = focusable();
+      const first = elements[0];
+      const last = elements.at(-1);
+      if (!first) { event.preventDefault(); return; }
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", keydown);
+      panelButton?.focus();
+    };
+  }, [narrow, drawerOpen]);
 
   /**
    * The chat scrolls with the PAGE, not inside a box of its own. 23 Sep, owner: a second
@@ -279,9 +320,17 @@ export function CopilotShell({
   }, [measure]);
 
   return (
+    <div className="cp-shell-frame">
+      <div className="cp-mobile-toolbar">
+        <button ref={panelButtonRef} type="button" className="cp-rail-icon" aria-label="Open the panel" aria-expanded={drawerOpen} aria-controls="copilot-panel" onClick={() => setDrawerOpen(true)}><PanelIcon /></button>
+        <button type="button" className="cp-mobile-assist" onClick={() => setAssistantOpen(true)}><Image src="/logos/vanna-icon.png" alt="" width={16} height={16} />Assist</button>
+      </div>
     <div
       ref={shell}
+      className="cp-shell"
+      data-cp-collapsed={compact}
       style={{
+        ["--cp-panel-top" as string]: `${stickyTop}px`,
         display: "flex",
         alignItems: "flex-start",
         // At least one window tall; taller as the thread grows, since the PAGE scrolls.
@@ -291,13 +340,20 @@ export function CopilotShell({
       }}
     >
       <aside
+        ref={panelRef}
+        id="copilot-panel"
+        className={`cp-panel ${drawerOpen ? "cp-panel-open" : ""}`}
+        role={narrow ? "dialog" : undefined}
+        aria-label="Copilot panel"
+        aria-modal={narrow && drawerOpen ? true : undefined}
+        inert={narrow && !drawerOpen ? true : undefined}
         style={{
           // Stays in view while the page scrolls, and keeps its own scroll for the rail.
           position: "sticky",
           top: stickyTop,
           height: height ? `${height}px` : "calc(100dvh - 96px)",
           flex: "none",
-          width: collapsed ? RAIL_MINI : RAIL_FULL,
+          width: compact ? RAIL_MINI : RAIL_FULL,
           minWidth: 0,
           background: "var(--surface)",
           borderRight: "1px solid var(--g100)",
@@ -305,7 +361,7 @@ export function CopilotShell({
           overflow: "visible",
         }}
       >
-        {collapsed ? (
+        {compact ? (
           <div
             style={{
               position: "absolute",
@@ -358,7 +414,7 @@ export function CopilotShell({
               </span>
               <button
                 type="button"
-                onClick={onToggleCollapsed}
+                onClick={narrow ? () => setDrawerOpen(false) : onToggleCollapsed}
                 title="Collapse"
                 aria-label="Collapse the panel"
                 className="cp-rail-icon"
@@ -381,8 +437,11 @@ export function CopilotShell({
           </div>
         )}
       </aside>
+      {narrow && drawerOpen && <button type="button" className="cp-panel-scrim" aria-label="Close the panel" onClick={() => setDrawerOpen(false)} />}
 
       <main
+        className="cp-main"
+        inert={narrow && drawerOpen ? true : undefined}
         style={{
           flex: 1,
           minWidth: 0,
@@ -403,6 +462,7 @@ export function CopilotShell({
         </div>
         <div
           ref={composerRef}
+          className="cp-composer-wrap"
           style={{
             minWidth: 0, padding: "8px 20px 14px",
             // Over the thread as it scrolls beneath; the page colour so nothing shows through.
@@ -413,6 +473,7 @@ export function CopilotShell({
         </div>
         <div />
       </main>
+    </div>
     </div>
   );
 }

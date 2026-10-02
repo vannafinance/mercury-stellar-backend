@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { render, fireEvent, screen } from "@testing-library/react";
 import { CopilotShell } from "@/components/copilot/copilot-shell";
 
 /**
@@ -22,6 +22,26 @@ function frames() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("CopilotShell — the chat scrolls with the page", () => {
+  it("opens and dismisses the phone drawer without replacing the thread or draft", () => {
+    vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() } as unknown as MediaQueryList);
+    const { container } = render(<CopilotShell collapsed onToggleCollapsed={vi.fn()} empty={false} railTop={<button>New chat</button>} railBody={<p>Positions</p>} railMini={<p>Mini</p>} thread={<p>Server explanation above its card</p>} composer={<textarea aria-label="Copilot intent" defaultValue="My draft" />} />);
+    const thread = screen.getByText("Server explanation above its card");
+    const draft = screen.getByLabelText("Copilot intent") as HTMLTextAreaElement;
+    expect(container.querySelector("#copilot-panel")?.hasAttribute("inert")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Open the panel" }));
+    expect(screen.getByRole("dialog", { name: "Copilot panel" }).getAttribute("aria-modal")).toBe("true");
+    expect(screen.getByText("Positions")).toBeTruthy();
+    expect(screen.queryByText("Mini")).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(container.querySelector("#copilot-panel")?.hasAttribute("inert")).toBe(true);
+    expect(screen.getByText("Server explanation above its card")).toBe(thread);
+    expect(draft.value).toBe("My draft");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Open the panel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open the panel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close the panel" }));
+    expect(container.querySelector("#copilot-panel")?.hasAttribute("inert")).toBe(true);
+  });
+
   it("has no scroll box of its own", () => {
     const { container } = render(shell({ thread: <div>thread turn 1</div> }));
     const stage = container.querySelector(".cp-stage") as HTMLElement;

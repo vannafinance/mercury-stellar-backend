@@ -6293,7 +6293,7 @@ export function CopilotWorkspace() {
             {/* Hero — only while the stage is empty. It shares the composer's block so
                 the two move together as the grid recentres them. */}
             {stageEmpty && (
-              <div style={{ textAlign: "center", marginBottom: 16 }}>
+              <div className="cp-hero" style={{ textAlign: "center", marginBottom: 16 }}>
                 <div className="text-[28px] leading-[42px] font-semibold text-vgray-900">
                   What&apos;s the next move?
                 </div>
@@ -6304,7 +6304,7 @@ export function CopilotWorkspace() {
             )}
             {openQuestionnaire && (
               /* Docked where the chat box is, so it must not grow over the thread: capped, with its own scroll. */
-              <div style={{ maxHeight: "min(46vh, 440px)", overflowY: "auto", overscrollBehavior: "contain", borderRadius: 16 }}>
+              <div className="cp-questionnaire-dock" style={{ borderRadius: 16 }}>
               <ClarifyQuestionnaire
                 questionnaire={openQuestionnaire}
                 busy={investigation.loading}
