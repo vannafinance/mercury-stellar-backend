@@ -114,9 +114,11 @@ describe("investigation card / options", () => {
       expect(screen.getByText(`${Number(idle.supplyApyPct).toFixed(2)}% APY`)).toBeTruthy();
     }
     expect(screen.queryByText(/% APR$/)).toBeNull();
-    expect(screen.getAllByText("$680.00")).toHaveLength(2);
-    // Two idle options leave health untouched; the levered third is the only one with a figure.
-    const health = screen.getAllByText("Health factor").map((dt) => dt.nextElementSibling?.textContent ?? "");
+    // One plan is open at a time; read each plan's health figure by choosing it in turn.
+    const health = screen.getAllByRole("radio").map((radio) => {
+      fireEvent.click(radio);
+      return screen.getByText("Health factor").nextElementSibling?.textContent ?? "";
+    });
     expect(health.slice(0, 2)).toEqual(["unchanged", "unchanged"]);
     expect(health[2]).toMatch(/(^|→ )1\.30$/);
   });
@@ -271,7 +273,7 @@ describe("investigation card / options", () => {
     expect(screen.getByRole("status").textContent).toMatch(/Reading can withdraw/);
   });
 
-  it("gives each plan its own Approve when a runner-up decided the ranking", () => {
+  it("approves the plan that was chosen, not the first, when a runner-up decided the ranking", () => {
     const onPropose = vi.fn();
     const candidates = generateCandidates({
       grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", borrowingAllowed: false,
@@ -302,7 +304,8 @@ describe("investigation card / options", () => {
     expect(screen.getByText(/Using SOUSDC/)).toBeTruthy();
     expect(screen.getByText("Plan A")).toBeTruthy();
     expect(screen.getByText("Plan B")).toBeTruthy();
-    fireEvent.click(screen.getAllByRole("button", { name: "Approve" })[1]);
+    fireEvent.click(screen.getByRole("radio", { name: /Plan B/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve Plan B" }));
     expect(onPropose).toHaveBeenCalledWith(candidateId("lend_idle", "AQUSDC"));
   });
 

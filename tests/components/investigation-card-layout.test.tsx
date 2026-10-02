@@ -39,10 +39,12 @@ const cardFor = (result: ResearchView, extra: Partial<Parameters<typeof Investig
   render(<InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} {...extra} />);
 
 describe("plan cards", () => {
-  it("gives every plan Approve and Cancel, and no Options heading, Ruled out list or figures explainer", () => {
+  it("gives the chosen plan one Approve and Cancel, and no Options heading, Ruled out list or figures explainer", () => {
     cardFor(view({ candidates: twoPlans() }), { onPropose: vi.fn() });
-    expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(2);
-    expect(screen.getAllByRole("button", { name: "Cancel" })).toHaveLength(2);
+    expect(screen.getAllByRole("radio")).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /^Approve/ })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Approve Plan A" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Cancel" })).toHaveLength(1);
     expect(screen.queryByRole("heading", { name: /^Options?$/ })).toBeNull();
     expect(screen.queryByText(/How these figures are made/)).toBeNull();
     expect(screen.queryByRole("button", { name: /Prepare this plan|Use the other option/ })).toBeNull();
@@ -59,14 +61,18 @@ describe("plan cards", () => {
     const onApproveCandidate = vi.fn(); const onPropose = vi.fn();
     const candidates = twoPlans();
     cardFor(view({ candidates }), { onApproveCandidate, onPropose });
-    fireEvent.click(screen.getAllByRole("button", { name: "Approve" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Approve Plan A" }));
     expect(onApproveCandidate).toHaveBeenCalledWith(candidates.feasible[0].id);
+    fireEvent.click(screen.getByRole("radio", { name: /Plan B/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve Plan B" }));
+    expect(onApproveCandidate).toHaveBeenLastCalledWith(candidates.feasible[1].id);
     expect(onPropose).not.toHaveBeenCalled();
   });
 
-  it("closes only the plan whose Cancel was pressed (owner, 24 Sep: Plan B's Cancel removed Plan A too)", () => {
+  it("closes only the chosen plan on Cancel (owner, 24 Sep: Plan B's Cancel removed Plan A too)", () => {
     cardFor(view({ candidates: twoPlans() }), { onPropose: vi.fn() });
-    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[1]);
+    fireEvent.click(screen.getByRole("radio", { name: /Plan B/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByText("Plan A")).toBeTruthy();
     expect(screen.queryByText("Plan B")).toBeNull();
     expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
@@ -75,7 +81,8 @@ describe("plan cards", () => {
 
   it("says nothing was submitted once every plan is cancelled", () => {
     cardFor(view({ candidates: twoPlans() }), { onPropose: vi.fn() });
-    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[1]);
+    fireEvent.click(screen.getByRole("radio", { name: /Plan B/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     expect(screen.getByTestId("plans-cancelled").textContent).toMatch(/Nothing was submitted/);
@@ -152,22 +159,37 @@ describe("plan layouts by count", () => {
     expect(screen.getByRole("button", { name: "Hide steps" })).toBeTruthy();
   });
 
-  it("lays two plans side by side with their steps behind a toggle", () => {
+  it("offers two plans as a pick-one list, the chosen one open, with its steps behind a toggle", () => {
     const base = twoPlans();
     cardFor(view({ candidates: { ...base, feasible: base.feasible.map((c) => withSteps(c, 3)) } }), { onPropose: vi.fn() });
-    expect(screen.getByRole("region", { name: "Plans" }).className).toMatch(/grid-cols-2/);
+    expect(screen.getByRole("radiogroup", { name: "Choose a plan" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /Plan A/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: /Plan B/ }).getAttribute("aria-checked")).toBe("false");
     expect(screen.queryAllByText(/^Step \d of /)).toHaveLength(0);
-    expect(screen.getAllByRole("button", { name: "Show the 3 steps" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Show the 3 steps" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("radio", { name: /Plan B/ }));
+    expect(screen.getAllByRole("button", { name: "Show the 3 steps" })).toHaveLength(1);
+    expect(screen.getByRole("radio", { name: /Plan B/ }).getAttribute("aria-checked")).toBe("true");
   });
 
-  it("collapses three or more plans to rows, with Approve only on the opened one", () => {
+  it("moves the choice with the arrow keys", () => {
+    cardFor(view({ candidates: twoPlans() }), { onPropose: vi.fn() });
+    fireEvent.keyDown(screen.getByRole("radio", { name: /Plan A/ }), { key: "ArrowDown" });
+    expect(screen.getByRole("radio", { name: /Plan B/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("button", { name: "Approve Plan B" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("radio", { name: /Plan B/ }), { key: "ArrowDown" });
+    expect(screen.getByRole("radio", { name: /Plan A/ }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("keeps three or more plans in the same pick-one list, with one Approve for the chosen one", () => {
     const base = twoPlans();
     const third = { ...base.feasible[1], id: `${base.feasible[1].id}-c`, label: "A third plan" };
     cardFor(view({ candidates: { ...base, feasible: [...base.feasible, third] } }), { onPropose: vi.fn() });
-    expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: /A third plan/ }));
-    expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
-    expect(screen.getByText("Plan C").closest("button")).toBeNull();
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: /^Approve/ })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("radio", { name: /A third plan/ }));
+    expect(screen.getAllByRole("button", { name: /^Approve/ })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Approve Plan C" })).toBeTruthy();
   });
 });
 

@@ -92,9 +92,7 @@ function rateOf(candidate: NonNullable<ResearchView["candidates"]>["feasible"][n
 }
 
 type PlanCandidate = NonNullable<ResearchView["candidates"]>["feasible"][number];
-type PlanLayout = "single" | "pair" | "list";
-
-/** Steps a single plan shows before "Show all"; a pair shows none until asked (mockup boards 5–7). */
+/** Steps a single plan shows before "Show all"; with several plans they stay behind a toggle (mockup boards 5–7). */
 const SINGLE_PLAN_PREVIEW_STEPS = 4;
 
 /** Health factor as the plan card states it: where it goes, not just where it ends. */
@@ -109,72 +107,39 @@ function healthCell(candidate: PlanCandidate, fallbackBefore: string | null): { 
 }
 
 /**
- * One plan (mockup boards 5–9). The same card in every layout; what changes is how much
- * of it shows: a single plan previews its first steps, a pair keeps them behind a toggle
- * so the two stay comparable side by side, and a list of three or more collapses all but
- * the opened plan to a row that still carries its figures.
+ * What a plan says about itself: the three figures, its steps, and the notes under them. One
+ * body for both ways a plan is shown (the lone card and the selected row of a picker), so the
+ * two can never drift apart. The figures sit on one line each; on a phone they become rows.
  */
-function PlanCard({
-  candidate, index, several, layout, compact, beforeHf, stepsOpen, onToggleSteps, onOpen,
-  onApprove, onCancel, approveDisabled, cancelDisabled,
+function PlanDetails({
+  candidate, lead, beforeHf, previewSteps, stepsOpen, onToggleSteps,
 }: {
-  candidate: PlanCandidate; index: number; several: boolean; layout: PlanLayout; compact: boolean;
-  beforeHf: string | null; stepsOpen: boolean; onToggleSteps: () => void; onOpen: () => void;
-  onApprove?: () => void; onCancel: () => void; approveDisabled: boolean; cancelDisabled: boolean;
+  candidate: PlanCandidate; lead: boolean; beforeHf: string | null;
+  previewSteps: number; stepsOpen: boolean; onToggleSteps: () => void;
 }) {
-  const rate = rateOf(candidate);
   const health = healthCell(candidate, beforeHf);
   const steps = candidate.steps ?? [];
-  const lead = index === 0;
-  const shownSteps = stepsOpen ? steps : layout === "single" ? steps.slice(0, SINGLE_PLAN_PREVIEW_STEPS) : [];
+  const shownSteps = stepsOpen ? steps : steps.slice(0, previewSteps);
   const hiddenCount = steps.length - shownSteps.length;
-  const stats = (
-    <dl className={`grid grid-cols-3 rounded-xl border border-vgray-100 ${compact ? "text-[12px]" : ""}`}>
-      <div className="flex flex-col gap-0.5 border-r border-vgray-100 px-3.5 py-2.5">
-        <dt className="text-[12px] text-vgray-400">Moves</dt>
-        <dd className="text-[15px] font-semibold tabular-nums text-vgray-900">{money(candidate.amountUsd)}</dd>
-      </div>
-      <div className="flex flex-col gap-0.5 border-r border-vgray-100 px-3.5 py-2.5">
-        <dt className="text-[12px] text-vgray-400">Health factor</dt>
-        <dd className={`text-[15px] font-semibold tabular-nums ${health.tone === "ok" ? "text-[var(--cp-ok-fg)]" : "text-vgray-900"}`}>{health.value}</dd>
-      </div>
-      <div className="flex flex-col gap-0.5 px-3.5 py-2.5">
-        <dt className="text-[12px] text-vgray-400">Transactions</dt>
-        <dd className="text-[15px] font-semibold tabular-nums text-vgray-900">{Math.max(1, steps.length)}</dd>
-      </div>
-    </dl>
-  );
-  const heading = (
-    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
-      <div className="flex min-w-0 flex-col gap-1">
-        {several && <span className={`text-[12px] font-semibold ${lead ? "text-violet-500" : "text-vgray-400"}`}>Plan {planLetter(index)}</span>}
-        <p className="min-w-0 break-words text-[15.5px] font-semibold leading-[22px] text-vgray-900">{candidate.label}</p>
-      </div>
-      {rate && <p className="shrink-0 text-[14px] font-semibold tabular-nums text-violet-500">{rate}</p>}
-    </div>
-  );
-
-  if (compact) {
-    return (
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-expanded={false}
-        className="flex w-full flex-col gap-3 rounded-2xl border border-vgray-100 bg-surface px-5 py-4 text-left transition-colors hover:border-violet-400"
-      >
-        {heading}
-        {stats}
-      </button>
-    );
-  }
-
+  const cell = "flex items-baseline justify-between gap-3 border-t border-vgray-100 px-3.5 py-2.5 first:border-t-0 sm:flex-col sm:items-start sm:justify-start sm:gap-0.5 sm:border-l sm:border-t-0 sm:first:border-l-0";
+  const label = "text-[12px] text-vgray-400 sm:whitespace-nowrap";
+  const value = "text-[15px] font-semibold tabular-nums text-vgray-900 sm:whitespace-nowrap";
   return (
-    <div
-      className="flex flex-col gap-4 rounded-2xl border bg-surface px-5 py-5 sm:px-6"
-      style={{ borderColor: lead && several ? "var(--cp-violet-soft-border)" : "var(--cp-g100)" }}
-    >
-      {heading}
-      {stats}
+    <>
+      <dl className="grid grid-cols-1 rounded-xl border border-vgray-100 sm:grid-cols-3">
+        <div className={cell}>
+          <dt className={label}>Moves</dt>
+          <dd className={value}>{money(candidate.amountUsd)}</dd>
+        </div>
+        <div className={cell}>
+          <dt className={label}>Health factor</dt>
+          <dd className={`${value} ${health.tone === "ok" ? "!text-[var(--cp-ok-fg)]" : ""}`}>{health.value}</dd>
+        </div>
+        <div className={cell}>
+          <dt className={label}>Transactions</dt>
+          <dd className={value}>{Math.max(1, steps.length)}</dd>
+        </div>
+      </dl>
       {shownSteps.length > 0 && (
         <ol className="flex flex-col" data-testid="plan-steps">
           {shownSteps.map((step, stepIndex) => (
@@ -195,9 +160,40 @@ function PlanCard({
         <p className="max-w-[68ch] text-[12.5px] leading-5 text-vgray-500" data-testid="plan-simulation">{candidate.simulation.summary}</p>
       )}
       {lead && candidate.decision?.reason && <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-700">{candidate.decision.reason}</p>}
+    </>
+  );
+}
+
+/** A plan's title line: its letter when there are several, what it does, and the rate it earns or pays. */
+function PlanHeading({ candidate, index, several, selected }: { candidate: PlanCandidate; index: number; several: boolean; selected: boolean }) {
+  const rate = rateOf(candidate);
+  return (
+    <div className="flex min-w-0 grow flex-wrap items-start justify-between gap-x-4 gap-y-1">
+      <div className="flex min-w-0 flex-col gap-1">
+        {several && <span className={`text-[12px] font-semibold ${selected ? "text-violet-500" : "text-vgray-400"}`}>Plan {planLetter(index)}</span>}
+        <p className="min-w-0 break-words text-[15.5px] font-semibold leading-[22px] text-vgray-900">{candidate.label}</p>
+      </div>
+      {rate && <p className="shrink-0 text-[14px] font-semibold tabular-nums text-violet-500">{rate}</p>}
+    </div>
+  );
+}
+
+/** The one plan on offer: a full card with its own Approve and Cancel. */
+function PlanCard({
+  candidate, index, several, beforeHf, stepsOpen, onToggleSteps,
+  onApprove, onCancel, approveDisabled, cancelDisabled,
+}: {
+  candidate: PlanCandidate; index: number; several: boolean;
+  beforeHf: string | null; stepsOpen: boolean; onToggleSteps: () => void;
+  onApprove?: () => void; onCancel: () => void; approveDisabled: boolean; cancelDisabled: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-4 rounded-2xl border border-vgray-100 bg-surface px-5 py-5 sm:px-6">
+      <PlanHeading candidate={candidate} index={index} several={several} selected={false} />
+      <PlanDetails candidate={candidate} lead={index === 0} beforeHf={beforeHf} previewSteps={SINGLE_PLAN_PREVIEW_STEPS} stepsOpen={stepsOpen} onToggleSteps={onToggleSteps} />
       {onApprove && (
         <div className="flex gap-2">
-          <button type="button" onClick={onApprove} disabled={approveDisabled} className={`${BTN_PRIMARY} ${layout === "pair" ? "grow" : ""}`}>
+          <button type="button" onClick={onApprove} disabled={approveDisabled} className={BTN_PRIMARY}>
             Approve
           </button>
           <button type="button" onClick={onCancel} disabled={cancelDisabled} className={BTN_QUIET}>
@@ -206,6 +202,75 @@ function PlanCard({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Two or more plans in one card: a radio row per plan, the chosen one open with its figures and
+ * steps, and a single Approve and Cancel for the chosen plan at the bottom. Choosing a row only
+ * changes what is shown; Approve and Cancel call exactly what a plan's own buttons called, with
+ * that plan's id.
+ */
+function PlanPicker({
+  plans, letterOf, selectedId, onSelect, beforeHf, openSteps, onToggleSteps,
+  onApprove, onCancel, approveDisabled, cancelDisabled,
+}: {
+  plans: PlanCandidate[]; letterOf: (candidate: PlanCandidate) => number; selectedId: string;
+  onSelect: (id: string) => void; beforeHf: string | null;
+  openSteps: Record<string, boolean>; onToggleSteps: (id: string) => void;
+  onApprove?: (id: string) => void; onCancel: (id: string) => void; approveDisabled: boolean; cancelDisabled: boolean;
+}) {
+  const selected = plans.find((candidate) => candidate.id === selectedId) ?? plans[0];
+  const move = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const next = plans[(plans.findIndex((candidate) => candidate.id === selected.id) + step + plans.length) % plans.length];
+    onSelect(next.id);
+    event.currentTarget.querySelector<HTMLElement>(`[data-plan-id="${CSS.escape(next.id)}"]`)?.focus();
+  };
+  return (
+    <section aria-label="Plans" className="overflow-hidden rounded-2xl border border-vgray-100 bg-surface">
+      <div role="radiogroup" aria-label="Choose a plan" onKeyDown={move}>
+        {plans.map((candidate) => {
+          const isSelected = candidate.id === selected.id;
+          const index = letterOf(candidate);
+          return (
+            <div key={candidate.id} className="border-t border-vgray-100 first:border-t-0" style={isSelected ? { background: "var(--cp-violet-soft)" } : undefined}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={isSelected}
+                data-plan-id={candidate.id}
+                tabIndex={isSelected ? 0 : -1}
+                onClick={() => onSelect(candidate.id)}
+                className="flex w-full items-start gap-3 px-5 py-4 text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-violet-500"
+              >
+                <span aria-hidden="true" className={`mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-[1.5px] ${isSelected ? "border-violet-500" : "border-vgray-200"}`}>
+                  {isSelected && <span className="h-2 w-2 rounded-full bg-violet-500" />}
+                </span>
+                <PlanHeading candidate={candidate} index={index} several selected={isSelected} />
+              </button>
+              {isSelected && (
+                <div className="flex flex-col gap-4 px-5 pb-5 pl-[3.25rem]">
+                  <PlanDetails candidate={candidate} lead={index === 0} beforeHf={beforeHf} previewSteps={0} stepsOpen={!!openSteps[candidate.id]} onToggleSteps={() => onToggleSteps(candidate.id)} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {onApprove && (
+        <div className="flex gap-2 border-t border-vgray-100 px-5 py-4">
+          <button type="button" onClick={() => onApprove(selected.id)} disabled={approveDisabled} className={BTN_PRIMARY}>
+            Approve Plan {planLetter(letterOf(selected))}
+          </button>
+          <button type="button" onClick={() => onCancel(selected.id)} disabled={cancelDisabled} className={BTN_QUIET}>
+            Cancel
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -426,33 +491,42 @@ export function InvestigationCard({
                 const feasible = result.candidates!.feasible;
                 const several = feasible.length > 1;
                 const approve = onApproveCandidate ?? onPropose;
-                const layout: PlanLayout = visiblePlans.length >= 3 ? "list" : visiblePlans.length === 2 ? "pair" : "single";
-                const opened = visiblePlans.some((c) => c.id === openPlan) ? openPlan : visiblePlans[0].id;
-                const cardFor = (candidate: (typeof feasible)[number], compact: boolean) => (
-                  <PlanCard
-                    key={candidate.id}
-                    candidate={candidate}
-                    index={feasible.indexOf(candidate)}
-                    several={several}
-                    layout={layout}
-                    compact={compact}
+                const selectedId = visiblePlans.some((c) => c.id === openPlan) ? openPlan! : visiblePlans[0].id;
+                const dismiss = (id: string) => setDismissed({ key: replyKey, ids: [...dismissedIds, id] });
+                const toggleSteps = (id: string) => setOpenSteps((open) => ({ ...open, [id]: !open[id] }));
+                if (visiblePlans.length === 1) {
+                  const only = visiblePlans[0];
+                  return (
+                    <section aria-label={several ? "Plans" : "Plan"} className="flex flex-col gap-3.5">
+                      <PlanCard
+                        candidate={only}
+                        index={feasible.indexOf(only)}
+                        several={several}
+                        beforeHf={result.capacity?.healthFactor ?? null}
+                        stepsOpen={!!openSteps[only.id]}
+                        onToggleSteps={() => toggleSteps(only.id)}
+                        onApprove={approve ? () => approve(only.id) : undefined}
+                        onCancel={() => dismiss(only.id)}
+                        approveDisabled={!!workflowLoading || planInFlight}
+                        cancelDisabled={!!workflowLoading}
+                      />
+                    </section>
+                  );
+                }
+                return (
+                  <PlanPicker
+                    plans={visiblePlans}
+                    letterOf={(candidate) => feasible.indexOf(candidate)}
+                    selectedId={selectedId}
+                    onSelect={setOpenPlan}
                     beforeHf={result.capacity?.healthFactor ?? null}
-                    stepsOpen={!!openSteps[candidate.id]}
-                    onToggleSteps={() => setOpenSteps((open) => ({ ...open, [candidate.id]: !open[candidate.id] }))}
-                    onOpen={() => setOpenPlan(candidate.id)}
-                    onApprove={approve ? () => approve(candidate.id) : undefined}
-                    onCancel={() => setDismissed({ key: replyKey, ids: [...dismissedIds, candidate.id] })}
+                    openSteps={openSteps}
+                    onToggleSteps={toggleSteps}
+                    onApprove={approve}
+                    onCancel={dismiss}
                     approveDisabled={!!workflowLoading || planInFlight}
                     cancelDisabled={!!workflowLoading}
                   />
-                );
-                return (
-                  <section
-                    aria-label={several ? "Plans" : "Plan"}
-                    className={layout === "pair" ? "grid items-start gap-3.5 sm:grid-cols-2" : "flex flex-col gap-3.5"}
-                  >
-                    {visiblePlans.map((candidate) => cardFor(candidate, layout === "list" && candidate.id !== opened))}
-                  </section>
                 );
               })()}
               {!!result.candidates?.feasible.length && !workflow && visiblePlans.length === 0 && (
