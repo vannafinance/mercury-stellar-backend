@@ -94,7 +94,7 @@ function RailFlyout({ label, icon, summary, heading, children, order }: {
 }
 
 function HealthIcon() {
-  return <svg aria-hidden width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M3 17a9 9 0 0 1 18 0M5 16h1M18 16h1M12 8v1M7 10l1 1M16 10l-4 6" /><circle cx="12" cy="16" r="1" /></svg>;
+  return <svg className="cp-health-icon" aria-hidden width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3.34 19a10 10 0 1 1 17.32 0" /><path className="cp-health-needle" d="m12 14 4-4" /></svg>;
 }
 
 function PositionIcon() {
@@ -187,10 +187,10 @@ export function CopilotRailBody({
       {/* Health factor — the number and the zone, nothing else. The dial, the scale and
           the collateral/borrowed strip stay off the rail by design. */}
       <RailFlyout order={2} label="Health factor" icon={<HealthIcon />} summary={<span className="text-[11px] font-semibold text-vgray-900"><HealthValue value={healthFactor} /></span>} heading={
-      <div className="cp-rail-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+      <div className="cp-rail-row cp-health-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <HealthIcon />
         <div className="flex-1 text-[14px] leading-[21px] font-semibold text-vgray-900">Health factor</div>
-        <div style={{ flex: "none", textAlign: "right", minWidth: 0 }}>
+        <div className="flex flex-none items-center gap-1.5" style={{ minWidth: 0 }}>
           <div className="text-[13px] leading-[20px] font-semibold text-vgray-900" style={{ fontFamily: VANNA_FONT }}>
             <HealthValue value={healthFactor} />
           </div>
@@ -212,11 +212,12 @@ export function CopilotRailBody({
         >
           <PositionIcon />
           <span className="flex-1 text-left text-[14px] leading-[21px] font-semibold">Positions</span>
+          <span aria-hidden className="text-[12px] font-normal text-vgray-500">{positions.length}</span>
           <Caret open={positionsOpen} />
         </button>
         }>
         {positionsOpen && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "8px 0 2px" }}>
+          <div className="cp-position-list">
             {positions.length === 0 ? (
               <p className="text-[12px] leading-[18px] text-vgray-400">{hasWallet ? "Nothing open." : "Connect your wallet to see positions."}</p>
             ) : (
@@ -244,7 +245,7 @@ export function CopilotRailBody({
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="truncate text-[14px] leading-[21px] font-semibold text-vgray-900">{p.symbol}</div>
-                    <div className="truncate text-[12px] leading-[18px] text-vgray-500">{p.role}</div>
+                    <div title={p.role} className="truncate text-[12px] leading-[18px] text-vgray-500">{p.role}</div>
                   </div>
                   <div style={{ flex: "none", textAlign: "right" }}>
                     <div className="text-[13px] leading-[20px] font-semibold text-vgray-900" style={{ fontFamily: VANNA_FONT }}>{p.amount}</div>
@@ -301,7 +302,7 @@ function RecentsList({
       </button>
       }>
       {recentsOpen && (
-        <div style={{ padding: "6px 0 4px", display: "flex", flexDirection: "column" }}>
+        <div className="cp-recents-list" style={{ padding: "2px 0 4px", display: "flex", flexDirection: "column" }}>
           {conversations.length === 0 ? (
             <p className="text-[12px] leading-[18px] text-vgray-400">No chats yet.</p>
           ) : (
@@ -416,7 +417,7 @@ function RecentRow({
       className={`group relative flex items-center gap-0.5 rounded-r2 ${
         active || menuOpen ? "bg-vgray-50" : "hover:bg-vgray-50"
       }`}
-      style={{ minWidth: 0, margin: "0 -6px", padding: "2px 4px" }}
+      style={{ minWidth: 0, margin: "0 -8px", padding: "2px 4px" }}
     >
       <button
         type="button"

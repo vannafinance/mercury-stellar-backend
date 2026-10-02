@@ -52,7 +52,7 @@ function CapField({
             : "border-vgray-100 focus-within:border-violet-400"
         }`}
       >
-        <span className="text-[12.5px] text-vgray-400">$</span>
+        <span className="shrink-0 whitespace-nowrap text-[12.5px] text-vgray-400">$</span>
         <input
           type="number"
           inputMode="decimal"
@@ -65,7 +65,7 @@ function CapField({
           placeholder={label === "per tx" ? "500" : "2000"}
           aria-label={aria}
           aria-readonly={locked || undefined}
-          className={`w-full min-w-0 border-0 bg-transparent py-1.5 text-[13px] tabular-nums outline-none ${
+          className={`w-0 min-w-0 flex-1 border-0 bg-transparent py-1.5 text-[13px] tabular-nums outline-none ${
             locked ? "pointer-events-none cursor-not-allowed text-vgray-400" : "text-vgray-900"
           }`}
         />
@@ -308,5 +308,5 @@ export function AutoApproveMenu({
 }
 
 function ZapMark({ on }: { on: boolean }) {
-  return <span className="cp-zap-mark" aria-hidden><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="m13 2-9 12h7l-1 8 10-12h-7z" /></svg><span className={`cp-zap-dot ${on ? "cp-zap-dot-on" : ""}`} /></span>;
+  return <span className="cp-zap-mark" aria-hidden><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path className="cp-zap-path" d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" /></svg><span className={`cp-zap-dot ${on ? "cp-zap-dot-on" : ""}`} /></span>;
 }
