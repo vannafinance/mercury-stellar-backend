@@ -1270,3 +1270,11 @@ html.dark .run-card,
   .cp-exec-ring { animation: none; opacity: 0; }
   .cp-exec-wallet-card { animation: none; }
 }
+/* Copilot WP4: steady questionnaire body; header and actions stay outside its scroll. */
+.cp-questionnaire-scroll { max-height: min(60dvh, 520px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.cp-questionnaire-scroll::-webkit-scrollbar { display: none; }
+.cp-questionnaire-step { min-height: 212px; }
+@media (max-width: 600px) {
+  .cp-questionnaire-scroll { max-height: min(66dvh, 500px); }
+  .cp-questionnaire-step { min-height: 196px; }
+}

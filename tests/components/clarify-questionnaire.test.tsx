@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ThemeProvider } from "@/contexts/theme-context";
 import {
   ClarifyQuestionnaire,
@@ -140,6 +140,23 @@ const mockMultiSectionQuestionnaire: Questionnaire = {
 };
 
 describe("ClarifyQuestionnaire Component", () => {
+  it("lets either question return to the composer without submitting or losing server prose", async () => {
+    const onCancel = vi.fn();
+    const onSubmit = vi.fn();
+    renderWithTheme(<><textarea aria-label="Copilot intent" /><ClarifyQuestionnaire questionnaire={mockQuestionnaire} onCancel={onCancel} onSubmit={onSubmit} /></>);
+    expect(screen.getByText(mockQuestionnaire.subtitle!)).toBeTruthy();
+    expect(screen.queryByText(/Press 1-9/)).toBeNull();
+    expect(screen.queryByText("Something else")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Type instead" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Copilot intent")));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("option-blusdc"));
+    fireEvent.click(screen.getByRole("button", { name: "Type instead" }));
+    expect(onCancel).toHaveBeenCalledTimes(2);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("renders title, subtitle, and step counter", () => {
     renderWithTheme(
       <ClarifyQuestionnaire

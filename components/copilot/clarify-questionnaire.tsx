@@ -931,7 +931,7 @@ export function ClarifyQuestionnaire({
       role="region"
       aria-label="Clarify request"
       onKeyDown={handleKeyDown}
-      className={`rounded-2xl border p-3.5 sm:p-4 transition-colors ${
+      className={`cp-questionnaire rounded-2xl border p-3.5 sm:p-4 transition-colors ${
         isDark
           ? "border-[#2A2A2A] bg-[#141414] text-white"
           : "border-vgray-200 bg-surface text-vgray-900"
@@ -968,6 +968,7 @@ export function ClarifyQuestionnaire({
         </button>
       </div>
 
+      <div className="cp-questionnaire-scroll">
       {/* Addendum 2: Multi-Action Section Checklist at the Top */}
       {isMultiSection && (
         <div className="pt-3 pb-2 border-b border-vgray-100 space-y-1.5" data-testid="section-checklist">
@@ -1070,7 +1071,7 @@ export function ClarifyQuestionnaire({
 
       {/* Active Step Content */}
       {currentStep && (
-        <div className="py-2">
+        <div className="cp-questionnaire-step py-2">
           <h3 className="text-[13px] font-semibold mb-2.5 text-vgray-900">
             {currentStep.prompt}
           </h3>
@@ -1330,6 +1331,7 @@ export function ClarifyQuestionnaire({
         </div>
       )}
 
+      </div>
       {/* Navigation Buttons: Back, Next, Send */}
       <div className="flex items-center justify-between gap-2 border-t border-vgray-100 pt-3.5 mt-3">
         <div>
@@ -1347,7 +1349,18 @@ export function ClarifyQuestionnaire({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            disabled={busy || submitted}
+            onClick={() => {
+              onCancel();
+              requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[aria-label="Copilot intent"]')?.focus());
+            }}
+            className="min-h-9 cursor-pointer px-2 text-[12px] font-medium text-vgray-500 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:opacity-50"
+          >
+            Type instead
+          </button>
           {!isLastVisibleStep && (
             <button
               type="button"
@@ -1371,12 +1384,6 @@ export function ClarifyQuestionnaire({
             {busy ? "Sending..." : "Send"}
           </button>
         </div>
-      </div>
-
-
-      {/* Keyboard hint */}
-      <div className="flex items-center justify-between text-[11px] text-vgray-400 mt-2 px-0.5">
-        <span>Press 1-9 to select &middot; &crarr; to submit &middot; Esc to close</span>
       </div>
     </div>
   );
