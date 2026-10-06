@@ -1,15 +1,10 @@
 import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
+import { acceptedTestnetBudget } from "@/lib/copilot/auto-approve-budget";
 
 /**
- * Client session auto-approve (Privy embedded wallet silent-sign of MCP XDR).
- *
- * Distinct from MCP Sign Service "enable auto-sign" (server-side caps). The app
- * toggle only promises the client path: whenever a hop returns a signable XDR,
- * auto-approve must submit it without asking the user to re-enable anything.
- *
- * Multi-leg used to break on hop 2+: MCP often returned needs_auto_sign while
- * hop 1 was needs_wallet_sign, and the UI only auto-submitted the latter — so
- * later legs showed the enable-auto-sign gate with auto-approve already on.
+ * Shared controls for server-enforced approval and wallet request dispatch.
+ * A delegated-signing refusal must never be bypassed by silent client signing.
+ * Freighter dispatch still requires the user to approve the wallet signature.
  */
 
 /** Stable key so each hop auto-submits once (request_id alone can collide or be missing). */
@@ -50,9 +45,11 @@ export function shouldSessionAutoSubmit(opts: {
   autoSubmitBlocked?: boolean;
   hasSignableXdr?: boolean;
   allowSessionSign?: boolean;
+  walletSigningRequired?: boolean;
+  allowWalletDispatch?: boolean;
 }): boolean {
   if (!opts.sessionSigning) return false;
-  if (opts.allowSessionSign === false) return false;
+  if (opts.walletSigningRequired ? opts.allowWalletDispatch !== true : opts.allowSessionSign === false) return false;
   if (opts.autoSubmitBlocked) return false;
   // "needs_confirmation" is the normal staged risk label — do NOT treat as click gate.
   if (opts.riskDecision === "block") return false;
@@ -141,6 +138,7 @@ export type SignServiceRailStatus = "unknown" | "ok" | "unavailable" | "unbound"
 export type SignServiceRailState = {
   status: SignServiceRailStatus;
   reason: string | null;
+  authoritative?: boolean;
 };
 
 export function hasAuthenticatedPrivyHeader(headers: Record<string, string>): boolean {
@@ -152,7 +150,7 @@ export function preserveLastConclusiveSignState(
   current: SignServiceRailState,
   next: SignServiceRailState,
 ): SignServiceRailState {
-  return next.status === "unavailable" && current.status !== "unknown" ? current : next;
+  return next.status === "unavailable" && !next.authoritative && current.status !== "unknown" ? current : next;
 }
 
 /**
@@ -170,6 +168,7 @@ export function signServiceFromSessionRead(res: {
 }): {
   status: SignServiceRailStatus;
   reason: string | null;
+  authoritative?: boolean;
   caps?: { tx: number; day: number };
 } {
   const facts = (res.data ?? {}) as Record<string, unknown>;
@@ -195,14 +194,13 @@ export function signServiceFromSessionRead(res: {
   if (!enabled) {
     return { status: "unknown", reason: null };
   }
-  const tx = Number(facts.max_per_tx_usd);
-  const day = Number(facts.max_per_day_usd);
+  const caps = acceptedTestnetBudget(facts);
+  if (!caps) {
+    return { status: "unavailable", authoritative: true, reason: "The signer has not confirmed enforced testnet amount limits. Choose testnet amount limits before enabling auto-approve." };
+  }
   return {
     status: "ok",
     reason: null,
-    caps:
-      Number.isFinite(tx) && tx > 0
-        ? { tx, day: Number.isFinite(day) && day > 0 ? day : tx }
-        : undefined,
+    caps,
   };
 }

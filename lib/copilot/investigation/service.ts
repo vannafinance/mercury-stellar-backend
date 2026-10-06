@@ -8,6 +8,7 @@ import { researchCodec } from "./continuation";
 import { boundedLimits, runInvestigation, interruptible } from "./runtime";
 import { strategyReply } from "./answer";
 import { normalizeResearchFacts } from "./normalize";
+import { accountDisplayObservations } from "./account-display";
 import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
@@ -53,6 +54,12 @@ export const SCOPE_BUDGET_MS = 20_000;
  * back without a scalar health factor, but it is a working turn rather than a dead one.
  */
 export const POSITION_BUDGET_MS = 8_000;
+// A read-only health question does not enter the strategy loop. Let its full
+// snapshot finish instead of discarding it at the shorter optional strategy-seed
+// budget. 12s matches the shared account snapshot's own deadline, which the copilot
+// does not own: waiting longer here could never produce a result.
+export const ACCOUNT_READ_BUDGET_MS = 12_000;
+export const HEALTH_READ_BUDGET_MS = ACCOUNT_READ_BUDGET_MS;
 export const CAPACITY_BUDGET_MS = 15_000;
 
 export interface ResearchInput {
@@ -285,7 +292,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       scope,
       mcp: scopedMcp,
       signal: dependencies.signal,
-      budgetMs: POSITION_BUDGET_MS,
+      budgetMs: HEALTH_READ_BUDGET_MS,
       snapshotFallback: () => computeAccountPosition(scope.smartAccount, dependencies.signal),
     });
     logPhase("health_fast_path", {
@@ -316,12 +323,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const withdrawAsk = !prior && scope.smartAccount ? parseWithdrawCheck(input.message) : null;
   const positionStarted = Date.now();
   const positionSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]);
-  const positionTask = haveCarriedPosition
+  const authoritativePositionSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(ACCOUNT_READ_BUDGET_MS)]);
+  // One fresh read per request. The optional strategy seed may stop waiting
+  // early; a later factual display can still consume the same completed read.
+  const authoritativePositionTask = haveCarriedPosition
     ? Promise.resolve({ value: null as Awaited<ReturnType<typeof computeAccountPosition>>, error: null as unknown })
     : interruptible(
-        () => computeAccountPosition(scope.smartAccount, positionSignal),
-        positionSignal,
+        () => computeAccountPosition(scope.smartAccount, authoritativePositionSignal),
+        authoritativePositionSignal,
       ).then((value) => ({ value, error: null as unknown }), (error) => ({ value: null, error }));
+  const positionTask = interruptible(() => authoritativePositionTask, positionSignal)
+    .catch((error) => ({ value: null, error }));
   const namedAssets = [...new Set([...input.message.matchAll(new RegExp(ASSET_SYMBOL_PATTERN.source, "gi"))]
     .map((match) => resolveAssetDef(match[0])?.id).filter((id): id is NonNullable<typeof id> => !!id))];
   const explicitOp = new RegExp(`\\b(?:${WORKFLOW_OPS.map((op) => op.replaceAll("_", " ")).join("|")})\\b`, "i").test(input.message);
@@ -620,13 +632,32 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }));
   // An answer that read one position pocket reads them all (position-coverage.ts).
   if (outcome.kind === "research_complete" && outcome.goal.intent !== "strategy" && !outcome.plans?.length && !outcome.goal.actions?.length) {
-    const coverage = missingPositionReads(result.observations);
+    const coverage = missingPositionReads(result.observations, outcome.goal, capacityMessages);
     if (coverage.length) {
       result.observations.push(...await collectStrategyReads(scope, scopedMcp, dependencies.signal, Date.now(), coverage, "pc"));
       logPhase("position_coverage", { requested: coverage.length });
     }
   }
-  const { facts, warnings } = normalizeResearchFacts(result.observations);
+  let displaySnapshot = position?.snapshot ?? null;
+  const positionAnswer = outcome.kind === "research_complete" && outcome.goal.intent === "answer"
+    && !outcome.plans?.length && !outcome.goal.actions?.length
+    && result.observations.some((observation) => observation.capability === "account_collateral" && observation.status === "ok");
+  if (positionAnswer && !displaySnapshot && scope.smartAccount) {
+    const displaySignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(ACCOUNT_READ_BUDGET_MS)]);
+    try {
+      const displayPosition = haveCarriedPosition
+        ? await interruptible(() => computeAccountPosition(scope.smartAccount, displaySignal), displaySignal)
+        : (await authoritativePositionTask).value;
+      displaySnapshot = displayPosition?.snapshot ?? null;
+    } catch (error) {
+      console.warn("[copilot] account display snapshot unavailable", { name: error instanceof Error ? error.name : "unknown" });
+    }
+  }
+  const displayObservations = positionAnswer
+    // The snapshot API does not expose its original observation time (including cache reuse).
+    // Unknown freshness must not become a fabricated live-read timestamp.
+    ? accountDisplayObservations(result.observations, displaySnapshot, 0) : result.observations;
+  const { facts, warnings } = normalizeResearchFacts(displayObservations);
   /**
    * Deterministic headroom, from the contract liquidation_snapshot once it agrees
    * with the app snapshot. Display still uses the snapshot; a material drift

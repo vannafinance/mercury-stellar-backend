@@ -292,8 +292,10 @@ describe("signServiceFromSessionRead", () => {
         data: {
           enabled: true,
           status: "enabled",
-          max_per_tx_usd: 1000,
-          max_per_day_usd: 2500,
+          cap_unit: "token_units", network: "testnet",
+          token_caps_enforced: true,
+          max_per_tx_tokens: 1000,
+          max_per_day_tokens: 2500,
         },
       }),
     ).toEqual({
@@ -340,4 +342,13 @@ describe("signServiceFromSessionRead", () => {
       }),
     ).toEqual({ status: "unavailable", reason: "not_configured" });
   });
+});
+
+
+it("Freighter dispatch opens only explicitly permitted wallet requests without bypassing review gates", () => {
+  const step = { kind: "needs_wallet_sign", sessionSigning: true, hasSignableXdr: true, allowSessionSign: false, walletSigningRequired: true };
+  expect(shouldSessionAutoSubmit(step)).toBe(false);
+  expect(shouldSessionAutoSubmit({ ...step, allowWalletDispatch: true })).toBe(true);
+  expect(shouldSessionAutoSubmit({ ...step, allowWalletDispatch: false })).toBe(false);
+  expect(shouldSessionAutoSubmit({ ...step, allowWalletDispatch: true, riskDecision: "block" })).toBe(false);
 });

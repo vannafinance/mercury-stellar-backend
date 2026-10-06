@@ -11,8 +11,9 @@ export interface AutoApproveMenuProps {
   capsMode: "defaults" | "custom";
   customTx: string;
   customDay: string;
-  defaultTx: number;
-  defaultDay: number;
+  defaultTx: number | null;
+  defaultDay: number | null;
+  walletSigningRequired?: boolean;
   onToggle: () => void;
   onCapsMode: (mode: "defaults" | "custom") => void;
   onCustomTx: (value: string) => void;
@@ -52,9 +53,10 @@ function CapField({
             : "border-vgray-100 focus-within:border-violet-400"
         }`}
       >
-        <span className="shrink-0 whitespace-nowrap text-[12.5px] text-vgray-400">$</span>
+        <span className="shrink-0 whitespace-nowrap text-[12.5px] text-vgray-400">units</span>
         <input
-          type="number"
+          type={locked ? "text" : "number"}
+          step="any"
           inputMode="decimal"
           min="0"
           value={value}
@@ -86,6 +88,7 @@ export function AutoApproveMenu({
   capsMode,
   customTx,
   customDay,
+  walletSigningRequired = false,
   defaultTx,
   defaultDay,
   onToggle,
@@ -141,6 +144,7 @@ export function AutoApproveMenu({
 
   const rail = variant === "rail";
   const mini = variant === "mini";
+  const controlLabel = walletSigningRequired ? "Auto-continue" : "Auto-approve";
 
   const toggle = () => {
     if (hoverMode) {
@@ -166,7 +170,7 @@ export function AutoApproveMenu({
     <div
       ref={panelRef}
       role="dialog"
-      aria-label="Auto-approve"
+      aria-label={controlLabel}
       data-cp-rail-popup
       onMouseEnter={clearHover}
       onMouseLeave={leave}
@@ -180,7 +184,7 @@ export function AutoApproveMenu({
       style={rail || mini ? { ...flyoutPos, maxHeight: `calc(100dvh - ${flyoutPos.top + 8}px)`, overflowY: "auto", scrollbarWidth: "none" } : undefined}
     >
           <div className="flex items-center justify-between gap-3 px-1 py-1">
-            <span className="text-[13px] font-semibold text-vgray-900">Auto-approve</span>
+            <span className="text-[13px] font-semibold text-vgray-900">{controlLabel}</span>
             <button
               type="button"
               role="switch"
@@ -200,7 +204,9 @@ export function AutoApproveMenu({
             </button>
           </div>
 
-          <div className="mt-3 flex gap-1.5">
+          {walletSigningRequired && <p className="mt-2 text-[12px] leading-[18px] text-vgray-500">Continue approved steps automatically. Freighter still asks you to sign each transaction; this does not enable offline execution.</p>}
+          {!walletSigningRequired && <p className="mt-2 text-[12px] leading-[18px] text-vgray-500">Each transaction has a limit. The daily budget covers their combined value.</p>}
+          <div hidden={walletSigningRequired} className={walletSigningRequired ? "hidden" : "mt-3 flex gap-1.5"}>
             <button
               type="button"
               aria-pressed={capsMode === "defaults"}
@@ -227,24 +233,25 @@ export function AutoApproveMenu({
             </button>
           </div>
 
-          {capsMode === "defaults" && (
+          {!walletSigningRequired && <p className="mt-2 text-xs text-vgray-500">Testnet amount limits, not dollar values. Different assets count by quantity.</p>}
+          {!walletSigningRequired && capsMode === "defaults" && (
             <div className="mt-2.5 grid grid-cols-2 gap-2">
-              <CapField label="per tx" aria="Default per transaction cap in USD" value={String(defaultTx)} />
-              <CapField label="per day" aria="Default per day cap in USD" value={String(defaultDay)} />
+              <CapField label="per tx" aria="Default per transaction cap in token units" value={defaultTx == null ? "—" : String(defaultTx)} />
+              <CapField label="per day" aria="Default per day cap in token units" value={defaultDay == null ? "—" : String(defaultDay)} />
             </div>
           )}
 
-          {capsMode === "custom" && (
+          {!walletSigningRequired && capsMode === "custom" && (
             <div className="mt-2.5 grid grid-cols-2 gap-2">
               <CapField
                 label="per tx"
-                aria="Per transaction cap in USD"
+                aria="Per transaction cap in token units"
                 value={customTx}
                 onChange={onCustomTx}
               />
               <CapField
                 label="per day"
-                aria="Per day cap in USD"
+                aria="Per day cap in token units"
                 value={customDay}
                 onChange={onCustomDay}
               />
@@ -264,11 +271,11 @@ export function AutoApproveMenu({
           onBlur={leave}
           aria-expanded={open}
           aria-haspopup="dialog"
-          aria-label={compact ? `Auto-approve ${on ? "on" : "off"}` : undefined}
+          aria-label={compact ? `${controlLabel} ${on ? "on" : "off"}` : undefined}
           className={`cp-rail-row cp-icon-button flex w-full cursor-pointer items-center justify-between gap-2 py-1.5 ${compact ? "cp-auto-mix" : ""}`}
         >
           <ZapMark on={on} />
-          <span className="cp-auto-label flex-1 text-left text-[14px] leading-[21px] font-semibold text-vgray-900">Auto-approve</span>
+          <span className="cp-auto-label flex-1 text-left text-[14px] leading-[21px] font-semibold text-vgray-900">{controlLabel}</span>
           <span className="cp-auto-label flex items-center gap-1.5 text-[12px] leading-[18px] text-vgray-400">
             {on ? "On" : "Off"}
             <span aria-hidden className="inline-flex flex-none">
@@ -285,8 +292,8 @@ export function AutoApproveMenu({
           onBlur={leave}
           aria-expanded={open}
           aria-haspopup="dialog"
-          aria-label={`Auto-approve ${on ? "on" : "off"}`}
-          title={`Auto-approve ${on ? "on" : "off"}`}
+          aria-label={`${controlLabel} ${on ? "on" : "off"}`}
+          title={`${controlLabel} ${on ? "on" : "off"}`}
           className="cp-rail-mix cp-icon-button flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-r2 text-[12px] leading-[18px] text-vgray-500 transition-colors"
         >
           <ZapMark on={on} />
@@ -300,7 +307,7 @@ export function AutoApproveMenu({
           aria-haspopup="dialog"
           className={HEADER_CONTROL}
         >
-          Auto-approve
+          {controlLabel}
           <span className="tabular-nums text-vgray-400">{on ? "on" : "off"}</span>
         </button>
       )}

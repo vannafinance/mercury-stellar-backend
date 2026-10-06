@@ -116,11 +116,14 @@ export interface QuestionnaireAnswers {
 }
 
 /** A run of reply text; `figure` marks a value code substituted from an audited fact. */
-export interface ReplySegment { text: string; figure?: true }
+export interface ReplySegment { text: string; figure?: true; factId?: string }
 /** A model-written reply, bound to audited facts (compose.ts). Plain text only: no markup. */
 export type ReplyBlock =
-  | { type: "paragraph" | "heading"; segments: ReplySegment[] }
-  | { type: "bullets"; items: ReplySegment[][] };
+  | { type: "paragraph"; segments: ReplySegment[] }
+  | { type: "heading"; segments: ReplySegment[] }
+  | { type: "bullets"; items: ReplySegment[][] }
+  | { type: "steps"; items: ReplySegment[][] }
+  | { type: "table"; columns: ReplySegment[][]; rows: ReplySegment[][][] };
 
 export interface ResearchView {
   /** Why a run stopped or plans were dropped, in validator terms. Never rendered; read from the response. */

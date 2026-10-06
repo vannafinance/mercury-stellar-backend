@@ -10,6 +10,7 @@
  * or the wallet prompt — if auto-sign is off, we ask the user to enable it.
  */
 
+import { autoSignAllowed } from "./guardrail-policy";
 import { randomUUID } from "crypto";
 import { copilotConfig, TEMPLATE_COUNT } from "./config";
 import { explainRead, factsForUi } from "./explain";
@@ -30,7 +31,6 @@ import {
   ambiguousUsdcSlot,
   usdcVariantClarifyMessage,
   USDC_VARIANT_OPTIONS,
-  defaultCapUsdFromMcp,
   walletBalanceForEarn,
   staticStepBlocker,
 } from "./mcp-write";
@@ -723,6 +723,9 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     /\b(caps?|limits?)\b/i.test(message) &&
     !/\bdisable\b/i.test(lower)
   ) {
+    if (/\$|\b(?:usd|dollars?)\b/i.test(message)) {
+      return { request_id, kind: "answer", message: "Dollar budgets are deferred. Testnet auto-approve uses token amount limits. Choose defaults or specify limits in token units.", preview: null };
+    }
     const tx = capMatch[1];
     const day = capMatch[2] || tx;
     return handleAutoSignAction(
@@ -730,8 +733,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         ...req,
         auto_sign: {
           action: "custom",
-          max_per_tx_usd: tx,
-          max_per_day_usd: day,
+          max_per_tx_tokens: tx,
+          max_per_day_tokens: day,
         },
       },
       request_id,
@@ -1014,8 +1017,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         ...req,
         auto_sign: {
           action: routed.action,
-          max_per_tx_usd: routed.max_per_tx_usd,
-          max_per_day_usd: routed.max_per_day_usd,
+          max_per_tx_tokens: routed.max_per_tx_tokens,
+          max_per_day_tokens: routed.max_per_day_tokens,
         },
       },
       request_id,
@@ -3440,6 +3443,7 @@ async function runWrite(
         action: { ...action, smart_account: smartAccount },
         simulation,
         mcp: { tool: result.tool, status: "needs_wallet_sign", needs_auto_sign: false },
+        allow_wallet_dispatch: autoSignAllowed(action.op) && swapImpact?.level !== "high" && String(result.build.auto_sign ?? "").toLowerCase() !== "withheld_price_impact",
         allow_session_sign:
           result.forbid_session_sign || swapImpact?.level === "high" ? false : undefined,
       },

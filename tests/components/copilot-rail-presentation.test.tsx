@@ -8,6 +8,26 @@ import { AutoApproveMenu, type AutoApproveMenuProps } from "@/components/copilot
 afterEach(() => vi.useRealTimers());
 
 describe("compact rail presentation", () => {
+  it("does not describe a loading or failed account read as an empty portfolio", () => {
+    const props = { hasWallet: true, healthFactor: null, positions: [], conversations: [], activeId: null, onOpen: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), onRetryAccount: vi.fn() };
+    const { rerender } = render(<CopilotRailBody {...props} accountLoading />);
+    expect(screen.getByText("Loading positions…")).toBeTruthy();
+    expect(screen.queryByText("Nothing open.")).toBeNull();
+    rerender(<CopilotRailBody {...props} accountError />);
+    expect(screen.getByText("Positions unavailable.")).toBeTruthy();
+    expect(screen.queryByText("Nothing open.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry account data" }));
+    expect(props.onRetryAccount).toHaveBeenCalledTimes(1);
+    rerender(<CopilotRailBody {...props} />);
+    expect(screen.getByText("Nothing open.")).toBeTruthy();
+  });
+
+  it("keeps loaded positions visible and labels them when a refresh fails", () => {
+    render(<CopilotRailBody hasWallet healthFactor={3} accountError positions={[{ symbol: "XLM", role: "Margin · Collateral", amount: "23.5", usd: "$4.70" }]} conversations={[]} activeId={null} onOpen={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.getByText("23.5")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("previously loaded");
+    expect(screen.getByText("Unavailable")).toBeTruthy();
+  });
   it("updates the health value without replacing conversation controls or inventing a direction label", () => {
     const props = { hasWallet: true, positions: [], conversations: [], activeId: null, onOpen: vi.fn(), onRename: vi.fn(), onDelete: vi.fn() };
     const { rerender } = render(<CopilotRailBody {...props} healthFactor={3} />);

@@ -175,12 +175,15 @@ function installFakeNetwork() {
       }
       return structured({
         status: "enabled",
+        cap_unit: "token_units", network: "testnet",
+        token_caps_enforced: true,
         created: true,
         session_id: "sess_1",
         wallet_address: TRADER,
-        default_cap_usd: 1000,
-        max_per_tx_usd: 1000,
-        max_per_day_usd: 1000,
+        default_per_tx_tokens: 1000,
+        default_per_day_tokens: 5000,
+        max_per_tx_tokens: 1000,
+        max_per_day_tokens: 5000,
         summary: "Auto-sign enabled for wallet GBC2B7N2...",
       });
     }
@@ -205,12 +208,14 @@ function installFakeNetwork() {
       }
       return structured({
         status: "enabled",
+        cap_unit: "token_units", network: "testnet",
+        token_caps_enforced: true,
         enabled: true,
         wallet_address: TRADER,
         session_id: "sess_1",
-        max_per_tx_usd: 1000,
-        max_per_day_usd: 1000,
-        summary: "Auto-sign is on for GBC2B7N2... Spend caps ≈ $1000.00/tx and $1000.00/day (Sign Service).",
+        max_per_tx_tokens: 1000,
+        max_per_day_tokens: 5000,
+        summary: "Auto-sign is on for GBC2B7N2... Spend caps ≈ $1000.00/tx and $5000.00/day (Sign Service).",
       });
     }
     if (name === "vanna_wallet" && action === "connect_start") {
@@ -281,8 +286,8 @@ async function postCopilot(
       enabled?: boolean;
       status?: string;
       error?: string | null;
-      max_per_tx_usd?: number | null;
-      max_per_day_usd?: number | null;
+      max_per_tx_tokens?: number | null;
+      max_per_day_tokens?: number | null;
     } | null;
     wallet_bind?: {
       status?: string;
@@ -290,8 +295,8 @@ async function postCopilot(
       signer_id?: string | null;
       request_id?: string | null;
       retry_action?: string | null;
-      max_per_tx_usd?: number | string | null;
-      max_per_day_usd?: number | string | null;
+      max_per_tx_tokens?: number | string | null;
+      max_per_day_tokens?: number | string | null;
       poll_schedule_seconds?: number[] | null;
     } | null;
   };
@@ -392,13 +397,13 @@ describe("wallet_not_bound starts the additional-signer consent", () => {
   it("carries custom caps through the detour so the user re-enters nothing", async () => {
     const data = await postCopilot({
       action: "custom",
-      max_per_tx_usd: 250,
-      max_per_day_usd: 900,
+      max_per_tx_tokens: 250,
+      max_per_day_tokens: 900,
     });
     expect(data.kind).toBe("needs_wallet_bind");
     expect(data.wallet_bind?.retry_action).toBe("custom");
-    expect(data.wallet_bind?.max_per_tx_usd).toBe(250);
-    expect(data.wallet_bind?.max_per_day_usd).toBe(900);
+    expect(data.wallet_bind?.max_per_tx_tokens).toBe(250);
+    expect(data.wallet_bind?.max_per_day_tokens).toBe(900);
   });
 
   it("disable also hits the bind gate and says so instead of reporting success", async () => {
@@ -411,7 +416,7 @@ describe("wallet_not_bound starts the additional-signer consent", () => {
     for (const action of ["start", "use_defaults", "custom", "disable"]) {
       toolCalls = [];
       const data = await postCopilot(
-        action === "custom" ? { action, max_per_tx_usd: 100 } : { action },
+        action === "custom" ? { action, max_per_tx_tokens: 100 } : { action },
       );
       expect(data.kind).toBe("needs_wallet_bind");
       // No session was created, and nothing in the copy pretends one was.
@@ -621,8 +626,8 @@ describe("the in-app silent bind is the primary path", () => {
   it("caps survive the silent path too", async () => {
     const started = await postCopilot({
       action: "custom",
-      max_per_tx_usd: 250,
-      max_per_day_usd: 900,
+      max_per_tx_tokens: 250,
+      max_per_day_tokens: 900,
     });
     expect(started.wallet_bind?.retry_action).toBe("custom");
 
@@ -631,14 +636,14 @@ describe("the in-app silent bind is the primary path", () => {
       request_id: started.wallet_bind?.request_id,
       wallet_address: TRADER,
       retry_action: "custom",
-      max_per_tx_usd: 250,
-      max_per_day_usd: 900,
+      max_per_tx_tokens: 250,
+      max_per_day_tokens: 900,
     });
     expect(done.kind).toBe("answer");
     const enables = callsTo("vanna_sign", "enable_auto_sign");
     const last = enables[enables.length - 1];
-    expect(last.kwargs.max_per_tx_usd).toBe(250);
-    expect(last.kwargs.max_per_day_usd).toBe(900);
+    expect(last.kwargs.max_per_tx_tokens).toBe(250);
+    expect(last.kwargs.max_per_day_tokens).toBe(900);
   });
 });
 
@@ -710,8 +715,8 @@ describe("auto_sign status reads GET /sessions without starting a bind", () => {
     expect(data.kind).toBe("answer");
     expect(data.data?.enabled).toBe(true);
     expect(data.data?.status).toBe("enabled");
-    expect(data.data?.max_per_tx_usd).toBe(1000);
-    expect(data.data?.max_per_day_usd).toBe(1000);
+    expect(data.data?.max_per_tx_tokens).toBe(1000);
+    expect(data.data?.max_per_day_tokens).toBe(5000);
     expect(data.message).toMatch(/auto-sign is on/i);
   });
 });

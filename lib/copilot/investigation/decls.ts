@@ -2,7 +2,7 @@ import type { FunctionDeclaration } from "../vertex-tools";
 import { lpVenues, ASSET_IDS } from "../registry/assets";
 import { CATALOG, catalogEntry, type ArgSpec } from "./catalog";
 import { isRecord, PLAN_SIZINGS } from "./decision";
-import { WORKFLOW_OPS } from "../workflow/types";
+import { OP_FLOW, WORKFLOW_OPS } from "../workflow/types";
 import { LIFECYCLE_WRITES } from "../workflow/lifecycle";
 import type { ReadCapability } from "./types";
 
@@ -105,6 +105,12 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
       properties: {
         intent: { type: "string", enum: ["answer", "strategy"] },
         relation: { type: "string", enum: ["new", "refine"] },
+        positionReadScope: {
+          type: "object",
+          description: "For factual position answers only. Use all for broad account overviews or uncertain scope. selected requires the user's exact quote explicitly limiting the requested pockets; never narrow strategy discovery or omit relevant funding/position dependencies.",
+          properties: { kind: { type: "string", enum: ["all", "selected"] }, capabilities: { type: "array", items: { type: "string", enum: [...new Set(Object.values(OP_FLOW).map((flow) => flow.positionRead).filter((read) => !!read))] } }, sourceQuote: { type: "string" } },
+          required: ["kind", "capabilities", "sourceQuote"],
+        },
         objective: { type: "string", description: "User objective in one sentence." },
         constraints: { type: "array", items: { type: "string" } },
         borrowing: { type: "string", enum: ["unspecified", "allowed", "required", "forbidden"] },
@@ -289,6 +295,7 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   };
   if (source.intent !== undefined) goal.intent = source.intent;
   if (source.relation !== undefined) goal.relation = source.relation;
+  if (source.positionReadScope !== undefined) goal.positionReadScope = source.positionReadScope;
   if (source.actions !== undefined) goal.actions = source.actions;
   if (source.write !== undefined) goal.write = source.write;
   if (source.healthFactorFloor !== undefined) goal.healthFactorFloor = source.healthFactorFloor;

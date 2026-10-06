@@ -324,6 +324,12 @@ export interface WorkflowStepState {
   balancesBefore?: Record<string, string>;
   txHash?: string;
   unsignedXdr?: string;
+  /**
+   * The Sign Service's own sentence for why it did not sign this step under auto-approve
+   * (a cap, a lapsed session). Present only on a step handed back to the wallet. The client
+   * reads it to stop silent signing and to tell the user why; it never changes what is signed.
+   */
+  signRefusal?: string;
   signedXdr?: string;
   message?: string;
   settledLedger?: number;
@@ -378,7 +384,7 @@ export function workflowView(record: WorkflowRecord): WorkflowView {
       const state = record.steps[index];
       return { id: step.id, op: step.op, asset: step.asset, amount: step.amount, label: step.label,
         sizing: step.sizing, funding: stepFundingPreview(step),
-        status: state.status, txHash: state.txHash, unsignedXdr: state.unsignedXdr,
+        status: state.status, txHash: state.txHash, unsignedXdr: state.unsignedXdr, signRefusal: state.signRefusal,
         message: state.message, settledLedger: state.settledLedger,
         executedAmountUsd: state.executedAmountUsd };
     }),

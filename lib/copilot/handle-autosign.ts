@@ -7,10 +7,10 @@
 
 import { copilotConfig } from "./config";
 import { factsForUi } from "./explain";
+import { acceptedTestnetBudget, defaultTestnetBudget } from "./auto-approve-budget";
 import { getMcpClient, type MCPClient } from "./mcp-client";
 import {
   enableAutoSign,
-  defaultCapUsdFromMcp,
 } from "./mcp-write";
 import {
   registerWalletBind,
@@ -19,6 +19,15 @@ import {
   resolvePrivySignerId,
 } from "./wallet-bind";
 import type { ChatRequest, ChatResponse, CopilotAction } from "./types";
+
+/** Presentation labels must not rename the fields used by signing controls. */
+function autoSignData(raw: Record<string, unknown>): Record<string, unknown> {
+  const data = factsForUi(raw);
+  for (const key of ["enabled", "status", "error", "cap_unit", "network", "token_caps_enforced", "max_per_tx_tokens", "max_per_day_tokens", "default_per_tx_tokens", "default_per_day_tokens", "maximum_per_tx_tokens", "maximum_per_day_tokens", "spent_today_tokens", "spend_resets_at", "expires_at"]) {
+    if (raw[key] !== undefined) data[key] = raw[key];
+  }
+  return data;
+}
 
 type ResumeWrite = (
   action: CopilotAction,
@@ -77,8 +86,8 @@ async function startWalletBind(
   request_id: string,
   retry: {
     action?: "use_defaults" | "custom" | "disable" | null;
-    max_per_tx_usd?: number | string | null;
-    max_per_day_usd?: number | string | null;
+    max_per_tx_tokens?: number | string | null;
+    max_per_day_tokens?: number | string | null;
   },
   /** Why we are here, in the user's terms — prepended to the instruction. May be "". */
   because: string,
@@ -157,8 +166,8 @@ async function startWalletBind(
       poll_schedule_seconds: schedule?.length ? schedule : null,
       wallet_address: trader,
       retry_action: retry.action ?? null,
-      max_per_tx_usd: retry.max_per_tx_usd ?? null,
-      max_per_day_usd: retry.max_per_day_usd ?? null,
+      max_per_tx_tokens: retry.max_per_tx_tokens ?? null,
+      max_per_day_tokens: retry.max_per_day_tokens ?? null,
     },
     data: factsForUi(started),
     request_id,
@@ -219,8 +228,8 @@ async function handleBindRegister(
           request_id: requestId,
           wallet_address: walletAddress,
           retry_action: retryAction,
-          max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
-          max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
+          max_per_tx_tokens: req.auto_sign?.max_per_tx_tokens ?? null,
+          max_per_day_tokens: req.auto_sign?.max_per_day_tokens ?? null,
         },
         request_id,
       };
@@ -276,8 +285,8 @@ async function handleBindStatus(
         status: "expired",
         wallet_address: trader,
         retry_action: retryAction,
-        max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
-        max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
+        max_per_tx_tokens: req.auto_sign?.max_per_tx_tokens ?? null,
+        max_per_day_tokens: req.auto_sign?.max_per_day_tokens ?? null,
       },
       data: factsForUi(st),
       request_id,
@@ -295,8 +304,8 @@ async function handleBindStatus(
         request_id: pollId,
         wallet_address: trader,
         retry_action: retryAction,
-        max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
-        max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
+        max_per_tx_tokens: req.auto_sign?.max_per_tx_tokens ?? null,
+        max_per_day_tokens: req.auto_sign?.max_per_day_tokens ?? null,
       },
       data: factsForUi(st),
       request_id,
@@ -320,11 +329,11 @@ async function handleBindStatus(
       ...req,
       auto_sign: {
         action: retryAction,
-        ...(req.auto_sign?.max_per_tx_usd != null
-          ? { max_per_tx_usd: req.auto_sign.max_per_tx_usd }
+        ...(req.auto_sign?.max_per_tx_tokens != null
+          ? { max_per_tx_tokens: req.auto_sign.max_per_tx_tokens }
           : {}),
-        ...(req.auto_sign?.max_per_day_usd != null
-          ? { max_per_day_usd: req.auto_sign.max_per_day_usd }
+        ...(req.auto_sign?.max_per_day_tokens != null
+          ? { max_per_day_tokens: req.auto_sign.max_per_day_tokens }
           : {}),
       },
     },
@@ -391,15 +400,16 @@ export async function handleAutoSignAction(
       // request, open the bind UI, or create a session — it only tells the
       // Autonomy card whether GET /sessions is already enforcing.
       const r = await mcp.call("vanna_auto_sign_status", { wallet_address: trader }, userId);
-      const tx = Number(r.max_per_tx_usd);
-      const day = Number(r.max_per_day_usd);
-      const enabled = r.enabled === true || r.status === "enabled";
+      const tx = Number(r.max_per_tx_tokens);
+      const day = Number(r.max_per_day_tokens);
+      const serverEnabled = r.enabled === true || r.status === "enabled";
+      const enabled = serverEnabled && !!acceptedTestnetBudget(r);
       const facts = {
-        ...factsForUi(r),
+        ...autoSignData(r),
         enabled,
-        status: r.status ?? (enabled ? "enabled" : "disabled"),
-        max_per_tx_usd: Number.isFinite(tx) ? tx : r.max_per_tx_usd ?? null,
-        max_per_day_usd: Number.isFinite(day) ? day : r.max_per_day_usd ?? null,
+        status: serverEnabled && !enabled ? "legacy_budget" : r.status ?? (enabled ? "enabled" : "disabled"),
+        max_per_tx_tokens: Number.isFinite(tx) ? tx : r.max_per_tx_tokens ?? null,
+        max_per_day_tokens: Number.isFinite(day) ? day : r.max_per_day_tokens ?? null,
         session_id: r.session_id ?? null,
         error: r.error ?? null,
       };
@@ -428,7 +438,7 @@ export async function handleAutoSignAction(
       return {
         kind: "answer",
         message:
-          (r.summary as string) ||
+          (serverEnabled && !enabled ? "Testnet auto-approve is off. Choose enforced testnet amount limits." : r.summary as string) ||
           (r.message as string) ||
           (enabled ? "Auto-sign is on." : "Auto-sign is off."),
         data: facts,
@@ -453,18 +463,19 @@ export async function handleAutoSignAction(
         );
       }
       return {
-        kind: "answer",
-        message: (r.summary as string) || (r.message as string) || "Auto-sign disabled.",
-        data: factsForUi(r),
+        kind: r.error ? "error" : "answer",
+        message: (r.summary as string) || (r.message as string) || (r.error ? "The signer did not confirm revocation." : "Auto-sign disabled."),
+        data: autoSignData(r),
         request_id,
       };
     }
 
     if (action === "start") {
-      // Bare call → MCP returns needs_confirmation with two options + default_cap_usd
+      // Bare call → MCP returns needs_confirmation with two options + independent signer defaults
       const r = await enableAutoSign(mcp, { wallet: trader, userId: userId || trader });
       const st = String(r.status || "");
-      const defCap = defaultCapUsdFromMcp(r);
+      const defaults = defaultTestnetBudget(r);
+      const defaultLabel = defaults ? `${defaults.tx} units per transaction · ${defaults.day} units per day` : "Defaults are unavailable until the signer confirms its testnet policy";
       // Ask for the missing consent BEFORE asking for spend caps. Caps chosen now
       // cannot be applied — the 403 lands before any session is created — so showing
       // the cap picker first collects an answer only to throw it away, and the user
@@ -472,6 +483,7 @@ export async function handleAutoSignAction(
       if (isWalletNotBound(r)) {
         return startWalletBind(mcp, trader, userId, request_id, { action: "use_defaults" }, "");
       }
+      if (r.error) return { kind: "error", message: String(r.message ?? r.error), data: autoSignData(r), request_id };
       if (st === "needs_confirmation" || !r.enabled) {
         return {
           kind: "needs_auto_sign",
@@ -479,21 +491,20 @@ export async function handleAutoSignAction(
             (r.question as string) ||
             (r.message as string) ||
             (r.summary as string) ||
-            `Enable auto-approve / auto-sign. MCP default is $${defCap}/tx and $${defCap}/day ` +
-              `(testnet stand-in; Sign Service may clamp). Pick defaults or custom USD caps.`,
+            `Choose defaults or custom testnet token caps. ${defaultLabel}.`,
           auto_sign: {
             status: "needs_confirmation",
-            message: `Choose spend limits (MCP default_cap_usd=$${defCap}):`,
+            message: "Choose testnet amount limits:",
             options: [
               {
                 id: "use_defaults",
                 label: "Use defaults",
-                description: `$${defCap} per transaction · $${defCap} per day (from MCP)`,
+                description: defaultLabel,
               },
               {
                 id: "custom",
                 label: "Set my own limits",
-                description: "Choose per-tx and daily USD caps (day can differ from tx)",
+                description: "Choose per-tx and daily token caps (day can differ from tx)",
               },
             ],
             pending_write: req.pending_write
@@ -506,20 +517,20 @@ export async function handleAutoSignAction(
               : null,
             raw: r,
           },
-          data: factsForUi(r),
+          data: autoSignData(r),
           request_id,
         };
       }
       return {
         kind: "answer",
         message: (r.summary as string) || "Auto-sign enabled.",
-        data: factsForUi(r),
+        data: autoSignData(r),
         request_id,
       };
     }
 
     if (action === "use_defaults") {
-      // Only use_default_caps — do not also send max_per_tx_usd (MCP then applies SS defaults).
+      // Only use_default_caps — do not also send max_per_tx_tokens (MCP then applies SS defaults).
       const r = await enableAutoSign(mcp, {
         wallet: trader,
         userId: userId || trader,
@@ -528,16 +539,12 @@ export async function handleAutoSignAction(
       if (isWalletNotBound(r)) {
         return startWalletBind(mcp, trader, userId, request_id, { action: "use_defaults" }, "");
       }
-      const defCap = defaultCapUsdFromMcp(r);
-      const msg =
-        (r.summary as string) ||
-        (r.message as string) ||
-        `Auto-sign / auto-approve enabled with MCP default caps (≈ $${defCap}/tx · $${defCap}/day).` +
-          (r.error
-            ? ` (MCP note: ${String(r.error)} — wallet session signing may still work for in-app approve.)`
-            : "");
+      const accepted = acceptedTestnetBudget(r);
+      const msg = accepted
+        ? String(r.summary ?? r.message ?? `Auto-sign enabled: ${accepted.tx} units/tx · ${accepted.day} units/day.`)
+        : String(r.message ?? r.error ?? "The signer has not confirmed enforced testnet amount limits. Auto-approve remains off.");
       // Resume pending write if any
-      if (req.pending_write?.op && (r.status === "enabled" || r.enabled === true || !r.error)) {
+      if (req.pending_write?.op && (r.status === "enabled" || r.enabled === true) && !!acceptedTestnetBudget(r)) {
         const resumed = await resumeWrite?.(
           {
             op: req.pending_write.op,
@@ -559,22 +566,24 @@ export async function handleAutoSignAction(
           return {
             ...resumed,
             message: `${msg}\n\n${resumed.message}`,
+            data: { ...resumed.data, ...autoSignData(r) },
           };
         }
       }
       return {
-        kind: r.error ? "error" : "answer",
+        kind: r.error || !accepted ? "error" : "answer",
         message: msg,
-        data: factsForUi(r),
+        data: autoSignData(r),
         request_id,
       };
     }
 
     if (action === "custom") {
-      const tx = req.auto_sign?.max_per_tx_usd;
+      const tx = req.auto_sign?.max_per_tx_tokens;
       if (tx == null || tx === "") {
-        // Probe MCP for default_cap_usd so UI numbers are not invented.
-        let defCap = 1000;
+        // Probe MCP for independent signer defaults so UI numbers are not invented.
+        let defaults: ReturnType<typeof defaultTestnetBudget> = null;
+        let policy: Record<string, unknown> | null = null;
         try {
           const probe = await enableAutoSign(mcp, { wallet: trader, userId: userId || trader });
           // Same reason as the `start` branch: consent before caps, so the numbers the
@@ -582,7 +591,8 @@ export async function handleAutoSignAction(
           if (isWalletNotBound(probe)) {
             return startWalletBind(mcp, trader, userId, request_id, { action: "custom" }, "");
           }
-          defCap = defaultCapUsdFromMcp(probe);
+          policy = probe;
+          defaults = defaultTestnetBudget(probe);
         } catch {
           /* keep fallback */
         }
@@ -590,8 +600,8 @@ export async function handleAutoSignAction(
           kind: "needs_auto_sign",
           message:
             "Set your auto-approve / auto-sign spend caps (same as MCP Sign Service).\n" +
-            `MCP default_cap_usd is $${defCap} per tx and per day (you may set a higher day cap).\n` +
-            "Pick defaults, enter custom USD limits, or say e.g. “set auto-sign cap to 500 per tx and 2000 per day”.",
+            (defaults ? `Defaults: ${defaults.tx} units/tx and ${defaults.day} units/day.\n` : "The signer must confirm its testnet policy before enabling.\n") +
+            "Pick defaults, enter custom testnet token limits, or say e.g. “set auto-sign cap to 500 per tx and 2000 per day”.",
           auto_sign: {
             status: "needs_confirmation",
             message: "Choose spend limits:",
@@ -599,7 +609,7 @@ export async function handleAutoSignAction(
               {
                 id: "use_defaults",
                 label: "Use defaults",
-                description: `$${defCap} per transaction · $${defCap} per day (MCP)`,
+                description: defaults ? `${defaults.tx} units per transaction · ${defaults.day} units per day` : "Awaiting signer defaults",
               },
               {
                 id: "custom",
@@ -608,18 +618,18 @@ export async function handleAutoSignAction(
               },
             ],
             pending_write: null,
-            raw: null,
+            raw: policy,
           },
           request_id,
         };
       }
       // If user only sets per-tx, omit day so MCP mirrors (sign_tools: day = tx).
-      const dayRaw = req.auto_sign?.max_per_day_usd;
+      const dayRaw = req.auto_sign?.max_per_day_tokens;
       const r = await enableAutoSign(mcp, {
         wallet: trader,
         userId: userId || trader,
-        maxPerTxUsd: tx,
-        ...(dayRaw != null && dayRaw !== "" ? { maxPerDayUsd: dayRaw } : {}),
+        maxPerTxTokens: tx,
+        ...(dayRaw != null && dayRaw !== "" ? { maxPerDayTokens: dayRaw } : {}),
       });
       if (isWalletNotBound(r)) {
         // Carry the caps through the consent detour so they are applied on the retry
@@ -629,23 +639,18 @@ export async function handleAutoSignAction(
           trader,
           userId,
           request_id,
-          { action: "custom", max_per_tx_usd: tx, max_per_day_usd: dayRaw ?? tx },
+          { action: "custom", max_per_tx_tokens: tx, max_per_day_tokens: dayRaw ?? tx },
           "",
         );
       }
-      const dayShown = dayRaw != null && dayRaw !== "" ? dayRaw : tx;
+      const accepted = acceptedTestnetBudget(r);
       return {
-        kind: r.error ? "error" : "answer",
+        kind: r.error || !accepted ? "error" : "answer",
         message:
           (r.summary as string) ||
           (r.message as string) ||
-          `Auto-sign / auto-approve enabled with your caps: $${tx} per tx · $${dayShown} per day.`,
-        data: factsForUi({
-          ...r,
-          max_per_tx_usd: tx,
-          max_per_day_usd: dayShown,
-          default_cap_usd: defaultCapUsdFromMcp(r),
-        }),
+          (accepted ? `Auto-sign enabled: ${accepted.tx} units per transaction · ${accepted.day} units per day.` : "The signer has not confirmed enforced testnet amount limits. Auto-approve remains off."),
+        data: autoSignData(r),
         request_id,
       };
     }

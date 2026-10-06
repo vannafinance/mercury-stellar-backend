@@ -41,6 +41,15 @@ const cardFor = (result: ResearchView, extra: Partial<Parameters<typeof Investig
 afterEach(() => vi.useRealTimers());
 
 describe("plan cards", () => {
+  it("does not redisplay legacy diagnostic notes beneath a failed read response", () => {
+    cardFor(view({ status: "incomplete", message: "Account data could not be loaded.", understanding: { intent: "answer", objective: "Read health", constraints: [], borrowing: "unspecified" }, warnings: ["Legacy unavailable-read diagnostic", "Legacy research pipeline diagnostic"] }), { turns: [{ role: "assistant", text: "Account data could not be loaded." }] });
+    expect(screen.getByText("Account data could not be loaded.")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Notes" })).toBeNull();
+  });
+  it("preserves safety warnings for an incomplete strategy", () => {
+    cardFor(view({ status: "incomplete", understanding: { intent: "strategy", objective: "Compare plans", constraints: [], borrowing: "allowed" }, warnings: ["Sizing is unavailable; do not approve a borrow."] }));
+    expect(screen.getByRole("list", { name: "Notes" }).textContent).toContain("Sizing is unavailable");
+  });
   it("keeps progress wording, clock and previous server prose beside the loading mark", () => {
     vi.useFakeTimers();
     render(<InvestigationCard prompt="Review my position" result={null} progress={{ kind: "reviewing", turn: 1 }} loading error={null} turns={[{ role: "user", text: "Earlier question" }, { role: "assistant", text: "The server explanation stays in the conversation." }]} />);

@@ -139,6 +139,35 @@ describe("postedHealthFactorFromSnapshot", () => {
 });
 
 describe("researchTurn fast path", () => {
+  it("keeps a slow complete health read instead of discarding it at the optional strategy budget", async () => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("read deadline", "TimeoutError")), ms);
+      return controller.signal;
+    });
+    try {
+      mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+      mocks.computeAccountPosition.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({ grossCollateralUsd: "300", debtUsd: "100", healthFactor: "3" }), 11_000)));
+      const mcp = { call: vi.fn(() => new Promise<Record<string, unknown>>(resolve => setTimeout(() => resolve({ collateral_usd: "200", debt_usd: "100" }), 9_000))) };
+      const pending = researchTurn({ message: "what's my health factor?", wallet: SCOPE.trader, continuation: null }, deps({ mcp }));
+      await vi.advanceTimersByTimeAsync(21_000);
+      const result = await pending;
+      expect(result.status).toBe("researched");
+      expect(result.facts).toContainEqual(expect.objectContaining({ sourcePath: "health_factor", value: "3" }));
+      expect(result.message).not.toContain("could not read");
+      expect(result.warnings).toEqual([]);
+      expect(result.executionAllowed).toBe(false);
+    } finally { timeout.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it("returns one failure response without pipeline notes when no read succeeded", () => {
+    const result = fastPathView({ message: "what's my health factor?", scope: SCOPE, observations: [{ id: "e0", capability: "liquidation_snapshot", args: {}, observedAt: Date.now(), status: "error", error: "health_unavailable" }], secret: "a".repeat(32), server: "mcp-test" });
+    expect(result.status).toBe("incomplete");
+    expect(result.facts).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.executionAllowed).toBe(false);
+  });
   it("answers a price question from one public read without the investigation loop", async () => {
     const mcp = { call: vi.fn(async () => ({ price_usd: "0.11" })) };
     const result = await researchTurn(

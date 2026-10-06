@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Networks, TransactionBuilder } from "@stellar/stellar-sdk";
 import type { RecordStore, Stored } from "./store";
 import type { ProposalStep, WorkflowProposal, WorkflowRecord } from "./types";
+import { PLAN_TTL_MS } from "../plan-ttl";
 
 /**
  * What a pre-broadcast check may conclude.
@@ -31,10 +32,10 @@ function bound(record: WorkflowRecord, identity: Identity) {
 
 /**
  * Strategy cards are live financial proposals, not durable instructions. Approval performs
- * another risk/balance read, but after five minutes the user must prepare a fresh card so
+ * another risk/balance read, but after the shared plan retention window a fresh card is required so
  * rates, balances, position sizes and pool state cannot be mistaken for current values.
  */
-export const PROPOSAL_TTL_MS = 5 * 60_000;
+export const PROPOSAL_TTL_MS = PLAN_TTL_MS;
 
 import { MAX_WORKFLOW_STEPS } from "./types";
 export { MAX_WORKFLOW_STEPS };
@@ -201,7 +202,7 @@ export class WorkflowJournal {
     return this.save(record);
   }
   async invocationResult(id: string, identity: Identity, stepId: string,
-    result: { kind: "submitted"; txHash: string; note?: string } | { kind: "unsigned"; unsignedXdr: string; note?: string }
+    result: { kind: "submitted"; txHash: string; note?: string } | { kind: "unsigned"; unsignedXdr: string; note?: string; refusal?: string }
       | { kind: "uncertain"; txHash?: string } | { kind: "failed"; message: string }) {
     const record = await this.read(id, identity);
     const step = record.value.steps.find(s => s.id === stepId);
@@ -215,6 +216,7 @@ export class WorkflowJournal {
     } else if (result.kind === "unsigned") {
       if (!result.unsignedXdr || result.unsignedXdr.length > 100_000) throw new Error("invalid_transaction_envelope");
       step.status = "awaiting_signature"; step.unsignedXdr = result.unsignedXdr;
+      if (result.refusal) step.signRefusal = result.refusal.slice(0, 400); else delete step.signRefusal;
       record.value.status = "awaiting_signature";
       record.value.message = result.note
         ? `Approve the transaction in your wallet to continue. ${result.note}`
@@ -257,6 +259,15 @@ export class WorkflowJournal {
     record.value.message = "Transaction submitted; waiting for ledger confirmation.";
     return this.save(record);
   }
+  /** Replace only an unsubmitted envelope; concurrent refreshes and late signatures lose the CAS. */
+  async replaceUnsignedEnvelope(id: string, identity: Identity, stepId: string, expectedXdr: string, unsignedXdr: string) {
+    const record = await this.read(id, identity);
+    const step = record.value.steps.find(s => s.id === stepId);
+    if (record.value.status !== "awaiting_signature" || !step || step.status !== "awaiting_signature" ||
+        step.unsignedXdr !== expectedXdr || step.txHash || step.signedXdr) throw new WorkflowConflict("step_changed");
+    step.unsignedXdr = unsignedXdr;
+    return this.save(record);
+  }
   /** Persist the exact signed envelope and hash BEFORE network submission. */
   async acceptSignedEnvelope(id: string, identity: Identity, stepId: string, signedXdr: string) {
     const record = await this.read(id, identity);
@@ -289,6 +300,19 @@ export class WorkflowJournal {
     // otherwise the one thing recording what price it actually swapped at is overwritten the
     // instant the ledger confirms, moments after it was written.
     record.value.message = success && note ? `${base} ${note}` : base;
+    return this.save(record);
+  }
+  /** A matching RPC response explicitly refused broadcast; this is not ledger failure. */
+  async submissionRejected(id: string, identity: Identity, stepId: string, hash: string, status: "ERROR" | "TRY_AGAIN_LATER", resultCode?: string) {
+    const record = await this.read(id, identity);
+    const step = record.value.steps.find((entry) => entry.id === stepId);
+    if (!step || step.status !== "submitted" || step.txHash !== hash || !step.signedXdr)
+      throw new WorkflowConflict("submission_mismatch");
+    step.status = "failed";
+    // Keep the signed envelope/hash for audit. Never assign latestLedger as settledLedger.
+    step.message = resultCode || status;
+    record.value.status = "blocked";
+    record.value.message = step.message;
     return this.save(record);
   }
   /**

@@ -39,6 +39,8 @@ export interface InvestigationRequest {
 import type { WorkflowOp } from "../workflow/types";
 
 export interface GoalUnderstanding {
+  /** Optional scope for answer-only coverage; uncertain requests retain full coverage. */
+  positionReadScope?: { kind: "all" | "selected"; capabilities: string[]; sourceQuote: string };
   intent?: "answer" | "strategy";
   relation?: "new" | "refine";
   actions?: StatedAction[];

@@ -77,7 +77,11 @@ function view(input: {
       status: observation.status,
       readAt: observation.observedAt,
     })),
-    warnings: facts.length ? warnings : [...warnings, "This was a fast read; no strategy was sized."],
+    // Failed reads are already represented by the response state, its message,
+    // and observation diagnostics. Do not append internal pipeline commentary
+    // as a second user-facing warning list. Partial successful reads retain
+    // their material warnings.
+    warnings: facts.length ? warnings : [],
     scope: { wallet: input.scope.trader, smartAccount: input.scope.smartAccount, network: input.scope.network },
     continuation: researchCodec(input.secret, input.server).seal(input.scope, [input.message], null, evidence),
     executionAllowed: false,

@@ -1,80 +1,71 @@
 import { copilotConfig } from "../config";
 import { generateInvestigationJson } from "../vertex";
-import { healthOnContractBasis } from "./answer";
-import { bindSegments, formatFactValue } from "./answer-prose";
+import { factualReplyBlocks, healthOnContractBasis } from "./answer";
+import { formatFactValue } from "./answer-prose";
+import { bindReplyBlocks, plainReply, REPLY_SCHEMA, replyFactContext } from "./reply-contract";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { OP_FLOW, type WorkflowOp, type WorkflowView } from "../workflow/types";
 import { resolveAssetDef } from "../registry/assets";
 import { pct, shownApyPct } from "./apy";
 import type { RateComparison } from "./rate-comparison";
 import { doneClause } from "./completion";
-import type { ReplyBlock, ReplySegment, ResearchFact, ResearchView } from "./view";
+import type { ReplyBlock, ResearchFact, ResearchView } from "./view";
+
+export { plainReply } from "./reply-contract";
+export const bindBlocks = bindReplyBlocks;
 
 /**
  * The model writes the reply; code writes every figure in it.
  *
- * Every answer on the investigate path was assembled from sentence templates ("I could not
- * read a live figure…", "Your reported margin debt is $X."), so it read like a form letter
- * next to the same model answering in its own chat. This asks the model to write the answer
- * as a few plain blocks, citing each figure by fact id; `bindSegments` substitutes the audited
- * values and refuses a reply that names an unread fact, types a digit itself, or carries markup.
- * Anything refused, late, or out of scope keeps the deterministic reply unchanged — so a
- * composed answer can only ever say what the reads already said, in better words.
+ * The model chooses a bounded block layout and freely written text. Typed fact references
+ * are bound to audited values by the reply contract. This enforces source identity and
+ * presentation validity, not the semantic truth of arbitrary prose. Invalid or late
+ * output keeps the existing verified fallback; execution authority never comes from prose.
  *
  * Scope: factual answers (a question about the account, prices, positions) and the words
  * above a strategy's plan cards. Questionnaires, refusals, warnings, direct actions and
- * executions keep their own replies.
+ * workflow completion has a separate composer. Other execution states keep their replies.
  */
 
-const COMPOSE_BUDGET_MS = 6_000;
-const MAX_BLOCKS = 8;
-const MAX_ITEMS = 12;
+const DEFAULT_COMPOSE_BUDGET_MS = 15_000;
+export function composeBudgetMs(): number {
+  const configured = Number(process.env.COPILOT_COMPOSE_BUDGET_MS);
+  return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_COMPOSE_BUDGET_MS;
+}
+const PRESENTATION = `Organize the response around what the user needs to understand. Lead with the answer, then group related information. For a broad position overview, open with a brief explanation of the account breakdown before the grouped holdings. Distinguish gross balances, posted collateral and outstanding debt by their supplied basis, never subtracting debt from a balance or calling a balance the user's own deposit; separate holdings in other venues and never add overlapping valuations together. Honor the user's requested presentation format when it can represent the supplied evidence faithfully. Otherwise use paragraphs for a connected explanation, bullets for parallel points, steps only when order matters, and a table for genuinely comparable rows. Use short descriptive headings when they improve navigation. Choose the combination and length needed by this request; avoid a wall of text, unnecessary sections, and repeating what a card already shows. Match the user's language where practical.
+Return JSON with a blocks array. A paragraph or heading has segments; bullets or steps have items (an array of segment arrays); a table has columns (an array of segment arrays) and rows (an array of rows of segment arrays). Each segment is either {"type":"text","text":"your freely written words"} or {"type":"fact","factId":"an supplied fact id"}. Code renders fact segments with their verified value and unit. Never type a figure, amount, rate, address or numeric unit in text; use its fact reference, and do not repeat its unit. Do not use placeholder strings or markdown. Refer only to supplied facts. Keep each reference attached to its correct label, venue and meaning. Evidence timestamps describe when a read happened; absent timestamps do not establish a live observation. Do not invent causes, risk conclusions, events or outcomes. The draft is background meaning, not a required sentence or layout.`;
 
 const SYSTEM = `You write the reply a user reads in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar).
 You are given the user's question and FACTS read live from their account and the protocol. Write the answer the way a sharp, friendly analyst would reply in a chat app.
 
-Figures: every number, amount, price, rate, health factor, or address MUST appear as {{factId}} using an id from FACTS, and nothing else. Each {{factId}} is replaced by exactly that fact's "shown" text, unit and currency sign included, so never write the unit again beside it. Never type a digit yourself, not even in words like "2x" or a list number. If a figure you want is not in FACTS, leave it out.
-Shape: answer in ONE paragraph of one to three sentences that leads with the direct answer; related figures belong in that same paragraph, never a new paragraph per sentence. Add a short bullet list only when three or more figures belong together (holdings per venue, a breakdown). Use a heading only when the reply has two distinct parts. Keep it under about 110 words. Say what a figure means for the user when that helps (e.g. whether a health factor leaves room), without advice to trade.
-Plain text only: no markdown symbols, asterisks, hashes, underscores, backticks or links. Mention only facts that answer the question. Do not invent reasons, venues, or events. "draft" is the current plain answer, given for meaning only.
-Return JSON: {"blocks":[{"type":"paragraph","text":"..."},{"type":"bullets","items":["...","..."]},{"type":"heading","text":"..."}]}`;
+Use the supplied scope, intent and fact metadata to answer the actual question. Quantity and measurement facts are different: never describe a rate or ratio as a token balance. Explain significance only where the supplied evidence supports it, without advice to trade.
+${PRESENTATION}`;
 
 const PLANS_SYSTEM = `You write the reply shown above a set of plan cards in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). The cards already show every step and figure; your words help the user choose, the way a thoughtful analyst would explain options in a chat app.
 You are given the user's request and PLANS, each with facts computed by the sizer. Plans are named by letter, exactly as the cards label them: "Plan A", "Plan B" and so on.
-Figures: every number, amount, rate, or health factor MUST appear as {{factId}} using an id from PLANS, and nothing else. Each {{factId}} is replaced by exactly that fact's "shown" text, unit and currency sign included, so never write the unit again beside it. Never type a digit yourself. If a figure you want is not given, leave it out.
-Shape: two short paragraphs. The first says which plan leads and why, using "lead" (the sizer's reason: already_held = it uses a token the user already holds, thin_margin = the rates are within noise so the held token wins, net_return = the best return at the user's size). The second says how the other plans differ, in a sentence or two, and that nothing runs until they approve a plan. Use a bullet list instead of the second paragraph only when there are four or more plans.
-Plain text only: no markdown symbols, asterisks, hashes, underscores, backticks or links. Do not invent risks, venues, or reasons. "draft" is the current plain reply, given for meaning only.
-Return JSON: {"blocks":[{"type":"paragraph","text":"..."},{"type":"paragraph","text":"..."}]}`;
+Explain the leading plan using the supplied sizer reason (already_held means an already held token; thin_margin means rates are within noise; net_return means the best computed return at this size). Describe useful differences without inventing a ranking. These are options awaiting approval, not executed transactions. Do not invent risks or reasons.
+${PRESENTATION}`;
 
 const COMPLETION_SYSTEM = `You write the reply shown once a user's transactions have finished, in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). Say what happened and what it means now, the way a helpful analyst would confirm a completed trade in a chat app.
-You are given the user's request and FACTS: each settled step (what was done, the amount), the rate a step now earns or costs, and, when it was read after the run, the account's health factor now.
-Figures: every number, amount, rate, or health factor MUST appear as {{factId}} using an id from FACTS, and nothing else. Each {{factId}} is replaced by exactly that fact's "shown" text, unit and currency sign included, so never write the unit again beside it. Never type a digit yourself.
-Shape: ONE paragraph of one to three sentences. Open by confirming what was done. Then what it now earns or costs, and the health factor now if given. If some steps did not go through ("stopped" is given), say plainly which part ran and that the rest was not submitted. Add a bullet list only when four or more steps settled.
-Plain text only: no markdown symbols, asterisks, hashes, underscores, backticks or links. Do not invent outcomes, rates, or next steps. "draft" is the current plain reply, given for meaning only.
-Return JSON: {"blocks":[{"type":"paragraph","text":"..."}]}`;
+You are given the user's request and FACTS: each settled step (what was done, the amount), any previously observed rates, and, when it was read after the run, the account's health factor now.
+Only supplied settled steps completed. Use workflow status and step statuses to distinguish settled, pending, failed and unsubmitted work. Rates come from the supplied sealed comparisons; they are not a new post-run read. If stopped is given, distinguish what ran from what did not. Do not invent current health or next actions.
+Write one combined summary for the whole run. Keep a single action concise; group a longer run into useful paragraphs or bullets. The renderer appends verified transaction bullets with purposes, hashes, explorer links and ledgers separately, so do not invent or repeat that receipt. Do not ask for approval or narrate waiting for signatures when the workflow is completed.
+${PRESENTATION}`;
 
 type Generate = (system: string, user: string, signal: AbortSignal) => Promise<unknown>;
+type ReplyLane = "answer" | "plans" | "completion";
 
-/** The only shapes a reply may take, enforced by the decoder rather than asked for in words. */
-const REPLY_SCHEMA = {
-  type: "object",
-  properties: {
-    blocks: {
-      type: "array",
-      minItems: 1,
-      maxItems: MAX_BLOCKS,
-      items: {
-        type: "object",
-        properties: {
-          type: { type: "string", enum: ["paragraph", "heading", "bullets"] },
-          text: { type: "string" },
-          items: { type: "array", items: { type: "string" }, maxItems: MAX_ITEMS },
-        },
-        required: ["type"],
-      },
-    },
-  },
-  required: ["blocks"],
-};
+/** Aggregatable lifecycle data only: no request text, account identifiers or fact values. */
+function compositionEvent(lane: ReplyLane | "other", outcome: "composed" | "skipped" | "off" | "refused" | "unavailable", ms = 0, blocks: readonly ReplyBlock[] = [], reason?: string) {
+  console.info("[copilot] reply composition", {
+    lane, outcome, ms: Math.round(ms), blockCount: blocks.length,
+    blockTypes: blocks.map((block) => block.type), ...(reason ? { reason } : {}),
+  });
+}
+
+function scopeContext(view: ResearchView) {
+  return { network: view.scope.network, walletPresent: Boolean(view.scope.wallet), smartAccountPresent: Boolean(view.scope.smartAccount) };
+}
 
 const defaultGenerate: Generate = (system, user, signal) =>
   generateInvestigationJson(copilotConfig.vertexModel, system, user, signal, "LOW", [], REPLY_SCHEMA);
@@ -126,7 +117,7 @@ export function planFacts(view: ResearchView): {
  * A finished run's facts: each settled step from the journal (never the browser's copy), the
  * rate it earns or costs from the sealed reads, and the health factor read after it ran.
  */
-export function completionFacts(view: WorkflowView, comparisons: readonly RateComparison[], healthNow: string | null): ResearchFact[] {
+export function completionFacts(view: WorkflowView, comparisons: readonly RateComparison[], healthNow: string | null, positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number }): ResearchFact[] {
   const facts: ResearchFact[] = [];
   const add = (id: string, label: string, value: string, unit: string) =>
     facts.push({ id, label, value, unit, venue: "margin", evidenceId: "run", sourcePath: id, readAt: 0 });
@@ -143,6 +134,14 @@ export function completionFacts(view: WorkflowView, comparisons: readonly RateCo
     }
   });
   if (healthNow) add("account:health_now", "health factor now", healthNow, "HF");
+  if (positionNow) {
+    add("account:collateral_now", "observed collateral value after settlement", positionNow.grossCollateralUsd, "USD");
+    add("account:debt_now", "observed debt value after settlement", positionNow.debtUsd, "USD");
+    for (const fact of facts.filter((entry) => entry.id.startsWith("account:"))) {
+      fact.readAt = positionNow.observedAt;
+      fact.evidenceId = "post-settlement-account-read";
+    }
+  }
   return facts;
 }
 
@@ -156,41 +155,54 @@ export async function composeCompletion(input: {
   draft: string;
   comparisons: readonly RateComparison[];
   healthNow: string | null;
+  positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number };
 }, signal: AbortSignal, generate: Generate = defaultGenerate): Promise<{ message: string; blocks: ReplyBlock[] } | null> {
-  if (process.env.COPILOT_COMPOSED_REPLIES === "off") return null;
-  const facts = completionFacts(input.view, input.comparisons, input.healthNow);
-  if (!facts.length) return null;
+  if (process.env.COPILOT_COMPOSED_REPLIES === "off") { compositionEvent("completion", "off"); return null; }
+  const facts = completionFacts(input.view, input.comparisons, input.healthNow, input.positionNow);
+  if (!facts.length) { compositionEvent("completion", "skipped", 0, [], "no_facts"); return null; }
   const stopped = input.view.status !== "completed";
   const user = JSON.stringify({
     request: input.request,
-    facts: facts.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact) })),
-    ...(stopped ? { stopped: `${input.view.status}; later steps were not submitted` } : {}),
+    facts: facts.map(replyFactContext),
+    context: { category: "completion", workflowStatus: input.view.status,
+      steps: input.view.steps.map((step) => ({ op: step.op, asset: step.asset, status: step.status })),
+      rateBasis: "sealed_comparison", healthProvided: Boolean(input.healthNow) },
+    ...(stopped ? { stopped: { status: input.view.status } } : {}),
     draft: input.draft,
   });
-  const bound = await boundReply(COMPLETION_SYSTEM, user, facts, signal, generate);
+  const bound = await boundReply(COMPLETION_SYSTEM, user, facts, signal, generate, "completion");
   return bound ? { message: plainReply(bound), blocks: bound } : null;
 }
 
 /** One budgeted model call, bound to `facts`, or null. Shared by every composed reply. */
-async function boundReply(system: string, user: string, facts: readonly ResearchFact[], signal: AbortSignal, generate: Generate): Promise<ReplyBlock[] | null> {
+async function boundReply(system: string, user: string, facts: readonly ResearchFact[], signal: AbortSignal, generate: Generate, lane: ReplyLane): Promise<ReplyBlock[] | null> {
+  const start = performance.now();
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(new DOMException("compose deadline", "TimeoutError")), composeBudgetMs());
+  const budget = AbortSignal.any([signal, deadline.signal]);
+  let onAbort: (() => void) | undefined;
   try {
-    const budget = AbortSignal.any([signal, AbortSignal.timeout(COMPOSE_BUDGET_MS)]);
     const raw = await Promise.race([
       generate(system, user, budget),
       new Promise<never>((_, reject) => {
         if (budget.aborted) reject(new DOMException("compose budget", "TimeoutError"));
-        budget.addEventListener("abort", () => reject(new DOMException("compose budget", "TimeoutError")), { once: true });
+        onAbort = () => reject(new DOMException("compose budget", "TimeoutError"));
+        budget.addEventListener("abort", onAbort, { once: true });
       }),
     ]);
     const bound = bindBlocks(raw, facts);
     if (!bound.ok) {
-      console.info("[copilot] composed reply refused", { reason: bound.reason });
+      compositionEvent(lane, "refused", performance.now() - start, [], "invalid_output");
       return null;
     }
+    compositionEvent(lane, "composed", performance.now() - start, bound.blocks);
     return bound.blocks;
-  } catch (error) {
-    console.info("[copilot] composed reply unavailable", { error: error instanceof Error ? error.name : "unknown" });
+  } catch {
+    compositionEvent(lane, "unavailable", performance.now() - start, [], signal.aborted ? "request_aborted" : deadline.signal.aborted ? "compose_deadline" : "provider_unavailable");
     return null;
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) budget.removeEventListener("abort", onAbort);
   }
 }
 
@@ -210,82 +222,54 @@ export function composable(view: ResearchView): boolean {
     && !view.proposalCandidateId;
 }
 
-function textOf(segments: readonly ReplySegment[]): string {
-  return segments.map((segment) => segment.text).join("");
-}
-
-/** Flattened for `message`, history and any surface that renders plain text. */
-export function plainReply(blocks: readonly ReplyBlock[]): string {
-  return blocks.map((block) => block.type === "bullets"
-    ? block.items.map((item) => `• ${textOf(item)}`).join("\n")
-    : textOf(block.segments)).join("\n\n");
-}
-
-/** Bind the model's blocks to the facts, or say why they are refused. Pure; exported for tests. */
-export function bindBlocks(raw: unknown, facts: readonly ResearchFact[]): { ok: true; blocks: ReplyBlock[] } | { ok: false; reason: string } {
-  const blocks = (raw as { blocks?: unknown })?.blocks;
-  if (!Array.isArray(blocks) || blocks.length === 0 || blocks.length > MAX_BLOCKS) return { ok: false, reason: "no usable blocks" };
-  const out: ReplyBlock[] = [];
-  let figures = 0;
-  const bind = (text: unknown) => {
-    if (typeof text !== "string" || !text.trim() || text.length > 700) return null;
-    const bound = bindSegments(text, facts);
-    if (!bound.ok) return bound.reason;
-    figures += bound.cited.length;
-    return bound.segments;
-  };
-  for (const block of blocks as Array<Record<string, unknown>>) {
-    if (block?.type === "paragraph" || block?.type === "heading") {
-      const segments = bind(block.text);
-      if (!Array.isArray(segments)) return { ok: false, reason: segments ?? `empty ${String(block.type)}` };
-      out.push({ type: block.type, segments });
-    } else if (block?.type === "bullets" && Array.isArray(block.items) && block.items.length && block.items.length <= MAX_ITEMS) {
-      const items: ReplySegment[][] = [];
-      for (const item of block.items) {
-        const segments = bind(item);
-        if (!Array.isArray(segments)) return { ok: false, reason: segments ?? "empty bullet" };
-        items.push(segments);
-      }
-      out.push({ type: "bullets", items });
-    } else {
-      return { ok: false, reason: "unknown block" };
-    }
-  }
-  // An answer about the account that cites none of what was read has answered nothing.
-  if (figures === 0) return { ok: false, reason: "reply cites no fact" };
-  return { ok: true, blocks: out };
-}
-
 /**
  * The view with its reply written by the model around the audited figures, or the view
  * unchanged. Never throws: a composed reply is an improvement, never a dependency.
  */
 export async function composeReply(view: ResearchView, signal: AbortSignal, generate: Generate = defaultGenerate): Promise<ResearchView> {
-  if (process.env.COPILOT_COMPOSED_REPLIES === "off") return view;
+  if (process.env.COPILOT_COMPOSED_REPLIES === "off") { compositionEvent("other", "off"); return view; }
   const request = [view.originalRequest, ...view.refinements].filter(Boolean).join("\n");
   let system: string;
   let user: string;
   let facts: readonly ResearchFact[];
+  let lane: ReplyLane;
   if (composable(view)) {
+    lane = "answer";
     system = SYSTEM;
     facts = view.facts;
     user = JSON.stringify({
       question: request,
-      facts: view.facts.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact), venue: fact.venue })),
+      facts: view.facts.map(replyFactContext),
+      context: { category: "answer", status: view.status, scope: scopeContext(view), understanding: view.understanding },
       draft: view.message,
     });
   } else if (composablePlans(view)) {
+    lane = "plans";
     const plans = planFacts(view);
-    if (!plans.facts.length) return view;
+    if (!plans.facts.length) { compositionEvent("plans", "skipped", 0, [], "no_facts"); return view; }
     system = PLANS_SYSTEM;
     facts = plans.facts;
-    user = JSON.stringify({ request, plans: plans.plans, lead: plans.lead, draft: view.message });
+    user = JSON.stringify({ request, plans: plans.plans, facts: facts.map(replyFactContext), lead: plans.lead,
+      context: { category: "plans", status: view.status, scope: scopeContext(view), requiresApproval: true,
+        constraints: view.understanding?.constraints ?? [], warnings: view.warnings }, draft: view.message });
   } else {
+    const reason = view.status !== "researched" ? "response_state"
+      : healthOnContractBasis(view.facts) ? "contract_health_basis"
+      : view.warnings.length ? "warnings" : view.questionnaire ? "questionnaire"
+      : view.pendingWrite ? "pending_write" : view.choices?.length ? "choices"
+      : view.proposalCandidateId ? "direct_action" : !view.facts.length ? "no_facts" : "unsupported_intent";
+    compositionEvent("other", "skipped", 0, [], reason);
     return view;
   }
   // Raced, not only signalled, in `boundReply`: a step before the model call (the access token)
   // does not listen to the signal, and a reset there held a reply for 34 s (29 Sep, local).
   // Errors are logged by class only: provider errors can carry upstream detail (HANDOFF rule 11).
-  const blocks = await boundReply(system, user, facts, signal, generate);
-  return blocks ? { ...view, message: plainReply(blocks), replyBlocks: blocks } : view;
+  const blocks = await boundReply(system, user, facts, signal, generate, lane);
+  if (blocks) return { ...view, message: plainReply(blocks), replyBlocks: blocks };
+  if (lane === "answer") {
+    const fallback = factualReplyBlocks(facts, request);
+    if (fallback.some((block) => block.type !== "paragraph")) return { ...view, message: plainReply(fallback), replyBlocks: fallback };
+    return { ...view, replyBlocks: [{ type: "paragraph", segments: [{ text: view.message }] }] };
+  }
+  return view;
 }

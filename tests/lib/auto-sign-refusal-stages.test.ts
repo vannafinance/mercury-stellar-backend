@@ -211,3 +211,17 @@ describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for 
     expect(calls).not.toContain("vanna_sign_and_submit");
   });
 });
+
+
+describe("USD enforcement cannot be bypassed by an embedded wallet", () => {
+  it("requires a manual click when delegated signing is unavailable", async () => {
+    const r = await executeMcpWrite(fakeMcp({ unsigned_xdr: XDR, auto_sign: "unavailable", auto_sign_error: "usd_enforcement_unavailable" }), STEP, CTX);
+    expect(r.status).toBe("needs_wallet_sign");
+    expect(r.forbid_session_sign).toBe(true);
+  });
+  it("never silently signs a partially priced transaction", async () => {
+    const r = await executeMcpWrite(fakeMcp({ unsigned_xdr: XDR, auto_sign: "rejected", reason: "usd_valuation_unavailable" }), STEP, CTX);
+    expect(r.status).toBe("needs_wallet_sign");
+    expect(r.forbid_session_sign).toBe(true);
+  });
+});

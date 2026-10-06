@@ -81,7 +81,7 @@ let tokenCache: { token: string; expiryMs: number } | null = null;
 
 /** Resolve gcloud on Windows/macOS — Next.js child processes often lack shell PATH. */
 function resolveGcloudBin(): string | null {
-  if (process.env.GCLOUD_PATH && existsSync(process.env.GCLOUD_PATH)) {
+  if (process.env.GCLOUD_PATH && existsSync(/* turbopackIgnore: true */ process.env.GCLOUD_PATH)) {
     return process.env.GCLOUD_PATH;
   }
   const local = process.env.LOCALAPPDATA || "";
@@ -98,7 +98,8 @@ function resolveGcloudBin(): string | null {
   ];
   for (const c of candidates) {
     if (c === "gcloud" || c === "gcloud.cmd") continue; // try bare last via PATH
-    if (existsSync(c)) return c;
+    // The SDK belongs to the host's authentication setup, not the app's standalone artifact.
+    if (existsSync(/* turbopackIgnore: true */ c)) return c;
   }
   return process.platform === "win32" ? "gcloud.cmd" : "gcloud";
 }
@@ -355,10 +356,10 @@ async function tryGcloudAccessToken(): Promise<{ token?: string; error?: string 
   const gcloudCmd = resolveGcloudBin();
 
   // Path A: python gcloud.py (no shell, handles spaces)
-  if (existsSync(gcloudPy)) {
+  if (existsSync(/* turbopackIgnore: true */ gcloudPy)) {
     const pyCandidates = [
       process.env.CLOUDSDK_PYTHON,
-      existsSync(bundledPy) ? bundledPy : "",
+      existsSync(/* turbopackIgnore: true */ bundledPy) ? bundledPy : "",
       "python",
       "python3",
     ].filter(Boolean) as string[];
@@ -1165,7 +1166,7 @@ PLAN (complex / multi-step strategy — e.g. park for yield THEN farm, keep HF, 
 ]}
 
 AUTO_SIGN:
-{"kind":"auto_sign","action":"start"|"use_defaults"|"custom"|"disable","template_id":"auto_sign","max_per_tx_usd":null,"max_per_day_usd":null}
+{"kind":"auto_sign","action":"start"|"use_defaults"|"custom"|"disable","template_id":"auto_sign","max_per_tx_tokens":null,"max_per_day_tokens":null}
 
 RESTRICTED:
 {"kind":"restricted","reason":"...","template_id":"liquidate"}
@@ -1182,7 +1183,8 @@ Rules:
 - Leverage "2x" / "at 2×" goes in args.leverage on farm/deploy steps — not as amount.
 - Park / lend for yield → op=lend. Farm Blend at Nx → op=deploy_to_blend with leverage.
 - If amount missing on a write, still emit write with amount:null so the server asks.
-- "enable auto-sign" / "turn on auto approve" → auto_sign start (MCP default $1000/tx · $1000/day).
+- "enable auto-sign" / "turn on auto approve" → auto_sign start (the MCP's default caps, which are token quantities).
+- Auto-sign caps are testnet token quantities. Dollar-denominated limits are deferred; never reinterpret a USD request as tokens.
 - "set auto-sign cap to 500 per tx and 2000 per day" → auto_sign custom.
 - "use default auto-sign caps" → auto_sign use_defaults.
 - "swap 20 XLM to USDC via aquarius" → write op=swap (server quotes expected_out via oracle).
@@ -1311,8 +1313,8 @@ function normalizeRoute(data: Record<string, unknown>): RoutedIntent {
       kind: "auto_sign",
       action: ["start", "use_defaults", "custom", "disable"].includes(action) ? action : "start",
       template_id: "auto_sign",
-      max_per_tx_usd: (data.max_per_tx_usd as any) ?? undefined,
-      max_per_day_usd: (data.max_per_day_usd as any) ?? undefined,
+      max_per_tx_tokens: (data.max_per_tx_tokens as any) ?? undefined,
+      max_per_day_tokens: (data.max_per_day_tokens as any) ?? undefined,
     };
   }
 

@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
-import { writeFileSync } from "node:fs";
 import { ChatTurns } from "@/components/copilot/chat-message";
 import { buildRunReceipt, type RunReceiptLeg } from "@/components/copilot/run-receipt";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
@@ -77,11 +76,5 @@ describe("a run's receipt describes the run, not the last leg to settle", () => 
     for (const needle of ["deposit_collateral", "borrow", "supply_blend", "100", "20", "19.998"]) {
       expect(text).toContain(needle);
     }
-    writeFileSync(
-      "tests/components/.rendered-card.txt",
-      (container.textContent || "")
-        .replace(/\s*\n\s*/g, "\n")
-        .split("\n").map((l) => l.trim()).filter(Boolean).join("\n"),
-    );
   });
 });

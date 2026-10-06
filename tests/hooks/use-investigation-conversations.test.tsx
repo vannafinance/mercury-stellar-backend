@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
+import { receiptKey, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 
 /**
  * Conversations: the server keeps every one a signed-in user has had; the hook lists them,
@@ -82,6 +83,87 @@ beforeEach(() => {
 });
 
 describe("useInvestigation — conversations", () => {
+  it("keeps the last selected chat when an older open request resolves late", async () => {
+    server([]);
+    const original = globalThis.fetch;
+    const pending = new Map<string, (response: Response) => void>();
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (url.endsWith("/c-older") || url.endsWith("/c-newer")) return new Promise<Response>(resolve => pending.set(url, resolve));
+      return original(url, init);
+    }));
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await waitFor(() => expect(result.current.conversations.length).toBeGreaterThan(0));
+    let older!: Promise<void>, newer!: Promise<void>;
+    act(() => { older = result.current.open("c-older"); });
+    await waitFor(() => expect(pending.has("/api/copilot/session/c-older")).toBe(true));
+    act(() => { newer = result.current.open("c-newer"); });
+    await waitFor(() => expect(pending.has("/api/copilot/session/c-newer")).toBe(true));
+    await act(async () => {
+      pending.get("/api/copilot/session/c-newer")!(new Response(JSON.stringify({ id: "c-newer", turns: [], continuation: null, result: null })));
+      await newer;
+      pending.get("/api/copilot/session/c-older")!(new Response(JSON.stringify({ id: "c-older", turns: [], continuation: null, result: null })));
+      await older;
+    });
+    expect(result.current.conversationId).toBe("c-newer");
+  });
+
+  it("does not reopen a slow previous selection after the user selects the current chat again", async () => {
+    server([]);
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await waitFor(() => expect(result.current.conversations.length).toBeGreaterThan(0));
+    await act(async () => { await result.current.open("c-newer"); });
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(done => { resolve = done; })));
+    let older!: Promise<void>;
+    act(() => { older = result.current.open("c-older"); });
+    await waitFor(() => expect(resolve).toBeDefined());
+    await act(async () => {
+      await result.current.open("c-newer");
+      resolve(new Response(JSON.stringify({ id: "c-older", turns: [], continuation: null, result: null })));
+      await older;
+    });
+    expect(result.current.conversationId).toBe("c-newer");
+  });
+  it("does not strand the spinner when the open chat is re-selected during a reply", async () => {
+    server([{ conversationId: "c-newer", result: view("Late answer") }]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const settle = mocks.consume.getMockImplementation()!;
+    mocks.consume.mockImplementation(async (res: unknown, emit: (event: unknown) => void) => { await held; await settle(res, emit); });
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await waitFor(() => expect(result.current.conversations.length).toBeGreaterThan(0));
+    await act(async () => { await result.current.open("c-newer"); });
+    let reply!: Promise<void>;
+    act(() => { reply = result.current.run("Another question"); });
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    await act(async () => { await result.current.open("c-newer"); });
+    expect(result.current.loading).toBe(true);
+    await act(async () => { release(); await reply; });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.turns.at(-1)?.text).toBe("Late answer");
+  });
+  it("delivers a late settled summary to its exact workflow turn and rejects conversation/wallet switches", async () => {
+    server([{ conversationId: "c-newer", result: view("Latest answer") }]);
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await waitFor(() => expect(result.current.conversations.length).toBeGreaterThan(0));
+    await act(async () => { await result.current.open("c-newer"); });
+    const receipt = { workflowId: "run-owned", network: "testnet", status: "completed" as const,
+      steps: [{ operation: "lend" as const, asset: "XLM", amount: "1", status: "settled" as const, txHash: "a".repeat(64), settledLedger: 123 }] };
+    await act(async () => { await result.current.updateExecutionReceipt(receipt); });
+    await act(async () => { await result.current.run("Another question"); });
+    const reply: WorkflowCompletionReply = { message: "Settled supply", replyBlocks: [{ type: "paragraph", segments: [{ text: "Settled supply" }] }], receipt,
+      completion: { workflowId: receipt.workflowId, receiptKey: receiptKey(receipt), generatedAt: 1, source: "model" } };
+    act(() => result.current.updateWorkflowCompletion(reply, "c-newer", "other-wallet"));
+    expect(result.current.turns[1].text).not.toBe(reply.message);
+    act(() => result.current.updateWorkflowCompletion(reply, "c-newer", WALLET));
+    expect(result.current.turns[1].text).toBe(reply.message);
+    expect(result.current.turns.at(-1)?.text).toBe("Latest answer");
+    const saved = JSON.parse(sessionStorage.getItem(`vanna.copilot.thread.${WALLET}`)!);
+    expect(saved.turns[1].completion.workflowId).toBe(receipt.workflowId);
+    await act(async () => { await result.current.open("c-older"); });
+    act(() => result.current.updateWorkflowCompletion(reply, "c-newer", WALLET));
+    expect(result.current.turns.map((turn) => turn.text)).toEqual(["lend 1 XLM", "Lend 1 XLM."]);
+  });
   /**
    * A reload starts a new chat (owner, 25 Sep): the server's open conversation stays in the
    * list, where opening it brings every turn back, and its pointer is cleared so the next turn

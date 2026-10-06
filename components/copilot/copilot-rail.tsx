@@ -161,6 +161,9 @@ export function CopilotRailBody({
   hasWallet,
   healthFactor,
   positions,
+  accountLoading = false,
+  accountError = false,
+  onRetryAccount,
   conversations,
   activeId,
   onOpen,
@@ -171,6 +174,9 @@ export function CopilotRailBody({
   /** Null when there is no account to read, which the rail says rather than showing 0. */
   healthFactor: number | null;
   positions: RailPosition[];
+  accountLoading?: boolean;
+  accountError?: boolean;
+  onRetryAccount?: () => void;
   conversations: ConversationSummary[];
   activeId: string | null;
   onOpen: (id: string) => void;
@@ -195,12 +201,16 @@ export function CopilotRailBody({
             <HealthValue value={healthFactor} />
           </div>
           <div className="text-[12px] leading-[18px] text-vgray-500" style={{ textTransform: "capitalize" }}>
-            {zoneLabel(zone)}
+            {accountLoading ? "Loading" : accountError ? "Unavailable" : zoneLabel(zone)}
           </div>
         </div>
       </div>
       }>
         {!hasWallet && <p className="px-2 pb-2 text-[12px] leading-[18px] text-vgray-500">Connect your wallet to see your health factor and positions.</p>}
+        {hasWallet && accountError && <div className="px-2 pb-2 text-[12px] leading-[18px] text-vgray-500" role="status">
+          Account refresh failed.{positions.length > 0 ? " Showing previously loaded positions." : " Your positions could not be loaded."}
+          {onRetryAccount && <button type="button" onClick={onRetryAccount} className="ml-2 underline">Retry account data</button>}
+        </div>}
       </RailFlyout>
 
       <RailFlyout order={4} label="Positions" icon={<PositionIcon />} heading={
@@ -212,14 +222,14 @@ export function CopilotRailBody({
         >
           <PositionIcon />
           <span className="flex-1 text-left text-[14px] leading-[21px] font-semibold">Positions</span>
-          <span aria-hidden className="text-[12px] font-normal text-vgray-500">{positions.length}</span>
+          <span aria-hidden className="text-[12px] font-normal text-vgray-500">{accountLoading || (accountError && positions.length === 0) ? "—" : positions.length}</span>
           <Caret open={positionsOpen} />
         </button>
         }>
         {positionsOpen && (
           <div className="cp-position-list">
             {positions.length === 0 ? (
-              <p className="text-[12px] leading-[18px] text-vgray-400">{hasWallet ? "Nothing open." : "Connect your wallet to see positions."}</p>
+              <p className="text-[12px] leading-[18px] text-vgray-400">{!hasWallet ? "Connect your wallet to see positions." : accountLoading ? "Loading positions…" : accountError ? "Positions unavailable." : "Nothing open."}</p>
             ) : (
               positions.map((p) => (
                 <div key={`${p.role}:${p.symbol}`} style={{ display: "flex", alignItems: "center", gap: 10 }}>

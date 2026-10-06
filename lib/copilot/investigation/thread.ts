@@ -21,6 +21,8 @@ export type ThreadTurn = {
   executionReceipt?: ExecutionReceiptSnapshot | null;
   /** The composed reply (compose.ts); `text` stays its plain form for history and older views. */
   blocks?: import("./view").ReplyBlock[];
+  /** Server-owned completion presentation, bound to this exact workflow receipt. */
+  completion?: import("../workflow-completion").WorkflowCompletion;
 };
 
 export type LastInvestigation = {

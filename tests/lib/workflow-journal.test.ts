@@ -1,8 +1,8 @@
 import { Account, Keypair, Networks, TransactionBuilder } from "@stellar/stellar-sdk";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WorkflowJournal, PROPOSAL_TTL_MS } from "@/lib/copilot/workflow/journal";
 import type { RecordStore } from "@/lib/copilot/workflow/store";
-import type { WorkflowRecord } from "@/lib/copilot/workflow/types";
+import { workflowView, type WorkflowRecord } from "@/lib/copilot/workflow/types";
 
 const identity = { scope: { subject: "owner", trader: "wallet", smartAccount: "account", network: "testnet" }, server: "mcp" };
 function fixture() {
@@ -35,11 +35,13 @@ describe("workflow approval and execution journal", () => {
       .toBe("6541.043333");
   });
 
-  it("invalidates a strategy card after several minutes so stale terms cannot be approved", async () => {
+  it("keeps a strategy card resumable after several minutes while validating fresh terms", async () => {
     const { journal, create, advance } = fixture();
     const { proposal: p } = await create();
     advance(10 * 60_000);
-    await expect(journal.approve(p.id, identity, 1, p.digest, async () => null)).rejects.toThrow("proposal_expired");
+    const validate = vi.fn(async () => null);
+    expect((await journal.approve(p.id, identity, 1, p.digest, validate)).status).toBe("approved");
+    expect(validate).toHaveBeenCalledTimes(1);
   });
 
   it("rejects wrong identity, modified approval, and expiration", async () => {
@@ -339,6 +341,28 @@ describe("workflow approval and execution journal", () => {
     expect(record.steps[0]).toMatchObject({ status: "failed", message: "Simulation failed. Nothing was submitted." });
     expect(record.steps[0].txHash).toBeUndefined();
     await expect(journal.claimNext(p.id, identity)).rejects.toThrow("workflow_not_runnable");
+  });
+
+  it("records why the signer refused a step handed back to the wallet, and clears it when it was not refused", async () => {
+    const { journal, create } = fixture();
+    const { proposal: p } = await create();
+    await journal.approve(p.id, identity, 1, p.digest, async () => null);
+    await journal.claimNext(p.id, identity);
+    const tx = new TransactionBuilder(new Account(Keypair.random().publicKey(), "0"), { fee: "100", networkPassphrase: Networks.TESTNET }).setTimeout(60).build();
+    const refused = await journal.invocationResult(p.id, identity, "one", { kind: "unsigned", unsignedXdr: tx.toXDR(), refusal: "Sign Service: over the per-tx cap." });
+    expect(refused.steps[0]).toMatchObject({ status: "awaiting_signature", signRefusal: "Sign Service: over the per-tx cap." });
+    expect(workflowView(refused).steps[0].signRefusal).toBe("Sign Service: over the per-tx cap.");
+  });
+
+  it("leaves no refusal on a step that was simply never auto-signed", async () => {
+    const { journal, create } = fixture();
+    const { proposal: p } = await create();
+    await journal.approve(p.id, identity, 1, p.digest, async () => null);
+    await journal.claimNext(p.id, identity);
+    const tx = new TransactionBuilder(new Account(Keypair.random().publicKey(), "0"), { fee: "100", networkPassphrase: Networks.TESTNET }).setTimeout(60).build();
+    const record = await journal.invocationResult(p.id, identity, "one", { kind: "unsigned", unsignedXdr: tx.toXDR() });
+    expect(record.steps[0].signRefusal).toBeUndefined();
+    expect(workflowView(record).steps[0].signRefusal).toBeUndefined();
   });
 
   it("accepts a submitted hash only from awaiting_signature", async () => {

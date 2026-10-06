@@ -110,6 +110,23 @@ describe("advanceWorkflow", () => {
     expect(view.steps[0].txHash).toBeUndefined();
   });
 
+  it("carries the signer's own refusal onto a step it handed back to the wallet", async () => {
+    const id = await approvedBorrow();
+    const xdr = "A".repeat(80);
+    const mcp: McpCall = { call: async () => ({ status: "needs_wallet_sign", unsigned_xdr: xdr, auto_sign: "rejected", message: "Over your per-transaction limit." }) };
+    const view = await advance(id, mcp);
+    expect(view.status).toBe("awaiting_signature");
+    expect(view.steps[0]).toMatchObject({ status: "awaiting_signature", unsignedXdr: xdr, signRefusal: "Over your per-transaction limit." });
+  });
+
+  it("marks no refusal when the signer never refused (auto-sign was not armed)", async () => {
+    const id = await approvedBorrow();
+    const xdr = "A".repeat(80);
+    const mcp: McpCall = { call: async () => ({ status: "needs_wallet_sign", unsigned_xdr: xdr }) };
+    const view = await advance(id, mcp);
+    expect(view.steps[0].signRefusal).toBeUndefined();
+  });
+
   it("blocks a simulation error without recording a hash", async () => {
     const id = await approvedBorrow();
     const mcp: McpCall = {

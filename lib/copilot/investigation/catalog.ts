@@ -131,7 +131,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "account_collateral", tool: "vanna_get_collateral", scope: "account", cost: "expensive",
-    description: "Read posted margin collateral; do not count it as spendable wallet balance.",
+    description: "Read gross posted storage and tracking collateral. Plain balances can include borrowed proceeds; they are not net deposited collateral or the Margin page's composite valuation. Do not count them as spendable wallet balance or silently mix this basis with website balances.",
     modelArgs: {}, bind: (_, scope) => ({ smart_account: scope.smartAccount }),
   },
   {

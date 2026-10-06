@@ -51,7 +51,11 @@ function encryption(secret: string) {
 export class LocalRecordStore<T> implements RecordStore<T> {
   private readonly directory: string;
   private readonly codec: ReturnType<typeof encryption>;
-  constructor(directory: string, secret: string, private readonly idRule: IdRule = UUID_ID) { this.directory = resolve(directory); this.codec = encryption(secret); }
+  constructor(directory: string, secret: string, private readonly idRule: IdRule = UUID_ID) {
+    // Development records are runtime data, never inputs to the standalone bundle.
+    this.directory = resolve(/* turbopackIgnore: true */ directory);
+    this.codec = encryption(secret);
+  }
   async read(id: string): Promise<Stored<T> | null> {
     check(this.idRule, id);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
@@ -161,7 +165,7 @@ export function durableStore<T>(collection: string, localDirectory: string, secr
     return new FirestoreRecordStore(project, process.env.COPILOT_WORKFLOW_FIRESTORE_DATABASE || "(default)", secret, undefined, undefined, collection, idRule);
   }
   if (runningDeployed) throw new Error("durable_workflow_store_not_configured");
-  return new LocalRecordStore(resolve(process.cwd(), localDirectory), secret, idRule);
+  return new LocalRecordStore(resolve(/* turbopackIgnore: true */ process.cwd(), localDirectory), secret, idRule);
 }
 
 export function workflowStore<T>(secret: string): RecordStore<T> {

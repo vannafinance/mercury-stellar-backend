@@ -4,7 +4,7 @@
  * deterministic reply, and so does a model that fails or runs late.
  */
 import { describe, expect, it, vi } from "vitest";
-import { bindBlocks, completionFacts, composable, composablePlans, composeCompletion, composeReply, planFacts, plainReply } from "@/lib/copilot/investigation/compose";
+import { bindBlocks, completionFacts, composable, composablePlans, composeBudgetMs, composeCompletion, composeReply, planFacts, plainReply } from "@/lib/copilot/investigation/compose";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import type { ResearchFact, ResearchView } from "@/lib/copilot/investigation/view";
 
@@ -45,7 +45,7 @@ describe("binding the model's blocks", () => {
     [{ blocks: [{ type: "paragraph", text: "**Healthy**: {{e0:health_factor}}" }] }, /markup/],
     [{ blocks: [{ type: "paragraph", text: "See [docs](x) for {{e0:health_factor}}" }] }, /markup or a link/],
     [{ blocks: [{ type: "paragraph", text: "You look healthy." }] }, /cites no fact/],
-    [{ blocks: [{ type: "table", rows: [] }] }, /unknown block/],
+    [{ blocks: [{ type: "table", rows: [] }] }, /invalid table/],
     [{ text: "no blocks" }, /no usable blocks/],
   ])("refuses %j", (raw, reason) => {
     const bound = bindBlocks(raw, FACTS);
@@ -55,6 +55,23 @@ describe("binding the model's blocks", () => {
 });
 
 describe("composing a reply", () => {
+  it("allows a valid model response beyond the former six-second deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = composeReply(view(), new AbortController().signal, () => new Promise((resolve) => setTimeout(() => resolve({ blocks: [{ type: "paragraph", text: "Health factor: {{e0:health_factor}}." }] }), 7_000)));
+      await vi.advanceTimersByTimeAsync(7_001);
+      expect((await pending).message).toBe("Health factor: 2.32.");
+    } finally { vi.useRealTimers(); }
+  });
+  it("keeps a failed prose call structured for any supplied row group", async () => {
+    const original = view({ originalRequest: "Show positions", facts: [
+      { ...fact("e1:collateral[0].balance", "XLM collateral balance", "70.1234567", "XLM"), evidenceId: "e1", sourcePath: "collateral[0].balance", quantity: true },
+    ] });
+    const out = await composeReply(original, new AbortController().signal, async () => { throw new Error("offline"); });
+    expect(out.replyBlocks?.map((block) => block.type)).toEqual(["heading", "bullets"]);
+    expect(out.message).toContain("70.12");
+    expect(out.facts[0].value).toBe("70.1234567");
+  });
   it("replaces the reply with the bound blocks and keeps a plain-text message", async () => {
     const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "Your health factor is {{e0:health_factor}}." }] }));
     const out = await composeReply(view(), new AbortController().signal, generate);
@@ -69,8 +86,12 @@ describe("composing a reply", () => {
 
   it("keeps the deterministic reply when the model fails or writes a figure", async () => {
     const original = view();
-    expect(await composeReply(original, new AbortController().signal, async () => { throw new Error("HTTP 503"); })).toBe(original);
-    expect(await composeReply(original, new AbortController().signal, async () => ({ blocks: [{ type: "paragraph", text: "It is 2.32." }] }))).toBe(original);
+    for (const generate of [async () => { throw new Error("HTTP 503"); }, async () => ({ blocks: [{ type: "paragraph", text: "It is 2.32." }] })]) {
+      const fallback = await composeReply(original, new AbortController().signal, generate);
+      expect(fallback.message).toBe(original.message);
+      expect(fallback.replyBlocks?.length).toBeGreaterThan(0);
+      expect(fallback.executionAllowed).toBe(false);
+    }
   });
 
   it("leaves plans, questionnaires, warnings and refusals to their own replies", () => {
@@ -88,8 +109,8 @@ describe("composing a reply", () => {
     vi.useFakeTimers();
     const original = view();
     const pending = composeReply(original, new AbortController().signal, () => new Promise(() => {}));
-    await vi.advanceTimersByTimeAsync(6_001);
-    expect(await pending).toBe(original);
+    await vi.advanceTimersByTimeAsync(composeBudgetMs() + 1);
+    expect((await pending).message).toBe(original.message);
     vi.useRealTimers();
   });
 
@@ -161,7 +182,7 @@ describe("composing the reply once a run has finished", () => {
     const out = await composeCompletion({ view, request: "x", draft: "1 of 2 steps went through.", comparisons, healthNow: null }, new AbortController().signal, generate);
     expect(out?.message).toBe("Supplied 5 XLM to Blend; the rest was not submitted.");
     const user = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
-    expect(user.stopped).toMatch(/blocked/);
+    expect(user.stopped).toEqual({ status: "blocked" });
     expect(user.facts.some((f: { id: string }) => f.id.startsWith("stepB"))).toBe(false);
   });
 

@@ -5,6 +5,30 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ExecutionStepper } from "@/components/copilot/execution-stepper";
 
 describe("ExecutionStepper", () => {
+  it("tells the user why auto-approve stopped and still offers manual signing", () => {
+    const onSign = vi.fn();
+    render(
+      <ExecutionStepper
+        currentStepIndex={0}
+        autoApprove={true}
+        onSign={onSign}
+        steps={[{ id: "s1", op: "swap", label: "Swap", asset: "XLM", amount: "5000", status: "signing", refusal: "Over your per-transaction limit." }]}
+      />,
+    );
+    expect(screen.getByText(/Auto-approve did not sign this step. Over your per-transaction limit./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in wallet" }));
+    expect(onSign).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("shows no refusal line when the step was not refused", () => {
+    render(
+      <ExecutionStepper currentStepIndex={0} autoApprove={true} onSign={vi.fn()}
+        steps={[{ id: "s1", op: "swap", label: "Swap", asset: "XLM", amount: "5", status: "signing" }]} />,
+    );
+    expect(screen.queryByText(/Auto-approve did not sign/)).toBeNull();
+    cleanup();
+  });
   it("renders multi-leg execution statuses accurately", () => {
     render(
       <ExecutionStepper

@@ -603,8 +603,8 @@ export const ROUTER_TOOLS: ToolEntry[] = [
             "start = begin enabling; use_defaults = accept default caps; custom = user gave caps; disable = turn off.",
             ["start", "use_defaults", "custom", "disable"],
           ),
-          max_per_tx_usd: num("Per-transaction USD cap, if the user gave one."),
-          max_per_day_usd: num("Daily USD cap, if the user gave one."),
+          max_per_tx_tokens: num("Testnet token amount limit per transaction; never reinterpret dollars as tokens."),
+          max_per_day_tokens: num("Testnet daily token amount limit; never reinterpret dollars as tokens."),
         },
         ["action"],
       ),
@@ -617,8 +617,8 @@ export const ROUTER_TOOLS: ToolEntry[] = [
           ? action
           : "start") as "start" | "use_defaults" | "custom" | "disable",
         template_id: "auto_sign",
-        ...(asAmount(a.max_per_tx_usd) != null ? { max_per_tx_usd: asAmount(a.max_per_tx_usd)! } : {}),
-        ...(asAmount(a.max_per_day_usd) != null ? { max_per_day_usd: asAmount(a.max_per_day_usd)! } : {}),
+        ...(asAmount(a.max_per_tx_tokens) != null ? { max_per_tx_tokens: asAmount(a.max_per_tx_tokens)! } : {}),
+        ...(asAmount(a.max_per_day_tokens) != null ? { max_per_day_tokens: asAmount(a.max_per_day_tokens)! } : {}),
       };
     },
   },

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import type { StepStatus, WorkflowRecord } from "@/lib/copilot/workflow/types";
+import { receiptKey, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 
 /**
  * Conversations, on both backends.
@@ -105,6 +106,35 @@ describe.each(BACKENDS)("copilot conversation store (%s backend)", (backend) => 
     const turn = (await store.readConversation("alice", first.id))?.turns[1];
     expect(turn?.text).toBe("Done. Supplied 1 XLM to Blend.");
     expect(turn?.blocks).toBeUndefined();
+  });
+
+  it("persists settled summaries on the exact owning turn across later turns and reopen", async () => {
+    const first = await store.appendSessionTurn({ subject: "alice", user: "swap", result: view("Approve") });
+    const r = receipt("completed", "settled", 123);
+    await store.updateSessionExecutionReceipt({ subject: "alice", conversationId: first.id, receipt: r });
+    await store.appendSessionTurn({ subject: "alice", conversationId: first.id, user: "hi", result: view("Hello") });
+    const reply: WorkflowCompletionReply = { receipt: r, message: "Settled swap", replyBlocks: [{ type: "paragraph", segments: [{ text: "Settled swap" }] }],
+      completion: { workflowId: r.workflowId, receiptKey: receiptKey(r), generatedAt: 1, source: "model" } };
+    expect(await store.updateSessionWorkflowCompletion({ subject: "bob", conversationId: first.id, reply })).toBe(false);
+    expect(await store.updateSessionWorkflowCompletion({ subject: "alice", conversationId: first.id, reply })).toBe(true);
+    expect(await store.updateSessionWorkflowCompletion({ subject: "alice", conversationId: first.id, reply })).toBe(true);
+    const restored = await store.openConversation("alice", first.id);
+    expect(restored?.turns[1]).toMatchObject({ text: reply.message, blocks: reply.replyBlocks, completion: reply.completion, executionReceipt: r });
+    expect(restored?.turns[3].text).toBe("Hello");
+    expect(await store.updateSessionExecutionReceipt({ subject: "alice", conversationId: first.id, receipt: receipt("running", "submitted") })).toBe(false);
+    expect((await store.readConversation("alice", first.id))?.turns[1].completion).toEqual(reply.completion);
+  });
+
+  it("refuses to attach a summary to an unowned workflow or replace it with legacy late text", async () => {
+    const first = await store.appendSessionTurn({ subject: "alice", user: "swap", result: view("Approve") });
+    const r = receipt("completed", "settled", 123);
+    const reply: WorkflowCompletionReply = { receipt: r, message: "Settled swap", replyBlocks: [{ type: "paragraph", segments: [{ text: "Settled swap" }] }],
+      completion: { workflowId: r.workflowId, receiptKey: receiptKey(r), generatedAt: 1, source: "model" } };
+    expect(await store.updateSessionWorkflowCompletion({ subject: "alice", conversationId: first.id, reply })).toBe(false);
+    await store.updateSessionExecutionReceipt({ subject: "alice", conversationId: first.id, receipt: r });
+    await store.updateSessionWorkflowCompletion({ subject: "alice", conversationId: first.id, reply });
+    await store.updateSessionAssistantText({ subject: "alice", conversationId: first.id, text: "Wait for signing" });
+    expect((await store.readConversation("alice", first.id))?.turns[1].text).toBe("Settled swap");
   });
 
   it("starts a conversation on the first turn, titled by the prompt, and appends later turns to it", async () => {

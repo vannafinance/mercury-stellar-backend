@@ -1,4 +1,6 @@
-import type { ResearchFact, ResearchView } from "./view";
+import type { ReplyBlock, ResearchFact, ResearchView } from "./view";
+import { formatFactValue } from "./answer-prose";
+import { formatTokenAmount } from "@/lib/utils/format-amount";
 import type { CandidateSet } from "./candidates";
 import type { ResearchCapacity } from "./view";
 import { ASSET_IDS, resolveAssetDef } from "../registry/assets";
@@ -55,11 +57,11 @@ function isDebtTotal(fact: ResearchFact): boolean {
  * (`<list>[<index>].<field>`), the asset by the label the fact carries (the registry's
  * spelling, not the wire's), the money by the unit. Nothing is named here by capability.
  */
-function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: string; sentence: string }> {
+function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: string; sentence: string; blocks: ReplyBlock[] }> {
   interface Row { asset: string; amounts: string[]; amountValues: number[]; usdValues: number[]; usd: string | null }
   const groups = new Map<string, { evidenceId: string; name: string; rows: Map<string, Row>; total: string | null }>();
   const money = (value: string) => `$${Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const tokens = (value: string) => Number(value).toLocaleString("en-US", { maximumFractionDigits: 7 });
+  const tokens = (value: string) => formatTokenAmount(Number(value));
   for (const fact of facts) {
     const row = /^([a-z_]+)\[(\d+)\]\.([a-z_]+)$/i.exec(fact.sourcePath);
     if (!row || !Number.isFinite(Number(fact.value))) continue;
@@ -125,7 +127,11 @@ function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: strin
   return [...groups.values()].filter((group) => group.rows.size).map((group) => {
     const rows = [...group.rows.values()].map((row) => `- ${`${row.asset} ${row.amounts[0] ?? ""}`.trim()}${row.usd ? ` · ${row.usd}` : ""}`);
     const name = group.name.charAt(0).toUpperCase() + group.name.slice(1);
-    return { evidenceId: group.evidenceId, sentence: `${name}${group.total ? ` (total ${group.total})` : ""}:\n${rows.join("\n")}` };
+    const heading = `${name}${group.total ? ` (total ${group.total})` : ""}`;
+    return { evidenceId: group.evidenceId, sentence: `${heading}:\n${rows.join("\n")}`, blocks: [
+      { type: "heading", segments: [{ text: heading }] },
+      { type: "bullets", items: rows.map((row) => [{ text: row.slice(2) }]) },
+    ] };
   });
 }
 
@@ -139,7 +145,7 @@ export function healthOnContractBasis(facts: readonly ResearchFact[]): boolean {
 }
 
 /** Conversational factual answers use audited fields; model prose cannot invent balances. */
-export function factualAnswer(facts: readonly ResearchFact[], request?: string): string | null {
+export function factualAnswer(facts: readonly ResearchFact[], request?: string, blocks?: ReplyBlock[]): string | null {
   const amount = (fact: ResearchFact) => {
     const n = Number(fact.value);
     const usd = fact.unit === "USD";
@@ -149,7 +155,7 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
           maximumFractionDigits: usd ? 2 : 7,
         })
       : fact.value;
-    return usd ? `$${value}` : `${value} ${fact.unit}`.trim();
+    return fact.quantity ? formatFactValue(fact) : usd ? `$${value}` : `${value} ${fact.unit}`.trim();
   };
   const sentences: string[] = [];
   const selected = relevantFacts(facts, request);
@@ -188,6 +194,8 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
    * total had a sentence here while the two debt rows the read returned had none.
    */
   const rowLines = rowSentences(selected.filter((f) => f.venue !== "wallet"));
+  if (sentences.length) blocks?.push({ type: "paragraph", segments: [{ text: sentences.join(" ") }] });
+  for (const line of rowLines) blocks?.push(...line.blocks);
   sentences.push(...rowLines.map((line) => line.sentence));
   /**
    * A position read that returned one amount, not rows (an Earn pool, one LP pair): one bullet
@@ -214,7 +222,11 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
     // Every LP read is tagged with the `aquarius` venue, Soroswap pairs included, so that group is named by what it holds.
     const heading = venue === "aquarius" ? "LP pools" : venue.charAt(0).toUpperCase() + venue.slice(1);
     sentences.push(`${heading}:\n${list.map((fact) => `- ${fact.label}: ${amount(fact)}`).join("\n")}`);
+    blocks?.push({ type: "heading", segments: [{ text: heading }] }, {
+      type: "bullets", items: list.map((fact) => [{ text: `${fact.label}: ` }, { text: amount(fact), figure: true }]),
+    });
   }
+  const scalarStart = sentences.length;
   const debt = selected.find(f => f.sourcePath === "total_debt_usd") ?? selected.find(isDebtTotal);
   if (debt && !rowLines.some((line) => line.evidenceId === debt.evidenceId)) sentences.push(`Your reported margin debt is ${amount(debt)}.`);
   const prices = selected.filter(f => f.venue === "oracle");
@@ -242,8 +254,16 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
     return `${pct.toFixed(2)}% APY`;
   };
   if (rates.length) sentences.push(`Supply APY: ${rates.map(f => `${f.label.replace(" supply APR", "")} ${shownApy(f)}`).join("; ")}.`);
+  if (sentences.length > scalarStart) blocks?.push({ type: "paragraph", segments: [{ text: sentences.slice(scalarStart).join(" ") }] });
   // A list section needs its own lines; plain sentences still read as one paragraph.
   return sentences.length ? sentences.join(sentences.some((line) => line.includes("\n")) ? "\n\n" : " ") : null;
+}
+
+/** Preserve data-derived structure even when the optional prose model is unavailable. */
+export function factualReplyBlocks(facts: readonly ResearchFact[], request?: string): ReplyBlock[] {
+  const blocks: ReplyBlock[] = [];
+  factualAnswer(facts, request, blocks);
+  return blocks;
 }
 
 /** What the wallet holds that a plan could use, from the wallet read's own rows — spendable where the read states it. */

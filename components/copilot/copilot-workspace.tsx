@@ -33,6 +33,7 @@ import { setAutoApprove, useCopilotSettingsStore } from "@/store/copilot-setting
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
+import { acceptedTestnetBudget, defaultTestnetBudget } from "@/lib/copilot/auto-approve-budget";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import type { Simulation as ServerSimulation } from "@/lib/copilot/types";
 import { liveUsdLabel, oracleSwapRateLabel } from "@/lib/copilot/swap-quote";
@@ -70,6 +71,7 @@ import {
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
 import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import { completionReply } from "@/lib/copilot/investigation/completion";
+import { completionMatches, settledTransactions, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import { REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { buildRunReceipt } from "./run-receipt";
 import { answerToText } from "@/lib/copilot/answer-schema";
@@ -85,7 +87,7 @@ import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { PLAN_TTL_MS } from "@/lib/copilot/plan-ttl";
 import { claimDispatch, releaseDispatch } from "@/lib/copilot/dispatch-once";
 import { lpSides } from "@/lib/copilot/lp-pair";
-import { AssistantMessage, UserBubble, ChatTurns } from "./chat-message";
+import { AssistantMessage, UserBubble, ChatTurns, REPLY_CARD_GAP_PX } from "./chat-message";
 import { ExecutionStepper } from "./execution-stepper";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
@@ -122,7 +124,7 @@ interface AutoSignPrompt {
   message: string;
   options?: Array<{ id: string; label: string; description?: string }>;
   pending_write?: CopilotAction | null;
-  /** MCP payload (e.g. default_cap_usd) — keep for UI labels, never invent caps. */
+  /** MCP payload (e.g. independent signer defaults) — keep for UI labels, never invent caps. */
   raw?: Record<string, unknown> | null;
 }
 
@@ -167,6 +169,7 @@ interface ChatResponse {
     risk?: { decision: "allow" | "block" | "needs_confirmation"; reasons?: string[] } | null;
     simulation?: Simulation | null;
     allow_session_sign?: boolean;
+    allow_wallet_dispatch?: boolean;
   } | null;
   data?: Record<string, unknown> | null;
   intent?: { template_id?: string | null } | null;
@@ -203,8 +206,8 @@ interface ChatResponse {
     poll_schedule_seconds?: number[] | null;
     wallet_address?: string | null;
     retry_action?: "use_defaults" | "custom" | "disable" | null;
-    max_per_tx_usd?: number | string | null;
-    max_per_day_usd?: number | string | null;
+    max_per_tx_tokens?: number | string | null;
+    max_per_day_tokens?: number | string | null;
   } | null;
   mcp?: {
     tool?: string | null;
@@ -513,9 +516,9 @@ function readAutoCaps(): { tx: number; day: number } | null {
   try {
     const raw = localStorage.getItem(AUTO_CAPS_KEY);
     if (!raw) return null;
-    const c = JSON.parse(raw) as { max_per_tx_usd?: number; max_per_day_usd?: number };
-    const tx = Number(c.max_per_tx_usd);
-    const day = Number(c.max_per_day_usd);
+    const c = JSON.parse(raw) as { max_per_tx_tokens?: number; max_per_day_tokens?: number };
+    const tx = Number(c.max_per_tx_tokens);
+    const day = Number(c.max_per_day_tokens);
     if (!Number.isFinite(tx) || tx <= 0) return null;
     return { tx, day: Number.isFinite(day) && day > 0 ? day : tx };
   } catch {
@@ -525,7 +528,7 @@ function readAutoCaps(): { tx: number; day: number } | null {
 
 /**
  * Default vs custom spend caps. The default figure is owned by MCP and only
- * reported after enable — this UI must not print a dollar amount before that.
+ * reported after enable — this UI must not print a token limit before that.
  */
 interface LogLeg {
   label: string;
@@ -1500,6 +1503,8 @@ export function CopilotWorkspace() {
   const investigation = useLiveInvestigation();
 
   const workflow = useLiveWorkflow();
+  const restoreWorkflow = workflow.restore;
+  const prepareWorkflowSign = workflow.prepareSign;
   const persistedWorkflowReceiptRef = useRef<string | null>(null);
   const walletKind = useUserStore((s) => s.walletKind);
   const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
@@ -1512,11 +1517,16 @@ export function CopilotWorkspace() {
 
   // Same live snapshot feed as margin / portfolio so the right rail tracks
   // real on-chain HF / collateral / debt instead of a one-shot store paint.
-  const { snapshot, refresh: refreshSnapshot } = useAccountSnapshot(address);
+  const { snapshot, isLoading: snapshotLoading, error: snapshotError, refresh: refreshSnapshot } = useAccountSnapshot(address);
 
   const [intentText, setIntentText] = useState("");
   const [submitted, setSubmitted] = useState<string | null>(null);
   const [signingJournal, setSigningJournal] = useState(false);
+  const signAttemptRef = useRef<object | null>(null);
+  useEffect(() => {
+    signAttemptRef.current = null;
+    setSigningJournal(false);
+  }, [address]);
   /** The prompt the user typed — never replaced by "Approved plan" on resume hops. */
   const originalIntentRef = useRef("");
   /** Collateral/debt tail paused because HF dropped below the stated floor. */
@@ -1544,8 +1554,8 @@ export function CopilotWorkspace() {
   const [showCustom, setShowCustom] = useState(false);
   const [railCapsMode, setRailCapsMode] = useState<"defaults" | "custom">("defaults");
   const [savedCaps, setSavedCaps] = useState<{ tx: number; day: number } | null>(null);
-  /** MCP `default_cap_usd` — shown under Default, never guessed from a custom session. */
-  const [mcpDefaultCap, setMcpDefaultCap] = useState<number | null>(null);
+  /** MCP `independent signer defaults` — shown under Default, never guessed from a custom session. */
+  const [mcpDefaultCaps, setMcpDefaultCaps] = useState<{ tx: number; day: number } | null>(null);
   const [log, setLogRaw] = useState<LogEntry[]>([]);
 
   /**
@@ -1729,6 +1739,7 @@ export function CopilotWorkspace() {
    * has to be cleared here or a "fetch failed" note stays on a blank chat.
    */
   const leavePlanCard = useCallback(() => {
+    signAttemptRef.current = null;
     setSigningJournal(false);
     workflow.reset();
     setIntentText("");
@@ -1740,7 +1751,38 @@ export function CopilotWorkspace() {
     abortRef.current = null;
   }, [workflow]);
   const startNewChat = useCallback(() => { leavePlanCard(); investigation.newChat(); }, [leavePlanCard, investigation]);
-  const openConversation = useCallback((id: string) => { leavePlanCard(); void investigation.open(id); }, [leavePlanCard, investigation]);
+  const openConversation = useCallback((id: string) => {
+    leavePlanCard();
+    if (id === investigation.conversationId) {
+      void investigation.open(id);
+      const receipt = [...investigation.turns].reverse().find(turn => turn.executionReceipt)?.executionReceipt;
+      let savedId: string | null = null;
+      try { savedId = localStorage.getItem(`vanna-workflow-chat:${address}:${id}`); } catch { /* server receipt is the fallback */ }
+      if (receipt && !["completed", "cancelled", "blocked"].includes(receipt.status)) void restoreWorkflow(receipt.workflowId);
+      else if (!receipt && savedId) void restoreWorkflow(savedId);
+    } else void investigation.open(id);
+  }, [leavePlanCard, investigation, address, restoreWorkflow]);
+  const restoredConversationRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (investigation.resultOrigin !== "restored" || investigation.loading) {
+      restoredConversationRef.current = null;
+      return;
+    }
+    const key = `${address}:${investigation.conversationId}`;
+    if (restoredConversationRef.current === key) return;
+    const receipt = [...investigation.turns].reverse().find(turn => turn.executionReceipt)?.executionReceipt;
+    let savedId: string | null = null;
+    try { savedId = localStorage.getItem(`vanna-workflow-chat:${key}`); } catch { /* server receipt is the fallback */ }
+    const id = receipt?.workflowId ?? savedId;
+    if (!id || receipt && ["completed", "cancelled", "blocked"].includes(receipt.status)) return;
+    restoredConversationRef.current = key;
+    void restoreWorkflow(id);
+  }, [address, investigation.conversationId, investigation.resultOrigin, investigation.loading, investigation.turns, restoreWorkflow]);
+  useEffect(() => {
+    if (!address || !investigation.conversationId || !workflow.view || investigation.loading) return;
+    if (investigation.resultOrigin !== "live" && !investigation.turns.some(turn => turn.executionReceipt?.workflowId === workflow.view?.id)) return;
+    try { localStorage.setItem(`vanna-workflow-chat:${address}:${investigation.conversationId}`, workflow.view.id); } catch { /* journal remains authoritative */ }
+  }, [address, investigation.conversationId, investigation.resultOrigin, investigation.loading, investigation.turns, workflow.view]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -1898,7 +1940,7 @@ export function CopilotWorkspace() {
 
   // Session signing via Sign Service applies to Privy embedded wallets.
   // For Freighter, auto-approve acts as auto-dispatch directly to the extension popup.
-  const sessionSigningAvailable = (walletKind === "privy" || walletKind === "freighter") && !!address;
+  const sessionSigningAvailable = walletKind === "privy" && !!address;
 
   const [autoApprovePending, setAutoApprovePending] = useState(false);
 
@@ -1980,6 +2022,7 @@ export function CopilotWorkspace() {
         const data = (await res.json()) as ChatResponse;
         if (cancelled || seq !== signReadSeq.current) return;
         const next = signServiceFromSessionRead(data);
+        setMcpDefaultCaps(defaultTestnetBudget(data.data ?? {}));
         // An unavailable/transient read is not proof that a previously conclusive
         // wallet-global session was revoked. Keep the last server-confirmed state.
         setSignServiceState((current) => {
@@ -1990,7 +2033,10 @@ export function CopilotWorkspace() {
           const stable = preserveLastConclusiveSignState(currentForWallet, next);
           return { address, ...stable };
         });
-        if (next.status === "unavailable") return;
+        if (next.status === "unavailable") {
+          if (next.authoritative && address) setAutoApprove(address, false);
+          return;
+        }
         if (address) {
           setAutoApprove(address, next.status === "ok");
         }
@@ -1999,8 +2045,8 @@ export function CopilotWorkspace() {
             localStorage.setItem(
               AUTO_CAPS_KEY,
               JSON.stringify({
-                max_per_tx_usd: next.caps.tx,
-                max_per_day_usd: next.caps.day,
+                max_per_tx_tokens: next.caps.tx,
+                max_per_day_tokens: next.caps.day,
               }),
             );
           } catch {
@@ -2237,13 +2283,9 @@ export function CopilotWorkspace() {
     };
   }, []);
 
-  // Initial + wallet-change paint of the right rail. Intentionally keyed on `address`
-  // only — including refreshRailStats would re-run this on every render it changes on.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (!address) return;
-    void refreshRailStats({ force: true });
-  }, [address]);
+  // useAccountSnapshot already reads on connect and wallet changes. A second
+  // forced browser scan here duplicated the same RPC work on every mount.
+  // Keep refreshRailStats for explicit mutation-driven refreshes only.
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2629,19 +2671,19 @@ export function CopilotWorkspace() {
          * account's real limit until the user happened to click Edit. Synced here, once,
          * off whatever MCP actually reports, so the chip can never drift from it.
          */
-        const reportedTx = Number((d as { max_per_tx_usd?: unknown } | null)?.max_per_tx_usd);
-        const reportedDay = Number((d as { max_per_day_usd?: unknown } | null)?.max_per_day_usd);
+        const reportedTx = Number((d as { max_per_tx_tokens?: unknown } | null)?.max_per_tx_tokens);
+        const reportedDay = Number((d as { max_per_day_tokens?: unknown } | null)?.max_per_day_tokens);
         if (Number.isFinite(reportedTx) && reportedTx > 0) {
           const caps = {
-            max_per_tx_usd: reportedTx,
-            max_per_day_usd: Number.isFinite(reportedDay) && reportedDay > 0 ? reportedDay : reportedTx,
+            max_per_tx_tokens: reportedTx,
+            max_per_day_tokens: Number.isFinite(reportedDay) && reportedDay > 0 ? reportedDay : reportedTx,
           };
           try {
             localStorage.setItem(AUTO_CAPS_KEY, JSON.stringify(caps));
           } catch {
             /* ignore */
           }
-          setSavedCaps({ tx: caps.max_per_tx_usd, day: caps.max_per_day_usd });
+          setSavedCaps({ tx: caps.max_per_tx_tokens, day: caps.max_per_day_tokens });
         }
 
         /**
@@ -2991,24 +3033,36 @@ export function CopilotWorkspace() {
     if (!view || workflow.loading || signingJournal) return;
     const step = view.steps.find((entry) => entry.status === "awaiting_signature" && entry.unsignedXdr);
     if (!step?.unsignedXdr) return;
+    // The Sign Service refused this step under auto-approve (a cap, a lapsed session). Silent
+    // client signing would walk around that refusal, so it waits for an explicit click.
+    if (auto && step.signRefusal) return;
     const signKey = `sign:${view.id}:${step.id}`;
     if (auto && !claimDispatch(address, signKey)) return;
     setSigningJournal(true);
+    const attempt = {}; signAttemptRef.current = attempt;
     try {
-      const result = await signWorkflowTransaction(step.unsignedXdr, { networkPassphrase: "Test SDF Network ; September 2015", address: address ?? undefined });
+      const refreshed = await prepareWorkflowSign();
+      if (signAttemptRef.current !== attempt || useUserStore.getState().address !== address) return;
+      const freshStep = refreshed?.steps.find(entry => entry.id === step.id && entry.status === "awaiting_signature");
+      if (!freshStep?.unsignedXdr) {
+        if (auto) releaseDispatch(address, signKey);
+        return;
+      }
+      const result = await signWorkflowTransaction(freshStep.unsignedXdr, { networkPassphrase: "Test SDF Network ; September 2015", address: address ?? undefined });
+      if (signAttemptRef.current !== attempt || useUserStore.getState().address !== address) return;
       if (result.error || !result.signedTxXdr || result.signerAddress && result.signerAddress !== address) {
         toast.error("The approved transaction could not be signed by the connected wallet.");
         if (auto) releaseDispatch(address, signKey);
         return;
       }
-      await confirmWorkflow(result.signedTxXdr);
+      await confirmWorkflow(result.signedTxXdr, view.id);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "The transaction could not be signed.");
       if (auto) releaseDispatch(address, signKey);
     } finally {
-      setSigningJournal(false);
+      if (signAttemptRef.current === attempt) { signAttemptRef.current = null; setSigningJournal(false); }
     }
-  }, [workflow.view, workflow.loading, signingJournal, address, confirmWorkflow]);
+  }, [workflow.view, workflow.loading, prepareWorkflowSign, signingJournal, address, confirmWorkflow]);
 
   /**
    * Auto-approve ON means the journal should not wait for a second click.
@@ -3078,10 +3132,12 @@ export function CopilotWorkspace() {
   useEffect(() => {
     if (!sessionSigning) return;
     const view = workflow.view;
-    if (!view || workflow.loading || signingJournal || workflow.restored) return;
-    if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr)) return;
+    // A failed refresh sets `error`. Without this guard the effect re-fires at once and loops;
+    // a manual click still retries, because prepareSign clears the error.
+    if (!view || workflow.loading || workflow.error || signingJournal || workflow.restored) return;
+    if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr && !step.signRefusal)) return;
     void signJournalXdr(true);
-  }, [sessionSigning, workflow.view, workflow.loading, workflow.restored, signingJournal, signJournalXdr]);
+  }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.restored, signingJournal, signJournalXdr]);
 
   const run = useCallback(async (text: string) => {
     if (signing) return;
@@ -3184,36 +3240,39 @@ export function CopilotWorkspace() {
         signReadSeq.current += 1;
         setAutoApprove(address, false);
         setSignServiceState({ address, status: "unknown", reason: null });
+        if (data.kind === "error" || data.data?.error) {
+          toast.error("The signer did not confirm revocation. Its session may still be active; retry turning it off.");
+        } else {
+          toast.success("Auto-approve off");
+        }
         return;
       }
       if (data.kind === "needs_auto_sign") return;
 
-      const facts = (data.data ?? {}) as {
-        default_cap_usd?: number;
-        error?: string;
-        detail?: { detail?: string };
-      };
-      const mcpEnabled = data.kind !== "error" && !facts.error;
+      const facts = data.data ?? {};
+      const accepted = acceptedTestnetBudget(facts);
+      const mcpEnabled = data.kind !== "error" && !facts.error && accepted != null;
       const reason =
-        facts.detail?.detail ||
-        facts.error ||
+        (typeof facts.error === "string" ? facts.error : null) ||
         (data.kind === "error" ? data.message : null) ||
-        null;
+        "The signer did not confirm an enforced testnet amount limits.";
       signReadSeq.current += 1;
       setSignServiceState({
         address,
         ...(mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason }),
       });
 
-      const fromMcp = Number(facts.default_cap_usd);
-      if (Number.isFinite(fromMcp) && fromMcp > 0) setMcpDefaultCap(fromMcp);
-      const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : mcpDefaultCap ?? 1000;
-      const txCap = action === "custom" ? Number(customTx) || mcpDef : mcpDef;
-      const dayCap = action === "custom" ? Number(customDay || customTx) || txCap : mcpDef;
+      setMcpDefaultCaps(defaultTestnetBudget(facts));
+      if (!accepted) {
+        setAutoApprove(address, false);
+        toast.error(reason);
+        return;
+      }
+      const { tx: txCap, day: dayCap } = accepted;
       try {
         localStorage.setItem(
           AUTO_CAPS_KEY,
-          JSON.stringify({ max_per_tx_usd: txCap, max_per_day_usd: dayCap }),
+          JSON.stringify({ max_per_tx_tokens: txCap, max_per_day_tokens: dayCap }),
         );
       } catch {
         /* ignore */
@@ -3232,9 +3291,9 @@ export function CopilotWorkspace() {
         return;
       }
       setAutoApprove(address, true);
-      toast.success(`Auto-approve on · $${txCap}/tx · $${dayCap}/day`);
+      toast.success(`Auto-approve on · ${txCap} units/tx · ${dayCap} units/day`);
     },
-    [address, customTx, customDay, sessionSigningAvailable, mcpDefaultCap],
+    [address, sessionSigningAvailable],
   );
 
   /**
@@ -3298,8 +3357,8 @@ export function CopilotWorkspace() {
             request_id: wb.request_id,
             wallet_address: authorized.address,
             ...(wb.retry_action ? { retry_action: wb.retry_action } : {}),
-            ...(wb.max_per_tx_usd != null ? { max_per_tx_usd: wb.max_per_tx_usd } : {}),
-            ...(wb.max_per_day_usd != null ? { max_per_day_usd: wb.max_per_day_usd } : {}),
+            ...(wb.max_per_tx_tokens != null ? { max_per_tx_tokens: wb.max_per_tx_tokens } : {}),
+            ...(wb.max_per_day_tokens != null ? { max_per_day_tokens: wb.max_per_day_tokens } : {}),
           },
         },
         "Authorize Vanna as an additional signer",
@@ -3326,7 +3385,7 @@ export function CopilotWorkspace() {
           : action === "use_defaults"
             ? "Enable auto-sign (MCP defaults)"
             : action === "custom"
-              ? `Enable auto-sign ($${customTx}/$${customDay || customTx})`
+              ? `Enable auto-sign (${customTx}/${customDay || customTx} units)`
               : "Enable auto-sign";
       if (!opts?.quiet) setSubmitted(submitted ?? label);
       const data = await postCopilot(
@@ -3342,7 +3401,7 @@ export function CopilotWorkspace() {
           auto_sign: {
             action,
             ...(action === "custom"
-              ? { max_per_tx_usd: customTx, max_per_day_usd: customDay || customTx }
+              ? { max_per_tx_tokens: customTx, max_per_day_tokens: customDay || customTx }
               : {}),
           },
           pending_write: response?.auto_sign?.pending_write
@@ -3426,7 +3485,6 @@ export function CopilotWorkspace() {
       void enableAutoSign("disable", { quiet: true }).finally(() => {
         setAutoApprovePending(false);
       });
-      toast.success("Auto-approve off");
       return;
     }
     if (!sessionSigningAvailable) {
@@ -3436,15 +3494,18 @@ export function CopilotWorkspace() {
     if (capsEnforced) {
       setAutoApprove(address, true);
       toast.success(
-        savedCaps ? `Auto-approve on · $${savedCaps.tx}/tx · $${savedCaps.day}/day` : "Auto-approve on",
+        savedCaps ? `Auto-approve on · ${savedCaps.tx} units/tx · ${savedCaps.day} units/day` : "Auto-approve on",
       );
       return;
     }
-    if (railCapsMode === "custom" && Number(customTx) <= 0) {
-      toast.error("Enter a per-tx cap above 0.");
-      return;
+    if (railCapsMode === "custom") {
+      const tx = Number(customTx);
+      const day = customDay.trim() ? Number(customDay) : tx;
+      if (!customTx.trim() || !Number.isFinite(tx) || !Number.isFinite(day) || tx <= 0 || day < tx) {
+        toast.error("Enter a positive per-transaction limit and a daily limit at least as large.");
+        return;
+      }
     }
-    setAutoApprove(address, true);
     setAutoApprovePending(true);
     void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults", { quiet: true }).finally(() => {
       setAutoApprovePending(false);
@@ -3461,6 +3522,7 @@ export function CopilotWorkspace() {
     savedCaps,
     railCapsMode,
     customTx,
+    customDay,
     enableAutoSign,
   ]);
 
@@ -3482,8 +3544,8 @@ export function CopilotWorkspace() {
             action: "bind_status",
             request_id: wb.request_id,
             ...(wb.retry_action ? { retry_action: wb.retry_action } : {}),
-            ...(wb.max_per_tx_usd != null ? { max_per_tx_usd: wb.max_per_tx_usd } : {}),
-            ...(wb.max_per_day_usd != null ? { max_per_day_usd: wb.max_per_day_usd } : {}),
+            ...(wb.max_per_tx_tokens != null ? { max_per_tx_tokens: wb.max_per_tx_tokens } : {}),
+            ...(wb.max_per_day_tokens != null ? { max_per_day_tokens: wb.max_per_day_tokens } : {}),
           },
         },
         "Check signing authority",
@@ -4456,6 +4518,8 @@ export function CopilotWorkspace() {
         autoSubmitBlocked,
         hasSignableXdr: isSignableXdr(response.unsigned_xdr),
         allowSessionSign: response.preview?.allow_session_sign,
+        walletSigningRequired: walletKind === "freighter",
+        allowWalletDispatch: response.preview?.allow_wallet_dispatch,
       })
     ) {
       return;
@@ -4481,6 +4545,7 @@ export function CopilotWorkspace() {
   }, [
     response,
     sessionAutoSignKey,
+    walletKind,
     sessionSigning,
     signing,
     signWithWallet,
@@ -5514,6 +5579,8 @@ export function CopilotWorkspace() {
     autoSubmitBlocked,
     hasSignableXdr: isSignableXdr(response?.unsigned_xdr),
     allowSessionSign: response?.preview?.allow_session_sign,
+    walletSigningRequired: walletKind === "freighter",
+    allowWalletDispatch: response?.preview?.allow_wallet_dispatch,
   });
   const txHash =
     response?.execution?.tx_hash ??
@@ -5561,7 +5628,8 @@ export function CopilotWorkspace() {
     ? investigation.result.questionnaire : null;
   /** The run finished on an earlier reply: it is history, drawn by the thread on its own turn. */
   const runIsPast = runIsOnEarlierTurn(investigation.turns, workflow.view ? { id: workflow.view.id, finished: finishedWorkflow(workflow.view) } : null);
-  const cardDrawsRun = !isStaleInvestigation && !!workflow.view && !runIsPast &&
+  const completionSummaryReady = investigation.turns.some((turn) => turn.executionReceipt?.workflowId === workflow.view?.id && completionMatches(turn.executionReceipt, turn.completion));
+  const cardDrawsRun = !completionSummaryReady && !isStaleInvestigation && !!workflow.view && !runIsPast &&
     workflow.view.status !== "proposed" && workflow.view.status !== "validating" &&
     investigation.turns[investigation.turns.length - 1]?.role !== "user";
   /**
@@ -5571,13 +5639,40 @@ export function CopilotWorkspace() {
    * themselves (localExecutionAnswer), not from any wording in the old reply.
    */
   const completedTextRef = useRef<string | null>(null);
+  const completionContextRef = useRef<string | null>(null);
+  completionContextRef.current = `${address}:${investigation.conversationId}:${investigation.turns.length}:${workflow.view?.id}`;
   const updateLastAssistantText = investigation.updateLastAssistantText;
+  const updateWorkflowCompletion = investigation.updateWorkflowCompletion;
   useEffect(() => {
     const view = workflow.view;
-    if (!view || !cardDrawsRun) return;
+    if (!view || completionSummaryReady) return;
+    const conversationId = investigation.conversationId;
+    const receipt = investigation.turns.find((turn) => turn.executionReceipt?.workflowId === view.id)?.executionReceipt;
+    if (view.status === "completed") {
+      if (!conversationId || !receipt || !settledTransactions(receipt)) return;
+      const key = `${address}:${conversationId}:${view.id}:completed`;
+      if (completedTextRef.current === key) return;
+      completedTextRef.current = key;
+      const controller = new AbortController();
+      const owner = address;
+      // Presentation retries cannot resubmit or sign transactions. The server persists first.
+      void (async () => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const composed = await fetchComposedCompletion(view.id, null, controller.signal, conversationId);
+          if (composed?.completion && composed.receipt) {
+            updateWorkflowCompletion(composed as WorkflowCompletionReply, conversationId, owner);
+            return;
+          }
+          if (controller.signal.aborted) return;
+          if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+      })();
+      // Wallet/conversation isolation is checked by the hook at delivery. Poll renders do not abort composition.
+      return;
+    }
+    if (!cardDrawsRun) return;
     const settledCount = view.steps.filter((step) => step.status === "settled").length;
-    const finished = view.status === "completed" ||
-      ((view.status === "blocked" || view.status === "cancelled") && settledCount > 0);
+    const finished = (view.status === "blocked" || view.status === "cancelled") && settledCount > 0;
     if (!finished) return;
     const key = `${view.id}:${view.status}:${settledCount}`;
     if (completedTextRef.current === key) return;
@@ -5587,18 +5682,20 @@ export function CopilotWorkspace() {
     const reply = completionReply(view, {
       title: candidate?.label ?? null,
       comparisons: result?.rateComparisons ?? [],
-      healthFactorAfter: candidate?.finalHealthFactor ?? null,
+      // A planned health factor is a projection, never the observed post-run ratio.
+      healthFactorAfter: null,
       repaysAllDebt: !!candidate?.repaysAllDebt,
     });
     if (!reply) return;
     void updateLastAssistantText(reply);
+    const context = completionContextRef.current;
     // Then the same reply in the model's words, around the run's own server-side facts; the
     // "Done." above stays if that does not arrive, and a newer finish supersedes it (the key).
     // Not aborted on cleanup: this effect re-runs on every poll, which would cancel it.
     void fetchComposedCompletion(view.id, result?.continuation ?? null, new AbortController().signal).then((composed) => {
-      if (composed && completedTextRef.current === key) void updateLastAssistantText(composed.message, composed.replyBlocks);
+      if (composed && completedTextRef.current === key && completionContextRef.current === context) void updateLastAssistantText(composed.message, composed.replyBlocks);
     });
-  }, [workflow.view, cardDrawsRun, updateLastAssistantText, investigation.result]);
+  }, [workflow.view, cardDrawsRun, completionSummaryReady, investigation.turns, investigation.conversationId, address, updateWorkflowCompletion, updateLastAssistantText, investigation.result]);
   const liveWriteUi =
     multiLeg ||
     phase === "plan" ||
@@ -5655,8 +5752,9 @@ export function CopilotWorkspace() {
               capsMode: railCapsMode,
               customTx,
               customDay,
-              defaultTx: mcpDefaultCap ?? 1000,
-              defaultDay: mcpDefaultCap ?? 1000,
+              walletSigningRequired: walletKind === "freighter",
+              defaultTx: mcpDefaultCaps?.tx ?? null,
+              defaultDay: mcpDefaultCaps?.day ?? null,
               onToggle: handleAutoApproveToggle,
               onCapsMode: setRailCapsMode,
               onCustomTx: setCustomTx,
@@ -5669,6 +5767,9 @@ export function CopilotWorkspace() {
             hasWallet={Boolean(address)}
             healthFactor={liveHf}
             positions={railPositions}
+            accountLoading={Boolean(address) && !snapshot && snapshotLoading}
+            accountError={Boolean(address) && Boolean(snapshotError)}
+            onRetryAccount={() => { void refreshSnapshot(); }}
             conversations={investigation.conversations}
             activeId={investigation.conversationId}
             onOpen={openConversation}
@@ -5686,8 +5787,9 @@ export function CopilotWorkspace() {
               capsMode: railCapsMode,
               customTx,
               customDay,
-              defaultTx: mcpDefaultCap ?? 1000,
-              defaultDay: mcpDefaultCap ?? 1000,
+              walletSigningRequired: walletKind === "freighter",
+              defaultTx: mcpDefaultCaps?.tx ?? null,
+              defaultDay: mcpDefaultCaps?.day ?? null,
               onToggle: handleAutoApproveToggle,
               onCapsMode: setRailCapsMode,
               onCustomTx: setCustomTx,
@@ -5707,7 +5809,7 @@ export function CopilotWorkspace() {
             {/* Thread content is a conversation, not one giant console card. Individual
                 decision and execution components keep their own boundaries. */}
             {(investigation.turns.length > 0 || pendingUser || investigation.loading || investigation.result || investigation.error || phase !== "idle") && (
-            <section aria-label="Copilot conversation" className="min-w-0">
+            <section aria-label="Copilot conversation" className="min-w-0 flex flex-col" style={{ gap: REPLY_CARD_GAP_PX }}>
             <ChatTurns
               turns={investigation.turns}
               pendingUser={pendingUser}
@@ -6219,12 +6321,9 @@ export function CopilotWorkspace() {
                           >
                             {(() => {
                               try {
-                                const raw = response?.auto_sign?.raw as
-                                  | { default_cap_usd?: number }
-                                  | null
-                                  | undefined;
-                                const d = Number(raw?.default_cap_usd);
-                                if (Number.isFinite(d) && d > 0) return `Defaults ($${d} / $${d})`;
+                                const raw = response?.auto_sign?.raw as Record<string, unknown> | null;
+                                const defaults = raw ? defaultTestnetBudget(raw) : null;
+                                if (defaults) return `Defaults (${defaults.tx} units / ${defaults.day} units)`;
                               } catch {
                                 /* ignore */
                               }
@@ -6244,7 +6343,7 @@ export function CopilotWorkspace() {
                         {showCustom && (
                           <div className="mt-4 grid gap-3 sm:grid-cols-2">
                             <label className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">
-                              max per tx USD
+                              max per tx token units
                               <input
                                 value={customTx}
                                 onChange={(e) => setCustomTx(e.target.value)}
@@ -6252,7 +6351,7 @@ export function CopilotWorkspace() {
                               />
                             </label>
                             <label className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">
-                              max per day USD
+                              max per day token units
                               <input
                                 value={customDay}
                                 onChange={(e) => setCustomDay(e.target.value)}

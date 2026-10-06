@@ -165,8 +165,8 @@ export interface ChatRequest {
        * and then applies the enable. No user-visible detour.
        */
       | "bind_register";
-    max_per_tx_usd?: number | string;
-    max_per_day_usd?: number | string;
+    max_per_tx_tokens?: number | string;
+    max_per_day_tokens?: number | string;
     /** `bind_status` / `bind_register` — the connect request to complete or poll. */
     request_id?: string;
     /** `bind_register` only — the G-address the browser authorized the quorum on. */
@@ -382,6 +382,8 @@ export interface Preview {
   simulation?: Simulation | null;
   /** False = in-app auto-approve must not silent-sign (Sign Service spend cap). */
   allow_session_sign?: boolean;
+  /** Freighter may open a signature request automatically; it still needs approval. */
+  allow_wallet_dispatch?: boolean;
   /** MCP execution path metadata */
   mcp?: {
     tool?: string;
@@ -455,8 +457,8 @@ export interface WalletBindPrompt {
   /** Re-run this auto-sign action once the binding exists (the user's original ask). */
   retry_action?: "use_defaults" | "custom" | "disable" | null;
   /** Caps to replay with `retry_action = "custom"`. */
-  max_per_tx_usd?: number | string | null;
-  max_per_day_usd?: number | string | null;
+  max_per_tx_tokens?: number | string | null;
+  max_per_day_tokens?: number | string | null;
 }
 
 export interface ClarifyOption {
@@ -712,8 +714,8 @@ export type RoutedIntent =
   | {
       kind: "auto_sign";
       action: "start" | "use_defaults" | "custom" | "disable";
-      max_per_tx_usd?: number | string;
-      max_per_day_usd?: number | string;
+      max_per_tx_tokens?: number | string;
+      max_per_day_tokens?: number | string;
       template_id: string;
     }
   | {

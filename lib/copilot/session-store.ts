@@ -30,6 +30,7 @@ import { durableStore, HASH_ID, type RecordStore } from "./workflow/store";
 import type { ThreadTurn } from "./investigation/thread";
 import type { ResearchView } from "./investigation/view";
 import type { ExecutionReceiptSnapshot } from "./execution-receipt";
+import { applyWorkflowCompletion, completionMatches, type WorkflowCompletionReply } from "./workflow-completion";
 
 /** How many conversations a subject keeps, newest first, and how many turns each keeps. */
 export const CONVERSATION_LIMIT = 30;
@@ -320,7 +321,7 @@ function sameReceipt(a: ExecutionReceiptSnapshot, b: ExecutionReceiptSnapshot): 
   if (a.workflowId !== b.workflowId || a.status !== b.status || a.network !== b.network || a.steps.length !== b.steps.length) return false;
   return a.steps.every((step, index) => {
     const other = b.steps[index];
-    return step.operation === other.operation && step.asset === other.asset && step.amount === other.amount
+    return step.operation === other.operation && (step.label ?? null) === (other.label ?? null) && step.asset === other.asset && step.amount === other.amount
       && step.status === other.status && (step.txHash ?? null) === (other.txHash ?? null)
       && (step.settledLedger ?? null) === (other.settledLedger ?? null);
   });
@@ -354,6 +355,7 @@ export async function updateSessionExecutionReceipt(input: {
     if (index == null) return false;
     const current = stored.value.turns[index].executionReceipt;
     if (current && sameReceipt(current, input.receipt)) return true;
+    if (completionMatches(current, stored.value.turns[index].completion)) return false;
     const turns = [...stored.value.turns];
     turns[index] = { ...turns[index], executionReceipt: input.receipt };
     const updated: CopilotConversation = { ...stored.value, turns, updatedAt: Date.now() };
@@ -376,6 +378,26 @@ export async function updateSessionExecutionReceipt(input: {
 /** Short alias for callers that think of this operation as an upsert. */
 export const upsertSessionExecutionReceipt = updateSessionExecutionReceipt;
 
+/** Only the server completion route calls this; browser-provided prose is not trusted. */
+export async function updateSessionWorkflowCompletion(input: {
+  subject: string; conversationId: string; reply: WorkflowCompletionReply;
+}): Promise<boolean> {
+  if (!usable(input.subject) || !input.conversationId) return false;
+  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
+    const stored = await stores().conversation.read(input.conversationId);
+    if (!stored || stored.value.subject !== input.subject || stored.value.deleted) return false;
+    const turns = applyWorkflowCompletion(stored.value.turns, input.reply);
+    if (!turns) return false;
+    const updated = { ...stored.value, turns, updatedAt: Date.now() };
+    if (!await stores().conversation.write(input.conversationId, stored.version, updated)) continue;
+    await updateIndex(input.subject, (index) => index ? { ...index,
+      conversations: index.conversations.map((entry) => entry.id === input.conversationId ? { ...entry, updatedAt: updated.updatedAt } : entry),
+      updatedAt: updated.updatedAt } : null);
+    return true;
+  }
+  return false;
+}
+
 /** Update the latest assistant turn's text in a conversation. */
 export async function updateSessionAssistantText(input: {
   subject: string;
@@ -389,6 +411,8 @@ export async function updateSessionAssistantText(input: {
     const reversed = [...stored.value.turns].map((turn, i) => ({ turn, i })).reverse();
     const index = reversed.find(({ turn }) => turn.role === "assistant")?.i;
     if (index == null) return false;
+    // A legacy, late text update must not destroy a server-owned settled summary.
+    if (completionMatches(stored.value.turns[index].executionReceipt, stored.value.turns[index].completion)) return true;
     const turns = [...stored.value.turns];
     // New text from the browser replaces the reply; the server's composed blocks for the old
     // text would draw over it, so they are dropped (browser-sent blocks are never stored).

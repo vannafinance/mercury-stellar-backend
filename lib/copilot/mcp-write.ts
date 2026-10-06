@@ -13,7 +13,6 @@ import { cleanExecutionCopy, fmtLpAmt, humanizeStroopCounts } from "./execution-
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
 import { allAssets, earnPoolSymbols, lpPairs, resolveAssetDef } from "./registry/assets";
-import { autoSignAllowed } from "./guardrail-policy";
 
 /**
  * Earn pool symbols, from the registry rather than from a doc.
@@ -518,8 +517,8 @@ export function mapOpToMcpStep(
     blend_pool_address?: string | null;
     /** enable_auto_sign only — Sign Service policy caps. */
     use_default_caps?: boolean | null;
-    max_per_tx_usd?: number | string | null;
-    max_per_day_usd?: number | string | null;
+    max_per_tx_tokens?: number | string | null;
+    max_per_day_tokens?: number | string | null;
   },
   ctx: AccountCtx,
 ): { step?: WriteStep; blocker?: string } {
@@ -1102,8 +1101,8 @@ export function mapOpToMcpStep(
             wallet_address: trader,
             user_id: trader,
             ...(params.use_default_caps != null ? { use_default_caps: params.use_default_caps } : {}),
-            ...(params.max_per_tx_usd != null ? { max_per_tx_usd: params.max_per_tx_usd } : {}),
-            ...(params.max_per_day_usd != null ? { max_per_day_usd: params.max_per_day_usd } : {}),
+            ...(params.max_per_tx_tokens != null ? { max_per_tx_tokens: params.max_per_tx_tokens } : {}),
+            ...(params.max_per_day_tokens != null ? { max_per_day_tokens: params.max_per_day_tokens } : {}),
           },
           label: "Enable auto-sign",
         },
@@ -1433,11 +1432,7 @@ function readyToSignMessage(_label: string): string {
   return "Built and ready — approve to sign it with your wallet.";
 }
 
-function writeOpForTool(tool: string): string {
-  const name = tool.replace(/^vanna_/, "");
-  if (name === "settle_account") return "settle";
-  return name;
-}
+
 
 export async function executeMcpWrite(
   mcp: MCPClient,
@@ -1579,7 +1574,7 @@ export async function executeMcpWrite(
   const policyReason = String(build.reason ?? "").toLowerCase();
   const isGenuinePolicyRejection =
     String(build.auto_sign ?? "").toLowerCase() === "rejected" &&
-    /^(over_per_tx_cap|over_daily_cap|contract_not_allowlisted|function_not_allowlisted|source_mismatch|op_source_mismatch|amount_undecodable|session_expired|session_not_active|unauthorized)$/.test(
+    /^(over_per_tx_cap|over_daily_cap|contract_not_allowlisted|function_not_allowlisted|source_mismatch|op_source_mismatch|amount_undecodable|usd_valuation_unavailable|usd_budget_missing|transaction_already_reserved|session_expired|session_not_active|unauthorized)$/.test(
       policyReason,
     );
   if (isGenuinePolicyRejection) {
@@ -1589,6 +1584,16 @@ export async function executeMcpWrite(
       asset || null,
     );
     const spendCap = policyReason === "over_daily_cap" || policyReason === "over_per_tx_cap";
+    if (xdr && (policyReason === "usd_valuation_unavailable" || policyReason === "usd_budget_missing")) {
+      return {
+        tool: step.tool, label: step.label, build, unsigned_xdr: xdr,
+        status: "needs_wallet_sign", forbid_session_sign: true,
+        message: policyReason === "usd_budget_missing"
+          ? "A dollar budget is required for auto-approve. Choose one, or review and sign this transaction manually."
+          : "Complete live dollar pricing is unavailable for this transaction. Review and sign manually, or retry once pricing is available.",
+        mcp_trace: { ...baseTrace, auto_sign_error: policyReason },
+      };
+    }
     if (spendCap && xdr) {
       return {
         tool: step.tool,
@@ -1630,6 +1635,7 @@ export async function executeMcpWrite(
       build,
       unsigned_xdr: xdr,
       status: "needs_wallet_sign",
+    forbid_session_sign: true,
       message: readyToSignMessage(step.label),
       mcp_trace: { ...baseTrace, auto_sign_error: errCode },
     };
@@ -1732,6 +1738,7 @@ export async function executeMcpWrite(
         build,
         unsigned_xdr: xdr,
         status: "needs_wallet_sign",
+    forbid_session_sign: true,
         // Kept to one line. The M2M-vs-user-assertion reason is our infrastructure
         // detail, not something the user can act on — and when session signing is on
         // the UI submits this without a click, so a paragraph about pressing approve
@@ -1757,6 +1764,7 @@ export async function executeMcpWrite(
         build,
         unsigned_xdr: xdr,
         status: "needs_wallet_sign",
+    forbid_session_sign: true,
         message: readyToSignMessage(step.label),
         mcp_trace: { ...baseTrace, auto_sign_error: asErr || as || null },
       };
@@ -1768,6 +1776,7 @@ export async function executeMcpWrite(
       build,
       unsigned_xdr: xdr,
       status: "needs_wallet_sign",
+    forbid_session_sign: true,
       message: readyToSignMessage(step.label),
       mcp_trace: { ...baseTrace, auto_sign_error: asErr || as || null },
     };
@@ -1785,7 +1794,7 @@ export async function executeMcpWrite(
       build,
       unsigned_xdr: xdr,
       status: "needs_wallet_sign",
-      forbid_session_sign: true,
+    forbid_session_sign: true,
       message:
         warning ||
         "This fill is far below oracle fair value. Auto-sign is withheld until you confirm it.",
@@ -1795,17 +1804,16 @@ export async function executeMcpWrite(
 
   // Never call vanna_sign_and_submit from the brain. If a Sign Service session
   // is active, MCP write tools submit themselves (`auto_sign: "on"`) and we
-  // already returned above. If not, unsigned XDR is the contract: in-app
-  // auto-approve is client session-signing of this XDR, not a server submit.
-  const humanSign = !autoSignAllowed(writeOpForTool(step.tool));
+  // already returned above. An unsigned fallback requires manual approval;
+  // the client must not silently bypass the server budget.
   return {
     tool: step.tool,
     label: step.label,
     build,
     unsigned_xdr: xdr,
     status: "needs_wallet_sign",
+    forbid_session_sign: true,
     message: readyToSignMessage(step.label),
-    ...(humanSign ? { forbid_session_sign: true } : {}),
     mcp_trace: { ...baseTrace, auto_sign: "disabled" },
   };
 }
@@ -1813,9 +1821,8 @@ export async function executeMcpWrite(
 /**
  * Enable Sign Service auto-sign.
  *
- * MCP `use_default_caps=true` must NOT also send max_per_tx_usd — the MCP server
- * then omits stroops so Sign Service applies its env defaults
- * (`DEFAULT_CAP_PER_TX` / `DEFAULT_CAP_PER_DAY`, testnet stand-in ≈ $1000 each).
+ * MCP `use_default_caps=true` must NOT also send max_per_tx_tokens — the MCP server
+ * then applies `DEFAULT_CAP_USD_PER_TX` and `DEFAULT_CAP_USD_PER_DAY`.
  * Custom path sends only USD fields; if only per-tx is set, MCP mirrors it to day.
  */
 export async function enableAutoSign(
@@ -1824,8 +1831,8 @@ export async function enableAutoSign(
     wallet: string;
     userId: string;
     useDefaultCaps?: boolean;
-    maxPerTxUsd?: number | string;
-    maxPerDayUsd?: number | string;
+    maxPerTxTokens?: number | string;
+    maxPerDayTokens?: number | string;
   },
 ): Promise<Record<string, unknown>> {
   const args: Record<string, unknown> = {
@@ -1835,18 +1842,8 @@ export async function enableAutoSign(
   if (opts.useDefaultCaps) {
     args.use_default_caps = true;
   } else {
-    if (opts.maxPerTxUsd != null) args.max_per_tx_usd = opts.maxPerTxUsd;
-    if (opts.maxPerDayUsd != null) args.max_per_day_usd = opts.maxPerDayUsd;
+    if (opts.maxPerTxTokens != null) args.max_per_tx_tokens = opts.maxPerTxTokens;
+    if (opts.maxPerDayTokens != null) args.max_per_day_tokens = opts.maxPerDayTokens;
   }
   return mcp.call("vanna_enable_auto_sign", args, opts.userId);
-}
-
-/** Read default_cap_usd from MCP needs_confirmation / enabled payloads (no hardcode). */
-export function defaultCapUsdFromMcp(data: Record<string, unknown> | null | undefined): number {
-  const n = Number(data?.default_cap_usd);
-  if (Number.isFinite(n) && n > 0) return n;
-  // Fallback only when MCP did not return the field (older deploy).
-  const envN = Number(process.env.DEFAULT_AUTO_SIGN_CAP_USD || process.env.COPILOT_DEFAULT_AUTO_SIGN_CAP_USD);
-  if (Number.isFinite(envN) && envN > 0) return envN;
-  return 1000;
 }

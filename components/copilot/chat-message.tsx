@@ -5,6 +5,7 @@ import { CircleAlert } from "lucide-react";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import type { ReplyBlock, ReplySegment } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { completionMatches, settledTransactions, transactionPurpose } from "@/lib/copilot/workflow-completion";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 
 /**
@@ -136,6 +137,7 @@ export function chatProseFromStored(text: string): string {
  */
 export type ChatBlock =
   | { kind: "p"; text: string }
+  | { kind: "bullets"; items: string[] }
   | { kind: "facts"; rows: Array<{ label: string; value: string }> }
   | { kind: "table"; rows: string[][] };
 
@@ -168,6 +170,14 @@ export function chatBlocksFromStored(text: string): ChatBlock[] {
     const line = raw.trim();
     if (!line) {
       flushAll();
+      continue;
+    }
+    // Legacy serialized list syntax; no prompt or asset wording is interpreted.
+    if (line.startsWith("- ")) {
+      flushAll();
+      const previous = blocks[blocks.length - 1];
+      if (previous?.kind === "bullets") previous.items.push(line.slice(2));
+      else blocks.push({ kind: "bullets", items: [line.slice(2)] });
       continue;
     }
     const bullet = /^•\s*([^:]+):\s*(.+)$/.exec(line);
@@ -281,18 +291,35 @@ export function ReplyBlocksBody({ blocks }: { blocks: readonly ReplyBlock[] }) {
         const gap = lead ? 0 : "10px 0 0";
         if (block.type === "heading") {
           return (
-            <p key={i} style={{ margin: lead ? 0 : "16px 0 0", fontSize: 14, lineHeight: "22px", fontWeight: 600, color: "var(--g900)" }}>
+            <h3 key={i} style={{ margin: lead ? 0 : "16px 0 0", fontSize: 16, lineHeight: "24px", fontWeight: 600, color: "var(--g900)" }}>
               <Segments segments={block.segments} />
-            </p>
+            </h3>
           );
         }
-        if (block.type === "bullets") {
+        if (block.type === "bullets" || block.type === "steps") {
+          const List = block.type === "steps" ? "ol" : "ul";
           return (
-            <ul key={i} style={{ margin: gap, paddingLeft: 20, listStyle: "disc", fontSize: 16, lineHeight: "26px", color: "var(--g800)" }}>
+            <List key={i} style={{ margin: gap, paddingLeft: 24, listStyle: block.type === "steps" ? "decimal" : "disc", fontSize: 16, lineHeight: "26px", color: "var(--g800)" }}>
               {block.items.map((item, j) => (
                 <li key={j} style={{ marginTop: j === 0 ? 0 : 2 }}><Segments segments={item} /></li>
               ))}
-            </ul>
+            </List>
+          );
+        }
+        if (block.type === "table") {
+          return (
+            <div key={i} style={{ margin: gap, maxWidth: "100%", overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, lineHeight: "22px", color: "var(--g800)" }}>
+                <thead><tr>{block.columns.map((column, j) => (
+                  <th key={j} scope="col" style={{ padding: "8px 12px", textAlign: "left", fontWeight: 600, borderBottom: "1px solid var(--g200)" }}><Segments segments={column} /></th>
+                ))}</tr></thead>
+                <tbody>{block.rows.map((row, j) => (
+                  <tr key={j}>{row.map((cell, k) => (
+                    <td key={k} style={{ padding: "8px 12px", verticalAlign: "top", borderBottom: "1px solid var(--g200)" }}><Segments segments={cell} /></td>
+                  ))}</tr>
+                ))}</tbody>
+              </table>
+            </div>
           );
         }
         return (
@@ -327,15 +354,19 @@ export function AssistantBody({ text, color = null }: { text: string; color?: st
             key={i}
             style={{
               margin: i === 0 ? 0 : "10px 0 0",
-              fontSize: i === 0 ? 16 : 14,
-              lineHeight: i === 0 ? "26px" : "22px",
-              color: color ?? (i === 0 ? "var(--g800)" : "var(--g700)"),
+              fontSize: 16,
+              lineHeight: "26px",
+              color: color ?? "var(--g800)",
               textWrap: "pretty",
               whiteSpace: "pre-wrap",
             }}
           >
             {b.text}
           </p>
+        ) : b.kind === "bullets" ? (
+          <ul key={i} style={{ margin: "10px 0 0", paddingLeft: 24, listStyle: "disc", fontSize: 16, lineHeight: "26px", color: color ?? "var(--g800)" }}>
+            {b.items.map((item, index) => <li key={index}>{item}</li>)}
+          </ul>
         ) : b.kind === "facts" ? (
           <FactRows key={i} rows={b.rows} />
         ) : (
@@ -382,6 +413,7 @@ function AssistantTurn({
   text,
   blocks,
   receipt,
+  completion,
   note,
   tone = "default",
   sessionSigning,
@@ -389,6 +421,7 @@ function AssistantTurn({
   text: string;
   blocks?: ReplyBlock[];
   receipt?: ThreadTurn["executionReceipt"];
+  completion?: ThreadTurn["completion"];
   note?: string | null;
   tone?: "default" | "error";
   sessionSigning?: boolean;
@@ -421,7 +454,18 @@ function AssistantTurn({
       />
       <div className="flex flex-col min-w-0 w-full" style={{ gap: REPLY_CARD_GAP_PX }}>
         <AssistantMessage note={note} tone={tone} blocks={blocks}>{text}</AssistantMessage>
-        {receipt ? (
+        {receipt && completionMatches(receipt, completion) ? (
+          <ul className="list-disc pl-5 space-y-2 text-[14px] leading-6 text-vgray-700" aria-label="Settled transactions">
+            {settledTransactions(receipt)!.map((transaction) => (
+              <li key={transaction.hash}>
+                <span>{transactionPurpose(transaction.steps)}</span>
+                <span> · </span>
+                <a href={transaction.url} target="_blank" rel="noopener noreferrer" className="underline break-all">{transaction.hash}</a>
+                <span> · Ledger {transaction.ledger.toLocaleString()}</span>
+              </li>
+            ))}
+          </ul>
+        ) : receipt ? (
           <div className="w-full">
             <ExecutionStepper
               steps={receiptStepperSteps(receipt)}
@@ -471,6 +515,7 @@ export function ChatTurns({
               <AssistantTurn
                 text={group.assistant.text}
                 blocks={group.assistant.blocks}
+                completion={group.assistant.completion}
                 receipt={hideReceiptFor && group.assistant.executionReceipt?.workflowId === hideReceiptFor
                   ? undefined
                   : group.assistant.executionReceipt}

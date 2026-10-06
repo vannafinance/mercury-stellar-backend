@@ -8,6 +8,7 @@ import { consumeResearchStream } from "@/lib/copilot/investigation/stream";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { QuestionnaireAnswers, ReplyBlock, ResearchView } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { applyWorkflowCompletion, completionMatches, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import {
   type ConversationSummary,
   type ThreadTurn,
@@ -110,6 +111,8 @@ export function useInvestigation(wallet: string | null) {
   });
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const abort = useRef<AbortController | null>(null);
+  /** The controller of the latest open-conversation request; lets `open` tell it from a reply run. */
+  const openRequest = useRef<AbortController | null>(null);
   const sequence = useRef(0);
   const continuation = useRef<string | null>(null);
   const conversationId = useRef<string | null>(null);
@@ -410,7 +413,17 @@ export function useInvestigation(wallet: string | null) {
   /** Open a conversation from the list. */
   const open = useCallback(async (id: string) => {
     const owner = activeWallet.current;
-    if (!owner || id === conversationId.current) return;
+    if (!owner) return;
+    if (id === conversationId.current) {
+      // Re-selecting the open chat supersedes a slower open request still in flight. It must
+      // not touch a running reply: aborting that would skip `run`'s own settle and leave
+      // `loading` true with nothing to clear it.
+      if (openRequest.current && abort.current === openRequest.current) {
+        abort.current.abort("kept current chat");
+        sequence.current += 1;
+      }
+      return;
+    }
     // If the user was in an unsaved live chat or a local chat, preserve it before switching
     if (owner && !conversationId.current) {
       const currentStored = readStoredThread(owner);
@@ -448,17 +461,25 @@ export function useInvestigation(wallet: string | null) {
       return;
     }
     abort.current?.abort("opened another chat");
-    sequence.current += 1;
+    const requestSequence = ++sequence.current;
+    const controller = new AbortController();
+    abort.current = controller;
+    openRequest.current = controller;
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]);
     try {
-      const headers = await requestHeaders(AbortSignal.timeout(8_000), owner);
-      const response = await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, { headers, cache: "no-store" });
-      if (!response.ok || activeWallet.current !== owner) return;
+      const headers = await requestHeaders(signal, owner);
+      signal.throwIfAborted();
+      const response = await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, { headers, signal, cache: "no-store" });
+      if (!response.ok || activeWallet.current !== owner || requestSequence !== sequence.current || signal.aborted) return;
       const conversation = await response.json() as ConversationPayload;
+      if (activeWallet.current !== owner || requestSequence !== sequence.current || signal.aborted) return;
+      if (conversation.id !== id) throw new Error("conversation_mismatch");
       const thread = { turns: conversation.turns, continuation: conversation.continuation, result: conversation.result, conversationId: conversation.id };
       writeStoredThread(owner, { wallet: owner, ...thread });
       applyThread(owner, thread);
     } catch {
-      setState((previous) => ({ ...previous, error: "That conversation could not be opened. Try again." }));
+      if (activeWallet.current === owner && requestSequence === sequence.current && !controller.signal.aborted)
+        setState((previous) => ({ ...previous, error: "That conversation could not be opened. Try again." }));
     }
   }, [applyThread]);
 
@@ -529,6 +550,7 @@ export function useInvestigation(wallet: string | null) {
         const index = matching?.index ?? reversed.find(({ turn }) =>
           turn.role === "assistant" && !turn.executionReceipt)?.index;
         if (index == null) return previous;
+        if (completionMatches(previous.turns[index].executionReceipt, previous.turns[index].completion)) return previous;
         const turns = [...previous.turns];
         turns[index] = { ...turns[index], executionReceipt: receipt };
         writeStoredThread(owner, {
@@ -541,6 +563,20 @@ export function useInvestigation(wallet: string | null) {
       return true;
     } catch { return false; }
   }, [refreshConversations]);
+
+  /** Apply a server-persisted reply to its owning turn, never the most recent reply. */
+  const updateWorkflowCompletion = useCallback((reply: WorkflowCompletionReply, id: string, owner: string | null) => {
+    if (!owner || activeWallet.current !== owner || conversationId.current !== id) return;
+    setState((previous) => {
+      if (previous.wallet !== owner || previous.conversationId !== id || activeWallet.current !== owner || conversationId.current !== id) return previous;
+      const turns = applyWorkflowCompletion(previous.turns, reply);
+      if (!turns) return previous;
+      transcript.current = turns.map((turn) => ({ role: turn.role, text: turn.text }));
+      writeStoredThread(owner, { wallet: owner, continuation: continuation.current, turns, result: lastResult.current, conversationId: id });
+      rememberLive(owner, turns, id);
+      return { ...previous, turns };
+    });
+  }, [rememberLive]);
 
   /**
    * Update the latest assistant turn in the conversation.
@@ -560,9 +596,11 @@ export function useInvestigation(wallet: string | null) {
     setState((previous) => {
       const idx = [...previous.turns].map((t, i) => ({ t, i })).reverse().find(({ t }) => t.role === "assistant")?.i;
       if (idx == null) return previous;
+      if (completionMatches(previous.turns[idx].executionReceipt, previous.turns[idx].completion)) return previous;
       found = true;
       const updatedTurns = [...previous.turns];
       const { blocks: _stale, ...turn } = updatedTurns[idx];
+      void _stale;
       updatedTurns[idx] = { ...turn, text: clean, ...(blocks?.length ? { blocks } : {}) };
       transcript.current = updatedTurns.map((t) => ({ role: t.role, text: t.text }));
       if (owner) {
@@ -756,5 +794,5 @@ export function useInvestigation(wallet: string | null) {
   // Do not expose the previous wallet's state during the render before its effect resets.
   const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null, resultOrigin: "restored" as const };
   /** `reset` keeps its name for the workspace: it is "new chat" now, not "wipe the thread". */
-  return { ...visible, conversations, run, cancel, recordDirect, reset: newChat, newChat, open, remove, rename, updateExecutionReceipt, updateLastAssistantText };
+  return { ...visible, conversations, run, cancel, recordDirect, reset: newChat, newChat, open, remove, rename, updateExecutionReceipt, updateLastAssistantText, updateWorkflowCompletion };
 }

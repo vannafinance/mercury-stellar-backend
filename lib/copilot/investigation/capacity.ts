@@ -347,13 +347,14 @@ export async function computeSizingBasis(
 export async function computeAccountPosition(
   smartAccount: string | null,
   signal?: AbortSignal,
+  freshAfter?: string | null,
 ): Promise<
   { grossCollateralUsd: string; debtUsd: string; healthFactor: string | null; snapshot: MarginSnapshot } | null
 > {
   if (!smartAccount) return null;
   let snapshot: MarginSnapshot;
   try {
-    snapshot = await computeMarginSnapshot(smartAccount);
+    snapshot = await computeMarginSnapshot(smartAccount, freshAfter ? { freshAfter } : undefined);
   } catch (error) {
     if (error instanceof SnapshotTimeoutError) {
       console.warn("[copilot] account snapshot timed out", { smartAccount, message: error.message });

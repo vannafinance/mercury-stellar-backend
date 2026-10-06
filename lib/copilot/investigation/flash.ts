@@ -212,6 +212,7 @@ Each finding that cites live data must use existing successful observation IDs. 
 A finding answers the question as asked: when the user asks WHICH tokens or positions, name every row the read
 returned (asset and balance) — a total alone is not an answer.
 research_complete means the research handoff is ready, NOT that the user's strategy is complete.
+For factual position answers, set goal.positionReadScope. Use kind=all for a broad overview, ambiguous scope, or a request that spans the whole account. Use kind=selected only when the user's request explicitly limits the position pockets: list the corresponding declared position-read capabilities and quote the exact request text in sourceQuote. This field controls extra answer coverage, not the investigation loop: inspect every dependency needed to answer safely, including relevant collateral, debt, Earn or farm holdings. Never use it to narrow strategy discovery, funding, sizing, or action dependencies. A comparative strategy must still inspect relevant venues, positions, wallet funding and rates before its handoff.
 Do not promise a permanent health floor or claim transactions ran. Clarifications and blockers
 are not financial recommendations. Use inspect args exactly as declared (e.g. {"asset":"XLM"}).`;
 

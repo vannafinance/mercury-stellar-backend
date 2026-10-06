@@ -255,7 +255,8 @@ describe("investigation card / options", () => {
         onSign={onSign}
       />,
     );
-    expect(screen.getByText("Approve the transaction in your wallet to continue.")).toBeTruthy();
+    expect(screen.queryByText("Approve the transaction in your wallet to continue.")).toBeNull();
+    expect(screen.getByText("Your signature needed")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign in wallet" }));
     expect(onSign).toHaveBeenCalledTimes(1);
   });

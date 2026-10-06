@@ -7,10 +7,11 @@ import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
+import { completionMatches } from "@/lib/copilot/workflow-completion";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap-review-card";
 import { PlanReviewCard } from "@/components/copilot/plan-review-card";
-import { finished, inFlight } from "@/hooks/use-workflow";
+import { finished } from "@/hooks/use-workflow";
 import { formatRunClock } from "@/lib/copilot/investigation/duration";
 import { ChatTurns, REPLY_CARD_GAP_PX } from "@/components/copilot/chat-message";
 
@@ -74,7 +75,7 @@ function toStepperStep(step: WorkflowView["steps"][number]): StepperStep {
               : "pending";
   return {
     id: step.id, label: step.label, op: step.op, asset: step.asset, amount: step.amount,
-    status, txHash: step.txHash, ledger: step.settledLedger, error: step.message,
+    status, txHash: step.txHash, ledger: step.settledLedger, error: step.message, refusal: step.signRefusal,
   };
 }
 
@@ -366,8 +367,7 @@ export function InvestigationCard({
   const stepperDrawnInThread =
     !!workflow && !threadDefersReceipt &&
     turns.some((turn) => turn.role === "assistant" && turn.executionReceipt?.workflowId === workflow.id);
-  /** A transaction is on its way to a ledger; the hook asks again at every ledger close. */
-  const awaitingLedger = !!workflow && ["approved", "running"].includes(workflow.status) && inFlight(workflow);
+  const completionSummaryReady = !!workflow && turns.some((turn) => turn.executionReceipt?.workflowId === workflow.id && completionMatches(turn.executionReceipt, turn.completion));
   /**
    * The run clock. Zeroing it inside the effect made every start a second render pass; a
    * run that begins is a prop change, so the reset belongs in render, where React handles
@@ -397,7 +397,6 @@ export function InvestigationCard({
    * and the options tests — keep the sized answer without a matching transcript row.
    */
   const resultIsLatest = !!result && lastTurn?.role !== "user";
-  const currentStep = workflow ? Math.max(1, workflow.steps.findIndex((step) => step.status !== "settled") + 1) : 0;
   const hasCardContent = Boolean(
     result?.understanding ||
     result?.capacity ||
@@ -454,7 +453,7 @@ export function InvestigationCard({
             * thread already carries it, so during a run the answer area stays empty and the
             * spinner is the only thing under the new question.
             */}
-          {result && resultIsLatest && !(loading && !workflow) && hasCardContent && (
+          {result && resultIsLatest && !completionSummaryReady && !(loading && !workflow) && hasCardContent && (
             <article aria-label="Copilot reply" className="flex flex-col" style={{ gap: REPLY_CARD_GAP_PX }}>
 
               {/*
@@ -534,18 +533,12 @@ export function InvestigationCard({
               )}
 
               {/* Between a click and its result the user must see the state, not a frozen card. */}
-              {(workflowLoading || awaitingLedger) && (
+              {workflowLoading && (!workflow || workflow.status === "proposed" || workflow.status === "validating") && (
                 <p role="status" aria-live="polite" className="flex items-center gap-2 text-[13px] text-violet-500" data-testid="workflow-progress">
                   <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-violet-500" aria-hidden="true" />
                   {!workflow
                     ? "Preparing the plan: sizing every step from the sealed reads"
-                    : !workflowLoading && awaitingLedger
-                      ? `Step ${currentStep} of ${workflow.steps.length} is on its way to the ledger; checking at every ledger close`
-                      : workflow.status === "proposed" || workflow.status === "validating"
-                        ? "Checking funds, prices and projected health before anything is submitted"
-                        : workflow.status === "awaiting_signature"
-                          ? "Waiting for your wallet signature"
-                          : `Running step ${currentStep} of ${workflow.steps.length}`}
+                    : "Checking funds, prices and projected health before anything is submitted"}
                 </p>
               )}
 
@@ -585,22 +578,19 @@ export function InvestigationCard({
                 / Executing. The boxed section stays only where the card is NOT drawn here: a run
                 blocked before it started (a plain step list), or one whose receipt the thread draws.
               */}
-              {workflow && workflow.status !== "proposed" && workflow.status !== "blocked" && !stepperDrawnInThread && (
+              {workflow && !completionSummaryReady && workflow.status !== "proposed" && workflow.status !== "blocked" && !stepperDrawnInThread && (
                 <div className="flex flex-col gap-2.5">
                   <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={result.scope.network} autoApprove={!!autoSign}
                     busy={!!workflowLoading}
                     cancelled={workflow.status === "cancelled"}
                     onSign={workflow.status === "awaiting_signature" ? onSign : undefined}
                     onStop={["approved", "awaiting_signature"].includes(workflow.status) ? onCancelPlan : undefined} />
-                  {!["completed", "running", "approved"].includes(workflow.status) && workflow.message && (
-                    <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-500">{workflow.message}</p>
-                  )}
                   {["running", "approved"].includes(workflow.status) && onResume && (
                     <button type="button" disabled={workflowLoading} onClick={onResume} className={`${BTN_QUIET} self-start`}>Check progress</button>
                   )}
                 </div>
               )}
-              {workflow && workflow.status !== "proposed" && (workflow.status === "blocked" || stepperDrawnInThread) && (
+              {workflow && !completionSummaryReady && workflow.status !== "proposed" && (workflow.status === "blocked" || stepperDrawnInThread) && (
                 <section className="rounded-xl border border-violet-100 px-4 py-3.5">
                   <SectionTitle>
                     {/* 23 Sep, X10: a run stopped at leg 5 after 4 legs settled read "Not executed".
@@ -613,7 +603,9 @@ export function InvestigationCard({
                         : workflow.status === "completed" ? "Done" : "Running"}
                   </SectionTitle>
                   <p className="mt-1.5 text-[15px] leading-6 text-vgray-900">{workflow.objective}</p>
-                  <p className="mt-1 max-w-[68ch] text-[13px] leading-5 text-vgray-500">{workflow.message}</p>
+                  {(workflow.status === "completed" || workflow.status === "blocked" || workflow.status === "cancelled") && (
+                    <p className="mt-1 max-w-[68ch] text-[13px] leading-5 text-vgray-500">{workflow.message}</p>
+                  )}
                   {workflow.status === "blocked" ? (
                     <ol className="mt-3 space-y-1.5">
                       {workflow.steps.map((step, stepIndex) => (
@@ -665,7 +657,7 @@ export function InvestigationCard({
               {(!result.question || result.questionnaire) && <ChoiceButtons choices={result.choices} onReply={onReply} onWrite={onWrite} />}
 
               {/* Notes explain a partial answer. With a plan or a run on screen they are noise (UI-FIX-LIST 3). */}
-              {result.warnings.length > 0 && !result.candidates?.feasible.length && !workflow && (
+              {!(result.status === "incomplete" && result.understanding?.intent === "answer") && result.warnings.length > 0 && !result.candidates?.feasible.length && !workflow && (
                 <ul className="space-y-1.5 text-[12.5px] leading-5 text-vgray-500" aria-label="Notes">
                   {result.warnings.map((warning, index) => (
                     <li key={index} className="flex gap-2">

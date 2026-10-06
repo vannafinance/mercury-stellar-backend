@@ -6,11 +6,16 @@ import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import { withClientDeadline } from "@/lib/copilot/client-deadline";
 import { useLedgerTick } from "@/contexts/ledger-subscriber";
 
-async function postJson(url: string, body: unknown, signal: AbortSignal): Promise<WorkflowView> {
+async function postJson(url: string, body: unknown, signal: AbortSignal, existingPlan = false): Promise<WorkflowView> {
   signal.throwIfAborted();
   const headers = await withClientDeadline(copilotRequestHeaders(), AbortSignal.any([signal, AbortSignal.timeout(10_000)]));
   signal.throwIfAborted();
-  const response = await fetch(url, { method: "POST", headers, signal, body: JSON.stringify(body) });
+  const response = await fetch(url, { method: "POST", headers, signal, body: JSON.stringify(body) }).catch((error: unknown) => {
+    if (error instanceof TypeError) throw new Error(existingPlan
+      ? "The server could not be reached. Your plan is saved. Reconnect and check its progress before trying again."
+      : "The server could not be reached. Reconnect and try preparing the plan again.");
+    throw error;
+  });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const message = payload && typeof payload === "object" && "message" in payload && typeof payload.message === "string"
@@ -100,7 +105,7 @@ export function useWorkflow(wallet: string | null = null) {
   const runUntilPaused = useCallback(async (initial: WorkflowView, signal: AbortSignal) => {
     let view = initial;
     for (let step = 0; step < 8 && running(view); step++) {
-      view = await postJson(`/api/copilot/workflow/${view.id}/advance`, {}, signal);
+      view = await postJson(`/api/copilot/workflow/${view.id}/advance`, {}, signal, true);
       const advanced = view;
       if (!signal.aborted) setState((previous) => ({ ...previous, view: advanced, loading: true, error: null }));
       if (inFlight(view)) break;
@@ -209,7 +214,7 @@ export function useWorkflow(wallet: string | null = null) {
     try {
       const approved = await postJson(`/api/copilot/workflow/${current.id}/approve`, {
         revision: current.revision, digest: current.digest,
-      }, controller.signal);
+      }, controller.signal, true);
       const view = await runUntilPaused(approved, controller.signal);
       if (!controller.signal.aborted && active.current === controller) setState({ view, loading: false, error: null, restored: false });
       return true;
@@ -224,10 +229,11 @@ export function useWorkflow(wallet: string | null = null) {
     } finally {
       clearTimeout(timer);
     }
-  }, [state.view, state.loading, runUntilPaused]);
+  }, [state.loading, runUntilPaused]);
 
-  const confirm = useCallback(async (signedXdr: string) => {
-    const current = state.view;
+  const confirm = useCallback(async (signedXdr: string, expectedId?: string) => {
+    const current = viewRef.current;
+    if (expectedId && current?.id !== expectedId) return;
     if (!current || state.loading) return;
     active.current?.abort();
     const controller = new AbortController();
@@ -235,7 +241,7 @@ export function useWorkflow(wallet: string | null = null) {
     const timer = setTimeout(() => controller.abort(), 180_000);
     setState((previous) => ({ ...previous, loading: true, error: null }));
     try {
-      const confirmed = await postJson(`/api/copilot/workflow/${current.id}/submit`, { signedXdr }, controller.signal);
+      const confirmed = await postJson(`/api/copilot/workflow/${current.id}/submit`, { signedXdr }, controller.signal, true);
       const view = await runUntilPaused(confirmed, controller.signal);
       if (!controller.signal.aborted && active.current === controller) setState({ view, loading: false, error: null, restored: false });
     } catch (error) {
@@ -248,7 +254,66 @@ export function useWorkflow(wallet: string | null = null) {
     } finally {
       clearTimeout(timer);
     }
-  }, [state.view, state.loading, runUntilPaused]);
+  }, [state.loading, runUntilPaused]);
+
+  const restore = useCallback(async (id: string) => {
+    active.current?.abort();
+    const controller = new AbortController(); active.current = controller;
+    setState({ view: null, loading: true, error: null, restored: true });
+    try {
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]);
+      const headers = await withClientDeadline(copilotRequestHeaders(), signal);
+      const response = await fetch(`/api/copilot/workflow/${encodeURIComponent(id)}`, { headers, signal, cache: "no-store" });
+      if (!response.ok) throw new Error(response.status === 401 ? "Reconnect your wallet session to resume this plan." : "The saved plan could not be loaded. Try opening this chat again.");
+      const view = await response.json() as WorkflowView;
+      if (!controller.signal.aborted && active.current === controller) setState({ view, loading: false, error: null, restored: true });
+    } catch (error) {
+      if (active.current === controller && !controller.signal.aborted) setState(previous => ({ ...previous, loading: false,
+        error: error instanceof TypeError ? "The server could not be reached. Reconnect and open this chat again." : error instanceof Error ? error.message : "The saved plan could not be loaded." }));
+      else if (active.current === controller) setState(previous => ({ ...previous, loading: false, error: "Loading the saved plan timed out. Open this chat again to retry." }));
+    }
+  }, []);
+
+  const prepareSign = useCallback(async (): Promise<WorkflowView | null> => {
+    const current = viewRef.current;
+    if (!current || loadingRef.current) return null;
+    active.current?.abort();
+    const controller = new AbortController(); active.current = controller;
+    setState(previous => ({ ...previous, loading: true, error: null }));
+    try {
+      const view = await postJson(`/api/copilot/workflow/${current.id}/prepare-sign`, {},
+        AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]), true);
+      if (controller.signal.aborted || active.current !== controller) return null;
+      setState(previous => ({ ...previous, view, loading: false, error: null }));
+      return view;
+    } catch (error) {
+      if (active.current === controller) setState(previous => ({ ...previous, loading: false,
+        error: error instanceof Error ? error.message : "The transaction could not be refreshed. Try signing again." }));
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => {
+      const current = viewRef.current;
+      if (!current || loadingRef.current || document.visibilityState === "hidden") return;
+      const signal = AbortSignal.timeout(20_000);
+      void (async () => {
+        try {
+          const headers = await withClientDeadline(copilotRequestHeaders(), signal);
+          const response = await fetch(`/api/copilot/workflow/${current.id}`, { headers, signal, cache: "no-store" });
+          if (!response.ok) return;
+          const view = await response.json() as WorkflowView;
+          // A return-to-tab read must not replace an action or another conversation opened meanwhile.
+          if (viewRef.current !== current || loadingRef.current) return;
+          setState(previous => ({ ...previous, view, restored: true, error: null }));
+        } catch { /* Explicit sign/retry reports failures; background reads preserve the saved card. */ }
+      })();
+    };
+    window.addEventListener("online", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.removeEventListener("online", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, []);
 
   const resume = useCallback(async () => {
     if (!state.view || state.loading) return;
@@ -262,6 +327,7 @@ export function useWorkflow(wallet: string | null = null) {
   }, [state.view, state.loading, runUntilPaused]);
   const reset = useCallback(() => {
     active.current?.abort();
+    viewRef.current = null;
     if (storageKey) try { localStorage.removeItem(storageKey); } catch { /* storage unavailable */ }
     setState({ view: null, loading: false, error: null, restored: false });
   }, [storageKey]);
@@ -288,5 +354,5 @@ export function useWorkflow(wallet: string | null = null) {
   const quote = onScreen(liveQuote) && !stale
     ? { minOut: liveQuote!.minOut, note: liveQuote!.note }
     : null;
-  return { ...state, stale, quote, propose, approve, confirm, resume, cancelPlan, reset };
+  return { ...state, stale, quote, propose, approve, confirm, resume, cancelPlan, reset, restore, prepareSign };
 }

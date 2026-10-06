@@ -262,6 +262,10 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
     const informational = rowInformational(node);
     const venue = venueFrom(observation.capability, segments, node);
     const here = identityOf(node, identity, requested, venue);
+    // A source-declared measurement basis travels with its values on every
+    // investigation, not only the account overview display path.
+    const labelParents = typeof node.balance_basis === "string"
+      ? [...segments.slice(0, -1), node.balance_basis] : segments;
     // A row naming a registry LP venue ("soroswap") is labelled by it; the fact's venue type has
     // no Soroswap, and "XLM/SOUSDC Aquarius LP shares" named the wrong DEX (25 Sep, live).
     const lpName = typeof node.venue === "string" && (lpVenues() as readonly string[]).includes(node.venue.toLowerCase())
@@ -284,6 +288,10 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
         continue;
       }
       if (informational) continue;
+      if (key === "freshness" && raw === "unknown" && venue === "oracle" && node.price_usd != null) {
+        facts.push({ path: childPath, label: labelFor(observation.capability, here, venue, segments, key, lpName), value: "unknown", unit: "", venue, quantity: false });
+        continue;
+      }
       if (typeof raw === "boolean") {
         if (key.startsWith("has_") || key === "allowed" && depth === 0) continue;
         // A yes/no is never an amount of anything.
@@ -300,7 +308,7 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
       if (!meta) continue;
       const value = decimalOf(raw);
       if (value === null) continue;
-      push(childPath, labelFor(observation.capability, here, venue, segments, meta.field, lpName), value, meta.unit, venue, meta.quantity === true);
+      push(childPath, labelFor(observation.capability, here, venue, labelParents, meta.field, lpName), value, meta.unit, venue, meta.quantity === true);
     }
   };
 

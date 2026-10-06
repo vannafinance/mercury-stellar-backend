@@ -21,6 +21,7 @@ vi.mock("@/lib/copilot/investigation/contract-health", async (importOriginal) =>
 import {
   computeBorrowCapacity,
   computeSizingBasis,
+  computeAccountPosition,
   parseLiquidationSnapshot,
   reconcileSizingBasis,
 } from "@/lib/copilot/investigation/capacity";
@@ -43,6 +44,13 @@ beforeEach(() => {
 });
 
 describe("borrow capacity", () => {
+  it("anchors a post-settlement account read without changing ordinary sizing reads", async () => {
+    snapshot(100, 20);
+    await computeAccountPosition(ACCOUNT, undefined, "final-confirmed-hash");
+    expect(mocks.computeMarginSnapshot).toHaveBeenLastCalledWith(ACCOUNT, { freshAfter: "final-confirmed-hash" });
+    await computeAccountPosition(ACCOUNT);
+    expect(mocks.computeMarginSnapshot).toHaveBeenLastCalledWith(ACCOUNT, undefined);
+  });
   it("sizes headroom from the contract snapshot when it agrees with the app", async () => {
     snapshot(4219.36, 1736.19);
     const capacity = await computeBorrowCapacity(

@@ -21,6 +21,7 @@ import { copilotConfig } from "./config";
 import { withMcpCall } from "./telemetry";
 import { callNeedsUserToken, currentUser } from "./user-context";
 import { RETRY, withRetry } from "./retry-policy";
+import { normalizeOracleFreshness } from "./oracle-freshness";
 
 export type MCPErrorCode = string;
 
@@ -178,6 +179,7 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_get_account_health: { tool: "vanna_margin_status", action: "health" },
   vanna_get_collateral: { tool: "vanna_margin_status", action: "collateral" },
   vanna_get_debt: { tool: "vanna_margin_status", action: "debt" },
+  vanna_get_margin_snapshot: { tool: "vanna_margin_status", action: "snapshot" },
   vanna_get_max_borrow: { tool: "vanna_margin_status", action: "max_borrow" },
   vanna_get_liquidation_snapshot: { tool: "vanna_margin_status", action: "liquidation_snapshot" },
   // Propose-time simulation (simulate.ts): the read dispatcher's `preview` — RiskEngine snapshot
@@ -968,7 +970,8 @@ class RoutingMCPClient implements MCPClient {
     args: Record<string, unknown>,
     userId?: string,
   ): Promise<Record<string, unknown>> {
-    return liveClientFor(m2mTokens).call(tool, args, userId);
+    const data = await liveClientFor(m2mTokens).call(tool, args, userId);
+    return normalizeOracleFreshness(data);
   }
 }
 

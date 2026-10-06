@@ -25,6 +25,7 @@ import { resolveAssetDef } from "../registry/assets";
 import { workflowJournal } from "./proposal";
 import { TOOLS } from "../workflow/allowlist";
 import { WALLET_OPS } from "../workflow/types";
+import { assertSigningTime, checkSigningPreconditions, refreshSigningEnvelope } from "../workflow/signing-envelope";
 
 /** Every tool the vocabulary maps to. Derived, so a new op cannot be allowlisted yet unexecutable. */
 const WRITE_TOOLS = new Set(Object.values(TOOLS));
@@ -570,6 +571,35 @@ async function settleSubmitted(
   return journal.settled(id, identity, step.id, step.txHash, outcome.ledger, outcome.success, note);
 }
 
+/** Explicit signing preparation. Never invokes a write tool or advances a later leg. */
+export async function prepareWorkflowSigning(input: {
+  id: string; subject: string; secret: string; server: string; network: string;
+  mcp: Pick<MCPClient, "call">; signal: AbortSignal;
+  refreshEnvelope?: typeof refreshSigningEnvelope;
+  lookupTx?: LedgerLookup;
+}): Promise<WorkflowView> {
+  const journal = workflowJournal(input.secret);
+  const stored = await journal.lookup(input.id, input.subject);
+  const expected = stored.value.proposal;
+  if (expected.server !== input.server || expected.scope.network !== input.network)
+    throw new ResearchError("context_expired", "The execution environment changed. Prepare a fresh plan.", 409);
+  const scope = await resolveInvestigationScope({ subject: input.subject, wallet: expected.scope.trader, network: input.network },
+    input.mcp, input.signal);
+  const identity = { scope, server: input.server };
+  const record = (await journal.read(input.id, identity)).value;
+  const waiting = record.steps.find(s => s.status === "awaiting_signature");
+  if (record.status !== "awaiting_signature" || !waiting?.unsignedXdr) {
+    return workflowView(await settleSubmitted(journal, input.id, identity, input.lookupTx ?? lookupTransaction));
+  }
+  const step = expected.steps.find(s => s.id === waiting.id);
+  if (!step || !scope.trader) throw new WorkflowConflict("step_changed");
+  const reason = await validateWorkflowRisk({ ...expected, steps: [step] }, input.mcp, input.signal);
+  if (reason) throw new ResearchError("risk_validation_failed", reason, 409);
+  const unsignedXdr = await interruptible(() => (input.refreshEnvelope ?? refreshSigningEnvelope)(waiting.unsignedXdr!, scope.trader!), input.signal);
+  input.signal.throwIfAborted();
+  return workflowView(await journal.replaceUnsignedEnvelope(input.id, identity, step.id, waiting.unsignedXdr, unsignedXdr));
+}
+
 export async function advanceWorkflow(input: {
   id: string;
   subject: string;
@@ -790,6 +820,7 @@ export async function advanceWorkflow(input: {
     record = await journal.invocationResult(input.id, identity, step.id, {
       kind: "unsigned", unsignedXdr: result.unsigned_xdr,
       note: [note, refusal].filter(Boolean).join(" ") || undefined,
+      refusal: refusal ?? undefined,
     });
     return workflowView(record);
   }
@@ -898,6 +929,10 @@ export async function confirmWorkflow(input: {
 export async function submitWorkflow(input: {
   id: string; signedXdr: string; subject: string; secret: string; server: string; network: string;
   mcp: Pick<MCPClient, "call">; signal: AbortSignal;
+  /** Server-only seams for controlled submission/settlement tests. */
+  sendTx?: (signedXdr: string) => Promise<import("@stellar/stellar-sdk").rpc.Api.SendTransactionResponse>;
+  checkEnvelope?: typeof checkSigningPreconditions;
+  lookupTx?: LedgerLookup;
 }): Promise<WorkflowView> {
   const journal = workflowJournal(input.secret);
   const stored = await journal.lookup(input.id, input.subject);
@@ -916,13 +951,24 @@ export async function submitWorkflow(input: {
   const baseline = await removalBalanceBaseline(step, expected, input.mcp, scope, input.signal);
   if (baseline.kind === "refuse") throw new ResearchError("step_not_ready", baseline.message);
   if (baseline.kind === "recorded") await journal.noteBalancesBefore(input.id, identity, step.id, baseline.balances);
+  // A wallet popup may itself have sat unanswered. Do not register or broadcast an expired signature.
+  assertSigningTime(input.signedXdr);
+  await interruptible(() => (input.checkEnvelope ?? checkSigningPreconditions)(input.signedXdr), input.signal);
   const record = await journal.acceptSignedEnvelope(input.id, identity, step.id, input.signedXdr);
+  let submission: import("@stellar/stellar-sdk").rpc.Api.SendTransactionResponse;
   try {
     const [sdk, config] = await Promise.all([import("@stellar/stellar-sdk"), import("@/lib/stellar-utils")]);
-    await interruptible(() => new sdk.rpc.Server(config.SOROBAN_RPC_URL).sendTransaction(
+    submission = await interruptible(() => input.sendTx ? input.sendTx(input.signedXdr) : new sdk.rpc.Server(config.SOROBAN_RPC_URL).sendTransaction(
       sdk.TransactionBuilder.fromXDR(input.signedXdr, sdk.Networks.TESTNET)), AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]));
   } catch { return workflowView(record); }
-  return workflowView(await settleSubmitted(journal, input.id, identity, lookupTransaction));
+  const submitted = record.steps.find((entry) => entry.id === step.id)!;
+  if (submission.hash?.toLowerCase() === submitted.txHash &&
+    (submission.status === "ERROR" || submission.status === "TRY_AGAIN_LATER")) {
+    const code = submission.errorResult?.result().switch().name;
+    return workflowView(await journal.submissionRejected(input.id, identity, step.id, submitted.txHash!, submission.status, code));
+  }
+  // PENDING/DUPLICATE need ledger confirmation. An ambiguous response never permits a resend.
+  return workflowView(await settleSubmitted(journal, input.id, identity, input.lookupTx ?? lookupTransaction));
 }
 
 function journalMessage(code: string): string {

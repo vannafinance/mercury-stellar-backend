@@ -13,6 +13,8 @@ export interface StepperStep {
   txHash?: string;
   ledger?: number;
   error?: string;
+  /** Why auto-approve did not sign this step, in the Sign Service's own words. */
+  refusal?: string;
 }
 
 export interface ExecutionStepperProps {
@@ -83,10 +85,11 @@ export function ExecutionStepper({
     <div
       role="region"
       aria-label="Workflow execution progress"
-      className="flex flex-col gap-4 rounded-2xl border border-vgray-100 bg-surface px-5 py-5 text-vgray-900 sm:px-6"
+      className="flex flex-col gap-3 rounded-2xl border border-vgray-100 bg-surface px-4 py-4 text-vgray-900 sm:px-5"
     >
       <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
           {complete && (
             <span className="cp-exec-pop flex h-4 w-4 items-center justify-center rounded-full bg-[var(--cp-emerald)] text-white" aria-hidden="true"
               style={{ animationDelay: `${total * STAGGER_MS}ms` }}>
@@ -95,6 +98,13 @@ export function ExecutionStepper({
           )}
           <span className="text-[15px] font-semibold">{headline}</span>
           {subline && <span className="text-[13px] text-vgray-400">{subline}</span>}
+          </div>
+          {onStop && !complete && !stopped && (
+            <button type="button" onClick={onStop} disabled={busy}
+              className="min-h-9 rounded-lg border border-vgray-200 bg-surface px-3 py-2 text-[12px] font-semibold text-vgray-700 hover:bg-vgray-50 disabled:opacity-50">
+              {autoApprove ? "Stop after this step" : "Cancel remaining steps"}
+            </button>
+          )}
         </div>
         <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, total)}, minmax(0, 1fr))` }} aria-hidden="true">
           {steps.map((step, index) => (
@@ -120,7 +130,7 @@ export function ExecutionStepper({
           const waitsHere = step.status === "signing" && walletCanSign;
           const last = index === steps.length - 1;
           return (
-            <li key={step.id || index} className={`flex gap-3.5 py-3 ${last ? "" : "border-b border-vgray-50"}`}>
+            <li key={step.id || index} className={`flex gap-3.5 py-2 ${last ? "" : "border-b border-vgray-50"}`}>
               <StepMark status={step.status} delayMs={index * STAGGER_MS} fresh={freshIds.has(step.id || String(index))} waitsForWallet={waitsHere} />
               <div className="flex min-w-0 grow flex-col gap-1">
                 <div className="flex items-baseline justify-between gap-3">
@@ -165,6 +175,11 @@ export function ExecutionStepper({
 
                 {waitsHere && (
                   <div className="mt-1 flex flex-wrap items-center gap-3">
+                    {step.refusal && (
+                      <p role="status" className="basis-full text-[12.5px] leading-5 text-vgray-500">
+                        Auto-approve did not sign this step. {step.refusal} Approve it yourself to continue.
+                      </p>
+                    )}
                     {onSign && (
                       <button type="button" onClick={onSign} disabled={busy}
                         className="min-h-9 rounded-lg bg-[image:var(--cp-gradient)] px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50">
@@ -200,14 +215,6 @@ export function ExecutionStepper({
         })}
       </ol>
 
-      {onStop && !complete && !stopped && (
-        <div className="flex justify-end">
-          <button type="button" onClick={onStop} disabled={busy}
-            className="min-h-9 rounded-lg border border-vgray-200 bg-surface px-3.5 py-2 text-[13px] font-semibold text-vgray-700 hover:bg-vgray-50 disabled:opacity-50">
-            {autoApprove ? "Stop after this step" : "Cancel remaining steps"}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
