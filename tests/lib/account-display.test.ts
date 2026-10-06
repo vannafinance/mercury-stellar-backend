@@ -18,40 +18,50 @@ describe("account display basis", () => {
     const { facts } = normalizeResearchFacts([{ ...observation, data: { collateral: [{ symbol: "XLM", balance: "100", value_usd: "20", balance_basis: "posted_storage_collateral" }] } }]);
     expect(facts.find((fact) => fact.quantity)?.label).toContain("posted storage collateral");
   });
-  it("shows balances gross of debt, excludes farm receipts, and preserves the raw evidence", () => {
+  it("shows the Margin page's Collateral Deposited, excludes farm receipts, and preserves the raw evidence", () => {
     const before = structuredClone(observation);
     const display = accountDisplayObservations([observation], snapshot, 2);
-    expect(display[0].data?.balances_before_debt).toEqual([
-      { symbol: "XLM", balance: "100", value_usd: "20", balance_basis: "gross_balance_before_debt" },
-      { symbol: "SOUSDC", balance: "50", value_usd: "50", balance_basis: "gross_balance_before_debt" },
+    expect(display[0].data?.collateral_deposited).toEqual([
+      { symbol: "XLM", balance: "70", value_usd: "14", balance_basis: "collateral_deposited" },
+      { symbol: "SOUSDC", balance: "45", value_usd: "45", balance_basis: "collateral_deposited" },
     ]);
-    expect(display[0].data?.total_balances_before_debt_usd).toBe("70");
-    expect(display[0].data?.net_deposited_collateral).toBeUndefined();
+    expect(display[0].data?.total_collateral_deposited_usd).toBe("59");
     expect(observation).toEqual(before);
     const { facts } = normalizeResearchFacts(display);
     const blocks = factualReplyBlocks(facts);
     expect(blocks.some((block) => block.type === "bullets" && block.items.length === 2)).toBe(true);
-    expect(facts.some((fact) => fact.value === "100" && fact.quantity)).toBe(true);
+    expect(facts.some((fact) => fact.value === "70" && fact.quantity)).toBe(true);
   });
-  it("does not pass a borrow swapped into another token off as that token's deposit", () => {
-    // 100 XLM posted, 1000 XLM borrowed and swapped to SOUSDC: the XLM debt stays on the XLM side and
-    // the proceeds stay a SOUSDC balance. Nothing is netted across, and the debt is its own figure.
-    const swapped = { collateralBalances: { XLM: { amount: "100", usdValue: "20" }, SOUSDC: { amount: "110", usdValue: "110" } },
-      borrowedBalances: { XLM: { amount: "1000", usdValue: "200" } }, totalBorrowedValue: 200, debtDataIncomplete: false } as unknown as MarginSnapshot;
+  it("agrees with the Margin page row for row on the live account it was checked against", () => {
+    // 6 Oct: balances 11,902.39 XLM / 1,392.20 SOUSDC / 119.28 AQUSDC / 390.05 BLUSDC against debts
+    // 7,679.85 / 22.00 / 25.20 / 365.00; the page listed 4,222.52 / 1,370.20 / 94.08 / 25.05.
+    const live = { collateralBalances: {
+      XLM: { amount: "11902.39", usdValue: "2575.53" }, SOUSDC: { amount: "1392.20", usdValue: "1392.32" },
+      AQUSDC: { amount: "119.28", usdValue: "119.29" }, BLUSDC: { amount: "390.05", usdValue: "390.09" },
+    }, borrowedBalances: {
+      XLM: { amount: "7679.85", usdValue: "1661.82" }, SOUSDC: { amount: "22.00", usdValue: "22.00" },
+      AQUSDC: { amount: "25.20", usdValue: "25.21" }, BLUSDC: { amount: "365.00", usdValue: "365.03" },
+    }, totalBorrowedValue: 2074.07, debtDataIncomplete: false } as unknown as MarginSnapshot;
+    const rows = accountDisplayObservations([observation], live, 2)[0].data?.collateral_deposited as Array<{ symbol: string; balance: string }>;
+    const byToken = Object.fromEntries(rows.map((row) => [row.symbol, Number(row.balance)]));
+    expect(byToken.XLM).toBeCloseTo(4222.54, 2);
+    expect(byToken.SOUSDC).toBeCloseTo(1370.2, 2);
+    expect(byToken.AQUSDC).toBeCloseTo(94.08, 2);
+    expect(byToken.BLUSDC).toBeCloseTo(25.05, 2);
+  });
+  it("lists borrowed assets as their own figure beside it", () => {
     const debt: Observation = { id: "pd0", capability: "account_debt", args: {}, observedAt: 1, status: "ok", data: { debt: [] } };
-    const [collateral, borrowed] = accountDisplayObservations([observation, debt], swapped, 2);
-    expect(collateral.data?.balances_before_debt).toEqual([
-      { symbol: "XLM", balance: "100", value_usd: "20", balance_basis: "gross_balance_before_debt" },
-      { symbol: "SOUSDC", balance: "110", value_usd: "110", balance_basis: "gross_balance_before_debt" },
+    const [, borrowed] = accountDisplayObservations([observation, debt], { ...snapshot, totalBorrowedValue: 11 } as unknown as MarginSnapshot, 2);
+    expect(borrowed.data?.debt).toEqual([
+      { symbol: "XLM", balance: "30", value_usd: "6" }, { symbol: "SOUSDC", balance: "5", value_usd: "5" },
     ]);
-    expect(borrowed.data?.debt).toEqual([{ symbol: "XLM", balance: "1000", value_usd: "200" }]);
-    expect(borrowed.data?.total_debt_usd).toBe("200");
+    expect(borrowed.data?.total_debt_usd).toBe("11");
   });
   it("does not subtract incomplete debt or infer an empty position from a missing snapshot", () => {
     for (const missing of [null, { ...snapshot, debtDataIncomplete: true }]) {
       const fallback = accountDisplayObservations([observation], missing, 2)[0];
       expect(fallback.data?.posted_storage_collateral).toEqual(observation.data?.collateral);
-      expect(fallback.data?.balances_before_debt).toBeUndefined();
+      expect(fallback.data?.collateral_deposited).toBeUndefined();
     }
   });
 });

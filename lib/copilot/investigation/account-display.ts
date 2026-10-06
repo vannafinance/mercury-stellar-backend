@@ -18,19 +18,20 @@ export function accountDisplayObservations(observations: readonly Observation[],
       } };
     }
     if (observation.capability !== "account_collateral") return observation;
-    // Balances are shown gross, with debt as its own figure (above). Subtracting a token's debt from
-    // that token's balance is wrong once a borrow has been swapped: the proceeds then sit in another
-    // token and read as a deposit, while the borrowed token's row disappears.
+    // "Collateral deposited" is the Margin page's own figure and heading: each token's balance minus
+    // the debt in that same token. The copilot shows what the page shows (owner ruling), with debt
+    // as its own list above. Farm receipts are left out, as the page leaves them out.
     const rows = Object.entries(snapshot.collateralBalances).flatMap(([symbol, balance]) => {
       if (isTrackingSymbol(symbol)) return [];
-      const amount = Number(balance.amount);
-      const value = Number(balance.usdValue);
-      if (!Number.isFinite(amount) || !Number.isFinite(value) || amount <= 0) return [];
-      return [{ symbol, balance: balance.amount, value_usd: balance.usdValue, balance_basis: "gross_balance_before_debt" }];
+      const debt = snapshot.borrowedBalances[symbol];
+      const amount = Math.max(0, Number(balance.amount) - Number(debt?.amount ?? 0));
+      const value = Math.max(0, Number(balance.usdValue) - Number(debt?.usdValue ?? 0));
+      if (!Number.isFinite(amount) || !Number.isFinite(value)) return [];
+      return amount > 0 ? [{ symbol, balance: String(amount), value_usd: String(value), balance_basis: "collateral_deposited" }] : [];
     });
     return { ...observation, id: `margin-display:${observation.id}`, observedAt, data: {
-      balances_before_debt: rows,
-      total_balances_before_debt_usd: String(rows.reduce((sum, row) => sum + Number(row.value_usd), 0)),
+      collateral_deposited: rows,
+      total_collateral_deposited_usd: String(rows.reduce((sum, row) => sum + Number(row.value_usd), 0)),
     } };
   });
 }

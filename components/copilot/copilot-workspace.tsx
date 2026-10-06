@@ -45,6 +45,7 @@ import {
   waitForAccountSequenceApplied,
   type SignXdrResult,
 } from "./sign-xdr";
+import { isInvestigationStale } from "./investigation-staleness";
 import {
   hopAutoSubmitKey,
   mayAutoSignJournalStep,
@@ -5601,16 +5602,11 @@ export function CopilotWorkspace() {
   const lastUserTurn = [...investigation.turns].reverse().find((turn) => turn.role === "user")?.text ?? null;
   const pendingUser = submitted && submitted !== lastUserTurn ? submitted : null;
   const submittedRecorded = !!submitted && investigation.turns.some((turn) => turn.role === "user" && turn.text === submitted);
-  const isStaleInvestigation = Boolean(
-    investigation.result &&
-    !investigation.loading &&
-    !workflow.view &&
-    !workflow.loading &&
-    !signingJournal &&
-    lastUserTurn &&
-    investigation.prompt &&
-    lastUserTurn !== investigation.prompt
-  );
+  const isStaleInvestigation = isInvestigationStale({
+    hasResult: Boolean(investigation.result), loading: investigation.loading, hasError: Boolean(investigation.error),
+    hasWorkflow: Boolean(workflow.view), workflowLoading: workflow.loading, signing: signingJournal,
+    lastUserTurn, prompt: investigation.prompt,
+  });
   /**
    * Owner layout (23 Sep): the plan card becomes the execution card in the same place. While
    * the investigation card draws this run, the thread leaves the run's receipt out, so one
