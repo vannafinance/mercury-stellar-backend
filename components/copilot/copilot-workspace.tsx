@@ -47,6 +47,7 @@ import {
 } from "./sign-xdr";
 import {
   hopAutoSubmitKey,
+  mayAutoSignJournalStep,
   promoteSignableAutoSignResponse,
   shouldArmAutoApprove,
   shouldAutoApproveProposedWorkflow,
@@ -3035,7 +3036,7 @@ export function CopilotWorkspace() {
     if (!step?.unsignedXdr) return;
     // The Sign Service refused this step under auto-approve (a cap, a lapsed session). Silent
     // client signing would walk around that refusal, so it waits for an explicit click.
-    if (auto && step.signRefusal) return;
+    if (auto && !mayAutoSignJournalStep(step)) return;
     const signKey = `sign:${view.id}:${step.id}`;
     if (auto && !claimDispatch(address, signKey)) return;
     setSigningJournal(true);
@@ -3135,7 +3136,7 @@ export function CopilotWorkspace() {
     // A failed refresh sets `error`. Without this guard the effect re-fires at once and loops;
     // a manual click still retries, because prepareSign clears the error.
     if (!view || workflow.loading || workflow.error || signingJournal || workflow.restored) return;
-    if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr && !step.signRefusal)) return;
+    if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr && mayAutoSignJournalStep(step))) return;
     void signJournalXdr(true);
   }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.restored, signingJournal, signJournalXdr]);
 

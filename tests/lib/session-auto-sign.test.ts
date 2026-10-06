@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import {
   hopAutoSubmitKey,
+  mayAutoSignJournalStep,
   promoteSignableAutoSignResponse,
   shouldArmAutoApprove,
   shouldAutoApproveProposedWorkflow,
@@ -351,4 +352,15 @@ it("Freighter dispatch opens only explicitly permitted wallet requests without b
   expect(shouldSessionAutoSubmit({ ...step, allowWalletDispatch: true })).toBe(true);
   expect(shouldSessionAutoSubmit({ ...step, allowWalletDispatch: false })).toBe(false);
   expect(shouldSessionAutoSubmit({ ...step, allowWalletDispatch: true, riskDecision: "block" })).toBe(false);
+});
+
+describe("mayAutoSignJournalStep", () => {
+  it("never signs silently a step the Sign Service refused, whatever the reason said", () => {
+    expect(mayAutoSignJournalStep({ signRefusal: "Over your per-transaction limit." })).toBe(false);
+    expect(mayAutoSignJournalStep({ signRefusal: "The session has lapsed." })).toBe(false);
+  });
+  it("lets a step that was simply never auto-signed follow the session signing mode", () => {
+    expect(mayAutoSignJournalStep({})).toBe(true);
+    expect(mayAutoSignJournalStep({ signRefusal: undefined })).toBe(true);
+  });
 });

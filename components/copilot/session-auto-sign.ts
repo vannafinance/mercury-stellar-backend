@@ -204,3 +204,14 @@ export function signServiceFromSessionRead(res: {
     caps,
   };
 }
+
+/**
+ * Whether the client may sign a journal step without a click under auto-approve.
+ *
+ * A step the Sign Service refused (a cap, a lapsed session) carries its refusal. Signing it
+ * silently would walk around that refusal, so it waits for an explicit click. A step that was
+ * simply never auto-signed carries no refusal and may follow the session's signing mode.
+ */
+export function mayAutoSignJournalStep(step: { signRefusal?: string }): boolean {
+  return !step.signRefusal;
+}
