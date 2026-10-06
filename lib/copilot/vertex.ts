@@ -31,7 +31,7 @@
  * access token, and there is nothing durable to leak. When a deploy has both configured,
  * the one that cannot leak should win.
  *
- * Model default: gemini-3.6-flash on project vanna-mcp, location=global.
+ * Models: see model-registry.ts. Project vanna-mcp, location=global.
  * Uses the REST generateContent endpoint (no dependency on broken ADC alone).
  */
 
@@ -67,6 +67,7 @@ import {
   normalizeGuideAnswer,
   type GuideAnswer,
 } from "./guide-schema";
+import { retirementStatus, usableModels } from "./model-registry";
 
 const execFileAsync = promisify(execFile);
 
@@ -768,9 +769,23 @@ export async function generateSocialLaneJson(
   });
 }
 
-/** Models to try: primary first, then fallbacks (handles wrong/retired model ids). */
+const retirementWarned = new Set<string>();
+
+/**
+ * Models to try: primary first, then fallbacks. A model Google has announced the retirement of is
+ * said so in the log once (a retiring default is a deploy to schedule, not a surprise 404), and a
+ * model already past its date is skipped, since trying it only costs a guaranteed 404.
+ */
 function modelCandidates(): string[] {
-  return [copilotConfig.vertexModel, ...copilotConfig.vertexModelFallbacks];
+  const configured = [copilotConfig.vertexModel, ...copilotConfig.vertexModelFallbacks];
+  for (const model of configured) {
+    const status = retirementStatus(model);
+    if (status.state !== "ok" && !retirementWarned.has(model)) {
+      retirementWarned.add(model);
+      console.warn("[copilot] model retirement", { model, ...status });
+    }
+  }
+  return usableModels(configured);
 }
 
 /**

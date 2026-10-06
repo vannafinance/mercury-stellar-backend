@@ -2,8 +2,10 @@
  * Copilot brain settings — resolved from process env (.env.local in Next.js).
  * Server-only. Never import from client components.
  *
- * Production defaults for this app: Vertex (gemini-3.7-flash) + live MCP.
+ * Production defaults for this app: Vertex (model ids live in model-registry.ts) + live MCP.
  */
+
+import { MODEL_DEFAULTS, type ThinkingLevel } from "./model-registry";
 
 function env(key: string, fallback = ""): string {
   return (process.env[key] ?? fallback).trim();
@@ -216,24 +218,29 @@ export const copilotConfig = {
     return (env("GOOGLE_CLOUD_LOCATION", "global") || "global").trim();
   },
   get vertexModel(): string {
-    return env("VERTEX_MODEL", "gemini-3.7-flash");
+    return env("VERTEX_MODEL", MODEL_DEFAULTS.research);
   },
   /**
    * Leftover greeting/identity lane only. Never the investigate/lend model.
    * Flash-Lite + MINIMAL thinking; a 2s abort lives on the caller.
    */
+  /**
+   * Reasoning effort for the research loop's concluding turn. VERTEX_RESEARCH_CONCLUDE_THINKING
+   * (LOW or MEDIUM) overrides the registry default; anything else is ignored rather than guessed at.
+   */
+  get researchConcludeThinking(): ThinkingLevel {
+    const raw = env("VERTEX_RESEARCH_CONCLUDE_THINKING").toUpperCase();
+    return raw === "LOW" || raw === "MEDIUM" ? raw : MODEL_DEFAULTS.researchConcludeThinking;
+  },
   get vertexSocialModel(): string {
-    return env("VERTEX_SOCIAL_MODEL", "gemini-3.5-flash-lite");
+    return env("VERTEX_SOCIAL_MODEL", MODEL_DEFAULTS.social);
   },
   /**
    * Fallback models when primary Vertex model returns 404/unavailable.
    * Comma-separated env VERTEX_MODEL_FALLBACKS or built-in list.
    */
   get vertexModelFallbacks(): string[] {
-    const raw = env(
-      "VERTEX_MODEL_FALLBACKS",
-      "gemini-2.5-flash,gemini-2.0-flash-001,gemini-2.0-flash",
-    );
+    const raw = env("VERTEX_MODEL_FALLBACKS", MODEL_DEFAULTS.fallback.join(","));
     const primary = this.vertexModel;
     return raw
       .split(",")

@@ -227,7 +227,7 @@ are not financial recommendations. Use inspect args exactly as declared (e.g. {"
  */
 export function researchThinkingLevel(turn: ResearchTurn): "LOW" | "MEDIUM" {
   const canStillRead = turn.remaining.toolCalls > 0 && turn.remaining.turns > 1;
-  return canStillRead && turn.observations.length < 4 ? "LOW" : "MEDIUM";
+  return canStillRead && turn.observations.length < 4 ? "LOW" : copilotConfig.researchConcludeThinking;
 }
 
 export function createFlashResearchModel(): ResearchModel {
