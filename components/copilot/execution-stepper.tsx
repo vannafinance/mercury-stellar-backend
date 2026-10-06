@@ -13,7 +13,7 @@ export interface StepperStep {
   txHash?: string;
   ledger?: number;
   error?: string;
-  /** Why auto-approve did not sign this step, in the Sign Service's own words. */
+  /** Why auto-approve did not sign this step, as the app's own sentence. */
   refusal?: string;
 }
 
@@ -177,7 +177,7 @@ export function ExecutionStepper({
                   <div className="mt-1 flex flex-wrap items-center gap-3">
                     {step.refusal && (
                       <p role="status" className="basis-full text-[12.5px] leading-5 text-vgray-500">
-                        Auto-approve did not sign this step. {step.refusal} Approve it yourself to continue.
+                        {step.refusal}
                       </p>
                     )}
                     {onSign && (

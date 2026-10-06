@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyWorkflowCompletion, completionMatches, receiptKey, settledTransactions, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
+import { applyWorkflowCompletion, completionMatches, immediateCompletion, receiptKey, settledTransactions, shortTransactionHash, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 
 export function receipt(): ExecutionReceiptSnapshot {
@@ -56,5 +56,36 @@ describe("post-settlement presentation contract", () => {
     const changed = structuredClone(r); changed.steps[0].amount = "11";
     expect(applyWorkflowCompletion([{ ...turns[0], executionReceipt: changed }], result)).toBeNull();
     expect(completionMatches(changed, result.completion)).toBe(false);
+  });
+});
+
+describe("immediateCompletion and shortTransactionHash", () => {
+  it("builds a reply from the receipt alone, keyed to it, so the settled list draws without any model", () => {
+    const r = receipt();
+    const reply = immediateCompletion(r, 1_000)!;
+    expect(reply.completion).toEqual({ workflowId: r.workflowId, receiptKey: receiptKey(r), generatedAt: 1_000, source: "fallback" });
+    expect(completionMatches(r, reply.completion)).toBe(true);
+    expect(reply.message).toMatch(/ — settled on-chain\.$/);
+    const [paragraph] = reply.replyBlocks;
+    expect(paragraph).toMatchObject({ type: "paragraph" });
+    // The plain text and the blocks say the same thing, and what was done is the bold figure.
+    expect((paragraph as { segments: Array<{ text: string; figure?: true }> }).segments.map((s) => s.text).join("")).toBe(reply.message);
+    expect((paragraph as { segments: Array<{ text: string; figure?: true }> }).segments[0].figure).toBe(true);
+  });
+  it("offers nothing for a run that has not fully settled, so a stopped run keeps its execution card", () => {
+    expect(immediateCompletion({ ...receipt(), status: "blocked" })).toBeNull();
+    expect(immediateCompletion({ ...receipt(), steps: [] })).toBeNull();
+  });
+  it("is replaced by the model-worded reply for the same receipt", () => {
+    const r = receipt();
+    const first = immediateCompletion(r)!;
+    const composed = { ...first, message: "You lent 5 XLM.", completion: { ...first.completion, source: "model" as const } };
+    const afterImmediate = applyWorkflowCompletion([{ role: "assistant", executionReceipt: r, text: "x" }], first)!;
+    const afterComposed = applyWorkflowCompletion(afterImmediate, composed)!;
+    expect(afterComposed[0]).toMatchObject({ text: "You lent 5 XLM.", completion: { source: "model" } });
+  });
+  it("shows the ends of a hash, and leaves a short value alone", () => {
+    expect(shortTransactionHash("73f69a1791b34ea5c6d076d42c259e93c2aabd616836d9a61f58be4e2f2d512b")).toBe("73f69a…512b");
+    expect(shortTransactionHash("abc")).toBe("abc");
   });
 });

@@ -15,6 +15,30 @@ export type WorkflowCompletionReply = {
   completion: WorkflowCompletion;
 };
 
+/** A transaction hash for display: the ends, with the whole hash kept in the link's title and accessible name. */
+export function shortTransactionHash(hash: string): string {
+  return hash.length > 12 ? `${hash.slice(0, 6)}…${hash.slice(-4)}` : hash;
+}
+
+/**
+ * The reply shown the moment a run settles, built only from the receipt: what was done, from the legs'
+ * own labels, and that it settled. It carries the receipt's key, so it draws the same settled list the
+ * model-worded reply does, and that reply replaces it when it arrives. Nothing here waits on a model.
+ */
+export function immediateCompletion(receipt: ExecutionReceiptSnapshot, now: number = Date.now()): WorkflowCompletionReply | null {
+  const transactions = settledTransactions(receipt);
+  if (!transactions) return null;
+  const what = transactions.map((transaction) => transactionPurpose(transaction.steps)).join("; ").replace(/[.s]+$/, "");
+  const message = `${what} — settled on-chain.`;
+  return {
+    message,
+    // What was done reads as a bold figure, the way the model-worded reply sets it; the status follows plainly.
+    replyBlocks: [{ type: "paragraph", segments: [{ text: what, figure: true }, { text: " — settled on-chain." }] }],
+    receipt,
+    completion: { workflowId: receipt.workflowId, receiptKey: receiptKey(receipt), generatedAt: now, source: "fallback" },
+  };
+}
+
 export function receiptKey(receipt: ExecutionReceiptSnapshot): string {
   return JSON.stringify([receipt.workflowId, receipt.status, receipt.network,
     receipt.steps.map((s) => [s.operation, s.label ?? null, s.asset, s.amount, s.status, s.txHash ?? null, s.settledLedger ?? null])]);

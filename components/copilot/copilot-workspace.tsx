@@ -73,7 +73,7 @@ import {
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
 import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import { completionReply } from "@/lib/copilot/investigation/completion";
-import { completionMatches, settledTransactions, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
+import { completionMatches, immediateCompletion, settledTransactions, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import { REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { buildRunReceipt } from "./run-receipt";
 import { answerToText } from "@/lib/copilot/answer-schema";
@@ -5652,6 +5652,10 @@ export function CopilotWorkspace() {
       completedTextRef.current = key;
       const controller = new AbortController();
       const owner = address;
+      // Shown at once, from the receipt alone. The model-worded reply below replaces it when it arrives, so
+      // the user is never left looking at a finished execution card waiting for a sentence.
+      const immediate = immediateCompletion(receipt);
+      if (immediate) updateWorkflowCompletion(immediate, conversationId, owner);
       // Presentation retries cannot resubmit or sign transactions. The server persists first.
       void (async () => {
         for (let attempt = 0; attempt < 3; attempt += 1) {

@@ -14,6 +14,7 @@ import { PlanReviewCard } from "@/components/copilot/plan-review-card";
 import { finished } from "@/hooks/use-workflow";
 import { formatRunClock } from "@/lib/copilot/investigation/duration";
 import { ChatTurns, REPLY_CARD_GAP_PX } from "@/components/copilot/chat-message";
+import { signRefusalCopy } from "@/components/copilot/sign-refusal-copy";
 
 export interface InvestigationCardProps {
   prompt: string;
@@ -75,7 +76,7 @@ function toStepperStep(step: WorkflowView["steps"][number]): StepperStep {
               : "pending";
   return {
     id: step.id, label: step.label, op: step.op, asset: step.asset, amount: step.amount,
-    status, txHash: step.txHash, ledger: step.settledLedger, error: step.message, refusal: step.signRefusal,
+    status, txHash: step.txHash, ledger: step.settledLedger, error: step.message, refusal: signRefusalCopy(step.signRefusal),
   };
 }
 

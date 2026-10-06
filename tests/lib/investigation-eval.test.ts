@@ -390,7 +390,9 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
       d,
     );
     expect(result.capacity).toBeNull();
-    expect(result.warnings).toContain(SIZING_SOURCES_DISAGREE_WARNING);
+    // Withheld, not explained on the card: how our two sizing sources compare is not the user's to act on.
+    // What matters is that nothing was sized off the disagreeing figures.
+    expect(result.warnings).not.toContain(SIZING_SOURCES_DISAGREE_WARNING);
     expect(result.candidates?.feasible.some((candidate) => candidate.borrows) ?? false).toBe(false);
     expect(result.message).not.toMatch(/Sized so health/i);
     expect(result.executionAllowed).toBe(false);

@@ -440,7 +440,9 @@ describe("model proposes, code disposes — end to end", () => {
     const shownAfter = (6605.84 + Number(last.grossAfterUsd) - 6457.32) / (5102.54 + Number(last.debtAfterUsd) - 5110.67);
     expect(Number(levered!.finalHealthFactor)).toBeCloseTo(shownAfter, 3);
     // The gap is stated as what it is — $6,605.84 − $6,457.32 of unposted collateral.
-    expect(view.warnings).toContainEqual(expect.stringMatching(/^\$148\.52 in your account is not posted as collateral/));
+    // Logged server-side as `unposted_collateral`, not a note on the card: the plans above are already sized
+    // from the contract, which is the part the user needs.
+    expect(view.warnings.some((warning) => /not posted as collateral/.test(warning))).toBe(false);
   });
 
   it("refuses a composed id the investigation never sealed", async () => {

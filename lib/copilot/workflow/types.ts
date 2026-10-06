@@ -325,9 +325,10 @@ export interface WorkflowStepState {
   txHash?: string;
   unsignedXdr?: string;
   /**
-   * The Sign Service's own sentence for why it did not sign this step under auto-approve
-   * (a cap, a lapsed session). Present only on a step handed back to the wallet. The client
-   * reads it to stop silent signing and to tell the user why; it never changes what is signed.
+   * Why auto-approve did not sign this step, as the Sign Service's structured reason code (for a cap,
+   * `over_per_tx_cap` / `over_daily_cap`), not its message. Present only when auto-approve was in
+   * force and the step was handed back to the wallet. The client reads it to stop silent signing and
+   * to say why in its own words; it never changes what is signed.
    */
   signRefusal?: string;
   signedXdr?: string;

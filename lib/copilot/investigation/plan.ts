@@ -2399,6 +2399,27 @@ export function resolveJoinedOrParts(
 export const USDC_QUESTION = `you said USDC without saying which one: ${USDC_VARIANTS.join(", ")}?`;
 
 /**
+ * One-tap answers to {@link USDC_QUESTION}: the user's own message with its bare "USDC" word swapped for
+ * each variant, so a tap re-sends their request with the choice made. Built by replacing the exact word in
+ * the message the same way the name-resolution choices are, not by interpreting the sentence. No chips when
+ * the word is not there to replace (the typed question still stands).
+ */
+export function usdcChoicesFor(message: string): { id: string; label: string; send: string }[] {
+  const tokens = message.split(/\s+/);
+  const at = tokens.flatMap((token, index) => (token.replace(/^[^\w]+|[^\w]+$/g, "").toUpperCase() === "USDC" ? [index] : []));
+  if (!at.length) return [];
+  return USDC_VARIANTS.map((variant) => {
+    const next = [...tokens];
+    for (const index of at) {
+      const leading = tokens[index].match(/^[^\w]+/)?.[0] ?? "";
+      const trailing = tokens[index].match(/[^\w]+$/)?.[0] ?? "";
+      next[index] = `${leading}${variant}${trailing}`;
+    }
+    return { id: variant, label: variant, send: next.join(" ") };
+  });
+}
+
+/**
  * The USDC variant on this leg the user never chose, or null. Bare "USDC" is three tokens
  * (registry header): a leg in one variant stands only if the user named that variant, by any
  * of its registry aliases, in some turn. A request that never said USDC is not affected.

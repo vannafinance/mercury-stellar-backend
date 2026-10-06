@@ -5,7 +5,7 @@ import { CircleAlert } from "lucide-react";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import type { ReplyBlock, ReplySegment } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
-import { completionMatches, settledTransactions, transactionPurpose } from "@/lib/copilot/workflow-completion";
+import { completionMatches, settledTransactions, shortTransactionHash, transactionPurpose } from "@/lib/copilot/workflow-completion";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 
 /**
@@ -460,8 +460,8 @@ function AssistantTurn({
               <li key={transaction.hash}>
                 <span>{transactionPurpose(transaction.steps)}</span>
                 <span> · </span>
-                <a href={transaction.url} target="_blank" rel="noopener noreferrer" className="underline break-all">{transaction.hash}</a>
-                <span> · Ledger {transaction.ledger.toLocaleString()}</span>
+                <a href={transaction.url} target="_blank" rel="noopener noreferrer" className="underline text-[var(--cp-emerald)]" title={transaction.hash} aria-label={`Transaction ${transaction.hash}`}>{shortTransactionHash(transaction.hash)} ↗</a>
+                <span> · Ledger <span className="text-[var(--cp-emerald)]">{transaction.ledger.toLocaleString()}</span></span>
               </li>
             ))}
           </ul>

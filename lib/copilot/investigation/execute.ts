@@ -820,7 +820,7 @@ export async function advanceWorkflow(input: {
     record = await journal.invocationResult(input.id, identity, step.id, {
       kind: "unsigned", unsignedXdr: result.unsigned_xdr,
       note: [note, refusal].filter(Boolean).join(" ") || undefined,
-      refusal: refusal ?? undefined,
+      refusal: autoSignRefusalCode(build) ?? undefined,
     });
     return workflowView(record);
   }
@@ -841,6 +841,19 @@ export async function advanceWorkflow(input: {
  * and it is passed through verbatim — which reason exists, and what to do about each,
  * is the Sign Service's to say, not something this file should keep its own copy of.
  */
+/**
+ * The structured reason auto-approve did not sign, or null when it was not in force. "rejected" is the
+ * Sign Service refusing under an armed session (its policy `reason` code rides along); "unavailable" is
+ * the signer being unreachable, which cannot be taken as permission. "disabled" is the user's own switch
+ * being off: nothing was refused, so there is nothing to explain.
+ */
+export function autoSignRefusalCode(build: Record<string, unknown>): string | null {
+  const verdict = typeof build.auto_sign === "string" ? build.auto_sign : null;
+  if (verdict === "rejected") return typeof build.reason === "string" && build.reason ? build.reason.slice(0, 80) : "rejected";
+  if (verdict === "unavailable") return "unavailable";
+  return null;
+}
+
 export function autoSignRefusal(build: Record<string, unknown>): string | null {
   const verdict = typeof build.auto_sign === "string" ? build.auto_sign : null;
   if (!verdict || verdict === "on") return null;

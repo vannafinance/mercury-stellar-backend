@@ -12,10 +12,10 @@ describe("ExecutionStepper", () => {
         currentStepIndex={0}
         autoApprove={true}
         onSign={onSign}
-        steps={[{ id: "s1", op: "swap", label: "Swap", asset: "XLM", amount: "5000", status: "signing", refusal: "Over your per-transaction limit." }]}
+        steps={[{ id: "s1", op: "swap", label: "Swap", asset: "XLM", amount: "5000", status: "signing", refusal: "This is outside your auto-approve limits, so it needs your own signature." }]}
       />,
     );
-    expect(screen.getByText(/Auto-approve did not sign this step. Over your per-transaction limit./)).toBeTruthy();
+    expect(screen.getByText("This is outside your auto-approve limits, so it needs your own signature.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign in wallet" }));
     expect(onSign).toHaveBeenCalledTimes(1);
     cleanup();
@@ -26,7 +26,7 @@ describe("ExecutionStepper", () => {
       <ExecutionStepper currentStepIndex={0} autoApprove={true} onSign={vi.fn()}
         steps={[{ id: "s1", op: "swap", label: "Swap", asset: "XLM", amount: "5", status: "signing" }]} />,
     );
-    expect(screen.queryByText(/Auto-approve did not sign/)).toBeNull();
+    expect(screen.queryByText(/needs your own signature/)).toBeNull();
     cleanup();
   });
   it("renders multi-leg execution statuses accurately", () => {

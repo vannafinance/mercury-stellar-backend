@@ -12,12 +12,12 @@ import { accountDisplayObservations } from "./account-display";
 import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
-import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
+import { unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
 import { venueCoveragePlans } from "./coverage";
 import { askForUnstatedAmounts } from "./unstated-amount";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
-import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
+import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, usdcChoicesFor, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { touchesMarginAccount } from "../workflow/types";
 import { missingPositionReads } from "./position-coverage";
 import { actionsFromAnswers, answerProblem, buildQuestionnaireSet, opsInPlay, readsForQuestionnaire } from "./questionnaire";
@@ -681,24 +681,21 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       });
       capacity = null;
       if (!capacityResult.failed && error instanceof Error && error.message === "sizing_sources_disagree") {
-        warnings.push(SIZING_SOURCES_DISAGREE_WARNING);
+        logPhase("capacity_withheld", { reason: "sizing_sources_disagree" });
       }
     }
   }
   if (capacityResult.failed) {
     // Only a genuine FAILURE is worth saying. "No floor was stated" is not a failure, and
     // warning about it read as "your position could not be read", which is a false claim.
-    warnings.push(
-      capacityResult.reason === "sizing_sources_disagree"
-        ? SIZING_SOURCES_DISAGREE_WARNING
-        : "Borrowing headroom could not be computed from your current position.",
-    );
+    // Server-side only: how our own two sizing sources compare is not something the user can act on.
+    logPhase("capacity_withheld", { reason: capacityResult.reason ?? "unavailable" });
   }
   const rateAnalysis = analyseObservedRates(result.observations, Date.now());
   const rateComparisons = rateAnalysis.comparisons;
   // A rate that was read but not used must be visible, or the prose (which saw the raw
   // read) and the ranked options (which did not) will disagree with no explanation.
-  for (const dropped of rateAnalysis.excluded) warnings.push(dropped.detail);
+  if (rateAnalysis.excluded.length) logPhase("rates_excluded", { details: rateAnalysis.excluded.map((dropped) => dropped.detail) });
   /**
    * Options, generated from the evidence rather than proposed by the model. Borrowing
    * goals may use the configured safety floor; its provenance is carried by `capacity`.
@@ -879,7 +876,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     console.error("[copilot] investigation candidate ranking failed", {
       error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
     });
-    warnings.push("Strategy options could not be ranked from the reads that completed.");
+    logPhase("ranking_failed", {});
   }
   /**
    * The model's composed shapes, sized and checked in code, ranked beside the fixed
@@ -934,6 +931,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   // Name resolution: check each word in user's prompt across all outcomes
   let nameQuestion: string | null = null;
   let nameChoices: { id: string; label: string; send: string }[] | null = null;
+  let usdcChoices: { id: string; label: string; send: string }[] = [];
   const nameFindings: Array<{ summary: string; evidenceIds: string[] }> = [];
 
   const lastUserMessage = messages[messages.length - 1] ?? messages[0] ?? "";
@@ -1028,10 +1026,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   if (outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length) logPhase("plans_dropped", { reasons: outcome.droppedPlanReasons });
   if (outcome.kind === "research_complete" && outcome.droppedPlans) {
-    warnings.push(`${outcome.droppedPlans} proposed ${outcome.droppedPlans === 1 ? "strategy shape" : "strategy shapes"} could not be read and ${outcome.droppedPlans === 1 ? "was" : "were"} not sized.`);
+    logPhase("plans_unsized", { count: outcome.droppedPlans });
   }
   if (outcome.kind === "research_complete" && outcome.droppedFindings) {
-    warnings.push(`${outcome.droppedFindings} ${outcome.droppedFindings === 1 ? "statement" : "statements"} from the model quoted a figure with no read behind it and ${outcome.droppedFindings === 1 ? "was" : "were"} left out.`);
+    logPhase("findings_dropped", { count: outcome.droppedFindings });
   }
   /**
    * The position the plans are sized against comes from the account read, and the floor
@@ -1102,7 +1100,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         };
         if (basis.issue === "sizing_sources_disagree") {
           const note = unpostedCollateralNote(basis.app, basis.contract ?? basis.app);
-          if (note && !warnings.includes(note)) warnings.push(note);
+          if (note) logPhase("unposted_collateral", { note });
         }
       }
     } catch (error) {
@@ -1153,7 +1151,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     if (partsBeforeJoin) {
       const choice = resolveJoinedOrParts(modelPlans[0], partsBeforeJoin, planContext, MAX_WORKFLOW_STEPS);
       if (choice.plans.length > 1) logPhase("plans_join_fallback", { warning: choice.warning });
-      if (choice.warning) warnings.push(choice.warning);
+      // Already logged above as plans_join_fallback; how the plans were joined is not for the card.
       modelPlans = choice.plans;
       resolved = choice.resolved;
     } else {
@@ -1221,6 +1219,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     if (onlyUsdcAsked) candidates = null;
     // The model's own open question, when it asked one, stands (it often already names the USDC).
     question = question ?? USDC_QUESTION.charAt(0).toUpperCase() + USDC_QUESTION.slice(1);
+    usdcChoices = usdcChoicesFor(lastUserMessage);
   }
   /**
    * A refusal the user could lift is a question, not a verdict.
@@ -1353,7 +1352,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const accountChoices = !scope.smartAccount && (candidates?.rejected.some((r) => r.accountRequired) || droppedMissingAccountActions.length > 0)
     ? [{ id: "create_account", label: "Open a margin account", write: "create_account" as const }]
     : [];
-  const mergedChoices = [...(nameChoices ?? []), ...accountChoices];
+  const mergedChoices = [...(nameChoices ?? []), ...usdcChoices, ...accountChoices];
   return {
     status, message, originalRequest: messages[0], refinements: messages.slice(1), question,
     ...(mergedChoices.length ? { choices: mergedChoices } : {}),

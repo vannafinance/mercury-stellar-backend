@@ -110,13 +110,29 @@ describe("advanceWorkflow", () => {
     expect(view.steps[0].txHash).toBeUndefined();
   });
 
-  it("carries the signer's own refusal onto a step it handed back to the wallet", async () => {
+  it("records the signer's structured reason, never its agent-directed message, on a step it handed back", async () => {
     const id = await approvedBorrow();
     const xdr = "A".repeat(80);
-    const mcp: McpCall = { call: async () => ({ status: "needs_wallet_sign", unsigned_xdr: xdr, auto_sign: "rejected", message: "Over your per-transaction limit." }) };
+    const mcp: McpCall = { call: async () => ({ status: "needs_wallet_sign", unsigned_xdr: xdr, auto_sign: "rejected", reason: "over_per_tx_cap",
+      message: "FULL unsigned envelope is in tool result field unsigned_xdr. Re-run vanna_enable_auto_sign." }) };
     const view = await advance(id, mcp);
     expect(view.status).toBe("awaiting_signature");
-    expect(view.steps[0]).toMatchObject({ status: "awaiting_signature", unsignedXdr: xdr, signRefusal: "Over your per-transaction limit." });
+    expect(view.steps[0]).toMatchObject({ status: "awaiting_signature", unsignedXdr: xdr, signRefusal: "over_per_tx_cap" });
+    expect(JSON.stringify(view.steps[0])).not.toMatch(/vanna_enable_auto_sign|FULL unsigned envelope|do not invent/i);
+  });
+
+  it("records no refusal when the user's own auto-approve switch is off (nothing was refused)", async () => {
+    const id = await approvedBorrow();
+    const mcp: McpCall = { call: async () => ({ status: "needs_wallet_sign", unsigned_xdr: "A".repeat(80), auto_sign: "disabled", message: "Auto-sign is off for this wallet." }) };
+    const view = await advance(id, mcp);
+    expect(view.steps[0].signRefusal).toBeUndefined();
+  });
+
+  it("treats an unreachable signer as a refusal, because it cannot be taken as permission", async () => {
+    const id = await approvedBorrow();
+    const mcp: McpCall = { call: async () => ({ status: "needs_wallet_sign", unsigned_xdr: "A".repeat(80), auto_sign: "unavailable" }) };
+    const view = await advance(id, mcp);
+    expect(view.steps[0].signRefusal).toBe("unavailable");
   });
 
   it("marks no refusal when the signer never refused (auto-sign was not armed)", async () => {
