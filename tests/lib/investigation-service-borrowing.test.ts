@@ -163,7 +163,8 @@ describe("unspecified borrowing with a stated floor", () => {
     );
 
     expect(result.status).toBe("researched");
-    expect(result.warnings.some((warning) => /ran out of time/i.test(warning))).toBe(true);
+    // The partial state is the server's to log, not a note on the card; a warning would also stop the answer being composed.
+    expect(result.warnings.some((warning) => /ran out of time/i.test(warning))).toBe(false);
     expect((result.candidates?.feasible.length ?? 0) + (result.candidates?.rejected.length ?? 0)).toBeGreaterThan(0);
     expect(result.executionAllowed).toBe(false);
   });

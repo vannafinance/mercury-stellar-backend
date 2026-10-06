@@ -13,7 +13,7 @@ import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
-import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, type CandidateSet } from "./candidates";
+import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
 import { venueCoveragePlans } from "./coverage";
 import { askForUnstatedAmounts } from "./unstated-amount";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
@@ -710,7 +710,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * the floor would answer a question they did not ask, and quietly substituting a larger
    * number than the one they gave is the worst outcome available here.
    */
-  const requestedBorrow = requestedBorrowFrom(messages, result.observations, observedNow);
+  // The size comes from the model's own structured borrow legs, never from scanning the wording.
+  const goalFloorQuote = goalFloor && outcome.kind === "research_complete" ? outcome.goal.healthFactorFloor?.sourceQuote ?? null : null;
+  const statedBorrow = outcome.kind === "research_complete"
+    ? statedBorrowFrom([...(outcome.goal.actions ?? []), ...(outcome.plans ?? []).flatMap((plan) => plan.legs)], goalFloorQuote) : null;
+  const requestedBorrow = requestedBorrowFrom(statedBorrow, result.observations, observedNow);
   /**
    * Permission to borrow is not an instruction to borrow. "Unspecified" still offers
    * both the idle path and a levered path — the owner prompt says the copilot may take
@@ -1195,21 +1199,15 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * still reported missing (15 Sep: BLUSDC's price read ok at plan_reads, ~4.7s after the
    * copilot had already told the user it was never read).
    */
-  const requestedBorrowNow = requestedBorrowFrom(messages, result.observations, observedNow);
-  if (requestedBorrowNow && requestedBorrowNow.usd === null) warnings.push(
-    `You asked to borrow ${requestedBorrowNow.tokens} ${requestedBorrowNow.asset}, but no ${requestedBorrowNow.asset} price was read, so that amount could not be checked against your floor.`);
+  const requestedBorrowNow = requestedBorrowFrom(statedBorrow, result.observations, observedNow);
+  // Server-side only. A note about our own unfinished read is not something the user can act on, and a
+  // warning on the result also stops the answer from being composed, leaving a bare list of reads.
+  if (requestedBorrowNow && requestedBorrowNow.usd === null) logPhase("requested_borrow_unvalued", { asset: requestedBorrowNow.asset, tokens: requestedBorrowNow.tokens });
   if (outcome.kind === "research_complete" && outcome.partial) {
-    /**
-     * A partial run can still have produced ranked options from the reads that did
-     * finish, and there is a test that pins exactly that. Asserting "no options are
-     * offered" beside a list of them told the user something plainly false, so the
-     * sentence follows whether any option actually survived rather than assuming none did.
-     */
-    warnings.push(candidates?.feasible.length
-      ? "The investigation ran out of time, so only what the finished reads could support is"
-        + " offered here. Ask again, or split it into smaller steps, for the full picture."
-      : "The investigation ran out of time before it could work out a plan for this, so no options are"
-        + " offered — only the reads that finished are shown. Ask again, or split it into smaller steps.");
+    // Server-side only. "Ran out of time" is our own pipeline talking, not something the user can act on,
+    // and any warning on the result stops the answer from being composed: the user was left with a bare
+    // list of which reads ran. The partial state is still recorded, and options are still withheld above.
+    logPhase("partial", { options: candidates?.feasible.length ?? 0 });
   }
   let question = outcome.kind === "clarify" && (!droppedMissingAccountActions.length || questionnaire) ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
@@ -1319,6 +1317,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
     evidence.floor = statedFloor;
     if (walletReserves.length) evidence.walletReserves = walletReserves;
+    if (statedBorrow) evidence.statedBorrow = statedBorrow;
   }
   const swapLeg = modelPlans.flatMap((plan) => plan.legs).find((leg) => leg.op === "swap" && leg.sizing.kind === "literal" && leg.assetOut);
   const swapVenue = swapLeg?.assetOut ? poolVenueFor(swapLeg.asset, swapLeg.assetOut) : null;

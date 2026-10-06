@@ -208,7 +208,7 @@ export async function proposeWorkflow(input: {
   const capacity = reused
     ? prior.evidence!.capacity
     : liveBasis && liveFloor ? capacityFromBasis(liveBasis, liveFloor) : null;
-  const requestedBorrow = requestedBorrowFrom(prior.messages, observations, now);
+  const requestedBorrow = requestedBorrowFrom(prior.evidence?.statedBorrow, observations, now);
   const comparisons = compareObservedRates(observations, now);
   // The reserves sealed with the research; the same subtraction the investigation sized with.
   const walletReserves = prior.evidence?.walletReserves;

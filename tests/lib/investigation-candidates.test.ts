@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateCandidates, idleWalletUsdFrom, plansBorrow, rankFeasible, rankingBorrowing, requestedBorrowFrom } from "@/lib/copilot/investigation/candidates";
+import { generateCandidates, idleWalletUsdFrom, plansBorrow, rankFeasible, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom } from "@/lib/copilot/investigation/candidates";
 import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
 
@@ -424,25 +424,34 @@ describe("valuing an amount the user named", () => {
     id: "e1", capability: "asset_price", args: {}, observedAt: 1_000, status: "ok" as const, ...over,
   });
   const price = (asset: string, price_usd: string) => observation({ args: { asset }, data: { price_usd } });
+  // The model reports each stated write as a leg whose literal sizing quotes the user's own words.
+  const borrow = (asset: string, amount: string, sourceQuote: string) =>
+    ({ op: "borrow", asset, sizing: { kind: "literal", amount, sourceQuote } });
 
   it("converts the stated token amount with a price read this turn", () => {
-    expect(requestedBorrowFrom(["borrow 500 XLM"], [price("XLM", "0.2")], 1_000))
+    expect(requestedBorrowFrom(statedBorrowFrom([borrow("XLM", "500", "borrow 500 XLM")]), [price("XLM", "0.2")], 1_000))
       .toEqual({ asset: "XLM", tokens: 500, usd: "100" });
   });
 
   it("reports the request as unvalued rather than assuming a stable is worth a dollar", () => {
     // No BLUSDC price was read. A $1 assumption would flow into the floor check.
-    expect(requestedBorrowFrom(["borrow 500 BLUSDC"], [price("XLM", "0.2")], 1_000))
+    expect(requestedBorrowFrom(statedBorrowFrom([borrow("BLUSDC", "500", "borrow 500 BLUSDC")]), [price("XLM", "0.2")], 1_000))
       .toEqual({ asset: "BLUSDC", tokens: 500, usd: null });
   });
 
   it("takes the latest stated amount, and returns nothing when none was stated", () => {
-    expect(requestedBorrowFrom(["borrow 500 XLM", "actually borrow 200 XLM"], [price("XLM", "0.2")], 1_000)?.tokens).toBe(200);
-    expect(requestedBorrowFrom(["build me a strategy"], [price("XLM", "0.2")], 1_000)).toBeNull();
+    const legs = [borrow("XLM", "500", "borrow 500 XLM"), borrow("XLM", "200", "actually borrow 200 XLM")];
+    expect(requestedBorrowFrom(statedBorrowFrom(legs), [price("XLM", "0.2")], 1_000)?.tokens).toBe(200);
+    expect(requestedBorrowFrom(statedBorrowFrom([]), [price("XLM", "0.2")], 1_000)).toBeNull();
   });
 
   it("does not value a request from a stale price", () => {
     const stale = [{ ...price("XLM", "0.2"), observedAt: 0 }];
-    expect(requestedBorrowFrom(["borrow 500 XLM"], stale, 5_000_000)?.usd).toBeNull();
+    expect(requestedBorrowFrom(statedBorrowFrom([borrow("XLM", "500", "borrow 500 XLM")]), stale, 5_000_000)?.usd).toBeNull();
+  });
+
+  it("reads only the model's literal borrow legs, so the wording alone can never produce an amount", () => {
+    expect(statedBorrowFrom([{ op: "borrow", asset: "USDC", sizing: { kind: "to_floor" } }])).toBeNull();
+    expect(statedBorrowFrom([{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "5", sourceQuote: "lend 5 XLM" } }])).toBeNull();
   });
 });

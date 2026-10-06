@@ -58,6 +58,8 @@ export interface ResearchEvidence {
   slippageAccepted?: boolean;
   /** Amounts the user said to keep in the wallet, anchored when sealed, so a re-propose sizes around them too. */
   walletReserves?: { asset: string; amount: string }[];
+  /** The borrow size the user stated (the model's own literal leg), so a re-propose honours it without re-reading the wording. */
+  statedBorrow?: { asset: string; tokens: number };
   /** The margin position the plans were sized against (contract basis), the sources' disagreement if any, and the user's stated floor (null = none). */
   position?: import("./plan").PlanContext["capacity"];
   floor?: string | null;

@@ -38,7 +38,6 @@ import { candidateId, candidateKindTraits, type CandidateKind } from "./candidat
 import type { ProposalStep } from "../workflow/types";
 import { ASSET_IDS, mentionsBareUsdc, namesAsset, resolveAssetDef, USDC_VARIANTS } from "../registry/assets";
 import { resolveName } from "../intent/resolve-name";
-import { findAsset, findBorrowAmount, findBorrowAsset } from "../router";
 
 const USDC_SET = new Set<string>(USDC_VARIANTS);
 /** APR gap (percentage points) below which we will not claim a yield winner. */
@@ -554,19 +553,43 @@ export function mergeCandidateSets(
  * same as no amount being named, and the caller must not fall back to sizing to the floor
  * on the strength of it.
  */
+/**
+ * The borrow size the user stated, read from what the model reported — never from the wording.
+ *
+ * The model returns each stated write as a structured leg whose literal sizing carries the exact
+ * amount and the substring of the user's message that states it; code has verified that substring
+ * is theirs. This takes the latest such borrow leg. A message is never scanned for a number near
+ * the word "borrow": that is how "how much more USDC can I borrow before my health factor drops to
+ * 1.5" became a borrow of 1.5 USDC.
+ *
+ * A number the user gave as a health-factor floor is never also a size. The model reports the floor
+ * with its own quote, so when a literal's quote is only that floor, the leg is not an amount.
+ */
+export function statedBorrowFrom(
+  legs: ReadonlyArray<{ op: string; asset: string; sizing: { kind: string; amount?: string; sourceQuote?: string } }>,
+  floorQuote?: string | null,
+): { asset: string; tokens: number } | null {
+  let found: { asset: string; tokens: number } | null = null;
+  for (const leg of legs) {
+    if (leg.op !== "borrow" || leg.sizing.kind !== "literal" || !leg.sizing.amount) continue;
+    const quote = leg.sizing.sourceQuote ?? "";
+    // Skip a literal that only restates the floor: its quote sits inside the floor's span, or the amount is
+    // gone from the quote once the floor's span is taken out of it.
+    if (floorQuote && quote && (floorQuote.includes(quote) || !quote.split(floorQuote).join(" ").includes(leg.sizing.amount))) continue;
+    const tokens = Number(leg.sizing.amount);
+    if (Number.isFinite(tokens) && tokens > 0) found = { asset: leg.asset, tokens };
+  }
+  return found;
+}
+
+/** A stated borrow size valued in USD from this investigation's own price reads; null when none was stated. */
 export function requestedBorrowFrom(
-  messages: readonly string[],
+  stated: { asset: string; tokens: number } | null | undefined,
   observations: readonly Observation[],
   now: number,
 ): { asset: string; tokens: number; usd: string | null } | null {
-  // The latest explicit request wins, matching how the floor is resolved.
-  let found: { asset: string; tokens: number } | null = null;
-  for (const message of messages) {
-    const tokens = findBorrowAmount(message);
-    const asset = tokens === null ? null : findBorrowAsset(message) ?? findAsset(message);
-    if (tokens !== null && asset) found = { asset, tokens };
-  }
-  if (!found) return null;
+  if (!stated) return null;
+  const found = stated;
 
   const price = freshPrices(observations, now).get(found.asset);
   if (!price) return { ...found, usd: null };
