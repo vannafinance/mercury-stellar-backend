@@ -499,12 +499,41 @@ describe("batched reads", () => {
     expect(MAX_BATCHED_READS).toBe(8);
   });
 
-  it("still stops when a batch re-asks for evidence it already holds", async () => {
+  /**
+   * 7 Oct, live: a strategy prompt died on "repeated read" with eight good reads in hand because the
+   * model asked once more for one it already held. A read it holds is left out of the batch and the
+   * rest runs; a batch with nothing new in it earns one nudge, and only a second one stops the run.
+   */
+  it("leaves out a read it already holds and runs the rest of the batch", async () => {
     const mcp = { call: vi.fn(async () => ({ debt_usd: "217.59" })) };
-    const model = sequence(batch(["account_debt"]), batch(["account_collateral"], ["account_debt"]));
+    const model = sequence(batch(["account_debt"]), batch(["account_collateral"], ["account_debt"]), complete(["e1", "e2"]));
+    const result = await runInvestigation(request, { model, mcp });
+
+    expect(result.outcome.kind).toBe("research_complete");
+    expect(mcp.call).toHaveBeenCalledTimes(2);
+    expect(result.observations.map((o) => [o.id, o.capability])).toEqual([["e1", "account_debt"], ["e2", "account_collateral"]]);
+  });
+
+  it("tells the model once what it already holds when nothing in the batch is new, and lets it conclude", async () => {
+    const mcp = { call: vi.fn(async () => ({ debt_usd: "217.59" })) };
+    const turns: ResearchTurn[] = [];
+    const decisions = [batch(["account_debt"]), batch(["account_debt"]), complete(["e1"])];
+    const model: ResearchModel = vi.fn(async (turn) => { turns.push(structuredClone(turn)); return decisions[turns.length - 1]; });
+    const result = await runInvestigation(request, { model, mcp });
+
+    expect(result.outcome.kind).toBe("research_complete");
+    expect(mcp.call).toHaveBeenCalledTimes(1);
+    expect(turns[1].decisionFeedback).toBeUndefined();
+    expect(turns[2].decisionFeedback).toMatch(/account_debt.*already hold/);
+  });
+
+  it("still stops when the model keeps re-asking after it was told", async () => {
+    const mcp = { call: vi.fn(async () => ({ debt_usd: "217.59" })) };
+    const model = sequence(batch(["account_debt"]), batch(["account_debt"]), batch(["account_debt"]));
     const result = await runInvestigation(request, { model, mcp });
 
     expect(result.outcome).toEqual({ kind: "stopped", reason: "repeated_read" });
+    expect(mcp.call).toHaveBeenCalledTimes(1);
   });
 
   it("fulfills health, debt and collateral from a seeded snapshot instead of MCP", async () => {

@@ -251,6 +251,8 @@ export async function runInvestigation(
     role: entry.role, text: entry.text.slice(0, 1200),
   }));
   let decisionFeedback: string | undefined;
+  // The model is told once, not stopped, when it asks again for reads it already holds.
+  let repeatNudged = false;
   const progress = (event: InvestigationProgress) => {
     // UI delivery failures must not alter the research decision or create retries.
     try { dependencies.onProgress?.(event); } catch { /* client may have disconnected */ }
@@ -396,13 +398,30 @@ export async function runInvestigation(
       if (toolCalls + resolved.length > limits.maxToolCalls) {
         return finish({ kind: "stopped", reason: "tool_budget" });
       }
-      // Every read in the batch must be new. Re-asking for fresh evidence already held is
-      // the signal the loop is not progressing, exactly as in the single-read case.
-      for (const { key } of resolved) {
+      /**
+       * A read the investigation already holds is not read again: it is left out of the batch, and
+       * the rest of the batch runs. A model that asks again for something it has is not stuck, it
+       * is not looking at what it holds, and ending the whole run for it (7 Oct, live: a strategy
+       * prompt died on "repeated read" with eight good reads in hand) threw away work that only
+       * needed one more sentence. When NOTHING in the batch is new, the model is told once what it
+       * already has and asked to conclude or request something else; a second time is the loop not
+       * progressing, and that stops it as before.
+       */
+      const repeated = new Set(resolved.filter(({ key }) => {
         const prior = seen.get(key);
-        if (prior && ((prior.status === "ok" && now() - prior.at <= limits.maxEvidenceAgeMs) || prior.attempts >= 2)) {
-          return finish({ kind: "stopped", reason: "repeated_read" });
+        return !!prior && ((prior.status === "ok" && now() - prior.at <= limits.maxEvidenceAgeMs) || prior.attempts >= 2);
+      }).map(({ key }) => key));
+      if (repeated.size) {
+        const rest = resolved.filter(({ key }) => !repeated.has(key));
+        if (!rest.length) {
+          if (repeatNudged) return finish({ kind: "stopped", reason: "repeated_read" });
+          repeatNudged = true;
+          const asked = [...new Set(resolved.map(({ request }) => request.capability))].join(", ");
+          decisionFeedback = `You asked again for ${asked}, which your observations already hold. Do not read them again: conclude with research_complete from the observations you have, or request only a read that is not there yet.`;
+          console.warn("[copilot] investigation repeated read, model told to conclude", { turn: modelTurns, capabilities: asked });
+          return null;
         }
+        resolved.splice(0, resolved.length, ...rest);
       }
 
       /**

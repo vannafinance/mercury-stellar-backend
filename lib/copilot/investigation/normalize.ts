@@ -204,7 +204,6 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
           if (!pair) continue;
           add(`${path}.liquidity_usd`, `Aquarius ${pair} pool depth`, row.liquidity_usd, "USD", "aquarius");
         }
-        warnings.add("Aquarius pools were discovered; executable quotes and net returns have not been evaluated.");
         break;
       }
       /**

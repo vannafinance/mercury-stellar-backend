@@ -1373,9 +1373,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   } else if (!scope.smartAccount && !lifecycleOp) {
     warnings.push("No active margin account was discovered for this wallet.");
   }
-  if (outcome.kind === "stopped") warnings.push(outcome.reason === "model_unavailable"
-    ? "The language model was unavailable. No keyword plan was substituted."
-    : `Research stopped: ${outcome.reason.replaceAll("_", " ")}.`);
+  // Why the run stopped is for the log: the reply above already says it stopped, in words for the user,
+  // and a line naming the internal reason ("repeated read") on the card is a pipeline note, not an answer.
+  if (outcome.kind === "stopped") logPhase("stopped", { reason: outcome.reason, ...(result.stopDetail ? { detail: result.stopDetail } : {}) });
   // Every read that errored, with what it was asked and what came back. The card only says "unavailable".
   const failedReads = result.observations.filter((o) => o.status === "error").slice(0, 12)
     .map((o) => ({ capability: o.capability, args: o.args, error: (o.error ?? "no error text").slice(0, 240) }));
