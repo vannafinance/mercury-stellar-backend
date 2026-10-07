@@ -195,6 +195,23 @@ function PlanHeading({ candidate, index, several, selected }: { candidate: PlanC
   );
 }
 
+/**
+ * A wait the user can read: after a while on the same step it says that it is taking longer than usual, that nothing has been
+ * submitted, and what to do (7 Oct: a plan sat on "Preparing the plan" with no sign of whether anything was happening).
+ */
+function StillWorking({ afterMs = 20_000 }: { afterMs?: number }) {
+  const [late, setLate] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setLate(true), afterMs);
+    return () => clearTimeout(timer);
+  }, [afterMs]);
+  return late ? (
+    <p role="status" aria-live="polite" className="max-w-[60ch] text-[12.5px] leading-5 text-vgray-500" data-testid="workflow-slow">
+      This is taking longer than usual. Nothing has been submitted; if it does not move in a minute, send your request again.
+    </p>
+  ) : null;
+}
+
 /** The one plan on offer: a full card with its own Approve and Cancel. */
 function PlanCard({
   candidate, index, several, beforeHf, stepsOpen, onToggleSteps,
@@ -560,10 +577,11 @@ export function InvestigationCard({
                 <p role="status" aria-live="polite" className="flex items-center gap-2 text-[13px] text-violet-500" data-testid="workflow-progress">
                   <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-violet-500" aria-hidden="true" />
                   {!workflow
-                    ? "Preparing the plan: sizing every step from the sealed reads"
+                    ? "Getting your transaction ready"
                     : "Checking funds, prices and projected health before anything is submitted"}
                 </p>
               )}
+              {workflowLoading && (!workflow || workflow.status === "proposed" || workflow.status === "validating") && <StillWorking />}
 
               {/* Withdrawn by the live re-check: the amounts below were true when they were read
                   and are not any more, so the card states that instead of offering Approve. */}

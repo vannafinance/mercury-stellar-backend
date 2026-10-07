@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { InvestigationCard } from "@/components/copilot/investigation-card";
 import { generateCandidates, type Candidate } from "@/lib/copilot/investigation/candidates";
 import { candidateId } from "@/lib/copilot/investigation/candidate-id";
@@ -381,13 +381,27 @@ describe("investigation card / historical receipts", () => {
   });
 });
 
+describe("investigation card / a wait that runs long", () => {
+  // 7 Oct: a plan sat on "Preparing the plan" and the user could not tell whether anything was happening.
+  it("says it is taking longer than usual, and that nothing was submitted, once the wait runs long", () => {
+    vi.useFakeTimers();
+    try {
+      const result = view();
+      render(<InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} onPropose={() => {}} workflowLoading workflow={null} />);
+      expect(screen.queryByTestId("workflow-slow")).toBeNull();
+      act(() => { vi.advanceTimersByTime(20_001); });
+      expect(screen.getByTestId("workflow-slow").textContent).toMatch(/taking longer than usual.*Nothing has been submitted/);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe("investigation card / in-flight state", () => {
   it("says what is happening between a click and its result", () => {
     const result = view();
     const { rerender } = render(
       <InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} onPropose={() => {}} workflowLoading workflow={null} />,
     );
-    expect(screen.getByTestId("workflow-progress").textContent).toMatch(/Preparing the plan/);
+    expect(screen.getByTestId("workflow-progress").textContent).toMatch(/Getting your transaction ready/);
     rerender(
       <InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} onPropose={() => {}} workflowLoading
         workflow={{ id: "w", revision: 1, digest: "d", status: "proposed", objective: "o", expiresAt: 0, assumptions: [], constraints: [], slippageAccepted: false, message: "m", steps: [] }} />,

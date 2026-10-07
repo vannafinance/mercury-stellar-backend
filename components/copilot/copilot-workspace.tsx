@@ -2875,6 +2875,17 @@ export function CopilotWorkspace() {
      * it has its own plan or write to put in its place. An answer or a question leaves the plan standing.
      */
     if (!investigation.result?.question) setResponse(null);
+    /**
+     * A run that has already finished has nothing left to protect, so it is cleared now, before the request goes out - the new
+     * plan's automatic preparation waits for the old workflow to be gone, and clearing it only when the reply arrives raced with
+     * that (7 Oct, live: a second action after a settled one sat on "Preparing the plan" and was never prepared). An unfinished
+     * run is only replaced once the reply says it brings a plan of its own.
+     */
+    if (workflow.view && finishedWorkflow(workflow.view)) {
+      setSigningJournal(false);
+      resetWorkflow();
+      resetStrategyAccumulator();
+    }
     setSubmitted(text);
     setIntentText("");
     await investigate(text, signal, undefined, (reply) => {
@@ -2884,7 +2895,7 @@ export function CopilotWorkspace() {
       resetStrategyAccumulator();
       setResponse(null);
     });
-  }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result]);
+  }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result, workflow.view]);
   const runDirect = useCallback(async (text: string, signal: AbortSignal) => {
     // A direct write is a new action of its own, so it takes the old plan's place; an open question is answered in place.
     if (!investigation.result?.question) {
@@ -2980,7 +2991,15 @@ export function CopilotWorkspace() {
      */
     const candidateId = view.proposalCandidateId;
     if (view.pendingWrite?.op || !candidateId || !view.continuation) return;
-    if (workflow.view || workflow.loading) return;
+    if (workflow.loading) return;
+    /**
+     * A run that has already finished is no obstacle to preparing the next plan: it is cleared here, and this effect runs again
+     * once it is gone. Waiting for something else to have cleared it left a second action sitting unprepared (7 Oct, live).
+     */
+    if (workflow.view) {
+      if (finishedWorkflow(workflow.view)) { setSigningJournal(false); resetWorkflow(); resetStrategyAccumulator(); }
+      return;
+    }
     /**
      * A failed propose waits for the user; it does not try again by itself.
      *
@@ -3017,7 +3036,7 @@ export function CopilotWorkspace() {
         releaseDispatch(address, proposeKey);
       }
     });
-  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, workflow.error, address]);
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, workflow.error, address, resetWorkflow, resetStrategyAccumulator]);
   useEffect(() => {
     const view = investigation.result;
     if (!view || investigation.loading || investigation.error) return;
