@@ -259,6 +259,8 @@ export async function proposeWorkflow(input: {
          */
         goal: prior.evidence?.slippageAccepted ? { slippageAccepted: { accepted: true, sourceQuote: "" } } : undefined,
         walletReserves,
+        // Sized under the same reading it was shown under: a goal, not an instruction (see `evidence.strategyGoal`).
+        ...(prior.evidence?.strategyGoal ? { strategyGoal: true } : {}),
       })
     : null;
   const candidate = resolved

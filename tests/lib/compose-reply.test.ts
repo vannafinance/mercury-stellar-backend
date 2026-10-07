@@ -186,6 +186,31 @@ describe("composing the reply once a run has finished", () => {
     expect(user.facts.some((f: { id: string }) => f.id.startsWith("stepB"))).toBe(false);
   });
 
+  /**
+   * 7 Oct, live: the plans reply came back as the deterministic template ("Non-borrowing Farm & Earn: ... deposit
+   * 1496.767159 XLM ...") because the model typed a digit once and the whole reply was refused. A refusal now says why,
+   * and the model gets one more try with that reason; the template is the fallback only if it fails again.
+   */
+  it("asks once more, with the validator's reason, when the first reply is refused", async () => {
+    const view = run("completed", [settled]);
+    const generate = vi.fn()
+      .mockResolvedValueOnce({ blocks: [{ type: "paragraph", text: "Supplied 5 XLM." }] })
+      .mockResolvedValueOnce({ blocks: [{ type: "paragraph", text: "{{stepA:done}}." }] });
+    const out = await composeCompletion({ view, request: "x", draft: "Done.", comparisons, healthNow: null }, new AbortController().signal, generate);
+    expect(out?.message).toBe("Supplied 5 XLM to Blend.");
+    expect(generate).toHaveBeenCalledTimes(2);
+    const retry = JSON.parse((generate.mock.calls[1] as unknown as [string, string])[1]);
+    expect(retry.previousReplyRefused).toMatch(/figure the model wrote itself/);
+    expect(JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1])).not.toHaveProperty("previousReplyRefused");
+  });
+
+  it("gives up after the second refusal, and does not ask a third time", async () => {
+    const view = run("completed", [settled]);
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "Supplied 5 XLM." }] }));
+    expect(await composeCompletion({ view, request: "x", draft: "Done.", comparisons, healthNow: null }, new AbortController().signal, generate)).toBeNull();
+    expect(generate).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps the deterministic reply when the model writes a figure or fails", async () => {
     const view = run("completed", [settled]);
     expect(await composeCompletion({ view, request: "x", draft: "Done.", comparisons, healthNow: null }, new AbortController().signal,

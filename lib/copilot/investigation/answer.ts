@@ -6,6 +6,8 @@ import type { ResearchCapacity } from "./view";
 import { ASSET_IDS, resolveAssetDef } from "../registry/assets";
 import { blendSupplyApyFromApr } from "../../rate-display";
 import { deploysIntoPosition } from "../workflow/types";
+import { consideredAlongside, consideredSentence } from "./considered";
+import type { RateComparison } from "./rate-comparison";
 
 const NAMED_ASSET = new RegExp(`\\b(${ASSET_IDS.join("|")})\\b`, "g");
 
@@ -308,6 +310,13 @@ function shownRate(apyPct: string | null | undefined, aprPct: string, prefix = "
   return apyPct != null ? `${Number(apyPct).toFixed(2)}% ${prefix}APY` : `${Number(aprPct).toFixed(2)}% ${prefix}APR`;
 }
 
+/** A token amount as a person reads it: grouped, two places from 1 up, six significant below. */
+function displayAmount(amount: string): string {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return amount;
+  return Math.abs(n) >= 1 ? n.toLocaleString("en-US", { maximumFractionDigits: 2 }) : String(Number(n.toPrecision(6)));
+}
+
 function money(usd: string): string {
   const n = Number(usd);
   return Number.isFinite(n)
@@ -329,6 +338,8 @@ export function strategyReply(input: {
   findings?: ReadonlyArray<{ summary: string }>;
   originalRequest?: string;
   statedSteps?: ReadonlyArray<{ label: string }>;
+  /** The rates the plans were judged by, so the reply can say what else was compared for the same job. */
+  comparisons?: readonly RateComparison[];
   /** Why the loop stopped, when it did - an `incomplete` turn reads differently for each. */
   stopReason?: string | null;
 }): string {
@@ -359,7 +370,8 @@ export function strategyReply(input: {
      * sizer produced - one source for the options and the prose, so they cannot disagree.
      */
     if (top.steps?.length) {
-      const legs = top.steps.map((step) => step.label.charAt(0).toLowerCase() + step.label.slice(1)).join(", then ");
+      // Amounts the way a person reads them (1,496.77), not the 7 places the step carries; the step itself keeps them all.
+      const legs = top.steps.map((step) => { const text = step.label.replace(step.amount, displayAmount(step.amount)); return text.charAt(0).toLowerCase() + text.slice(1); }).join(", then ");
       // A plan that only repays earns nothing; say what it repays, not an APR on it.
       const repays = top.steps.filter((step) => step.op === "repay");
       // The step list is the structured source of truth for funding. A composed plan can
@@ -390,7 +402,8 @@ export function strategyReply(input: {
       const others = input.candidates && input.candidates.feasible.length > 1
         ? ` ${input.candidates.feasible.length - 1} other option${input.candidates.feasible.length > 2 ? "s" : ""} below.`
         : "";
-      return `${top.label}: ${legs}.${rate}${hf}${others} Approve to run those steps.${ruledOut}`;
+      const considered = consideredSentence(consideredAlongside(top.steps, input.comparisons ?? [], input.facts));
+      return `${top.label}: ${legs}.${rate}${considered}${hf}${others} Approve to run those steps.${ruledOut}`;
     }
     const rates = top.venue === "earn" ? "Earn and Blend supply rates" : "live farm rates";
     const carry = top.netAprPct

@@ -6,6 +6,7 @@ import { AutoApproveMenu, type AutoApproveMenuProps } from "./auto-approve-menu"
 import { zoneOf, zoneLabel } from "./health-dial";
 import type { ConversationSummary } from "@/lib/copilot/investigation/thread";
 import { COIN_ICONS } from "@/lib/constants/margin";
+import { INLINE_COIN_ICONS } from "@/components/copilot/coin-icon-data";
 import { HEALTH_FACTOR_INFINITY_SENTINEL } from "@/lib/margin-health";
 import { CopilotRailPresentation } from "./copilot-shell";
 import Image from "next/image";
@@ -98,7 +99,7 @@ function HealthIcon() {
 }
 
 function PositionIcon() {
-  return <span className="cp-position-stack" aria-hidden><Image src={COIN_ICONS.XLM} alt="" width={17} height={17} /><Image src={COIN_ICONS.USDC} alt="" width={17} height={17} /></span>;
+  return <span className="cp-position-stack" aria-hidden><img src={INLINE_COIN_ICONS.XLM} alt="" width={17} height={17} /><Image src={COIN_ICONS.USDC} alt="" width={17} height={17} /></span>;
 }
 
 export interface RailPosition {
@@ -237,7 +238,7 @@ export function CopilotRailBody({
                       drawn from two sources that can disagree about what it looks like. */}
                   <div style={{ position: "relative", width: p.pairedSymbol ? 26 : 20, height: 20, flex: "none" }}>
                     <img
-                      src={COIN_ICONS[p.symbol.toUpperCase()] ?? "/coins/default.svg"}
+                      src={INLINE_COIN_ICONS[p.symbol.toUpperCase()] ?? COIN_ICONS[p.symbol.toUpperCase()] ?? "/coins/default.svg"}
                       alt=""
                       width={20}
                       height={20}
@@ -245,7 +246,7 @@ export function CopilotRailBody({
                     />
                     {p.pairedSymbol && (
                       <img
-                        src={COIN_ICONS[p.pairedSymbol.toUpperCase()] ?? "/coins/default.svg"}
+                        src={INLINE_COIN_ICONS[p.pairedSymbol.toUpperCase()] ?? COIN_ICONS[p.pairedSymbol.toUpperCase()] ?? "/coins/default.svg"}
                         alt=""
                         width={20}
                         height={20}

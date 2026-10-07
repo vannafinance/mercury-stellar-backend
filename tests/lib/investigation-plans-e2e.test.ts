@@ -646,6 +646,9 @@ describe("a plan the sizer refuses for how it is built gets one repair", () => {
     const { view, turns } = await run([reads, split, split]);
     expect(turns).toHaveLength(3);
     expect(view.candidates?.feasible.find((c) => c.steps?.map((s) => s.op).join() === "lend,deposit_collateral")).toBeUndefined();
+    // What the model built wrongly and could not put right is logged, not read out to the user as "ruled out".
+    expect((view.candidates?.rejected ?? []).some((entry) => /already use all/.test(entry.reason))).toBe(false);
+    expect(view.message).not.toMatch(/already use all/);
   });
 
   it("does not ask again about a refusal that is a fact (no AQUSDC in the wallet)", async () => {
@@ -698,5 +701,82 @@ describe("a borrow the protocol refuses on a pool limit is sized under the proto
     // The ceiling was read only because the preview refused: one targeted read, not one per plan.
     expect(poolMcp.call.mock.calls.filter(([tool]) => tool === "vanna_get_max_borrow")).toHaveLength(1);
     expect(view.candidates?.rejected.some((entry) => /protocol refuses/.test(entry.reason))).toBe(false);
+  });
+});
+
+/**
+ * Owner, 7 Oct: "loans ke bina bhi aur loans ke sath bhi options dena chahiye". Permission to borrow is not an
+ * instruction to borrow, so when the model composes only the levered plan it is asked once for the one without a loan.
+ */
+describe("a borrowing plan comes with the plan that does not borrow", () => {
+  const levered = { ...modelComplete, plans: [modelComplete.plans[0]] };
+  const noLoan = { ...modelComplete, plans: [modelComplete.plans[0], modelComplete.plans[1]] };
+  const run = async (answers: unknown[]) => {
+    const turns: Array<{ decisionFeedback?: string }> = [];
+    let n = 0;
+    const view = await researchTurn(
+      { message: PROMPT, wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+        model: async (turn) => { turns.push(turn); return answers[Math.min(n++, answers.length - 1)]; },
+      },
+    );
+    return { view, turns };
+  };
+  const reads = { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "blend_markets", args: {} }] };
+
+  it("asks for the no-loan plan when every plan borrows, and shows both", async () => {
+    const { view, turns } = await run([reads, levered, noLoan]);
+    expect(turns).toHaveLength(3);
+    expect(turns[2].decisionFeedback).toMatch(/does not borrow/);
+    const shapes = (view.candidates?.feasible ?? []).map((c) => c.id);
+    expect(shapes).toContain("composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM");
+    expect(shapes).toContain("composed:dc.XLM+sb.XLM");
+  });
+
+  it("does not ask when a no-loan plan is already there, or when the loan was required", async () => {
+    const both = await run([reads, modelComplete]);
+    expect(both.turns).toHaveLength(2);
+    const required = await run([reads, { ...levered, goal: { ...levered.goal, borrowing: "required" } }]);
+    expect(required.turns).toHaveLength(2);
+  });
+});
+
+/**
+ * 7 Oct, live: the plan was shown (a bare "USDC" in a strategy covers every held variant), and Approve on it answered
+ * "That option no longer sizes on the current reads - deposit collateral BLUSDC: you said USDC without saying which one".
+ * The approval sized the sealed plan as an instruction, not under the goal reading it was shown under.
+ */
+describe("approving a plan the strategy turn showed over a bare USDC", () => {
+  const usdcMcp = {
+    call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_get_wallet_balance") return { assets: [
+        { symbol: "XLM", balance: "0", decimals: 7, status: "ok" },
+        { symbol: "BLUSDC", balance: "50", decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" };
+      return mcp.call(tool, args);
+    }),
+  };
+  it("is proposed, not refused for the USDC the user did not name", async () => {
+    let turn = 0;
+    const view = await researchTurn(
+      { message: "put my usdc to work and keep HF above 1.3", wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: usdcMcp, signal: new AbortController().signal,
+        model: async () => turn++ === 0
+          ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "blend_markets", args: {} }] }
+          : { ...modelComplete, plans: [{
+              title: "Post BLUSDC as collateral", rationale: "Collateral raises headroom (e1).", evidenceIds: ["e1"],
+              legs: [{ op: "deposit_collateral", asset: "BLUSDC", sizing: { kind: "all_wallet" } }],
+            }] },
+      },
+    );
+    const target = view.candidates?.feasible[0]?.id;
+    expect(target, "the plan was shown").toBeTruthy();
+    const proposal = await proposeWorkflow({
+      continuation: view.continuation, candidateId: target!, subject: SCOPE.subject, secret: SECRET, server: "mcp-test",
+      network: "testnet", mcp: usdcMcp, signal: new AbortController().signal,
+    });
+    expect(proposal.status).toBe("proposed");
   });
 });

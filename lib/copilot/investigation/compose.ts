@@ -9,6 +9,7 @@ import { resolveAssetDef } from "../registry/assets";
 import { pct, shownApyPct } from "./apy";
 import type { RateComparison } from "./rate-comparison";
 import { doneClause } from "./completion";
+import { consideredAlongside } from "./considered";
 import type { ReplyBlock, ResearchFact, ResearchView } from "./view";
 
 export { plainReply } from "./reply-contract";
@@ -43,7 +44,7 @@ ${PRESENTATION}`;
 
 const PLANS_SYSTEM = `You write the reply shown above a set of plan cards in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). The cards already show every step and figure; your words help the user choose, the way a thoughtful analyst would explain options in a chat app.
 You are given the user's request and PLANS, each with facts computed by the sizer. Plans are named by letter, exactly as the cards label them: "Plan A", "Plan B" and so on.
-Explain the leading plan using the supplied sizer reason (already_held means an already held token; thin_margin means rates are within noise; net_return means the best computed return at this size). Describe useful differences without inventing a ranking. These are options awaiting approval, not executed transactions. Do not invent risks or reasons.
+Explain the leading plan using the supplied sizer reason (already_held means an already held token; thin_margin means rates are within noise; net_return means the best computed return at this size). CONSIDERED lists other tokens the user holds that were compared for the same job, with their rates; say they were checked and how the leading plan's token compares, using only those facts, when the list is there. Keep it to two short paragraphs at most: the leading plan and why, then how the other plans differ; the cards already show every step and figure, so do not walk through them. Describe useful differences without inventing a ranking. These are options awaiting approval, not executed transactions. Do not invent risks or reasons.
 ${PRESENTATION}`;
 
 const COMPLETION_SYSTEM = `You write the reply shown once a user's transactions have finished, in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). Say what happened and what it means now, the way a helpful analyst would confirm a completed trade in a chat app.
@@ -89,6 +90,7 @@ export function composablePlans(view: ResearchView): boolean {
 export function planFacts(view: ResearchView): {
   facts: ResearchFact[];
   plans: Array<{ plan: string; borrows: boolean; facts: Array<{ id: string; label: string; shown: string }> }>;
+  considered: Array<{ id: string; label: string; shown: string }>;
   lead: string | null;
 } {
   const feasible = (view.candidates?.feasible ?? []).slice(0, 6);
@@ -110,7 +112,21 @@ export function planFacts(view: ResearchView): {
     facts.push(...own);
     return { plan: letter, borrows: candidate.borrows, facts: own.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact) })) };
   });
-  return { facts, plans, lead: feasible[0]?.decision?.factor ?? null };
+  // What else was compared for the leading plan's job (the other held tokens priced as the same dollar), as facts the
+  // reply may cite, so "why this token" is an answer from the reads and not a silence.
+  const considered = consideredAlongside(feasible[0]?.steps ?? [], view.rateComparisons ?? [], view.facts).flatMap((token) => {
+    const make = (key: string, label: string, value: string): ResearchFact =>
+      ({ id: `considered:${token.asset}:${key}`, label, value, unit: "% APY", venue: "margin", evidenceId: "considered", sourcePath: key, readAt: 0 });
+    return [
+      make("rate", `${token.label} ${token.venue} supply rate, compared`, token.apy),
+      make("lead", `${token.leadLabel} ${token.venue} supply rate, the token the leading plan uses`, token.leadApy),
+    ];
+  });
+  facts.push(...considered);
+  return {
+    facts, plans, considered: considered.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact) })),
+    lead: feasible[0]?.decision?.factor ?? null,
+  };
 }
 
 /**
@@ -182,17 +198,31 @@ async function boundReply(system: string, user: string, facts: readonly Research
   const budget = AbortSignal.any([signal, deadline.signal]);
   let onAbort: (() => void) | undefined;
   try {
-    const raw = await Promise.race([
-      generate(system, user, budget),
+    const ask = (payload: string) => Promise.race([
+      generate(system, payload, budget),
       new Promise<never>((_, reject) => {
         if (budget.aborted) reject(new DOMException("compose budget", "TimeoutError"));
         onAbort = () => reject(new DOMException("compose budget", "TimeoutError"));
         budget.addEventListener("abort", onAbort, { once: true });
       }),
     ]);
-    const bound = bindBlocks(raw, facts);
+    let bound = bindBlocks(await ask(user), facts);
     if (!bound.ok) {
-      compositionEvent(lane, "refused", performance.now() - start, [], "invalid_output");
+      /**
+       * A refused reply is told why, once: the validator's reason is a fixed sentence ("reply contains a figure the
+       * model wrote itself"), never user text. Without this the user got the plain template instead (7 Oct: the
+       * prose "Non-borrowing Farm & Earn: ... deposit 1496.767159 XLM ..." where a written reply used to be).
+       */
+      compositionEvent(lane, "refused", performance.now() - start, [], `first_attempt:${bound.reason}`);
+      let feedback: string | null = null;
+      try {
+        feedback = JSON.stringify({ ...JSON.parse(user), previousReplyRefused: `${bound.reason}. Write the reply again: type no digit in any text segment, and take every figure from a fact reference.` });
+      } catch { feedback = null; }
+      // A second attempt that cannot finish inside the budget only spends it: ask again only when the first came back early.
+      if (feedback && !budget.aborted && performance.now() - start < composeBudgetMs() / 2) bound = bindBlocks(await ask(feedback), facts);
+    }
+    if (!bound.ok) {
+      compositionEvent(lane, "refused", performance.now() - start, [], `invalid_output:${bound.reason}`);
       return null;
     }
     compositionEvent(lane, "composed", performance.now() - start, bound.blocks);
@@ -249,7 +279,7 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
     if (!plans.facts.length) { compositionEvent("plans", "skipped", 0, [], "no_facts"); return view; }
     system = PLANS_SYSTEM;
     facts = plans.facts;
-    user = JSON.stringify({ request, plans: plans.plans, facts: facts.map(replyFactContext), lead: plans.lead,
+    user = JSON.stringify({ request, plans: plans.plans, considered: plans.considered, facts: facts.map(replyFactContext), lead: plans.lead,
       context: { category: "plans", status: view.status, scope: scopeContext(view), requiresApproval: true,
         constraints: view.understanding?.constraints ?? [], warnings: view.warnings }, draft: view.message });
   } else {

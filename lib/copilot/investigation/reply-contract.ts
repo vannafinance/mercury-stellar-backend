@@ -67,17 +67,17 @@ export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[]): B
     // Migration support for callers producing the previous wire grammar; the new schema
     // generates typed references exclusively. Stored bound blocks are not parsed here.
     if (typeof rawSegments === "string") {
-      if (!rawSegments.trim() || rawSegments.length > REPLY_LIMITS.text) return null;
+      if (!rawSegments.trim() || rawSegments.length > REPLY_LIMITS.text) { reason = "segment text empty or too long"; return null; }
       const result = bindSegments(rawSegments, facts);
       if (!result.ok) { reason = result.reason; return null; }
       citations += result.cited.length;
       return result.segments;
     }
-    if (!Array.isArray(rawSegments) || !rawSegments.length || rawSegments.length > REPLY_LIMITS.segments) return null;
+    if (!Array.isArray(rawSegments) || !rawSegments.length || rawSegments.length > REPLY_LIMITS.segments) { reason = "segments missing, empty or too many"; return null; }
     const out: ReplySegment[] = [];
     let textLength = 0;
     for (const segment of rawSegments) {
-      if (!record(segment)) return null;
+      if (!record(segment)) { reason = "a segment is not an object"; return null; }
       if (segment.type === "fact" && only(segment, ["type", "factId"]) && typeof segment.factId === "string") {
         const fact = byId.get(segment.factId);
         if (!fact) { reason = "reply cites a fact that was not read"; return null; }
@@ -86,16 +86,17 @@ export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[]): B
       } else if (segment.type === "text" && only(segment, ["type", "text"]) && typeof segment.text === "string" && segment.text.length) {
         const text = segment.text;
         textLength += text.length;
-        if (textLength > REPLY_LIMITS.text) return null;
+        if (textLength > REPLY_LIMITS.text) { reason = "paragraph text too long"; return null; }
         // This is display validation, never natural-language intent parsing.
         if ([...text].some((c) => c >= "0" && c <= "9")) { reason = "reply contains a figure the model wrote itself"; return null; }
         if (["<", ">", "`", "*", "#", "_", "{{", "}}", "](", "://", "www."].some((token) => text.toLowerCase().includes(token))) {
           reason = "reply contains markup or a link"; return null;
         }
         out.push({ text: segment.text });
-      } else return null;
+      } else { reason = "a segment has the wrong keys or type"; return null; }
     }
-    return out.some((segment) => segment.text.trim()) ? out : null;
+    if (!out.some((segment) => segment.text.trim())) { reason = "segments carry no words"; return null; }
+    return out;
   };
   const bindItems = (items: unknown): ReplySegment[][] | null => {
     if (!Array.isArray(items) || !items.length || items.length > REPLY_LIMITS.items) return null;

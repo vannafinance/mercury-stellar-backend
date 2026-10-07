@@ -35,7 +35,7 @@ import { resolveLifecycleWrite } from "../workflow/lifecycle";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
 import { ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
-import { WORKFLOW_OPS } from "../workflow/types";
+import { OP_FLOW, WORKFLOW_OPS } from "../workflow/types";
 import { MAX_WORKFLOW_STEPS } from "../workflow/journal";
 import { resolveName } from "../intent/resolve-name";
 import { plainDashes } from "../plain-text";
@@ -1261,14 +1261,29 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
      * there, a floor that would be breached) are never retried; asking again would only reword them.
      */
     const repairable = resolved.rejected.filter((entry) => entry.repairable);
-    if (!partsBeforeJoin && repairable.length && Date.now() - turnStartedAt <= REPAIR_START_BY_MS) {
+    /**
+     * Permission to borrow is not an instruction to borrow: when it was allowed and not required, the user is owed the
+     * plan without a loan beside the one with it (owner, 7 Oct: "loans ke bina bhi aur loans ke sath bhi"). The model
+     * sometimes composes only the levered one, so it is asked once for the other. Read off the goal's structured
+     * borrowing field and the sized plans' own steps, never the wording.
+     */
+    const onlyBorrowing = outcome.kind === "research_complete" && outcome.goal.intent === "strategy"
+      && (borrowing === "allowed" || borrowing === "unspecified") && resolved.candidates.length > 0
+      && resolved.candidates.every((candidate) => candidate.steps?.some((step) => OP_FLOW[step.op].from === "debt"));
+    if (!partsBeforeJoin && (repairable.length || onlyBorrowing) && Date.now() - turnStartedAt <= REPAIR_START_BY_MS) {
       const repairStarted = Date.now();
       try {
         const repairSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(REPAIR_BUDGET_MS)]);
         const repairedPlans = (await interruptible(() => requestResearchRetry({
           model: dependencies.model, message: input.message, history: (input.history ?? []).slice(-8),
           scope, observations: result.observations, task: { messages, lastQuestion: prior?.lastQuestion ?? null },
-          feedback: planRepairFeedback(repairable), signal: repairSignal,
+          feedback: [
+            repairable.length ? planRepairFeedback(repairable) : null,
+            onlyBorrowing
+              ? "Every plan that was sized borrows. The user allowed borrowing but did not require it, so also include the plan that does not borrow (using only what the wallet and the account already hold), beside the one that does."
+              : null,
+          ].filter(Boolean).join(" "),
+          signal: repairSignal,
         }), repairSignal))?.plans ?? null;
         if (repairedPlans) {
           const needed = readsForPlans(repairedPlans, result.observations, Date.now());
@@ -1285,13 +1300,19 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             };
             modelPlans = [...modelPlans.filter((plan) => !repairable.some((entry) => entry.title === plan.title)), ...repairedPlans];
           }
-          logPhase("plan_repair", { refused: repairable.length, offered: repairedPlans.length, gained: gained.length, ms: Date.now() - repairStarted });
+          logPhase("plan_repair", { reason: [repairable.length ? "faults" : null, onlyBorrowing ? "no_debt_alternative" : null].filter(Boolean).join("+"), refused: repairable.length, offered: repairedPlans.length, gained: gained.length, ms: Date.now() - repairStarted });
         } else {
-          logPhase("plan_repair", { refused: repairable.length, offered: 0, gained: 0, ms: Date.now() - repairStarted });
+          logPhase("plan_repair", { reason: [repairable.length ? "faults" : null, onlyBorrowing ? "no_debt_alternative" : null].filter(Boolean).join("+"), refused: repairable.length, offered: 0, gained: 0, ms: Date.now() - repairStarted });
         }
       } catch (error) {
-        logPhase("plan_repair", { refused: repairable.length, failed: error instanceof Error ? error.name : "unknown", ms: Date.now() - repairStarted });
+        logPhase("plan_repair", { reason: [repairable.length ? "faults" : null, onlyBorrowing ? "no_debt_alternative" : null].filter(Boolean).join("+"), refused: repairable.length, failed: error instanceof Error ? error.name : "unknown", ms: Date.now() - repairStarted });
       }
+    }
+    // What the model built wrongly and could not put right is ours to log, not the user's to read as "ruled out".
+    const unrepaired = resolved.rejected.filter((entry) => entry.repairable);
+    if (unrepaired.length) {
+      logPhase("plans_unrepaired", { reasons: unrepaired.map((entry) => `${entry.title}: ${entry.reason}`) });
+      resolved = { ...resolved, rejected: resolved.rejected.filter((entry) => !entry.repairable) };
     }
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     // Fixed options only for the assets the user named; the model's composed plans are untouched.
@@ -1429,6 +1450,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         originalRequest: messages[0],
         statedSteps: requestedSteps,
         stopReason: outcome.kind === "stopped" ? outcome.reason : null,
+        comparisons: planComparisons,
       });
   /**
    * The part that runs is the stated steps; the part a missing margin account blocked must be
@@ -1477,6 +1499,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     evidence.floor = statedFloor;
     if (walletReserves.length) evidence.walletReserves = walletReserves;
     if (statedBorrow) evidence.statedBorrow = statedBorrow;
+    if (strategyGoal) evidence.strategyGoal = true;
   }
   const swapLeg = modelPlans.flatMap((plan) => plan.legs).find((leg) => leg.op === "swap" && leg.sizing.kind === "literal" && leg.assetOut);
   const swapVenue = swapLeg?.assetOut ? poolVenueFor(swapLeg.asset, swapLeg.assetOut) : null;

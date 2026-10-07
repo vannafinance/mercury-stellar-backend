@@ -58,6 +58,13 @@ export interface ResearchEvidence {
   slippageAccepted?: boolean;
   /** Amounts the user said to keep in the wallet, anchored when sealed, so a re-propose sizes around them too. */
   walletReserves?: { asset: string; amount: string }[];
+  /**
+   * The request named a goal, not an instruction, when it was sized (no stated plan): a bare "USDC" then covers every held
+   * variant and only a variant a leg would ACQUIRE needs the user's choice. Carried so approving the plan sizes it under the
+   * same reading - without it the approval asked "you said USDC without saying which one" about a plan that had just been
+   * shown (7 Oct, live, Approve on a BLUSDC plan).
+   */
+  strategyGoal?: boolean;
   /** The borrow size the user stated (the model's own literal leg), so a re-propose honours it without re-reading the wording. */
   statedBorrow?: { asset: string; tokens: number };
   /** The margin position the plans were sized against (contract basis), the sources' disagreement if any, and the user's stated floor (null = none). */
