@@ -412,12 +412,12 @@ function anchoredShare(sizing: PlanSizing & { kind: "fraction" }, messages: read
   // bound is the one the parser already holds (a percent above 0 and up to 100) and the sizer's
   // check that the legs together never draw more than the wallet has.
   if (sizing.allocation) return decimalWad(Number(sizing.percent).toFixed(9)) / BigInt(100);
-  if (!messages.some((m) => m.includes(sizing.sourceQuote))) throw new Reject(name, `the share "${sizing.sourceQuote}" does not appear in your request`);
+  if (!messages.some((m) => m.includes(sizing.sourceQuote))) throw new PlanFault(name, `the share "${sizing.sourceQuote}" does not appear in your request, so it is not a share you were given: split a balance across legs with a share and a reason, or size the leg all_idle`);
   const percent = Number(sizing.percent);
   const numbers = (sizing.sourceQuote.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
   const byNumber = numbers.some((n) => Math.abs(n - percent) < 1e-9);
   const byWord = FRACTION_WORDS.some((w) => w.pattern.test(sizing.sourceQuote) && Math.abs(w.percent - percent) < 1e-6);
-  if (!byNumber && !byWord) throw new Reject(name, `the share ${sizing.percent}% does not appear in your request`);
+  if (!byNumber && !byWord) throw new PlanFault(name, `the share ${sizing.percent}% does not appear in your request, so it is not a share you were given: split a balance across legs with a share and a reason, or size the leg all_idle`);
   return decimalWad(percent.toFixed(9)) / BigInt(100);
 }
 /**
@@ -1321,6 +1321,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
          * leg must fit in what the earlier legs of the plan, of any sizing, left.
          */
         if (sizing.allocation) {
+          // A share divides one balance between legs. With only this leg drawing on the asset there is
+          // nothing to divide: the percent would be an amount the model made up, which only the user may state.
+          const competing = expanded.filter((other) => other.asset === leg.asset && drawsOnWallet(other.sizing)).length;
+          if (competing < 2) throw new PlanFault(name, `a share splits one wallet balance between legs, and this is the only leg drawing on ${leg.asset}: size it all_idle, or use the amount you were given`);
           const left = walletAfterEarlierLegs(held, drafts, leg.asset);
           if (left.tokens === null || decimalWad(tokens) > decimalWad(left.tokens)) {
             const used = left.tokens === null ? held.tokens : formatWad(decimalWad(held.tokens) - decimalWad(left.tokens));

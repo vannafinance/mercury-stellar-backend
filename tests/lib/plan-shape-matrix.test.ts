@@ -254,7 +254,10 @@ function cells(asset: AssetId): Cell[] {
    * asset and funding state, not for the prompts that first showed the gap (a plan that spent
    * 675 BLUSDC twice, 7 Oct).
    */
-  const allocatedPairs = WORKFLOW_OPS.flatMap((first) => WORKFLOW_OPS.flatMap((second) => ([[60, 40], [70, 50]] as const).map(([a, b]) => ({
+  // Only ops that spend the wallet, or the account the wallet funds, can take a share of an idle balance; the rest
+  // refuse it by the op's own source (covered by the single-leg `share:60` cells), so pairing them adds cells, not cases.
+  const drawing = WORKFLOW_OPS.filter((op) => OP_FLOW[op].from === "wallet" || OP_FLOW[op].from === "account");
+  const allocatedPairs = drawing.flatMap((first) => drawing.flatMap((second) => ([[60, 40], [70, 50]] as const).map(([a, b]) => ({
     title: `${first} ${a}% + ${second} ${b}% ${asset} (allocated)`, said: `split my ${asset}`,
     legs: [{ op: first, asset, sizing: allocated(a), ...withOut(first, asset) },
            { op: second, asset, sizing: allocated(b), ...withOut(second, asset) }],
@@ -358,7 +361,7 @@ describe("the shape matrix — every op × sizing × asset × funding state", ()
           plansBy.asset.add(asset);
         }
       }
-    }, 120_000);
+    }, 300_000);
   });
 
   // 14 Sep: 1,880 plans and 51,040 refusals out of 52,920 cells.

@@ -921,7 +921,9 @@ describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% 
       ctx({ observations, messages: ["lend some of my xlm"] }),
     );
     expect(invented.candidates).toEqual([]);
-    expect(invented.rejected[0]?.reason).toBe("the share 40% does not appear in your request");
+    expect(invented.rejected[0]?.reason).toMatch(/^the share 40% does not appear in your request/);
+    // The refusal names a fault in how the plan is built, so the service may ask the model to fix it.
+    expect(invented.rejected[0]?.repairable).toBe(true);
   });
 
   /**
@@ -961,6 +963,16 @@ describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% 
       const [first, second] = candidates[0]?.steps ?? [];
       expect(first?.amount).toBe("5999.9263347");
       expect(decimalWad(first!.amount) + decimalWad(second!.amount)).toBeLessThanOrEqual(decimalWad("9999.8772246"));
+    });
+
+    it("refuses a share on the only leg drawing on an asset: nothing to divide, so the percent would be an invented amount", () => {
+      const { candidates, rejected } = resolvePlans(
+        [plan("One leg", [{ op: "lend", asset: "XLM", sizing: split("50") }])],
+        noQuote,
+      );
+      expect(candidates).toEqual([]);
+      expect(rejected[0]?.reason).toMatch(/this is the only leg drawing on XLM/);
+      expect(rejected[0]?.repairable).toBe(true);
     });
 
     it("still refuses two all_idle legs on one balance: only a share splits it", () => {

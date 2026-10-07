@@ -613,6 +613,23 @@ describe("a plan the sizer refuses for how it is built gets one repair", () => {
     expect(first + second).toBeLessThanOrEqual(10206.3356118);
   });
 
+  it("repairs a percent the model wrote as if the user had said it: a stated share needs the user's words, a split needs a reason", async () => {
+    const invented = {
+      ...split,
+      plans: [{
+        ...split.plans[0],
+        legs: [
+          { op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "idle", sourceQuote: "split it half and half" } },
+          { op: "deposit_collateral", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "idle", sourceQuote: "split it half and half" } },
+        ],
+      }],
+    };
+    const { view, turns } = await run([reads, invented, repaired]);
+    expect(turns).toHaveLength(3);
+    expect(turns[2].decisionFeedback).toMatch(/does not appear in your request/);
+    expect(view.candidates?.feasible.find((c) => c.steps?.map((s) => s.op).join() === "lend,deposit_collateral")).toBeTruthy();
+  });
+
   it("keeps the original refusal when the second answer is no better", async () => {
     const { view, turns } = await run([reads, split, split]);
     expect(turns).toHaveLength(3);
