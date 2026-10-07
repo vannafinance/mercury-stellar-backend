@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyWorkflowCompletion, completionMatches, completionStep, immediateCompletion, receiptKey, settledTransactions, shortTransactionHash, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
+import { applyWorkflowCompletion, completionMatches, completionStep, immediateCompletion, receiptBeside, receiptKey, settledTransactions, shortTransactionHash, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 
 export function receipt(): ExecutionReceiptSnapshot {
@@ -113,5 +113,24 @@ describe("completionStep: a finished run always has a next step toward its summa
     expect(completionStep({ status: "completed" }, null, noBuild)).toEqual({ kind: "wait" });
     expect(completionStep({ status: "completed" }, { ...settled, steps: [] }, noBuild)).toEqual({ kind: "wait" });
     expect(completionStep({ status: "completed" }, null, () => ({ ...settled, steps: [{ ...settled.steps[0], status: "failed" as const, txHash: undefined }] }))).toEqual({ kind: "wait" });
+  });
+});
+
+/**
+ * 7 Oct: the reply listed "Deposited 5 XLM" and "Supplied 5 XLM to Blend", and the receipt listed the same two again with their hashes.
+ * One list carries both when the reply has one item per transaction; otherwise the verified list stays.
+ */
+describe("receiptBeside: where a transaction's hash can sit beside the reply's own words", () => {
+  const list = (n: number) => ({ type: "bullets", items: Array.from({ length: n }, () => []) });
+
+  it("is the list with exactly one item per settled transaction", () => {
+    expect(receiptBeside([{ type: "paragraph" }, list(2)], 2)).toBe(1);
+  });
+
+  it("is nothing for a single transaction, a list of another length, or no list - the verified list then stays", () => {
+    expect(receiptBeside([{ type: "paragraph" }, list(2)], 1)).toBeNull();
+    expect(receiptBeside([{ type: "paragraph" }, list(3)], 2)).toBeNull();
+    expect(receiptBeside([{ type: "paragraph" }], 2)).toBeNull();
+    expect(receiptBeside(undefined, 2)).toBeNull();
   });
 });

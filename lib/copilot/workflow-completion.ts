@@ -56,6 +56,20 @@ export function completionStep(
   return built && settledTransactions(built) ? { kind: "attach", receipt: built } : { kind: "wait" };
 }
 
+/**
+ * Where each transaction's hash and ledger can sit beside the reply's own words, instead of in a second list that says the same
+ * thing again (7 Oct: "Deposited 5 XLM" above and "Deposit 5 XLM - hash - ledger" below).
+ *
+ * That is possible only when the reply has a list with exactly one item per settled transaction: the nth item then carries the nth
+ * transaction, which is what the composer is told to write. Anything else (a sentence, a list of another length) returns null and
+ * the verified list stays where it is, so the evidence of what settled is never dropped for the sake of tidiness.
+ */
+export function receiptBeside(blocks: ReadonlyArray<{ type: string; items?: readonly unknown[] }> | undefined, transactions: number): number | null {
+  if (!blocks || transactions < 2) return null;
+  const at = blocks.findIndex((block) => block.type === "bullets" && block.items?.length === transactions);
+  return at >= 0 ? at : null;
+}
+
 export function receiptKey(receipt: ExecutionReceiptSnapshot): string {
   return JSON.stringify([receipt.workflowId, receipt.status, receipt.network,
     receipt.steps.map((s) => [s.operation, s.label ?? null, s.asset, s.amount, s.status, s.txHash ?? null, s.settledLedger ?? null])]);

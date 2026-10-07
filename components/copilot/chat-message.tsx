@@ -5,7 +5,7 @@ import { CircleAlert } from "lucide-react";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import type { ReplyBlock, ReplySegment } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
-import { completionMatches, settledTransactions, shortTransactionHash, transactionPurpose } from "@/lib/copilot/workflow-completion";
+import { completionMatches, receiptBeside, settledTransactions, shortTransactionHash, transactionPurpose } from "@/lib/copilot/workflow-completion";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 import { VANNA_ICON_SRC } from "@/components/copilot/vanna-icon-data";
 
@@ -59,17 +59,20 @@ export function AssistantMessage({
   note,
   tone = "default",
   blocks,
+  beside,
 }: {
   children: React.ReactNode;
   note?: string | null;
   tone?: "default" | "error";
   /** A composed reply (compose.ts); drawn in place of the plain text when present. */
   blocks?: ReplyBlock[];
+  /** Set when each settled transaction is drawn at the end of its own list item (see receiptBeside). */
+  beside?: { at: number; nodes: React.ReactNode[] };
 }) {
   return (
     <div className="cp-reply-rise">
       {blocks?.length && tone !== "error" ? (
-        <ReplyBlocksBody blocks={blocks} />
+        <ReplyBlocksBody blocks={blocks} beside={beside} />
       ) : typeof children === "string" ? (
         <AssistantBody text={children} color={tone === "error" ? "var(--z-danger, #c23d3d)" : null} />
       ) : (
@@ -284,7 +287,8 @@ function Segments({ segments }: { segments: readonly ReplySegment[] }) {
  * A reply the model wrote around audited figures (compose.ts). Plain blocks only - the
  * figures inside are code's, bound before they reach here - so nothing is parsed from text.
  */
-export function ReplyBlocksBody({ blocks }: { blocks: readonly ReplyBlock[] }) {
+/** `beside`: after the items of block `at`, the nth node is drawn at the end of the nth item. */
+export function ReplyBlocksBody({ blocks, beside }: { blocks: readonly ReplyBlock[]; beside?: { at: number; nodes: React.ReactNode[] } }) {
   return (
     <>
       {blocks.map((block, i) => {
@@ -302,7 +306,7 @@ export function ReplyBlocksBody({ blocks }: { blocks: readonly ReplyBlock[] }) {
           return (
             <List key={i} style={{ margin: gap, paddingLeft: 24, listStyle: block.type === "steps" ? "decimal" : "disc", fontSize: 16, lineHeight: "26px", color: "var(--g800)" }}>
               {block.items.map((item, j) => (
-                <li key={j} style={{ marginTop: j === 0 ? 0 : 2 }}><Segments segments={item} /></li>
+                <li key={j} style={{ marginTop: j === 0 ? 0 : 2 }}><Segments segments={item} />{beside?.at === i ? beside.nodes[j] : null}</li>
               ))}
             </List>
           );
@@ -454,19 +458,35 @@ function AssistantTurn({
         className="h-[18px] w-[18px] shrink-0 mt-1 rounded-full"
       />
       <div className="flex flex-col min-w-0 w-full" style={{ gap: REPLY_CARD_GAP_PX }}>
-        <AssistantMessage note={note} tone={tone} blocks={blocks}>{text}</AssistantMessage>
-        {receipt && completionMatches(receipt, completion) ? (
-          <ul className="list-disc pl-5 space-y-2 text-[14px] leading-6 text-vgray-700" aria-label="Settled transactions">
-            {settledTransactions(receipt)!.map((transaction) => (
-              <li key={transaction.hash}>
-                <span>{transactionPurpose(transaction.steps)}</span>
-                <span> · </span>
-                <a href={transaction.url} target="_blank" rel="noopener noreferrer" className="underline text-[var(--cp-emerald)]" title={transaction.hash} aria-label={`Transaction ${transaction.hash}`}>{shortTransactionHash(transaction.hash)} ↗</a>
-                <span> · Ledger <span className="text-[var(--cp-emerald)]">{transaction.ledger.toLocaleString()}</span></span>
-              </li>
-            ))}
-          </ul>
-        ) : receipt ? (
+        {(() => {
+          const settled = receipt && completionMatches(receipt, completion) ? settledTransactions(receipt) : null;
+          // One list when the reply already has one item per transaction: each hash and ledger sits at the end of its own item.
+          const at = settled ? receiptBeside(blocks, settled.length) : null;
+          const link = (transaction: NonNullable<typeof settled>[number]) => (
+            <>
+              <span> · </span>
+              <a href={transaction.url} target="_blank" rel="noopener noreferrer" className="underline text-[var(--cp-emerald)]" title={transaction.hash} aria-label={`Transaction ${transaction.hash}`}>{shortTransactionHash(transaction.hash)} ↗</a>
+              <span> · Ledger <span className="text-[var(--cp-emerald)]">{transaction.ledger.toLocaleString()}</span></span>
+            </>
+          );
+          const beside = settled && at != null ? { at, nodes: settled.map((transaction) => <span key={transaction.hash} className="text-[14px] text-vgray-700">{link(transaction)}</span>) } : undefined;
+          return (
+            <>
+              <AssistantMessage note={note} tone={tone} blocks={blocks} beside={beside}>{text}</AssistantMessage>
+              {settled && !beside ? (
+                <ul className="list-disc pl-5 space-y-2 text-[14px] leading-6 text-vgray-700" aria-label="Settled transactions">
+                  {settled.map((transaction) => (
+                    <li key={transaction.hash}>
+                      <span>{transactionPurpose(transaction.steps)}</span>
+                      {link(transaction)}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </>
+          );
+        })()}
+        {receipt && !(completionMatches(receipt, completion)) ? (
           <div className="w-full">
             <ExecutionStepper
               steps={receiptStepperSteps(receipt)}

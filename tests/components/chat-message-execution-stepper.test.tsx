@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import { ChatTurns } from "@/components/copilot/chat-message";
 import { VANNA_ICON_SRC } from "@/components/copilot/vanna-icon-data";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
+import { receiptKey } from "@/lib/copilot/workflow-completion";
 
 /**
  * Live, 21 Sep, Freighter, auto-approve on: a turn's execution card read
@@ -66,5 +67,43 @@ describe("ChatTurns - the execution card makes no signing claim of its own", () 
     expect(icons[0].getAttribute("src")).toBe(VANNA_ICON_SRC);
     expect(VANNA_ICON_SRC.startsWith("data:image/png;base64,")).toBe(true);
     expect(icons[0].closest("[data-cp-user-bubble]")).toBeNull();
+  });
+});
+
+/** 7 Oct: the reply's own bullets and the receipt's bullets said the same thing twice; one list carries both now. */
+describe("ChatTurns - a finished run's hash and ledger sit with the reply's bullets", () => {
+  const hashA = "a".repeat(64);
+  const hashB = "b".repeat(64);
+  const done = (steps: Array<{ op: "deposit_collateral" | "supply_blend"; amount: string; hash: string; ledger: number }>) => ({
+    workflowId: "wf-2", status: "completed" as const, network: "testnet",
+    steps: steps.map((s) => ({ operation: s.op, asset: "XLM", amount: s.amount, status: "settled" as const, txHash: s.hash, settledLedger: s.ledger })),
+  });
+  const turnWith = (receipt: ReturnType<typeof done>, items: string[]): ThreadTurn[] => [
+    { role: "user", text: "deposit 5 XLM and supply 5 XLM to Blend" },
+    { role: "assistant", text: "Done", executionReceipt: receipt,
+      blocks: [{ type: "paragraph", segments: [{ text: "Both settled." }] }, { type: "bullets", items: items.map((text) => [{ text }]) }],
+      completion: { workflowId: receipt.workflowId, receiptKey: receiptKey(receipt), generatedAt: 1, source: "model" } },
+  ];
+  const receipt = done([
+    { op: "deposit_collateral", amount: "5", hash: hashA, ledger: 10 },
+    { op: "supply_blend", amount: "5", hash: hashB, ledger: 12 },
+  ]);
+
+  it("puts each transaction's hash and ledger at the end of its own bullet, and draws no second list", () => {
+    render(<ChatTurns turns={turnWith(receipt, ["Deposited as collateral", "Supplied to Blend"])} />);
+    expect(screen.queryByLabelText("Settled transactions")).toBeNull();
+    const items = screen.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toMatch(/Deposited as collateral.*Ledger 10/);
+    expect(items[1].textContent).toMatch(/Supplied to Blend.*Ledger 12/);
+    expect(screen.getByLabelText(`Transaction ${hashA}`)).toBeTruthy();
+    expect(screen.getByLabelText(`Transaction ${hashB}`)).toBeTruthy();
+  });
+
+  it("keeps the verified list when the reply's list does not match the transactions one for one", () => {
+    render(<ChatTurns turns={turnWith(receipt, ["Only one point"])} />);
+    expect(screen.getByLabelText("Settled transactions")).toBeTruthy();
+    expect(screen.getByLabelText(`Transaction ${hashA}`)).toBeTruthy();
+    expect(screen.getByLabelText(`Transaction ${hashB}`)).toBeTruthy();
   });
 });
