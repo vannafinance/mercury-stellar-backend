@@ -73,7 +73,9 @@ export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[]): B
       citations += result.cited.length;
       return result.segments;
     }
-    if (!Array.isArray(rawSegments) || !rawSegments.length || rawSegments.length > REPLY_LIMITS.segments) { reason = "segments missing, empty or too many"; return null; }
+    if (!Array.isArray(rawSegments)) { reason = `a block's words are neither a list of segments nor text (${rawSegments === undefined ? "missing" : typeof rawSegments})`; return null; }
+    if (!rawSegments.length) { reason = "a block has an empty list of segments"; return null; }
+    if (rawSegments.length > REPLY_LIMITS.segments) { reason = `a block has ${rawSegments.length} segments, at most ${REPLY_LIMITS.segments} are allowed`; return null; }
     const out: ReplySegment[] = [];
     let textLength = 0;
     for (const segment of rawSegments) {

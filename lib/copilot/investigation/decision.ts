@@ -171,8 +171,9 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       ? [{ asset: String(row.asset), amount: row.amount, sourceQuote: row.sourceQuote }] : []) : [];
   // Permission rows, kept one by one: an op the registry does not have, or a row with no quote, is dropped alone.
   const venues = Array.isArray(goal.venuesAllowed) ? goal.venuesAllowed.slice(0, 8).flatMap((row) =>
-    isRecord(row) && exactKeys(row, ["op", "sourceQuote"]) && (WORKFLOW_OPS as readonly string[]).includes(String(row.op)) && text(row.sourceQuote, 400)
-      ? [{ op: row.op as WorkflowOp, sourceQuote: row.sourceQuote }] : []) : [];
+    isRecord(row) && exactKeys(row, ["op", "sourceQuote", ...(Object.hasOwn(row, "whyNotUsed") ? ["whyNotUsed"] : [])]) && (WORKFLOW_OPS as readonly string[]).includes(String(row.op)) && text(row.sourceQuote, 400)
+      // The reason is read out to the user, so it carries no figure of its own: a figure must trace to a read.
+      ? [{ op: row.op as WorkflowOp, sourceQuote: row.sourceQuote, ...(text(row.whyNotUsed, 240) && !/\d/.test(String(row.whyNotUsed)) ? { whyNotUsed: String(row.whyNotUsed).trim() } : {}) }] : []) : [];
   if (!Array.isArray(raw.findings) || raw.findings.length === 0 || raw.findings.length > 12 ||
     !texts(raw.openQuestions)) return refuse(`findings/openQuestions: findings=${Array.isArray(raw.findings) ? raw.findings.length : typeof raw.findings}`);
   /**

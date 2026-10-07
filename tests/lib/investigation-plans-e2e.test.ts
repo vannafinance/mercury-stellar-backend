@@ -772,6 +772,12 @@ describe("an operation the user said may be used", () => {
     expect(view.understanding?.venuesAllowed).toEqual([{ op: "swap", sourceQuote: quote }]);
   });
 
+  it("says why the model left it out, in the model's own sentence", async () => {
+    const answer = { ...modelComplete, goal: { ...modelComplete.goal, venuesAllowed: [{ op: "swap", sourceQuote: quote, whyNotUsed: "The pools pay less than Blend on these tokens." }] } };
+    const { view } = await run([reads, answer, answer]);
+    expect(view.message).toMatch(/You said I could use swap; I left it out: The pools pay less than Blend on these tokens./);
+  });
+
   it("is not asked for, and not mentioned, when a plan already uses it", async () => {
     const { view, turns } = await run([reads, allowing("deposit_collateral")]);
     expect(turns).toHaveLength(2);

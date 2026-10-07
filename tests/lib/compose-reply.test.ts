@@ -140,7 +140,7 @@ describe("composing the words above plan cards", () => {
   it("names the operations the user allowed that no plan uses, and none that a plan does", () => {
     const used = strategy()?.candidates?.feasible?.[0]?.steps?.[0]?.op;
     const view = strategy({ understanding: { objective: "o", constraints: [], borrowing: "allowed", intent: "strategy", venuesAllowed: [{ op: "swap", sourceQuote: "q" }, ...(used ? [{ op: used, sourceQuote: "q" }] : [])] } } as Partial<ResearchView>);
-    expect(planFacts(view).notUsed).toEqual(used === "swap" ? [] : ["swap"]);
+    expect(planFacts(view).notUsed).toEqual(used === "swap" ? [] : [{ operation: "swap", reason: null }]);
     expect(planFacts(strategy()).notUsed).toEqual([]);
   });
 

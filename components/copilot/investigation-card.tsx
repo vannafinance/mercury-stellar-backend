@@ -13,6 +13,7 @@ import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap
 import { PlanReviewCard } from "@/components/copilot/plan-review-card";
 import { finished } from "@/hooks/use-workflow";
 import { formatRunClock } from "@/lib/copilot/investigation/duration";
+import { recommendationReason } from "@/lib/copilot/investigation/recommendation";
 import { ChatTurns, REPLY_CARD_GAP_PX } from "@/components/copilot/chat-message";
 import { signRefusalCopy } from "@/components/copilot/sign-refusal-copy";
 
@@ -109,6 +110,18 @@ function healthCell(candidate: PlanCandidate, fallbackBefore: string | null): { 
   return { value: after ?? "unchanged", tone: "plain" };
 }
 
+/** A model's paragraph as separate sentences: split where a full stop is followed by a space and a new sentence. */
+function sentencesOf(text: string | null | undefined): string[] {
+  return (text ?? "").split(/(?<=[.!?])\s+(?=[A-Z])/).map((part) => part.trim()).filter(Boolean);
+}
+
+/** The protocol check in one line; the full per-step summary is under "Show details". */
+function simulationLine(simulation: NonNullable<PlanCandidate["simulation"]>): string {
+  if (simulation.verdict === "runnable") return "Every step passed the protocol's check.";
+  if (simulation.verdict === "partial") return "Checked with the protocol; the later steps follow from the earlier ones.";
+  return simulation.summary;
+}
+
 /**
  * What a plan says about itself: the three figures, its steps, and the notes under them. One
  * body for both ways a plan is shown (the lone card and the selected row of a picker), so the
@@ -124,6 +137,7 @@ function PlanDetails({
   const steps = candidate.steps ?? [];
   const shownSteps = stepsOpen ? steps : steps.slice(0, previewSteps);
   const hiddenCount = steps.length - shownSteps.length;
+  const [headline, ...moreNotes] = sentencesOf(candidate.rationale);
   const cell = "flex items-baseline justify-between gap-3 border-t border-vgray-100 px-3.5 py-2.5 first:border-t-0 sm:flex-col sm:items-start sm:justify-start sm:gap-0.5 sm:border-l sm:border-t-0 sm:first:border-l-0";
   const label = "text-[12px] text-vgray-400 sm:whitespace-nowrap";
   const value = "text-[15px] font-semibold tabular-nums text-vgray-900 sm:whitespace-nowrap";
@@ -158,9 +172,19 @@ function PlanDetails({
           {stepsOpen ? "Hide steps" : shownSteps.length ? `Show all ${steps.length} steps` : `Show the ${steps.length} steps`}
         </button>
       )}
-      {candidate.rationale && <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-500">{candidate.rationale}</p>}
+      {/* One line each: the plan's main point and the protocol check. The rest is behind "Show details", as points. */}
+      {headline && <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-600" data-testid="plan-rationale">{headline}</p>}
       {candidate.simulation && (
-        <p className="max-w-[68ch] text-[12.5px] leading-5 text-vgray-500" data-testid="plan-simulation">{candidate.simulation.summary}</p>
+        <p className="max-w-[68ch] text-[12.5px] leading-5 text-vgray-500" data-testid="plan-simulation">{simulationLine(candidate.simulation)}</p>
+      )}
+      {(moreNotes.length > 0 || (candidate.simulation && simulationLine(candidate.simulation) !== candidate.simulation.summary)) && (
+        <details className="max-w-[68ch]" data-testid="plan-details">
+          <summary className="cursor-pointer text-[13px] font-semibold text-violet-500 hover:text-violet-600">Show details</summary>
+          <ul className="mt-2 flex list-disc flex-col gap-1.5 pl-5 text-[12.5px] leading-5 text-vgray-500">
+            {moreNotes.map((note) => <li key={note}>{note}</li>)}
+            {candidate.simulation && <li>{candidate.simulation.summary}</li>}
+          </ul>
+        </details>
       )}
       {lead && candidate.decision?.reason && <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-700">{candidate.decision.reason}</p>}
     </>
@@ -173,7 +197,13 @@ function PlanHeading({ candidate, index, several, selected }: { candidate: PlanC
   return (
     <div className="flex min-w-0 grow flex-wrap items-start justify-between gap-x-4 gap-y-1">
       <div className="flex min-w-0 flex-col gap-1">
-        {several && <span className={`text-[12px] font-semibold ${selected ? "text-violet-500" : "text-vgray-400"}`}>Plan {planLetter(index)}</span>}
+        {several && (
+          <span className="flex items-center gap-2">
+            <span className={`text-[12px] font-semibold ${selected ? "text-violet-500" : "text-vgray-400"}`}>Plan {planLetter(index)}</span>
+            {/* The plans arrive ranked, best first: the leading one is the recommendation, and the card says so. */}
+            {index === 0 && <span data-testid="plan-recommended" className="rounded-full bg-[var(--cp-ok-bg)] px-2 py-0.5 text-[11px] font-semibold text-[var(--cp-ok-fg)]">Recommended</span>}
+          </span>
+        )}
         <p className="min-w-0 break-words text-[15.5px] font-semibold leading-[22px] text-vgray-900">{candidate.label}</p>
       </div>
       {rate && <p className="shrink-0 text-[14px] font-semibold tabular-nums text-violet-500">{rate}</p>}
@@ -224,6 +254,7 @@ function PlanPicker({
   onApprove?: (id: string) => void; onCancel: (id: string) => void; approveDisabled: boolean; cancelDisabled: boolean;
 }) {
   const selected = plans.find((candidate) => candidate.id === selectedId) ?? plans[0];
+  const why = recommendationReason(plans);
   const move = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
     if (!step) return;
@@ -254,6 +285,8 @@ function PlanPicker({
                 </span>
                 <PlanHeading candidate={candidate} index={index} several selected={isSelected} />
               </button>
+              {/* Outside the radio, so the plan's accessible name stays its own and not the sentence about its rival. */}
+              {index === 0 && why && <p data-testid="plan-recommended-why" className="max-w-[68ch] px-5 pb-3 pl-[3.25rem] text-[12.5px] leading-5 text-vgray-500">{why}</p>}
               {isSelected && (
                 <div className="flex flex-col gap-4 px-5 pb-5 pl-[3.25rem]">
                   <PlanDetails candidate={candidate} lead={index === 0} beforeHf={beforeHf} previewSteps={0} stepsOpen={!!openSteps[candidate.id]} onToggleSteps={() => onToggleSteps(candidate.id)} />

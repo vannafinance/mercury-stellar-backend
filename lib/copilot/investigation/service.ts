@@ -1327,7 +1327,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       logPhase("plans_unrepaired", { reasons: unrepaired.map((entry) => `${entry.title}: ${entry.reason}`) });
       resolved = { ...resolved, rejected: resolved.rejected.filter((entry) => !entry.repairable) };
     }
-    logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
+    logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, shapes: resolved.candidates.map((candidate) => candidate.id), rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     // Fixed options only for the assets the user named; the model's composed plans are untouched.
     const fixedShapes = onlyNamedAssets(candidates, messages);
     candidates = mergeCandidateSets(fixedShapes, resolved, borrowing);
@@ -1464,7 +1464,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         statedSteps: requestedSteps,
         stopReason: outcome.kind === "stopped" ? outcome.reason : null,
         comparisons: planComparisons,
-        venuesAllowed: outcome.kind === "research_complete" ? anchoredVenueOps(outcome.goal, messages) : undefined,
+        venuesAllowed: outcome.kind === "research_complete" ? anchoredVenueRows(outcome.goal, messages) : undefined,
       });
   /**
    * The part that runs is the stated steps; the part a missing margin account blocked must be

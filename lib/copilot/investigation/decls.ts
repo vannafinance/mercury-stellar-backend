@@ -147,7 +147,11 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           description: "Only when the user said, in their own words, that you may use a kind of operation (\"you can use spots and farm markets\", \"feel free to swap\", \"lend it if that pays more\"). One row per operation: op is the operation, sourceQuote is the exact substring of their message that allows it. This is permission, not an order: do not list an operation they did not mention, and do not use this for what they told you to do (that is an action).",
           items: {
             type: "object",
-            properties: { op: { type: "string", enum: [...WORKFLOW_OPS] }, sourceQuote: { type: "string" } },
+            properties: {
+              op: { type: "string", enum: [...WORKFLOW_OPS] },
+              sourceQuote: { type: "string" },
+              whyNotUsed: { type: "string", description: "Only when none of your plans uses this operation: one plain sentence, with no figures, saying why the reads you took show it is not worth it here. Omit it when a plan uses the operation." },
+            },
             required: ["op", "sourceQuote"],
           },
         },

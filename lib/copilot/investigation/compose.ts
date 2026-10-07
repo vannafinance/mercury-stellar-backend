@@ -10,7 +10,7 @@ import { pct, shownApyPct } from "./apy";
 import type { RateComparison } from "./rate-comparison";
 import { doneClause } from "./completion";
 import { consideredAlongside } from "./considered";
-import { opWords, unusedVenueOps } from "./venues";
+import { opWords, unusedVenueOps, venueReasons } from "./venues";
 import type { ReplyBlock, ResearchFact, ResearchView } from "./view";
 
 export { plainReply } from "./reply-contract";
@@ -45,7 +45,7 @@ ${PRESENTATION}`;
 
 const PLANS_SYSTEM = `You write the reply shown above a set of plan cards in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). The cards already show every step and figure; your words help the user choose, the way a thoughtful analyst would explain options in a chat app.
 You are given the user's request and PLANS, each with facts computed by the sizer. Plans are named by letter, exactly as the cards label them: "Plan A", "Plan B" and so on.
-Explain the leading plan using the supplied sizer reason (already_held means an already held token; thin_margin means rates are within noise; net_return means the best computed return at this size). CONSIDERED lists other tokens the user holds that were compared for the same job, with their rates; say they were checked and how the leading plan's token compares, using only those facts, when the list is there. NOT_USED names operations the user said you may use that none of the plans uses; when it is not empty, say in one clause that none of the plans needed them, without giving a reason you were not given. Keep it to two short paragraphs at most: the leading plan and why, then how the other plans differ; the cards already show every step and figure, so do not walk through them. Describe useful differences without inventing a ranking. These are options awaiting approval, not executed transactions. Do not invent risks or reasons.
+Explain the leading plan using the supplied sizer reason (already_held means an already held token; thin_margin means rates are within noise; net_return means the best computed return at this size). CONSIDERED lists other tokens the user holds that were compared for the same job, with their rates; say they were checked and how the leading plan's token compares, using only those facts, when the list is there. NOT_USED names operations the user said you may use that none of the plans uses; when it is not empty, say in one clause that none of the plans used them, giving the reason when one is supplied and no other. Keep it to two short paragraphs at most: the leading plan and why, then how the other plans differ; the cards already show every step and figure, so do not walk through them. Describe useful differences without inventing a ranking. These are options awaiting approval, not executed transactions. Do not invent risks or reasons.
 ${PRESENTATION}`;
 
 const COMPLETION_SYSTEM = `You write the reply shown once a user's transactions have finished, in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). Say what happened and what it means now, the way a helpful analyst would confirm a completed trade in a chat app.
@@ -93,7 +93,7 @@ export function planFacts(view: ResearchView): {
   plans: Array<{ plan: string; borrows: boolean; facts: Array<{ id: string; label: string; shown: string }> }>;
   considered: Array<{ id: string; label: string; shown: string }>;
   /** Operations the user allowed that no plan uses, by name. Empty when every one is used. */
-  notUsed: string[];
+  notUsed: Array<{ operation: string; reason: string | null }>;
   lead: string | null;
 } {
   const feasible = (view.candidates?.feasible ?? []).slice(0, 6);
@@ -128,7 +128,8 @@ export function planFacts(view: ResearchView): {
   facts.push(...considered);
   return {
     facts, plans, considered: considered.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact) })),
-    notUsed: unusedVenueOps([...new Set((view.understanding?.venuesAllowed ?? []).map((row) => row.op))], feasible).map(opWords),
+    notUsed: unusedVenueOps([...new Set((view.understanding?.venuesAllowed ?? []).map((row) => row.op))], feasible)
+      .map((op) => ({ operation: opWords(op), reason: venueReasons(view.understanding?.venuesAllowed ?? []).get(op) ?? null })),
     lead: feasible[0]?.decision?.factor ?? null,
   };
 }

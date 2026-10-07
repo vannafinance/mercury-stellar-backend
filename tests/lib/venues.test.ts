@@ -44,3 +44,25 @@ describe("the venuesAllowed field of a conclusion", () => {
     if (out?.kind === "research_complete") expect(out.goal.venuesAllowed).toEqual([{ op: "swap", sourceQuote: "you can use spots" }]);
   });
 });
+
+describe("the reason an allowed operation was left out", () => {
+  it("is said for that operation and the rest are named together", () => {
+    const reasons = new Map([["swap" as const, "Blend already pays more on the same tokens."]]);
+    expect(venueSentence(["swap", "add_liquidity"], reasons)).toBe(
+      " You said I could use swap; I left it out: Blend already pays more on the same tokens. You said I could use add liquidity; no plan that sizes on the current reads uses it.",
+    );
+  });
+
+  it("is kept from the model's row only when it states no figure of its own", () => {
+    const conclude = (whyNotUsed: string) => parseDecision({
+      kind: "research_complete",
+      goal: { objective: "o", constraints: [], borrowing: "unspecified", intent: "strategy", venuesAllowed: [{ op: "swap", sourceQuote: "you can use spots", whyNotUsed }] },
+      findings: [{ summary: "s", evidenceIds: [] }], openQuestions: [],
+    });
+    const kept = conclude("The pool pays less than Blend here.");
+    const dropped = conclude("The pool pays 3% less.");
+    if (kept?.kind !== "research_complete" || dropped?.kind !== "research_complete") throw new Error("not parsed");
+    expect(kept.goal.venuesAllowed?.[0].whyNotUsed).toBe("The pool pays less than Blend here.");
+    expect(dropped.goal.venuesAllowed?.[0].whyNotUsed).toBeUndefined();
+  });
+});

@@ -137,6 +137,33 @@ describe("investigation card / options", () => {
     expect(health[2]).toMatch(/(^|→ )1.30$/);
   });
 
+  // Owner, 7 Oct: with several plans one must be marked as the recommendation, next to its letter.
+  it("marks only the leading plan as Recommended, and only when there are several", () => {
+    const two = { feasible: [walletPlan("Lend BLUSDC to Earn", "25.41"), walletPlan("Supply BLUSDC to Blend", "10.00")], rejected: [] };
+    const first = card(view({ candidates: two }));
+    const badges = screen.getAllByTestId("plan-recommended");
+    expect(badges).toHaveLength(1);
+    expect(badges[0].parentElement?.textContent).toMatch(/^Plan ARecommended$/);
+    expect(screen.getByTestId("plan-recommended-why").textContent).toMatch(/^Recommended: the highest return of the plans, 25.41% against 10.00% for Plan B.$/);
+    first.unmount();
+    card(view({ candidates: { feasible: [walletPlan("Lend BLUSDC to Earn", "25.41")], rejected: [] } }));
+    expect(screen.queryByTestId("plan-recommended")).toBeNull();
+  });
+
+  // Owner, 7 Oct: "itni textual info thodi chahiye" - one line for the main point, the rest as points behind a toggle.
+  it("shows one line of reasoning and one line for the protocol check, the rest as points under Show details", () => {
+    const long = { ...walletPlan("Supply XLM to Blend", "10.00"),
+      rationale: "Supplying XLM into Blend pays the most for XLM. Deposit to margin collateral is required first. Lending BLUSDC to Earn pays 19.25% APY.",
+      simulation: { verdict: "runnable" as const, steps: [], summary: "Simulated against the protocol: Deposit 1496.77 XLM as collateral allowed (LTV 49.91% after); Lend 675 BLUSDC to Earn allowed." } };
+    card(view({ candidates: { feasible: [long], rejected: [] } }));
+    expect(screen.getByTestId("plan-rationale").textContent).toBe("Supplying XLM into Blend pays the most for XLM.");
+    expect(screen.getByTestId("plan-simulation").textContent).toBe("Every step passed the protocol's check.");
+    const details = screen.getByTestId("plan-details");
+    expect(details.querySelectorAll("li")).toHaveLength(3);
+    expect(details.textContent).toMatch(/Deposit to margin collateral is required first\./);
+    expect(details.textContent).toMatch(/LTV 49\.91% after/);
+  });
+
   it("renders only the no-debt plan when the user forbade borrowing", () => {
     const generated = generateCandidates({
       grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", borrowingAllowed: false,
