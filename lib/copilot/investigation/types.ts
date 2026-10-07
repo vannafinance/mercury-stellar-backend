@@ -18,12 +18,23 @@ export interface InvestigationScope {
   unverified?: "bindings" | "session" | "claimed";
 }
 
+/** A plan the previous turn put on screen, as the user saw it: its letter, its title and its steps. */
+export interface ShownPlan { plan: string; title: string; steps: string[] }
+
+/** What the model is told about the conversation so far, so a follow-up can be read against it. */
+export interface ResearchTask {
+  messages: string[];
+  lastQuestion: string | null;
+  /** The plans on screen, by letter, so "make Plan B smaller" and "add spot" have something to refer to. */
+  shown?: ShownPlan[];
+}
+
 export interface InvestigationRequest {
   message: string;
   history?: Array<{ role: "user" | "assistant"; text: string }>;
   scope: InvestigationScope;
   /** Authenticated continuation: preserve whole user instructions, not a truncated transcript. */
-  task?: { messages: string[]; lastQuestion: string | null };
+  task?: ResearchTask;
   /**
    * Evidence the SERVER already holds, presented to the model as observations it need not
    * read. Not a shortcut: it is the same authoritative snapshot the Margin page renders, so
@@ -49,7 +60,11 @@ export interface GoalUnderstanding {
   /** Optional scope for answer-only coverage; uncertain requests retain full coverage. */
   positionReadScope?: { kind: "all" | "selected"; capabilities: string[]; sourceQuote: string };
   intent?: "answer" | "strategy";
-  relation?: "new" | "refine";
+  /**
+   * How the latest message relates to the conversation, as the model read it: `refine` changes the plan or answers the open
+   * question, `new` is an unrelated request, `side` is a question beside the plan that leaves it as it is.
+   */
+  relation?: "new" | "refine" | "side";
   actions?: StatedAction[];
   /**
    * A lifecycle write - not a sized plan. Opening a margin account is one of these:
@@ -300,7 +315,7 @@ export interface ResearchTurn {
   capabilities: readonly ReadCapability[];
   observations: readonly Observation[];
   remaining: { turns: number; toolCalls: number };
-  task?: { messages: string[]; lastQuestion: string | null };
+  task?: ResearchTask;
 }
 
 export type InvestigationProgress =

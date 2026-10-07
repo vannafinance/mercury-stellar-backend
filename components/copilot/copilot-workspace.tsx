@@ -104,7 +104,7 @@ import { InvestigationCard } from "./investigation-card";
 import { ClarifyQuestionnaire } from "./clarify-questionnaire";
 import { ConversationMenu } from "./conversation-menu";
 import { AutoApproveMenu } from "./auto-approve-menu";
-import { runIsOnEarlierTurn, shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
+import { bringsItsOwnPlan, runIsOnEarlierTurn } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
   status: string;
@@ -2870,26 +2870,27 @@ export function CopilotWorkspace() {
   const { run: investigate } = investigation;
   const resetWorkflow = workflow.reset;
   const runInvestigation = useCallback(async (text: string, signal?: AbortSignal) => {
-    const continuing = shouldContinueInvestigation(text, investigation.result);
-    if (shouldReplacePlan(text, investigation.result)) {
-      setSigningJournal(false);
-      resetWorkflow();
-      resetStrategyAccumulator();
-      setResponse(null);
-    } else if (!(continuing && investigation.result?.question)) {
-      setResponse(null);
-    }
+    /**
+     * Whether this message continues the last plan is the server's reading, not ours: the old plan stays until the reply says
+     * it has its own plan or write to put in its place. An answer or a question leaves the plan standing.
+     */
+    if (!investigation.result?.question) setResponse(null);
     setSubmitted(text);
     setIntentText("");
-    await investigate(text, signal);
-  }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result]);
-  const runDirect = useCallback(async (text: string, signal: AbortSignal) => {
-    const continuing = shouldContinueInvestigation(text, investigation.result);
-    if (shouldReplacePlan(text, investigation.result)) {
+    await investigate(text, signal, undefined, (reply) => {
+      if (!bringsItsOwnPlan(reply)) return;
       setSigningJournal(false);
       resetWorkflow();
       resetStrategyAccumulator();
-    } else if (!(continuing && investigation.result?.question)) {
+      setResponse(null);
+    });
+  }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result]);
+  const runDirect = useCallback(async (text: string, signal: AbortSignal) => {
+    // A direct write is a new action of its own, so it takes the old plan's place; an open question is answered in place.
+    if (!investigation.result?.question) {
+      setSigningJournal(false);
+      resetWorkflow();
+      resetStrategyAccumulator();
       setResponse(null);
     }
     setSubmitted(text);

@@ -1,5 +1,6 @@
 import type { MCPClient } from "../mcp-client";
-import type { ResearchModel, InvestigationProgress, InvestigationLimits, Observation, ProposedPlan } from "./types";
+import type { ResearchModel, InvestigationProgress, InvestigationLimits, Observation, ProposedPlan, ResearchTask } from "./types";
+import { inheritsThread, shownPlans } from "./thread-context";
 import { parseDecision } from "./decision";
 import { readCapabilities } from "./catalog";
 import { StrKey } from "@stellar/stellar-sdk";
@@ -127,7 +128,7 @@ async function requestResearchRetry(args: {
   history: Array<{ role: "user" | "assistant"; text: string }>;
   scope: Parameters<typeof readCapabilities>[0];
   observations: readonly Observation[];
-  task: { messages: string[]; lastQuestion: string | null };
+  task: ResearchTask;
   feedback: string;
   signal: AbortSignal;
 }) {
@@ -284,7 +285,20 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
      */
     return reconnectWalletView(input, dependencies.network, scope.unverified === "bindings" ? "bindings" : "session");
   }
-  const prior = input.continuation ? codec.open(input.continuation, scope) : null;
+  /**
+   * The client always sends the last continuation it holds; whether the message continues it is the model's call. A
+   * continuation that has expired, or belongs to another account, is simply no thread for a new request - it is an error
+   * only for an answer to a questionnaire, which is checked against exactly what that reply issued.
+   */
+  let prior: ReturnType<typeof codec.open> | null = null;
+  if (input.continuation) {
+    try {
+      prior = codec.open(input.continuation, scope);
+    } catch (error) {
+      if (input.answers || !(error instanceof ResearchError) || error.code !== "context_expired") throw error;
+      logPhase("thread_expired", {});
+    }
+  }
   const answeredQuestionnaire = prior?.evidence?.questionnaire;
   if (input.answers) {
     const problem = answerProblem(answeredQuestionnaire, input.answers);
@@ -320,6 +334,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   // Validate capacity before paying for any model call. Never truncate an older constraint.
   codec.seal(scope, messages, prior?.lastQuestion ?? null);
+  // A function, not a value: `messages` is reset when the model reads the request as new, and a retry must see the reset one.
+  const researchTask = (): ResearchTask => ({ messages, lastQuestion: prior?.lastQuestion ?? null, ...(prior?.evidence?.shown?.length ? { shown: prior.evidence.shown } : {}) });
   const scopedMcp: Pick<MCPClient, "call"> = { call: async (tool, args, userId) => {
     const data = await dependencies.mcp.call(tool, args, userId);
     if ((typeof data.smart_account === "string" && data.smart_account !== scope.smartAccount) ||
@@ -559,7 +575,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     : await withInvestigationPhase("loop", () => runInvestigation({
       message: input.message, scope, seed, seedLater: lateSeed,
       history: (input.history ?? []).slice(-8),
-      task: { messages, lastQuestion: prior?.lastQuestion ?? null },
+      task: researchTask(),
       promptName: input.promptName,
     }, { model: dependencies.model, mcp: scopedMcp, signal: dependencies.signal, onProgress: dependencies.onProgress, limits: dependencies.limits }));
   // The late seed has been taken by the loop (or never needed); either way `position` and the basis are set from here on.
@@ -592,7 +608,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       const retrySignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(REPAIR_BUDGET_MS)]);
       strategyAnswer = await interruptible(() => requestResearchRetry({
         model: dependencies.model, message: input.message, history: (input.history ?? []).slice(-8),
-        scope, observations: result.observations, task: { messages, lastQuestion: prior?.lastQuestion ?? null },
+        scope, observations: result.observations, task: researchTask(),
         feedback: "You asked a question, but this request names a goal for the user's own funds, which is answered with plans, not a questionnaire. " +
           "Return research_complete with intent strategy and one to three plans composed from the wallet, positions and rates in your observations. " +
           "State each amount as a sizing word, and do not ask which venue or how much.",
@@ -671,7 +687,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   );
   const needsBorrowCapacity = borrowing === "required" ||
     (outcome.kind === "research_complete" && plansBorrow(outcome.plans));
-  const capacityMessages = prior && outcome.kind === "research_complete" && outcome.goal.relation === "new"
+  const capacityMessages = prior && outcome.kind === "research_complete" && !inheritsThread(outcome.goal.relation, prior.lastQuestion)
     ? [input.message]
     : messages;
   const goalFloor = outcome.kind === "research_complete" ? anchoredGoalFloor(outcome.goal, capacityMessages) : null;
@@ -773,7 +789,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    */
   const capacityResult = await capacityTask;
   let capacity = capacityResult.value;
-  if (prior && outcome.kind === "research_complete" && outcome.goal.relation === "new") {
+  if (prior && outcome.kind === "research_complete" && !inheritsThread(outcome.goal.relation, prior.lastQuestion)) {
     messages = [input.message];
     // Never carry the previous task's floor or amount into an unrelated new goal.
     try {
@@ -1286,7 +1302,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         const repairSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(REPAIR_BUDGET_MS)]);
         const repairedPlans = (await interruptible(() => requestResearchRetry({
           model: dependencies.model, message: input.message, history: (input.history ?? []).slice(-8),
-          scope, observations: result.observations, task: { messages, lastQuestion: prior?.lastQuestion ?? null },
+          scope, observations: result.observations, task: researchTask(),
           feedback: [
             repairable.length ? planRepairFeedback(repairable) : null,
             onlyBorrowing
@@ -1422,8 +1438,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * acceptance that would lift it - but a sentence buried in a rejected option is not an
    * invitation, and it asks the user to know the words before they have been told them.
    * Raising it as the turn's question puts it where the UI already handles one ("Needs
-   * your answer"), and `shouldContinueInvestigation` already treats an open question as a
-   * thread the next message continues - so "yes, go ahead" lands on this same
+   * your answer"), and an open question is a
+   * thread the next message continues (`inheritsThread`) - so "yes, go ahead" lands on this same
    * investigation instead of starting a new one.
    *
    * Only when nothing was offered: an option the user can approve is the better answer,
@@ -1496,6 +1512,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   // The reads the sealed plans need survive sealing, so propose can re-size exactly what was offered.
   const evidence = compactResearchEvidence(result.observations, capacity, observedNow, readsForPlans(modelPlans, [], observedNow));
   if (questionnaire) evidence.questionnaire = questionnaire;
+  if (candidates?.feasible.length) evidence.shown = shownPlans(candidates.feasible);
   // Every option shown can be prepared; the sealed list is exactly the shown list.
   evidence.allowedCandidateIds = outcome.kind === "research_complete"
     ? candidates?.feasible.map(candidate => candidate.id) ?? [] : [];

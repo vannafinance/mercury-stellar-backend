@@ -105,7 +105,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
       type: "object",
       properties: {
         intent: { type: "string", enum: ["answer", "strategy"] },
-        relation: { type: "string", enum: ["new", "refine"] },
+        relation: { type: "string", enum: ["new", "refine", "side"], description: "How the latest message relates to the conversation. refine: it changes the plan on screen or answers the open question. new: an unrelated request. side: a question asked beside the plan (a balance, a price, a definition) that leaves the plan as it is." },
         positionReadScope: {
           type: "object",
           description: "For factual position answers only. Use all for broad account overviews or uncertain scope. selected requires the user's exact quote explicitly limiting the requested pockets; never narrow strategy discovery or omit relevant funding/position dependencies.",

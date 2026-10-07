@@ -1,40 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { isIndependentGoal, isRefinement, runIsOnEarlierTurn, shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
+import { bringsItsOwnPlan, runIsOnEarlierTurn } from "@/lib/copilot/investigation/thread";
+import { inheritsThread, shownPlans } from "@/lib/copilot/investigation/thread-context";
 
-describe("investigation thread continuation", () => {
-  it("always continues when a question is open, including a one-word variant answer", () => {
-    expect(shouldContinueInvestigation("SOUSDC", { question: "Which USDC variant?", status: "needs_input" })).toBe(true);
-    expect(shouldContinueInvestigation("ok", { question: "May I borrow?", status: "needs_input" })).toBe(true);
+/** Whether a message continues the plan on screen is the model's reading; these are the rules code applies to its answer. */
+describe("what a follow-up inherits", () => {
+  it("carries the thread for a refinement and for an answer to an open question, and for nothing else", () => {
+    expect(inheritsThread("refine", null)).toBe(true);
+    expect(inheritsThread(undefined, "Which USDC variant?")).toBe(true);
+    expect(inheritsThread("new", "Which USDC variant?")).toBe(false);
+    expect(inheritsThread("side", "Which USDC variant?")).toBe(false);
+    expect(inheritsThread("new", null)).toBe(false);
+    expect(inheritsThread("side", null)).toBe(false);
+    expect(inheritsThread(undefined, null)).toBe(false);
   });
 
-  it("continues a floor or amount refinement of a researched strategy", () => {
-    const last = {
-      question: null as string | null,
-      status: "researched",
-      understanding: { intent: "strategy" as const },
-    };
-    expect(shouldContinueInvestigation("make it 1.4 instead", last)).toBe(true);
-    expect(isRefinement("make it 1.4 instead")).toBe(true);
-    expect(shouldReplacePlan("make it 1.4 instead", last)).toBe(true);
+  it("names the plans on screen by the letters their cards show", () => {
+    const shown = shownPlans([{ label: "Lend USDC", steps: [{ label: "Lend 5 BLUSDC to Earn" }] }, { label: "Supply XLM" }]);
+    expect(shown).toEqual([
+      { plan: "Plan A", title: "Lend USDC", steps: ["Lend 5 BLUSDC to Earn"] },
+      { plan: "Plan B", title: "Supply XLM", steps: [] },
+    ]);
   });
+});
 
-  it("does not inherit the objective for an independent goal, including over an open question", () => {
-    const last = {
-      question: null as string | null,
-      status: "researched",
-      understanding: { intent: "strategy" as const },
-    };
-    expect(shouldContinueInvestigation("what's my health factor", last)).toBe(false);
-    expect(shouldContinueInvestigation("price of XLM", last)).toBe(false);
-    expect(isIndependentGoal("repay 1 XLM")).toBe(true);
-    expect(shouldReplacePlan("what's my health factor", last)).toBe(false);
-    expect(shouldReplacePlan("repay 1 XLM", last)).toBe(true);
-    expect(shouldContinueInvestigation("what's my health factor", {
-      question: "Which USDC variant?", status: "needs_input",
-    })).toBe(false);
-    expect(shouldReplacePlan("what's my health factor", {
-      question: "Which USDC variant?", status: "needs_input",
-    })).toBe(false);
+describe("what replaces the plan on screen", () => {
+  it("is a reply that brings its own plans, write or form - never an answer or a question", () => {
+    expect(bringsItsOwnPlan({ candidates: { feasible: [{} as never], rejected: [] } })).toBe(true);
+    expect(bringsItsOwnPlan({ pendingWrite: { op: "create_account" } as never })).toBe(true);
+    expect(bringsItsOwnPlan({ directAction: true })).toBe(true);
+    expect(bringsItsOwnPlan({ candidates: null })).toBe(false);
+    expect(bringsItsOwnPlan({ candidates: { feasible: [], rejected: [] } })).toBe(false);
+    expect(bringsItsOwnPlan(null)).toBe(false);
   });
 });
 

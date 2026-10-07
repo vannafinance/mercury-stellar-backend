@@ -73,6 +73,8 @@ export interface ResearchEvidence {
   capturedAt: number;
   observations: Observation[];
   capacity: ResearchCapacity | null;
+  /** The plans this turn showed, by letter, for the next turn's model to read a follow-up against. */
+  shown?: import("./types").ShownPlan[];
   /** The questionnaire this turn issued, so a later answer can be checked against these options. */
   questionnaire?: import("./view").Questionnaire;
 }

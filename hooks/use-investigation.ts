@@ -12,7 +12,6 @@ import { applyWorkflowCompletion, completionMatches, type WorkflowCompletionRepl
 import {
   type ConversationSummary,
   type ThreadTurn,
-  shouldContinueInvestigation,
   readStoredThread,
   writeStoredThread,
   clearStoredThread,
@@ -635,7 +634,7 @@ export function useInvestigation(wallet: string | null) {
    * THAT reply's continuation, which seals the options the server checks them against; the
    * summary is only what the thread shows as the user's turn, never what is executed.
    */
-  const run = useCallback(async (message: string, signal?: AbortSignal, answers?: QuestionnaireAnswers) => {
+  const run = useCallback(async (message: string, signal?: AbortSignal, answers?: QuestionnaireAnswers, onResult?: (result: ResearchView) => void) => {
     const prompt = message.trim();
     if (!prompt) return;
     abort.current?.abort("replaced by a newer prompt");
@@ -666,8 +665,9 @@ export function useInvestigation(wallet: string | null) {
     const abortedCopy = () => timedOut
       ? "The investigation ran out of time before it could finish. Nothing was executed - please try again."
       : "This investigation was cancelled or replaced before it finished. Nothing was executed - run it again.";
-    const followUp = answers ? continuation.current
-      : shouldContinueInvestigation(prompt, lastResult.current) ? continuation.current : null;
+    // Always sent when held: whether this message continues it is for the server's model to read, with the plans on screen.
+    const followUp = continuation.current;
+    const answeringQuestion = Boolean(lastResult.current?.question);
     const session = continuation.current;
     const history = transcript.current.slice(-8);
     const startedIn = conversationId.current && !isLocalConversationId(conversationId.current)
@@ -676,7 +676,7 @@ export function useInvestigation(wallet: string | null) {
       const turns = [...previous.turns, { role: "user" as const, text: prompt }].slice(-16);
       rememberLive(owner, turns, startedIn);
       return {
-        wallet: owner, loading: true, prompt: followUp ? previous.prompt || prompt : prompt,
+        wallet: owner, loading: true, prompt: answeringQuestion ? previous.prompt || prompt : prompt,
         result: previous.result,
         turns,
         progress: { kind: "scope", label: "Preparing your session" }, error: null,
@@ -716,6 +716,7 @@ export function useInvestigation(wallet: string | null) {
           received = true;
           continuation.current = event.result.continuation;
           lastResult.current = event.result;
+          onResult?.(event.result);
           const landedIn = event.conversationId ?? startedIn;
           conversationId.current = landedIn;
           const next: Array<{ role: "user" | "assistant"; text: string }> = [

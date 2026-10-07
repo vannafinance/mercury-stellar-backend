@@ -4,14 +4,13 @@ import { renderHook, act } from "@testing-library/react";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 
 /**
- * Which turns continue a prior investigation, and which start a new one.
+ * Which turns continue a prior investigation is the server model's reading, not the browser's.
  *
- * The continuation token carries the ORIGINAL objective plus every refinement, and the
- * research prompt instructs the model never to discard that objective. Sending it on
- * every turn therefore did not merely mislabel the card - asking "price of XLM" and then
- * a full strategy goal recorded "price of XLM" as the objective and reduced the real goal
- * to a refinement of it, so the investigation kept optimising the wrong thing. Only a
- * reply to an open question may continue; anything else starts over.
+ * The browser used to decide from the wording (a word list) whether to send the continuation token, and a message in no
+ * list - "mrko spt bhi chaiye", "make plan b smaller" - was sent as a brand-new request that forgot the plan on screen.
+ * It now always sends the thread it holds; the server shows the model the earlier messages and the plans on screen and the
+ * model says whether the message refines the plan, is unrelated, or is a question beside it. A new objective is kept from
+ * inheriting the old one by the server (relation "new" starts from the new message alone), tested in the e2e suite.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -98,7 +97,7 @@ describe("useInvestigation - continuation chaining", () => {
     sessionStorage.clear();
   });
 
-  it("does not chain a new goal onto a finished investigation", async () => {
+  it("sends the held thread with a new goal too, and leaves the reading of it to the server", async () => {
     const sent = server([{ result: view({ continuation: "r1.first", question: null }) }]);
     const { result } = renderHook(() => useInvestigation(WALLET));
 
@@ -113,8 +112,8 @@ describe("useInvestigation - continuation chaining", () => {
     expect(result.current.loading).toBe(false);
     expect(sent[0].continuation).toBeNull();
     expect(sent[0].history).toEqual([]);
-    // New objective: do not inherit the first goal, but keep the transcript and evidence token.
-    expect(sent[1].continuation).toBeNull();
+    // The held thread is always sent; whether this message continues it is the server's call.
+    expect(sent[1].continuation).toBe("r1.first");
     expect(sent[1].session).toBe("r1.first");
     expect(sent[1].message).toBe("build a strategy with USDC and XLM");
     expect(sent[1].history).toEqual([
@@ -147,7 +146,7 @@ describe("useInvestigation - continuation chaining", () => {
     ]);
   });
 
-  it("stops chaining a new independent goal once the answered question is resolved", async () => {
+  it("sends the latest thread with an unrelated question after an answered one", async () => {
     const sent = server([
       { result: view({ status: "needs_input", continuation: "r1.first", question: "Which venue?" }) },
       { result: view({ continuation: "r1.second", question: null }) },
@@ -160,7 +159,7 @@ describe("useInvestigation - continuation chaining", () => {
     await act(async () => { await result.current.run("what's my health factor"); });
 
     expect(sent[1].continuation).toBe("r1.first");
-    expect(sent[2].continuation).toBeNull();
+    expect(sent[2].continuation).toBe("r1.second");
     expect(sent[2].session).toBe("r1.second");
     expect(result.current.turns.some((turn) => turn.text === "build a strategy")).toBe(true);
     expect(result.current.turns.some((turn) => turn.text === "what's my health factor")).toBe(true);

@@ -101,7 +101,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
   }
   const goal = raw.goal;
   if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "venuesAllowed") ? ["venuesAllowed"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
-    (goal.relation !== undefined && !["new", "refine"].includes(String(goal.relation))) ||
+    (goal.relation !== undefined && !["new", "refine", "side"].includes(String(goal.relation))) ||
     (goal.intent !== undefined && !["answer", "strategy"].includes(String(goal.intent))) ||
     !text(goal.objective) || !texts(goal.constraints) ||
     !["unspecified", "allowed", "required", "forbidden"].includes(String(goal.borrowing))) {
@@ -219,7 +219,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
         && texts(goal.positionReadScope.capabilities) && typeof goal.positionReadScope.sourceQuote === "string"
         ? { positionReadScope: { kind: goal.positionReadScope.kind as "all" | "selected", capabilities: [...goal.positionReadScope.capabilities], sourceQuote: goal.positionReadScope.sourceQuote } } : {}),
       ...(goal.intent ? { intent: goal.intent as "answer" | "strategy" } : {}),
-      ...(goal.relation ? { relation: goal.relation as "new" | "refine" } : {}),
+      ...(goal.relation ? { relation: goal.relation as "new" | "refine" | "side" } : {}),
       ...(validActions.length ? { actions: structuredClone(validActions) as NonNullable<Extract<ResearchDecision, { kind: "research_complete" }>["goal"]["actions"]> } : {}),
       ...(write ? { write } : {}),
       ...(floor ? { healthFactorFloor: floor } : {}),

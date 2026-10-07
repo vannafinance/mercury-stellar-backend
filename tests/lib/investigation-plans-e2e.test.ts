@@ -830,3 +830,60 @@ describe("approving a plan the strategy turn showed over a bare USDC", () => {
     expect(proposal.status).toBe("proposed");
   });
 });
+
+/**
+ * 7 Oct, owner: a follow-up may continue the plan on screen or be something new, and the copilot has to know which - from the
+ * message and the plans in front of it, not from a list of words. The client always sends the thread it holds; the model reads
+ * the message against `task.messages` and `task.shown` and says how they relate.
+ */
+describe("a follow-up read against the thread it arrives in", () => {
+  const reads = { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "blend_markets", args: {} }] };
+  const first = async () => {
+    let n = 0;
+    return researchTurn(
+      { message: PROMPT, wallet: SCOPE.trader, continuation: null },
+      { subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+        model: async () => (n++ === 0 ? reads : modelComplete) },
+    );
+  };
+  const followUp = async (message: string, continuation: string, answer: unknown) => {
+    const tasks: Array<{ messages: string[]; lastQuestion: string | null; shown?: Array<{ plan: string; title: string; steps: string[] }> } | undefined> = [];
+    const view = await researchTurn(
+      { message, wallet: SCOPE.trader, continuation },
+      { subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+        model: async (turn) => { tasks.push(turn.task); return turn.observations.length ? answer : reads; } },
+    );
+    return { view, tasks };
+  };
+  const answering = (relation: string | undefined) => ({ ...modelComplete, goal: { ...modelComplete.goal, ...(relation ? { relation } : {}) } });
+
+  it("shows the model the plans on screen, by letter, beside the earlier messages", async () => {
+    const earlier = await first();
+    const { tasks } = await followUp("make plan b smaller", earlier.continuation, answering("refine"));
+    expect(tasks[0]?.messages).toEqual([PROMPT, "make plan b smaller"]);
+    const onScreen = earlier.candidates?.feasible ?? [];
+    expect(onScreen.length).toBeGreaterThan(1);
+    expect(tasks[0]?.shown?.map((plan) => plan.plan)).toEqual(onScreen.map((_, index) => `Plan ${String.fromCharCode(65 + index)}`));
+    expect(tasks[0]?.shown?.map((plan) => plan.title)).toEqual(onScreen.map((candidate) => candidate.label));
+    expect(tasks[0]?.shown?.[0].steps.length).toBeGreaterThan(0);
+  });
+
+  it("carries the thread when the model reads the message as a refinement", async () => {
+    const earlier = await first();
+    const { view } = await followUp("mrko spt bhi chaiye", earlier.continuation, answering("refine"));
+    expect(view.originalRequest).toBe(PROMPT);
+    expect(view.refinements).toEqual(["mrko spt bhi chaiye"]);
+  });
+
+  it.each([["new"], ["side"], [undefined]])("does not carry the thread when the model reads it as %s", async (relation) => {
+    const earlier = await first();
+    const { view } = await followUp("what is my healt fvtor", earlier.continuation, answering(relation));
+    expect(view.originalRequest).toBe("what is my healt fvtor");
+    expect(view.refinements).toEqual([]);
+  });
+
+  it("treats a thread that has expired as no thread, not as an error", async () => {
+    const { view } = await followUp("price of xlm", "r1.not.a.real.token", answering("new"));
+    expect(view.originalRequest).toBe("price of xlm");
+  });
+});

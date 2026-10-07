@@ -31,55 +31,16 @@ export type LastInvestigation = {
   understanding?: { intent?: string } | null;
 };
 
-export function isRefinement(message: string): boolean {
-  const text = message.trim();
-  if (!text) return false;
-  if (isIndependentGoal(text) && !/instead|make it|change (the )?(floor|budget)|also use|use \S+ too/i.test(text)) {
-    return false;
-  }
-  return /instead|make it|change (the )?(floor|budget|hf|health)|use \S+ too|also use|don'?t borrow|no (new )?borrow|you can borrow|may borrow|switch|higher floor|lower floor|\b1\.\d\b/i.test(text);
-}
-
-/** Health / price / "am I safe" - a new objective that must not inherit the last plan. */
-export function isFactualIndependent(message: string): boolean {
-  return /^(what'?s|whats|wats|how much is|price of|am i|is my)\b/i.test(message.trim());
-}
-
-/** Health / repay / price questions that must not inherit a prior strategy objective. */
-export function isIndependentGoal(message: string): boolean {
-  return isFactualIndependent(message)
-    || /^(repay|lend|deposit|withdraw|borrow)\s+\d/i.test(message.trim());
-}
-
 /**
- * Inherit the sealed objective (messages + lastQuestion). Only an answer to an
- * open question, or a refinement of the current plan. Independent goals start a
- * new objective; they still carry transcript and evidence on other channels.
+ * Whether a reply brings plans or a write of its own, and so replaces the plan that was on screen.
+ *
+ * Whether a message continues the earlier thread is the model's reading (`relation` on the goal), made on the server with the
+ * plans on screen in front of it; the client no longer guesses from the wording before sending. What the client still has to
+ * decide is what to draw: a reply that carries its own plans, a staged write or a form takes the place of the old plan, and
+ * an answer or a question leaves it where it is.
  */
-export function shouldContinueInvestigation(
-  message: string,
-  last: LastInvestigation | null,
-): boolean {
-  if (!last) return false;
-  if (isIndependentGoal(message)) return false;
-  if (last.question) return true;
-  if (last.understanding?.intent === "strategy" || last.status === "researched") {
-    return isRefinement(message);
-  }
-  return false;
-}
-
-/**
- * Kill the awaiting proposal / approval fingerprint. Factual side-questions keep
- * a plan that is already on screen; a new write, a new strategy, or a floor
- * refinement replaces it because the fingerprint is bound to one specific plan.
- */
-export function shouldReplacePlan(message: string, last: LastInvestigation | null): boolean {
-  if (shouldContinueInvestigation(message, last)) {
-    return Boolean(last && !last.question && isRefinement(message));
-  }
-  if (isFactualIndependent(message)) return false;
-  return true;
+export function bringsItsOwnPlan(result: Pick<ResearchView, "candidates" | "pendingWrite" | "questionnaire" | "directAction"> | null | undefined): boolean {
+  return Boolean(result?.candidates?.feasible.length || result?.pendingWrite || result?.questionnaire || result?.directAction);
 }
 
 const STORAGE_PREFIX = "vanna.copilot.thread.";
