@@ -115,13 +115,6 @@ function sentencesOf(text: string | null | undefined): string[] {
   return (text ?? "").split(/(?<=[.!?])\s+(?=[A-Z])/).map((part) => part.trim()).filter(Boolean);
 }
 
-/** The protocol check in one line; the full per-step summary is under "Show details". */
-function simulationLine(simulation: NonNullable<PlanCandidate["simulation"]>): string {
-  if (simulation.verdict === "runnable") return "Every step passed the protocol's check.";
-  if (simulation.verdict === "partial") return "Checked with the protocol; the later steps follow from the earlier ones.";
-  return simulation.summary;
-}
-
 /**
  * What a plan says about itself: the three figures, its steps, and the notes under them. One
  * body for both ways a plan is shown (the lone card and the selected row of a picker), so the
@@ -137,7 +130,7 @@ function PlanDetails({
   const steps = candidate.steps ?? [];
   const shownSteps = stepsOpen ? steps : steps.slice(0, previewSteps);
   const hiddenCount = steps.length - shownSteps.length;
-  const [headline, ...moreNotes] = sentencesOf(candidate.rationale);
+  const [headline] = sentencesOf(candidate.rationale);
   const cell = "flex items-baseline justify-between gap-3 border-t border-vgray-100 px-3.5 py-2.5 first:border-t-0 sm:flex-col sm:items-start sm:justify-start sm:gap-0.5 sm:border-l sm:border-t-0 sm:first:border-l-0";
   const label = "text-[12px] text-vgray-400 sm:whitespace-nowrap";
   const value = "text-[15px] font-semibold tabular-nums text-vgray-900 sm:whitespace-nowrap";
@@ -172,19 +165,10 @@ function PlanDetails({
           {stepsOpen ? "Hide steps" : shownSteps.length ? `Show all ${steps.length} steps` : `Show the ${steps.length} steps`}
         </button>
       )}
-      {/* One line each: the plan's main point and the protocol check. The rest is behind "Show details", as points. */}
+      {/* The plan's main point in one line. The protocol check is only worth a line when it did not pass cleanly. */}
       {headline && <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-600" data-testid="plan-rationale">{headline}</p>}
-      {candidate.simulation && (
-        <p className="max-w-[68ch] text-[12.5px] leading-5 text-vgray-500" data-testid="plan-simulation">{simulationLine(candidate.simulation)}</p>
-      )}
-      {(moreNotes.length > 0 || (candidate.simulation && simulationLine(candidate.simulation) !== candidate.simulation.summary)) && (
-        <details className="max-w-[68ch]" data-testid="plan-details">
-          <summary className="cursor-pointer text-[13px] font-semibold text-violet-500 hover:text-violet-600">Show details</summary>
-          <ul className="mt-2 flex list-disc flex-col gap-1.5 pl-5 text-[12.5px] leading-5 text-vgray-500">
-            {moreNotes.map((note) => <li key={note}>{note}</li>)}
-            {candidate.simulation && <li>{candidate.simulation.summary}</li>}
-          </ul>
-        </details>
+      {candidate.simulation && candidate.simulation.verdict !== "runnable" && candidate.simulation.verdict !== "partial" && (
+        <p className="max-w-[68ch] text-[12.5px] leading-5 text-vgray-500" data-testid="plan-simulation">{candidate.simulation.summary}</p>
       )}
       {lead && candidate.decision?.reason && <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-700">{candidate.decision.reason}</p>}
     </>

@@ -1,33 +1,35 @@
 import { describe, expect, it } from "vitest";
 import { recommendationReason } from "@/lib/copilot/investigation/recommendation";
 
-const plan = (rate: string, borrows = false) => borrows
-  ? { borrows, netApyPct: rate, netAprPct: rate } : { borrows, supplyApyPct: rate, supplyAprPct: rate };
+const plan = (rate: string, amountUsd: string, borrows = false) => borrows
+  ? { borrows, amountUsd, netApyPct: rate, netAprPct: rate } : { borrows, amountUsd, supplyApyPct: rate, supplyAprPct: rate };
 
-/** Owner, 7 Oct: a recommended plan must say why it is recommended. The reason is read off the plans' own figures. */
+/** Owner, 7 Oct: a recommended plan must say why. The ranking orders by what a plan earns over a year, so the reason does too. */
 describe("why the first plan is recommended", () => {
   it("says nothing for a single plan", () => {
-    expect(recommendationReason([plan("10")])).toBeNull();
+    expect(recommendationReason([plan("10", "100")])).toBeNull();
   });
 
-  it("names the margin when the leader pays the most", () => {
-    expect(recommendationReason([plan("95.54"), plan("19.25")])).toBe("Recommended: the highest return of the plans, 95.54% against 19.25% for Plan B.");
+  it("says it earns the most, in money over a year", () => {
+    expect(recommendationReason([plan("20", "1000"), plan("10", "1000")])).toBe("Recommended: earns the most over a year, about $200 against $100 for Plan B.");
+  });
+
+  it("explains a rival with the higher rate but less money to work (the 7 Oct live case)", () => {
+    expect(recommendationReason([plan("95.64", "1864.70"), plan("165.69", "700")])).toBe(
+      "Recommended: earns the most over a year, about $1,783 against $1,160 for Plan B (Plan B has the higher rate, 165.69%, but puts less money to work).",
+    );
   });
 
   it("adds that it takes on no debt when a plan beside it borrows", () => {
-    expect(recommendationReason([plan("12"), plan("8", true)])).toBe("Recommended: the highest return of the plans, 12.00% against 8.00% for Plan B, and it adds no debt.");
+    expect(recommendationReason([plan("12", "1000"), plan("8", "1000", true)])).toBe("Recommended: earns the most over a year, about $120 against $80 for Plan B, and it adds no debt.");
   });
 
-  it("does not claim the best rate when a borrowing plan pays more", () => {
-    expect(recommendationReason([plan("6"), plan("14", true)])).toBe("Recommended because it adds no debt; Plan B pays more (14.00% against 6.00%) but borrows.");
+  it("does not claim the most when a borrowing plan earns more", () => {
+    expect(recommendationReason([plan("6", "1000"), plan("14", "1000", true)])).toBe("Recommended because it adds no debt; Plan B earns more (about $140 a year against $60) but borrows.");
   });
 
-  it("points at the richest rival, whatever its letter", () => {
-    expect(recommendationReason([plan("5"), plan("7", true), plan("9", true)])).toMatch(/Plan C pays more \(9\.00% against 5\.00%\)/);
-  });
-
-  it("falls back to what is known when a rate was not read", () => {
-    expect(recommendationReason([{ borrows: false }, plan("8", true)])).toBe("Recommended because it adds no debt.");
+  it("falls back to what is known when a figure was not read, and to silence when nothing is", () => {
+    expect(recommendationReason([{ borrows: false }, plan("8", "100", true)])).toBe("Recommended because it adds no debt.");
     expect(recommendationReason([{ borrows: false }, { borrows: false }])).toBeNull();
   });
 });

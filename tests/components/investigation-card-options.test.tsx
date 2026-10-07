@@ -144,24 +144,22 @@ describe("investigation card / options", () => {
     const badges = screen.getAllByTestId("plan-recommended");
     expect(badges).toHaveLength(1);
     expect(badges[0].parentElement?.textContent).toMatch(/^Plan ARecommended$/);
-    expect(screen.getByTestId("plan-recommended-why").textContent).toMatch(/^Recommended: the highest return of the plans, 25.41% against 10.00% for Plan B.$/);
+    expect(screen.getByTestId("plan-recommended-why").textContent).toBe("Recommended: earns the most over a year, about $173 against $68 for Plan B.");
     first.unmount();
     card(view({ candidates: { feasible: [walletPlan("Lend BLUSDC to Earn", "25.41")], rejected: [] } }));
     expect(screen.queryByTestId("plan-recommended")).toBeNull();
   });
 
-  // Owner, 7 Oct: "itni textual info thodi chahiye" - one line for the main point, the rest as points behind a toggle.
-  it("shows one line of reasoning and one line for the protocol check, the rest as points under Show details", () => {
+  // Owner, 7 Oct: "itni textual info thodi chahiye", then "dont need these dropdowns, dont show this" - one line, no toggle.
+  it("shows one line of reasoning, with no dropdown and no simulation paragraph", () => {
     const long = { ...walletPlan("Supply XLM to Blend", "10.00"),
       rationale: "Supplying XLM into Blend pays the most for XLM. Deposit to margin collateral is required first. Lending BLUSDC to Earn pays 19.25% APY.",
-      simulation: { verdict: "runnable" as const, steps: [], summary: "Simulated against the protocol: Deposit 1496.77 XLM as collateral allowed (LTV 49.91% after); Lend 675 BLUSDC to Earn allowed." } };
+      simulation: { verdict: "runnable" as const, steps: [], summary: "Simulated against the protocol: Deposit 1496.77 XLM as collateral allowed (LTV 49.91% after)." } };
     card(view({ candidates: { feasible: [long], rejected: [] } }));
     expect(screen.getByTestId("plan-rationale").textContent).toBe("Supplying XLM into Blend pays the most for XLM.");
-    expect(screen.getByTestId("plan-simulation").textContent).toBe("Every step passed the protocol's check.");
-    const details = screen.getByTestId("plan-details");
-    expect(details.querySelectorAll("li")).toHaveLength(3);
-    expect(details.textContent).toMatch(/Deposit to margin collateral is required first\./);
-    expect(details.textContent).toMatch(/LTV 49\.91% after/);
+    expect(screen.queryByTestId("plan-details")).toBeNull();
+    expect(screen.queryByText(/Show details/)).toBeNull();
+    expect(screen.queryByText(/Simulated against the protocol/)).toBeNull();
   });
 
   it("renders only the no-debt plan when the user forbade borrowing", () => {
