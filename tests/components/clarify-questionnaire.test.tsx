@@ -261,8 +261,8 @@ describe("ClarifyQuestionnaire Component", () => {
       />
     );
 
-    // Initial step should be Venue (2 of 3) since Asset had 1 option and was auto-skipped
-    expect(screen.getByTestId("step-counter").textContent).toContain("2 of 3");
+    // A step with one option is answered for the user and is not counted: the venue is the first of the two real questions (7 Oct: "2 of 2" sat over one question).
+    expect(screen.getByTestId("step-counter").textContent).toContain("1 of 2");
     expect(screen.getByTestId("option-blend")).toBeTruthy();
     expect(screen.getByTestId("option-earn")).toBeTruthy();
     expect(screen.getByText(/Which asset\?|Asset/i)).toBeTruthy();
