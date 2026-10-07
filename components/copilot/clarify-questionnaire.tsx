@@ -922,6 +922,8 @@ export function ClarifyQuestionnaire({
     return true;
   }, [activeSectionIdx, sections.length, currentState.activeStepIdx, currentSection, currentState.assetId, isStepAutoSkipped]);
 
+  const stepsAsked = currentSection.steps.filter((step) => step.slot === "amount" || step.options.length !== 1);
+  const askedIdx = stepsAsked.indexOf(currentSection.steps[currentState.activeStepIdx]);
   const presetsToRender = currentStep?.presets || DEFAULT_PRESETS;
   const activePercentNum = currentParsedAmount?.kind === "fraction" ? currentParsedAmount.percent : null;
 
@@ -944,12 +946,15 @@ export function ClarifyQuestionnaire({
             <h2 className="text-[15px] font-semibold leading-tight">
               {currentSection.title || questionnaire.title}
             </h2>
-            <span
-              className="text-[12px] font-medium text-vgray-400 tabular-nums"
-              data-testid="step-counter"
-            >
-              {currentState.activeStepIdx + 1} of {currentSection.steps.length}
-            </span>
+            {/* Only a step the user answers is counted: a question with a single option is answered for them and is not a step (7 Oct: "Deposit XLM 2 of 2" over one real question). */}
+            {stepsAsked.length > 1 && askedIdx >= 0 && (
+              <span
+                className="text-[12px] font-medium text-vgray-400 tabular-nums"
+                data-testid="step-counter"
+              >
+                {askedIdx + 1} of {stepsAsked.length}
+              </span>
+            )}
           </div>
           {questionnaire.subtitle && (
             <p className="mt-0.5 text-[13px] text-vgray-500 leading-normal">

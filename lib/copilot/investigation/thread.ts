@@ -17,6 +17,11 @@ export type ThreadTurn = {
   role: "user" | "assistant";
   text: string;
   question?: string | null;
+  /**
+   * The reply was a form (a questionnaire) and nothing else: the form is the answer, so the thread draws no sentence above it.
+   * The text stays for history and for the model's context.
+   */
+  quiet?: boolean;
   /** Structured workflow facts, when this assistant turn has an execution receipt. */
   executionReceipt?: ExecutionReceiptSnapshot | null;
   /** The composed reply (compose.ts); `text` stays its plain form for history and older views. */
@@ -39,8 +44,9 @@ export type LastInvestigation = {
  * decide is what to draw: a reply that carries its own plans, a staged write or a form takes the place of the old plan, and
  * an answer or a question leaves it where it is.
  */
-export function bringsItsOwnPlan(result: Pick<ResearchView, "candidates" | "pendingWrite" | "questionnaire" | "directAction"> | null | undefined): boolean {
-  return Boolean(result?.candidates?.feasible.length || result?.pendingWrite || result?.questionnaire || result?.directAction);
+export function bringsItsOwnPlan(result: Pick<ResearchView, "candidates" | "pendingWrite" | "questionnaire" | "directAction" | "proposalCandidateId"> | null | undefined): boolean {
+  // A stated action ("deposit 5 XLM and supply 5 XLM to Blend") carries no candidate list: its plan is named by `proposalCandidateId`.
+  return Boolean(result?.candidates?.feasible.length || result?.proposalCandidateId || result?.pendingWrite || result?.questionnaire || result?.directAction);
 }
 
 const STORAGE_PREFIX = "vanna.copilot.thread.";

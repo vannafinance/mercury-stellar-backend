@@ -171,6 +171,21 @@ describe("ClarifyQuestionnaire Component", () => {
     expect(screen.getByTestId("step-counter").textContent).toContain("1 of 3");
   });
 
+  // 7 Oct: "Deposit XLM 2 of 2" sat over a single real question - a place with one option is answered for the user, so it is no step.
+  it("shows no step counter over one real question, and counts only steps the user answers", () => {
+    const oneQuestion: Questionnaire = {
+      id: "q-single-place", title: "Deposit XLM", subtitle: "Choose which, where and how much",
+      steps: [
+        { slot: "venue", prompt: "Where should it go?", options: [{ id: "margin", label: "Margin account", detail: "", forAsset: "xlm", op: "deposit_collateral" }] },
+        { slot: "amount", prompt: "How much?", options: [], max: { margin: { amount: "1496", asset: "XLM", where: "wallet" } },
+          presets: [{ id: "half", label: "50%", percent: "50" }] },
+      ],
+      namedAsset: "XLM", op: "deposit_collateral",
+    } as never;
+    renderWithTheme(<ClarifyQuestionnaire questionnaire={oneQuestion} onSubmit={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.queryByTestId("step-counter")).toBeNull();
+  });
+
   it("filters the venue step by the selected asset", () => {
     renderWithTheme(
       <ClarifyQuestionnaire

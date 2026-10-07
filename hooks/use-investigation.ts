@@ -735,6 +735,7 @@ export function useInvestigation(wallet: string | null) {
               ...priorTurns,
               {
                 role: "assistant" as const, text: event.result.message, question: event.result.question,
+                ...(event.result.questionnaire ? { quiet: true } : {}),
                 ...(event.result.replyBlocks?.length ? { blocks: event.result.replyBlocks } : {}),
               },
             ].slice(-16);

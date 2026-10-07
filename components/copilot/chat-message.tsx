@@ -512,7 +512,7 @@ export function ChatTurns({
         return (
           <section key={`turn-${index}`} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {group.user ? <UserBubble>{group.user.text}</UserBubble> : null}
-            {group.assistant && !hideStaleAssistant ? (
+            {group.assistant && !hideStaleAssistant && !group.assistant.quiet ? (
               <AssistantTurn
                 text={group.assistant.text}
                 blocks={group.assistant.blocks}

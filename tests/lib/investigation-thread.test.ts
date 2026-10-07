@@ -28,6 +28,8 @@ describe("what replaces the plan on screen", () => {
     expect(bringsItsOwnPlan({ candidates: { feasible: [{} as never], rejected: [] } })).toBe(true);
     expect(bringsItsOwnPlan({ pendingWrite: { op: "create_account" } as never })).toBe(true);
     expect(bringsItsOwnPlan({ directAction: true })).toBe(true);
+    // 7 Oct, live: a stated multi-step action has no candidate list, only the id of its plan; the old plan stayed and the new one never showed.
+    expect(bringsItsOwnPlan({ candidates: null, proposalCandidateId: "requested_actions" })).toBe(true);
     expect(bringsItsOwnPlan({ candidates: null })).toBe(false);
     expect(bringsItsOwnPlan({ candidates: { feasible: [], rejected: [] } })).toBe(false);
     expect(bringsItsOwnPlan(null)).toBe(false);

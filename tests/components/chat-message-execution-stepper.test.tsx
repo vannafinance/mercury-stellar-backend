@@ -49,6 +49,13 @@ describe("ChatTurns - the execution card makes no signing claim of its own", () 
     expect(screen.getByLabelText("Settled")).toBeTruthy();
   });
 
+  // 7 Oct: a questionnaire is the whole reply; a sentence above it that repeats its question is noise.
+  it("draws no sentence for a reply that was only a form", () => {
+    render(<ChatTurns turns={[{ role: "user", text: "deposit XLM" }, { role: "assistant", text: "Before a plan can be prepared, this is unresolved: How much?", quiet: true }]} />);
+    expect(screen.queryByText(/Before a plan can be prepared/)).toBeNull();
+    expect(screen.getByText("deposit XLM")).toBeTruthy();
+  });
+
   // One user turn and one assistant turn: the mark belongs to the reply only, never to the prompt.
   // It is inlined (no request), because a fetched avatar sat in the browser queue behind slow API
   // calls and a finished answer rendered without it.
