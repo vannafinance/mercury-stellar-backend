@@ -7,6 +7,7 @@ import type { ReplyBlock, ReplySegment } from "@/lib/copilot/investigation/view"
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import { completionMatches, settledTransactions, shortTransactionHash, transactionPurpose } from "@/lib/copilot/workflow-completion";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
+import { VANNA_ICON_SRC } from "@/components/copilot/vanna-icon-data";
 
 /**
  * Live thread chrome: user on the right, copilot on the left.
@@ -430,7 +431,7 @@ function AssistantTurn({
     return (
       <div className="flex items-start gap-2.5 w-full">
         <img
-          src="/logos/vanna-icon.png"
+          src={VANNA_ICON_SRC}
           alt="Vanna"
           width={18}
           height={18}
@@ -446,7 +447,7 @@ function AssistantTurn({
   return (
     <div className="flex items-start gap-2.5 w-full">
       <img
-        src="/logos/vanna-icon.png"
+        src={VANNA_ICON_SRC}
         alt="Vanna"
         width={18}
         height={18}
@@ -538,7 +539,7 @@ export function ChatTurns({
           ) : working ? (
             <div className="flex items-start gap-2.5 w-full">
               <img
-                src="/logos/vanna-icon.png"
+                src={VANNA_ICON_SRC}
                 alt="Vanna"
                 width={18}
                 height={18}

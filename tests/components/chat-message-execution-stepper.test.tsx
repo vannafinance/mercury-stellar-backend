@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ChatTurns } from "@/components/copilot/chat-message";
+import { VANNA_ICON_SRC } from "@/components/copilot/vanna-icon-data";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 
 /**
@@ -48,10 +49,15 @@ describe("ChatTurns — the execution card makes no signing claim of its own", (
     expect(screen.getByLabelText("Settled")).toBeTruthy();
   });
 
-  it("renders Vanna icon on the left of assistant replies", () => {
+  // One user turn and one assistant turn: the mark belongs to the reply only, never to the prompt.
+  // It is inlined (no request), because a fetched avatar sat in the browser queue behind slow API
+  // calls and a finished answer rendered without it.
+  it("renders the inline Vanna icon on assistant replies only", () => {
     render(<ChatTurns turns={turns} />);
     const icons = screen.getAllByAltText("Vanna");
-    expect(icons.length).toBeGreaterThanOrEqual(1);
-    expect(icons[0].getAttribute("src")).toBe("/logos/vanna-icon.png");
+    expect(icons).toHaveLength(1);
+    expect(icons[0].getAttribute("src")).toBe(VANNA_ICON_SRC);
+    expect(VANNA_ICON_SRC.startsWith("data:image/png;base64,")).toBe(true);
+    expect(icons[0].closest("[data-cp-user-bubble]")).toBeNull();
   });
 });

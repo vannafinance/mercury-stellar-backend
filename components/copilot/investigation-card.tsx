@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { CircleAlert, Search } from "lucide-react";
-import Image from "next/image";
+import { VANNA_ICON_SRC } from "@/components/copilot/vanna-icon-data";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
@@ -435,7 +435,7 @@ export function InvestigationCard({
 
           {loading && (
             <p role="status" aria-live="polite" className="flex items-center gap-2.5 text-[13px] text-violet-500">
-              <span className="cp-loader-mark" aria-hidden="true"><Image src="/logos/vanna-icon.png" alt="" width={18} height={18} /></span>
+              <span className="cp-loader-mark" aria-hidden="true"><img src={VANNA_ICON_SRC} alt="" width={18} height={18} /></span>
               {progressLabel}{deviceClock ? ` (${deviceClock})` : ""}
             </p>
           )}
