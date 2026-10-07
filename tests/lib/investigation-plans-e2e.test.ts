@@ -404,7 +404,7 @@ describe("model proposes, code disposes - end to end", () => {
     expect(mcp.call.mock.calls.map((c) => c[0])).toContain("vanna_get_debt");
   });
 
-  it("when the Margin page and the liquidation engine disagree, sizes BOTH from the contract and names the unposted gap", async () => {
+  it("when the Margin page and the liquidation engine disagree, sizes a deposit on the contract and a borrow on the page, with the contract's line kept", async () => {
     // 13 Sep live: app $6,605.84 / $5,102.54 vs contract $6,457.32 / $5,110.67 - past the drift band.
     harness.computeSizingBasis.mockResolvedValue({
       grossCollateralUsd: "6457.32", debtUsd: "5110.67", source: "contract", issue: "sizing_sources_disagree",
@@ -428,17 +428,20 @@ describe("model proposes, code disposes - end to end", () => {
     expect(Number(deposit!.initialHealthFactor)).toBeCloseTo(6605.84 / 5102.54, 3);
     expect(Number(deposit!.finalHealthFactor)).toBeCloseTo(1.6547, 3);
     /**
-     * The disagreement no longer refuses the borrow: the app counts what the account holds
-     * and the contract counts what is posted, so they disagree permanently on any account
-     * with an unposted token - and the sizer is on the contract's figures either way. The
-     * levered option is offered, projected to the stated 1.2 floor on those figures.
+     * The disagreement no longer refuses the borrow: the app counts what the account holds and the contract counts
+     * what is posted, so they disagree permanently on any account with an unposted token. A floor the user stated
+     * is a number on the Margin page they read, so the borrow is sized there (7 Oct: "borrow until HF 1.5" ended
+     * at 1.81 when sized on the contract's figures): the levered option is projected to the stated 1.2 floor on the
+     * page's figures. The contract is still the one that liquidates, so its own line stays a limit: after the
+     * borrow its health factor must stay strictly above 1.10, and nobody is told a figure they never saw.
      */
     const levered = view.candidates?.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM");
     expect(levered).toBeTruthy();
     const last = levered!.legs.at(-1)!;
     expect(Number(last.healthFactorAfter)).toBeCloseTo(1.2, 3);
-    const shownAfter = (6605.84 + Number(last.grossAfterUsd) - 6457.32) / (5102.54 + Number(last.debtAfterUsd) - 5110.67);
-    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(shownAfter, 3);
+    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.2, 3);
+    const contractAfter = (6457.32 + Number(last.grossAfterUsd) - 6605.84) / (5110.67 + Number(last.debtAfterUsd) - 5102.54);
+    expect(contractAfter).toBeGreaterThan(1.1);
     // The gap is stated as what it is - $6,605.84 − $6,457.32 of unposted collateral.
     // Logged server-side as `unposted_collateral`, not a note on the card: the plans above are already sized
     // from the contract, which is the part the user needs.
@@ -648,5 +651,52 @@ describe("a plan the sizer refuses for how it is built gets one repair", () => {
   it("does not ask again about a refusal that is a fact (no AQUSDC in the wallet)", async () => {
     const { turns } = await run([reads, modelComplete]);
     expect(turns).toHaveLength(2);
+  });
+});
+
+/**
+ * 7 Oct, live: "how much more USDC can I borrow before my health factor drops to 1.5" was sized to the floor, the
+ * protocol's preview refused it on the pool's utilization cap ("max borrow right now is 3035"), and the answer was
+ * "none could be prepared". The refusal names its limit in a structured field, so the borrow is not a dead plan: the
+ * protocol's own ceiling is read, the plans are sized under it, and the result is put to the preview again.
+ */
+describe("a borrow the protocol refuses on a pool limit is sized under the protocol's own ceiling", () => {
+  const CEILING_XLM = 1000;
+  const poolMcp = {
+    call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_preview_margin") {
+        return args.operation === "borrow" && Number(args.amount) > CEILING_XLM
+          ? { allowed: false, reason: "pool limit exceeded", limiting_factor: "pool_utilization_cap" }
+          : { allowed: true, reason: "ok", limiting_factor: null };
+      }
+      if (tool === "vanna_get_max_borrow") return { max_borrow_human: String(CEILING_XLM), symbol: "XLM", limiting_factor: "pool_utilization_cap" };
+      return mcp.call(tool, args);
+    }),
+  };
+  const run = () => {
+    let turn = 0;
+    return researchTurn(
+      { message: PROMPT, wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: poolMcp, signal: new AbortController().signal,
+        model: async () => turn++ === 0
+          ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "blend_markets", args: {} }] }
+          : modelComplete,
+      },
+    );
+  };
+
+  it("offers the borrow at the ceiling instead of ruling it out", async () => {
+    poolMcp.call.mockClear();
+    const view = await run();
+    const levered = view.candidates?.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM");
+    expect(levered, "the levered plan survives the pool limit").toBeTruthy();
+    const borrow = levered!.steps!.find((step) => step.op === "borrow")!;
+    expect(Number(borrow.amount)).toBeLessThanOrEqual(CEILING_XLM);
+    expect(Number(borrow.amount)).toBeGreaterThan(CEILING_XLM * 0.99);
+    expect(levered!.simulation?.verdict).not.toBe("blocked");
+    // The ceiling was read only because the preview refused: one targeted read, not one per plan.
+    expect(poolMcp.call.mock.calls.filter(([tool]) => tool === "vanna_get_max_borrow")).toHaveLength(1);
+    expect(view.candidates?.rejected.some((entry) => /protocol refuses/.test(entry.reason))).toBe(false);
   });
 });

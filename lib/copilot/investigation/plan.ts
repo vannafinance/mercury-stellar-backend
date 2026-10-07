@@ -525,6 +525,29 @@ class PlanFault extends Reject {
 }
 const repairFlag = (error: Reject) => (error instanceof PlanFault ? { repairable: true as const } : {});
 
+/**
+ * Sized a tenth of a percent inside the protocol's ceiling: the pool's utilization moves with every ledger as interest
+ * accrues, so a borrow sized to the figure read ten seconds ago was refused for 0.00004 of a token (7 Oct, live).
+ */
+const POOL_CEILING_MARGIN = decimalWad("0.999");
+
+/**
+ * The most of an asset the protocol says this account can borrow right now, in USD, from the `max_borrow` read.
+ * The protocol takes the smallest of three limits (the collateral guard, the pool's free liquidity, its utilization
+ * cap), so this is the one ceiling that holds whichever of them binds. Null when no fresh read was made.
+ */
+function protocolBorrowCeilingUsd(ctx: PlanContext, asset: string, price: bigint | undefined): { usd: bigint; tokens: string } | null {
+  if (price === undefined) return null;
+  const read = [...ctx.observations].reverse().find((o) =>
+    o.capability === "max_borrow" && o.status === "ok" && o.data && o.args.asset === asset && ctx.now - o.observedAt <= 60_000);
+  const human = read?.data?.max_borrow_human;
+  if (typeof human !== "string") return null;
+  try { return { usd: mulDown(mulDown(decimalWad(human), price, WAD), POOL_CEILING_MARGIN, WAD), tokens: human }; } catch { return null; }
+}
+
+/** Just above the contract's liquidation line: it requires a health factor strictly greater than 1.10 (measured 8 Sep, 1.100000 is refused and 1.100001 is not). */
+const CONTRACT_LINE_FLOOR = formatWad(LIQUIDATION_THRESHOLD_WAD + BigInt(1_000_000_000_000));
+
 const SIZER_REASONS: Record<string, string> = {
   floor_below_liquidation_threshold: "a health-factor floor at or below 1.1 is the liquidation line, not a safety margin - state a floor above it",
   would_be_liquidatable: "this would leave the account liquidatable",
@@ -1523,6 +1546,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
   const marginDrafts = drafts.filter((d) => (SIZED_OPS as readonly string[]).includes(d.leg.op));
   let sized: SizedLeg[] = [];
   let finalHealthFactor: string | null = null;
+  // The figures the legs were sized on: the contract's, or the Margin page's when a stated floor is read there.
+  let sizingBase: { grossCollateralUsd: string; debtUsd: string } | null = null;
   if (marginDrafts.length) {
     const capacity = ctx.capacity!;
     /**
@@ -1545,12 +1570,21 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         return true;
       } catch { return false; }
     };
-    const requests: LegRequest[] = marginDrafts.map((d) => ({
-      op: d.leg.op as SizedOp, label: d.name,
-      amountUsd: d.usd === "max" ? "max" : typeof d.usd === "string" ? d.usd : "0",
-      ...(d.capUsd !== undefined ? { capUsd: d.capUsd } : {}),
-      ...(withinOwnDebt(d) ? { withinPosition: true } : {}),
-    }));
+    const requests: LegRequest[] = marginDrafts.map((d) => {
+      const ceiling = OP_FLOW[d.leg.op].from === "debt" ? protocolBorrowCeilingUsd(ctx, d.leg.asset, prices.get(d.leg.asset)) : null;
+      const amountUsd = d.usd === "max" ? "max" : typeof d.usd === "string" ? d.usd : "0";
+      if (ceiling && amountUsd !== "max" && decimalWad(amountUsd) > ceiling.usd) {
+        throw new Reject(d.name, `the most the protocol lets this account borrow of ${d.leg.asset} right now is ${ceiling.tokens} ${d.leg.asset}`);
+      }
+      const cap = ceiling && amountUsd === "max"
+        ? (d.capUsd === undefined || ceiling.usd < decimalWad(d.capUsd) ? formatWad(ceiling.usd) : d.capUsd)
+        : d.capUsd;
+      return {
+        op: d.leg.op as SizedOp, label: d.name, amountUsd,
+        ...(cap !== undefined ? { capUsd: cap } : {}),
+        ...(withinOwnDebt(d) ? { withinPosition: true } : {}),
+      };
+    });
     /**
      * The floor is a stop condition for legs that can LOWER health. A sequence of deposits
      * and repays only raises it, so it is sized against the contract's line alone - an
@@ -1558,7 +1592,35 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * defect: repay and deposit were blocked exactly when they were needed).
      */
     const canLowerHealth = marginDrafts.some((d) => OP_FLOW[d.leg.op].health === "lowers");
-    const result = sizeLegs({ grossCollateralUsd: capacity.grossCollateralUsd, debtUsd: capacity.debtUsd }, requests, canLowerHealth ? capacity.floor : null);
+    /**
+     * A floor the user stated is a number on a page they read: the Margin page's health factor. When that page
+     * and the contract's liquidation snapshot disagree (tokens held in the account and pool receipts count on
+     * the page and not for the contract), the borrow is sized on the page's figures, so "borrow until HF 1.5"
+     * ends at 1.5 where they will look, not at 1.81 (7 Oct, live). The contract is still the one that
+     * liquidates, so it stays a hard limit without a word to the user: the same legs are sized at the
+     * contract's own line (strictly above 1.10, measured), and no borrow may exceed what that allows or
+     * breach it. With no floor stated there is no page figure to honour and the contract's figures stand.
+     */
+    const disputed = capacity.issue?.reason === "sizing_sources_disagree" ? capacity.issue : null;
+    const borrows = marginDrafts.some((d) => OP_FLOW[d.leg.op].from === "debt");
+    const onThePage = borrows && canLowerHealth && capacity.floor !== null && disputed !== null ? disputed.app : null;
+    let sizedRequests = requests;
+    if (onThePage) {
+      const atTheLine = sizeLegs({ grossCollateralUsd: capacity.grossCollateralUsd, debtUsd: capacity.debtUsd }, requests, CONTRACT_LINE_FLOOR);
+      if (!atTheLine.ok) {
+        throw new Reject(atTheLine.failingLeg, atTheLine.reason === "no_capacity_at_floor"
+          ? "the protocol allows no more borrowing on this account, whatever floor you keep"
+          : "the protocol would not accept this borrow: it would take the account to its own liquidation line");
+      }
+      sizedRequests = requests.map((request, i) => {
+        if (request.amountUsd !== "max") return request;
+        const lineMax = atTheLine.legs[i].amountUsd;
+        const tighter = request.capUsd === undefined || decimalWad(lineMax) < decimalWad(request.capUsd) ? lineMax : request.capUsd;
+        return { ...request, capUsd: tighter };
+      });
+    }
+    sizingBase = onThePage ?? { grossCollateralUsd: capacity.grossCollateralUsd, debtUsd: capacity.debtUsd };
+    const result = sizeLegs(sizingBase, sizedRequests, canLowerHealth ? capacity.floor : null);
     if (!result.ok) {
       const reason = SIZER_REASONS[result.reason] ?? result.reason.replaceAll("_", " ");
       const advice = canLowerHealth && capacity.floor ? shortfallAdvice(capacity, result, holdings, prices) : null;
@@ -1869,7 +1931,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     ? formatWad((decimalWad(ctx.capacity.grossCollateralUsd) * WAD) / decimalWad(ctx.capacity.debtUsd))
     : null;
   // Shown on the Margin page's basis (owner, 29 Sep); a plan that clears all debt stays "No debt".
-  const shown = ctx.capacity ? displayHealthFactors(ctx.capacity, ctx.capacity.site, sized) : null;
+  const shown = ctx.capacity ? displayHealthFactors(sizingBase ?? ctx.capacity, ctx.capacity.site, sized) : null;
   if (shown) {
     initialHealthFactor = shown.before;
     if (finalHealthFactor !== null) finalHealthFactor = shown.after;

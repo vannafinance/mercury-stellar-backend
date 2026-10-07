@@ -242,6 +242,17 @@ describe("reconcileSizingBasis", () => {
 });
 
 describe("computeSizingBasis", () => {
+  it("awaits a basis already in flight this turn instead of reading the snapshot and the contract again", async () => {
+    mocks.computeMarginSnapshot.mockClear();
+    const inFlight = { grossCollateralUsd: "4219.36", debtUsd: "1736.19", source: "contract" as const, issue: null,
+      app: { grossCollateralUsd: "4219.36", debtUsd: "1736.19" }, contract: { grossCollateralUsd: "4219.36", debtUsd: "1736.19" } };
+    const mcp = { call: vi.fn() };
+    const basis = await computeSizingBasis(ACCOUNT, null, { basis: Promise.resolve(inFlight), mcp });
+    expect(basis).toBe(inFlight);
+    expect(mocks.computeMarginSnapshot).not.toHaveBeenCalled();
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
+
   it("uses the RiskEngine basis when the app snapshot times out", async () => {
     mocks.computeMarginSnapshot.mockRejectedValue(new Error("snapshot timed out"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

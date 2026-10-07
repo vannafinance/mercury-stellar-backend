@@ -67,6 +67,14 @@ describe("investigation timeout budgets", () => {
     expect(startByMs + budgetMs + 10_000).toBeLessThanOrEqual(routeMs);
   });
 
+  it("lets the pool-limit resize start only early enough to finish and still compose the reply", () => {
+    // It runs at the very end of the turn: its read, one more sizing and one more preview, then the reply (~10s).
+    const service = read("lib/copilot/investigation/service.ts");
+    const startByMs = onlyNumber(service, /RESIZE_START_BY_MS\s*=\s*([\d_]+)/, "resize start bound");
+    const budgetMs = onlyNumber(service, /RESIZE_BUDGET_MS\s*=\s*([\d_]+)/, "resize budget");
+    expect(startByMs + budgetMs + 20_000).toBeLessThanOrEqual(routeMs);
+  });
+
   it("bounds the position read, since an unbounded one can spend the whole route", () => {
     expect(positionMs).toBeGreaterThan(0);
     expect(positionMs).toBeLessThan(runtimeMs);

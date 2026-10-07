@@ -55,6 +55,10 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       // A swap is valued on both sides: the asset it spends AND the one it buys.
       if (leg.assetOut) want("asset_price", leg.assetOut);
       const flow = OP_FLOW[leg.op];
+      // A borrow is limited by more than the health factor: the pool's free liquidity and its utilization
+      // cap bind too, and only the protocol knows all three. Its own "most you can borrow now" is read so the
+      // sized amount never exceeds it (7 Oct, live: a borrow sized to HF 1.5 was refused by the pool cap).
+      if (flow.from === "debt") want("max_borrow", leg.asset);
       // A leg that carries a rate needs its rate row: the Earn market, and the Blend reserves for a Blend rate.
       if (flow.rate !== null) want("earn_market", leg.asset);
       if (flow.rate === "blend_supply") want("blend_markets");

@@ -12,7 +12,7 @@ import { strategyReply } from "./answer";
 import { normalizeResearchFacts } from "./normalize";
 import { accountDisplayObservations } from "./account-display";
 import { analyseObservedRates } from "./rate-comparison";
-import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
+import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis, type SizingBasis } from "./capacity";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, spendableWalletAfterReserves, onlyNamedAssets, spendableWalletUsdFrom, spendableWalletByAssetUsdFrom, spendableWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
@@ -72,6 +72,13 @@ export const CAPACITY_BUDGET_MS = 15_000;
  */
 export const REPAIR_START_BY_MS = 45_000;
 export const REPAIR_BUDGET_MS = 15_000;
+/**
+ * One more sizing, when the protocol's preview refuses a borrow on a pool limit: the protocol's own "most you can
+ * borrow now" is read for that asset and the plans are sized again under it. It runs at the very end of the turn, so
+ * it may only start early enough, and its read is cut off at its own budget (`investigation-timeout-budget.test.ts`).
+ */
+export const RESIZE_START_BY_MS = 38_000;
+export const RESIZE_BUDGET_MS = 8_000;
 
 export interface ResearchInput {
   message: string;
@@ -494,6 +501,21 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     seed.push(...evidenceSeed);
     logPhase("evidence_seed", { requested: evidenceSeedRequests.map((request) => `${request.capability}:${request.args.asset ?? ""}`), ok: evidenceSeed.filter((observation) => observation.status === "ok").length });
   }
+  /**
+   * The sizing basis is read ONCE per turn, now, so it runs while the loop does and not after it. Headroom
+   * and plan sizing both await this same promise instead of reading the snapshot and the contract again
+   * (7 Oct, live: that was two more reads, ~9s each, on the critical path after the loop).
+   */
+  let basisTask: Promise<SizingBasis | null> | undefined;
+  if (scope.smartAccount && !input.answers) {
+    try {
+      basisTask = computeSizingBasis(scope.smartAccount, position?.snapshot ?? null, { mcp: scopedMcp, trader: scope.trader }, dependencies.signal)
+        .catch((error) => {
+          console.warn("[copilot] sizing basis failed", { error: error instanceof Error ? { name: error.name, message: error.message } : String(error) });
+          return null;
+        });
+    } catch { basisTask = undefined; }
+  }
   const loopStarted = Date.now();
   const answered = input.answers && answeredQuestionnaire
     ? actionsFromAnswers(answeredQuestionnaire, input.answers) : null;
@@ -644,6 +666,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const capacityOptions = {
     mcp: scopedMcp,
     trader: scope.trader,
+    ...(basisTask ? { basis: basisTask } : {}),
     ...(needsBorrowCapacity
       ? { floor: goalFloor, useConfiguredFloor: true }
       : {}),
@@ -1152,7 +1175,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   let planPosition: import("./plan").PlanContext["capacity"] = null;
   if (scope.smartAccount && outcome.kind === "research_complete" && modelPlans.length) {
     try {
-      const basis = await computeSizingBasis(scope.smartAccount, position?.snapshot ?? null, { mcp: scopedMcp, trader: scope.trader }, dependencies.signal);
+      const basis = await computeSizingBasis(scope.smartAccount, position?.snapshot ?? null, { mcp: scopedMcp, trader: scope.trader, ...(basisTask ? { basis: basisTask } : {}) }, dependencies.signal);
       if (basis) {
         planPosition = {
           grossCollateralUsd: basis.grossCollateralUsd, debtUsd: basis.debtUsd, floor: statedFloor,
@@ -1260,7 +1283,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     // Fixed options only for the assets the user named; the model's composed plans are untouched.
-    candidates = mergeCandidateSets(onlyNamedAssets(candidates, messages), resolved, borrowing);
+    const fixedShapes = onlyNamedAssets(candidates, messages);
+    candidates = mergeCandidateSets(fixedShapes, resolved, borrowing);
     /**
      * The sizer said what fits the facts it read; the protocol's preview says what the
      * contract will accept. An option the preview refuses is never shown; one it cannot
@@ -1269,6 +1293,31 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     if (candidates.feasible.some((c) => c.steps?.length)) {
       candidates = await simulateCandidates(candidates, scope, scopedMcp, dependencies.signal);
       logPhase("simulation", { options: candidates.feasible.map((c) => `${c.id}: ${c.simulation?.verdict ?? "not simulated"}`), refused: candidates.rejected.filter((r) => /^The protocol refuses/.test(r.reason)).map((r) => r.reason) });
+      /**
+       * A borrow the preview refused on a pool limit is not a dead plan: the protocol states its own ceiling, and the plan
+       * sized under it is what the user can actually do (7 Oct, live: a borrow sized to HF 1.5 was refused by the pool's
+       * utilization cap and the answer was "none could be prepared"). Read that ceiling for the assets concerned, size
+       * once more with it in evidence, and put the result to the preview again.
+       */
+      const poolLimited = [...new Set(candidates.rejected.flatMap((entry) => entry.poolLimited ? [entry.poolLimited.asset] : []))];
+      if (poolLimited.length && Date.now() - turnStartedAt <= RESIZE_START_BY_MS) {
+        const resizeStarted = Date.now();
+        try {
+          const resizeSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(RESIZE_BUDGET_MS)]);
+          const ceilings = await collectStrategyReads(scope, scopedMcp, resizeSignal, Date.now(), poolLimited.map((asset) => ({ capability: "max_borrow", args: { asset } })), "pl");
+          if (ceilings.some((observation) => observation.status === "ok")) {
+            result.observations.push(...ceilings);
+            observedNow = Date.now();
+            const again = capToOneApproval(resolvePlans(modelPlans, { ...planContext, observations: result.observations, now: observedNow }), MAX_WORKFLOW_STEPS);
+            candidates = await simulateCandidates(mergeCandidateSets(fixedShapes, again, borrowing), scope, scopedMcp, resizeSignal);
+            logPhase("pool_resize", { assets: poolLimited, offered: candidates.feasible.length, ms: Date.now() - resizeStarted });
+          } else {
+            logPhase("pool_resize", { assets: poolLimited, offered: 0, failed: "ceiling_unavailable", ms: Date.now() - resizeStarted });
+          }
+        } catch (error) {
+          logPhase("pool_resize", { assets: poolLimited, failed: error instanceof Error ? error.name : "unknown", ms: Date.now() - resizeStarted });
+        }
+      }
     }
   }
   if (droppedMissingAccountActions.length > 0) {

@@ -274,7 +274,13 @@ export async function simulateCandidates(
     const simulation = simulated.get(candidate.id);
     if (!simulation) { feasible.push(candidate); continue; }
     if (simulation.verdict === "blocked") {
-      rejected.push({ label: candidate.label, reason: simulation.summary, asset: candidate.asset });
+      // A borrow the protocol refused on one of the POOL's limits (its structured limiting factor, never its sentence) can pass at
+      // a smaller amount; the caller reads the protocol's own ceiling and sizes again. A refusal on the account's health cannot.
+      const blockedStep = simulation.steps.find((step) => step.verdict === "blocked");
+      const planStep = candidate.steps?.find((step) => step.id === blockedStep?.stepId);
+      const poolLimited = planStep && OP_FLOW[planStep.op].from === "debt" && blockedStep?.limitingFactor && blockedStep.limitingFactor !== "collateral_health"
+        ? { poolLimited: { asset: planStep.asset } } : {};
+      rejected.push({ label: candidate.label, reason: simulation.summary, asset: candidate.asset, ...poolLimited });
       continue;
     }
     feasible.push({ ...candidate, simulation });

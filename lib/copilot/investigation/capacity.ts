@@ -62,6 +62,13 @@ export type SizingOptions = {
    * propose past the browser's 90s (13 Sep).
    */
   app?: MarginSnapshot | null;
+  /**
+   * A basis already being computed this turn. Headroom, plan sizing and the position note all need
+   * the same figures, and each used to read them again: two to three full reads of a slow snapshot
+   * and the contract in one turn (7 Oct, live: ~9s each, one of them timing out at 12s). The turn starts
+   * it once, while the investigation loop runs, and every consumer awaits that one.
+   */
+  basis?: Promise<SizingBasis | null>;
 };
 
 /** Absolute USD band that still counts as WAD / rounding noise. */
@@ -294,6 +301,7 @@ export async function computeSizingBasis(
   options?: SizingOptions,
   signal?: AbortSignal,
 ): Promise<SizingBasis | null> {
+  if (options?.basis) return options.basis;
   let snapshot = shared ?? null;
   if (!snapshot && !(options && Object.prototype.hasOwnProperty.call(options, "app"))) {
     try {

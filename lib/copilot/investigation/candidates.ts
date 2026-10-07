@@ -140,7 +140,9 @@ export interface CandidateSet {
    * `acceptable` marks a refusal the user's own acceptance would lift, so the caller can
    * put it to them as a question instead of a verdict they cannot answer.
    */
-  rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] } }>;
+  rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] };
+    /** The protocol refused a borrow of this asset on a pool limit (its structured `limiting_factor`, not the sentence), so a smaller amount may pass. */
+    poolLimited?: { asset: string } }>;
 }
 
 function signedWad(value: string): bigint {

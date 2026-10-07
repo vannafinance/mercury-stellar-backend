@@ -135,4 +135,17 @@ describe("simulateCandidates", () => {
       { label: "a", asset: "XLM", reason: 'The protocol refuses "withdraw_collateral 900 XLM": Withdrawing 900 XLM ($162 USD) is NOT permitted: it would leave the account below the 1.1x health threshold against outstanding debt.' },
     ]);
   });
+
+  it("marks a borrow refused on a POOL limit, by the protocol's structured limiting factor, so a smaller amount can be tried", async () => {
+    const mcp = { call: vi.fn(async () => ({ allowed: false, reason: "pool limit exceeded", limiting_factor: "pool_utilization_cap" })) };
+    const set = await simulateCandidates({ feasible: [candidate("a", [step("s0", "borrow", "5000")])], rejected: [] }, SCOPE, mcp, signal());
+    expect(set.feasible).toEqual([]);
+    expect(set.rejected[0]).toMatchObject({ label: "a", poolLimited: { asset: "XLM" } });
+  });
+
+  it("does not mark a borrow refused on the account's own health, which no smaller pool amount would fix", async () => {
+    const mcp = { call: vi.fn(async () => ({ allowed: false, reason: "not permitted", limiting_factor: "collateral_health" })) };
+    const set = await simulateCandidates({ feasible: [candidate("a", [step("s0", "borrow", "5000")])], rejected: [] }, SCOPE, mcp, signal());
+    expect(set.rejected[0]).not.toHaveProperty("poolLimited");
+  });
 });

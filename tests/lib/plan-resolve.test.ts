@@ -723,6 +723,76 @@ describe("resolvePlans - the 13 Sep prompt gets its options", () => {
   });
 });
 
+/**
+ * 7 Oct, live: "how much more USDC can I borrow before my health factor drops to 1.5" came back as a borrow of
+ * $1,381 ending at 1.81. The Margin page said 2.37 (it counts $1,049 the contract does not: a token balance held
+ * in the account and pool receipts), and the borrow was sized on the contract's 1.84 instead. The page is what the
+ * user reads, so a stated floor is sized on it; the contract's liquidation line stays a limit nobody is told about.
+ */
+describe("resolvePlans - a stated floor is sized on the Margin page when it disagrees with the contract", () => {
+  const contract = { grossCollateralUsd: "3694.71", debtUsd: "2002.01" };
+  const page = { grossCollateralUsd: "4743.78", debtUsd: "2002.01" };
+  const disputed = (floor: string) => ctx({
+    capacity: { ...contract, floor, issue: { reason: "sizing_sources_disagree" as const, app: page, contract }, site: page },
+    messages: ["how much more can I borrow before my health factor drops to " + floor],
+  });
+  const borrow = (title: string, sizing: ProposedPlan["legs"][number]["sizing"] = { kind: "to_floor" }) =>
+    [plan(title, [{ op: "borrow", asset: "XLM", sizing }])];
+
+  it("ends a borrow to the floor at the floor the user named, as the page shows it", () => {
+    const { candidates, rejected } = resolvePlans(borrow("Borrow to 1.5"), disputed("1.5"));
+    expect(rejected).toEqual([]);
+    // (4743.78 - 1.5 x 2002.01) / 0.5 = 3,480.5 on the page; on the contract's own figures it was 1,383.
+    expect(Number(candidates[0].legs[0].amountUsd)).toBeGreaterThan(3_470);
+    expect(Number(candidates[0].legs[0].amountUsd)).toBeLessThan(3_481);
+    expect(Number(candidates[0].finalHealthFactor)).toBeCloseTo(1.5, 2);
+  });
+
+  it("never lets the page's figures take a borrow past what the contract itself allows", () => {
+    // On the page a floor of 1.12 would allow ~20,800; the contract's line (strictly above 1.10) stops it near 14,900.
+    const { candidates } = resolvePlans(borrow("Borrow to 1.12"), disputed("1.12"));
+    const usd = Number(candidates[0].legs[0].amountUsd);
+    expect(usd).toBeGreaterThan(14_000);
+    expect(usd).toBeLessThan(14_950);
+    // Still above the floor on the page, and above the contract's line there: (3694.71 + x) / (2002.01 + x) > 1.10.
+    expect((3694.71 + usd) / (2002.01 + usd)).toBeGreaterThan(1.1);
+    expect(Number(candidates[0].finalHealthFactor)).toBeGreaterThan(1.12);
+  });
+
+  it("refuses an amount the page would allow and the contract would not, without naming a figure the user never saw", () => {
+    const { candidates, rejected } = resolvePlans(
+      [plan("Borrow a lot", [{ op: "borrow", asset: "XLM", sizing: { kind: "literal", amount: "90000", sourceQuote: "borrow 90000 XLM" } }])],
+      { ...disputed("1.12"), messages: ["borrow 90000 XLM and keep my health factor above 1.12"] },
+    );
+    expect(candidates).toEqual([]);
+    expect(rejected[0].reason).toMatch(/the protocol would not accept this borrow/);
+  });
+
+  it("holds a borrow to the most the protocol says it can lend now, whichever of its limits binds (7 Oct: a pool cap refused a borrow sized to 1.5)", () => {
+    // 9,000 XLM at $0.18 = $1,620: below what the floor allows ($3,480), as when the pool's utilization cap binds.
+    const withCeiling = { ...disputed("1.5"), observations: [...OBSERVATIONS, obs("e20", "max_borrow", { max_borrow_human: "9000", limiting_factor: "pool_utilization_cap" }, { asset: "XLM" })] };
+    const { candidates, rejected } = resolvePlans(borrow("Borrow to 1.5"), withCeiling);
+    expect(rejected).toEqual([]);
+    // Sized a tenth of a percent inside the ceiling ($1,620 x 0.999): the pool's utilization moves with every ledger.
+    expect(Number(candidates[0].legs[0].amountUsd)).toBeCloseTo(1_618.38, 1);
+    // An amount over the ceiling is refused with the ceiling, not shown and then refused by the pool.
+    const over = resolvePlans(
+      [plan("Borrow a lot", [{ op: "borrow", asset: "XLM", sizing: { kind: "literal", amount: "20000", sourceQuote: "borrow 20000 XLM" } }])],
+      { ...withCeiling, messages: ["borrow 20000 XLM and keep my health factor above 1.5"] },
+    );
+    expect(over.candidates).toEqual([]);
+    expect(over.rejected[0].reason).toMatch(/the most the protocol lets this account borrow of XLM right now is 9000 XLM/);
+  });
+
+  it("changes nothing when the page and the contract agree, or when no floor was stated", () => {
+    const agree = resolvePlans(borrow("Borrow to 1.2"), ctx());
+    const noFloor = resolvePlans(borrow("Borrow, no floor"), ctx({ capacity: { ...CAPACITY, floor: null, issue: { reason: "sizing_sources_disagree", app: page, contract } } }));
+    expect(agree.rejected).toEqual([]);
+    expect(noFloor.candidates).toEqual([]);
+    expect(noFloor.rejected[0].reason).toMatch(/needs the health-factor floor/);
+  });
+});
+
 describe("mergeCandidateSets - composed plans beside the fixed shapes", () => {
   it("dedupes a composed plan against the fixed shape it equals and keeps the rationale", () => {
     const fixed = generateCandidates({
