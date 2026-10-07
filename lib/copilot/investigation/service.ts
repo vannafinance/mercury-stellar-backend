@@ -1295,6 +1295,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       ? unusedVenueOps(anchoredVenueOps(outcome.goal, messages), resolved.candidates)
       : [];
     if (outcome.kind === "research_complete" && outcome.goal.intent === "strategy") logPhase("venues_allowed", { stated: outcome.goal.venuesAllowed?.map((row) => row.op) ?? [], unused: unusedOps });
+    const askedOps = new Set(anchoredVenueRows(outcome.kind === "research_complete" ? outcome.goal : null, messages).filter((row) => row.asked).map((row) => row.op));
+    const askedUnused = unusedOps.filter((op) => askedOps.has(op));
     const repairReason = [repairable.length ? "faults" : null, onlyBorrowing ? "no_debt_alternative" : null, unusedOps.length ? "allowed_unused" : null].filter(Boolean).join("+");
     if (!partsBeforeJoin && (repairable.length || onlyBorrowing || unusedOps.length) && Date.now() - turnStartedAt <= REPAIR_START_BY_MS) {
       const repairStarted = Date.now();
@@ -1308,8 +1310,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             onlyBorrowing
               ? "Every plan that was sized borrows. The user allowed borrowing but did not require it, so also include the plan that does not borrow (using only what the wallet and the account already hold), beside the one that does."
               : null,
-            unusedOps.length
-              ? `The user said you may use ${unusedOps.map(opWords).join(", ")}, and no plan uses ${unusedOps.length > 1 ? "them" : "it"}. Where the reads show it pays better or fits better than the plans so far, include a plan that does, beside them; where they do not, leave it out.`
+            askedUnused.length
+              ? `The user asked for ${askedUnused.map(opWords).join(", ")} to be part of the plan, and no plan has ${askedUnused.length > 1 ? "it" : "it"}. Include a plan that uses ${askedUnused.length > 1 ? "them" : "it"}, beside the others, even where another venue pays more.`
+              : null,
+            unusedOps.filter((op) => !askedUnused.includes(op)).length
+              ? `The user said you may use ${unusedOps.filter((op) => !askedUnused.includes(op)).map(opWords).join(", ")}, and no plan uses ${unusedOps.filter((op) => !askedUnused.includes(op)).length > 1 ? "them" : "it"}. Where the reads show it pays better or fits better than the plans so far, include a plan that does, beside them; where they do not, leave it out.`
               : null,
           ].filter(Boolean).join(" "),
           signal: repairSignal,

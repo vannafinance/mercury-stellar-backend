@@ -142,6 +142,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           },
           required: ["kind"],
         },
+        reading: { type: "string", description: "Only when the latest message was misspelled, abbreviated, in mixed languages or could mean more than one thing: how you read it, in a few plain words, written in English (for example: adding a swap between tokens to the plan). Omit it when the message was plain." },
         venuesAllowed: {
           type: "array",
           description: "Only when the user said, in their own words, that you may use a kind of operation (\"you can use spots and farm markets\", \"feel free to swap\", \"lend it if that pays more\"). One row per operation: op is the operation, sourceQuote is the exact substring of their message that allows it. This is permission, not an order: do not list an operation they did not mention, and do not use this for what they told you to do (that is an action).",
@@ -150,6 +151,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
             properties: {
               op: { type: "string", enum: [...WORKFLOW_OPS] },
               sourceQuote: { type: "string" },
+              asked: { type: "boolean", description: "true when the user asked for this operation to be part of the plan (\"I want X in the plan\", \"include X\"); omit or false when they only said you may use it." },
               whyNotUsed: { type: "string", description: "Only when none of your plans uses this operation: one plain sentence, with no figures, saying why the reads you took show it is not worth it here. Omit it when a plan uses the operation." },
             },
             required: ["op", "sourceQuote"],
@@ -317,6 +319,7 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.healthFactorFloor !== undefined) goal.healthFactorFloor = source.healthFactorFloor;
   if (source.walletReserves !== undefined) goal.walletReserves = source.walletReserves;
   if (source.venuesAllowed !== undefined) goal.venuesAllowed = source.venuesAllowed;
+  if (source.reading !== undefined) goal.reading = source.reading;
   if (source.planRelation !== undefined) goal.planRelation = source.planRelation;
   if (source.trigger !== undefined) goal.trigger = source.trigger;
   // Copied by name, like every field above it. A field the model answers and this does not

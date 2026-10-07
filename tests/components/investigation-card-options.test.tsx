@@ -162,6 +162,16 @@ describe("investigation card / options", () => {
     expect(screen.queryByText(/Simulated against the protocol/)).toBeNull();
   });
 
+  // Owner, 7 Oct: a misspelled or ambiguous message is answered with what the copilot took it to mean.
+  it("says how a message was read only when the model gave a reading", () => {
+    const plans = { feasible: [walletPlan("Lend BLUSDC to Earn", "25.41")], rejected: [] };
+    const first = card(view({ candidates: plans, understanding: { objective: "o", constraints: [], borrowing: "allowed", reading: "Adding a spot trade to the plan" } }));
+    expect(screen.getByTestId("read-as").textContent).toBe("Read as: Adding a spot trade to the plan");
+    first.unmount();
+    card(view({ candidates: plans }));
+    expect(screen.queryByTestId("read-as")).toBeNull();
+  });
+
   it("renders only the no-debt plan when the user forbade borrowing", () => {
     const generated = generateCandidates({
       grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", borrowingAllowed: false,

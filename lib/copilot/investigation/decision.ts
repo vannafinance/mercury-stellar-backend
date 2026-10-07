@@ -100,7 +100,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return refuse(`unknown kind or keys: kind=${String(raw.kind)} keys=${Object.keys(raw).join(",")}`);
   }
   const goal = raw.goal;
-  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "venuesAllowed") ? ["venuesAllowed"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
+  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "venuesAllowed") ? ["venuesAllowed"] : []), ...(Object.hasOwn(goal, "reading") ? ["reading"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
     (goal.relation !== undefined && !["new", "refine", "side"].includes(String(goal.relation))) ||
     (goal.intent !== undefined && !["answer", "strategy"].includes(String(goal.intent))) ||
     !text(goal.objective) || !texts(goal.constraints) ||
@@ -171,9 +171,9 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       ? [{ asset: String(row.asset), amount: row.amount, sourceQuote: row.sourceQuote }] : []) : [];
   // Permission rows, kept one by one: an op the registry does not have, or a row with no quote, is dropped alone.
   const venues = Array.isArray(goal.venuesAllowed) ? goal.venuesAllowed.slice(0, 8).flatMap((row) =>
-    isRecord(row) && exactKeys(row, ["op", "sourceQuote", ...(Object.hasOwn(row, "whyNotUsed") ? ["whyNotUsed"] : [])]) && (WORKFLOW_OPS as readonly string[]).includes(String(row.op)) && text(row.sourceQuote, 400)
+    isRecord(row) && exactKeys(row, ["op", "sourceQuote", ...(Object.hasOwn(row, "whyNotUsed") ? ["whyNotUsed"] : []), ...(Object.hasOwn(row, "asked") ? ["asked"] : [])]) && (WORKFLOW_OPS as readonly string[]).includes(String(row.op)) && text(row.sourceQuote, 400)
       // The reason is read out to the user, so it carries no figure of its own: a figure must trace to a read.
-      ? [{ op: row.op as WorkflowOp, sourceQuote: row.sourceQuote, ...(text(row.whyNotUsed, 240) && !/\d/.test(String(row.whyNotUsed)) ? { whyNotUsed: String(row.whyNotUsed).trim() } : {}) }] : []) : [];
+      ? [{ op: row.op as WorkflowOp, sourceQuote: row.sourceQuote, ...(text(row.whyNotUsed, 240) && !/\d/.test(String(row.whyNotUsed)) ? { whyNotUsed: String(row.whyNotUsed).trim() } : {}), ...(row.asked === true ? { asked: true } : {}) }] : []) : [];
   if (!Array.isArray(raw.findings) || raw.findings.length === 0 || raw.findings.length > 12 ||
     !texts(raw.openQuestions)) return refuse(`findings/openQuestions: findings=${Array.isArray(raw.findings) ? raw.findings.length : typeof raw.findings}`);
   /**
@@ -226,6 +226,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       ...(slippage ? { slippageAccepted: slippage } : {}),
       ...(reserves.length ? { walletReserves: reserves } : {}),
       ...(venues.length ? { venuesAllowed: venues } : {}),
+      ...(text(goal.reading, 200) ? { reading: String(goal.reading).trim() } : {}),
       ...(relation ? { planRelation: relation } : {}),
       ...(trigger ? { trigger } : {}),
       objective: goal.objective,

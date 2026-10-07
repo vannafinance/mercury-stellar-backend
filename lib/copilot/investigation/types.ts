@@ -94,7 +94,12 @@ export interface GoalUnderstanding {
    * Operations the user said the copilot may use (swap, add_liquidity, lend...), each with the sentence that says so.
    * A permission, never an order: it decides what the reply must account for, not what a plan must contain.
    */
-  venuesAllowed?: { op: WorkflowOp; sourceQuote: string; whyNotUsed?: string }[];
+  venuesAllowed?: { op: WorkflowOp; sourceQuote: string; whyNotUsed?: string; asked?: boolean }[];
+  /**
+   * How the model read the latest message, in a few words, only when it was misspelled, abbreviated or could mean more than
+   * one thing. Shown to the user so a wrong reading is caught before it is acted on; absent when the message was plain.
+   */
+  reading?: string;
   /**
    * The user accepting a bad price, in their own words - "i dont care if i lose",
    * "swap anyway". Structural, because the model already understood it: on 16 Sep it

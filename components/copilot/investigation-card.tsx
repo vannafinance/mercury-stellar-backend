@@ -480,6 +480,11 @@ export function InvestigationCard({
                 the extra wording the layout sketch rules out.
               */}
 
+              {/* Only when the message needed reading (misspelled, shorthand, ambiguous): what the model took it to mean, so a wrong reading is caught here. */}
+              {result.understanding?.reading && (
+                <p className="max-w-[68ch] text-[13px] leading-5 text-vgray-500" data-testid="read-as">Read as: {result.understanding.reading}</p>
+              )}
+
               {/* The one computed number worth its own block: real headroom at their floor. */}
               {result.capacity && (
                 <section className="rounded-xl border border-vgray-100 px-4 py-3.5">

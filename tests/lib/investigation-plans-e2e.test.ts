@@ -778,6 +778,14 @@ describe("an operation the user said may be used", () => {
     expect(view.message).toMatch(/You said I could use swap; I left it out: The pools pay less than Blend on these tokens./);
   });
 
+  it("is asked for as a requirement, even where another venue pays more, when the user asked for it", async () => {
+    const asked = { ...modelComplete, goal: { ...modelComplete.goal, venuesAllowed: [{ op: "swap", sourceQuote: quote, asked: true }] } };
+    const { turns } = await run([reads, asked, asked]);
+    expect(turns).toHaveLength(3);
+    expect(turns[2].decisionFeedback).toMatch(/asked for swap to be part of the plan/);
+    expect(turns[2].decisionFeedback).not.toMatch(/you may use swap/);
+  });
+
   it("is not asked for, and not mentioned, when a plan already uses it", async () => {
     const { view, turns } = await run([reads, allowing("deposit_collateral")]);
     expect(turns).toHaveLength(2);

@@ -13,7 +13,7 @@ import type { GoalUnderstanding } from "./types";
 export function anchoredVenueRows(
   goal: Pick<GoalUnderstanding, "venuesAllowed"> | null | undefined,
   messages: readonly string[],
-): { op: WorkflowOp; sourceQuote: string; whyNotUsed?: string }[] {
+): { op: WorkflowOp; sourceQuote: string; whyNotUsed?: string; asked?: boolean }[] {
   return (goal?.venuesAllowed ?? []).filter((row) => messages.some((message) => message.includes(row.sourceQuote)));
 }
 

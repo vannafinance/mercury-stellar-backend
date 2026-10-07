@@ -66,3 +66,25 @@ describe("the reason an allowed operation was left out", () => {
     expect(dropped.goal.venuesAllowed?.[0].whyNotUsed).toBeUndefined();
   });
 });
+
+describe("the reading and the request that ride on a conclusion", () => {
+  const conclude = (extra: Record<string, unknown>, row: Record<string, unknown> = { op: "swap", sourceQuote: "spt bhi chaiye" }) => parseDecision({
+    kind: "research_complete",
+    goal: { objective: "o", constraints: [], borrowing: "unspecified", intent: "strategy", venuesAllowed: [row], ...extra },
+    findings: [{ summary: "s", evidenceIds: [] }], openQuestions: [],
+  });
+
+  it("keeps how the model read a misspelled message, and that the user asked for the operation", () => {
+    const out = conclude({ reading: "Adding a spot trade to the plan" }, { op: "swap", sourceQuote: "spt bhi chaiye", asked: true });
+    if (out?.kind !== "research_complete") throw new Error("not parsed");
+    expect(out.goal.reading).toBe("Adding a spot trade to the plan");
+    expect(out.goal.venuesAllowed).toEqual([{ op: "swap", sourceQuote: "spt bhi chaiye", asked: true }]);
+  });
+
+  it("drops an empty reading and a non-boolean request", () => {
+    const out = conclude({ reading: "  " }, { op: "swap", sourceQuote: "spt bhi chaiye", asked: "yes" });
+    if (out?.kind !== "research_complete") throw new Error("not parsed");
+    expect(out.goal.reading).toBeUndefined();
+    expect(out.goal.venuesAllowed?.[0].asked).toBeUndefined();
+  });
+});
