@@ -702,7 +702,7 @@ export function actionFromAnswers(issued: Questionnaire, answers: QuestionnaireA
   const sizing: PlanLeg["sizing"] = answers.amount.kind === "previous_leg"
     ? { kind: "previous_leg" }
     : answers.amount.kind === "fraction"
-      ? { kind: "fraction", percent: answers.amount.percent, of: flow.from === "wallet" ? "idle" : "position", sourceQuote: answers.summary }
+      ? { kind: "fraction", percent: answers.amount.percent, of: flow.from === "wallet" ? "wallet" : "position", sourceQuote: answers.summary }
       : { kind: "literal", amount: answers.amount.amount, sourceQuote: answers.summary };
   return {
     op,

@@ -6,7 +6,7 @@ import type { GoalUnderstanding, PlanLeg, PlanOp, PlanSizing, ProposedPlan, Read
 
 export const PLAN_OPS: readonly PlanOp[] = WORKFLOW_OPS;
 /** The sizing words a leg may carry. `plan.ts` gives each one its meaning; the prompt lists them from here. */
-export const PLAN_SIZINGS = ["all_idle", "all_position", "to_floor", "previous_leg", "literal", "fraction", "share", "leverage"] as const;
+export const PLAN_SIZINGS = ["all_wallet", "all_position", "to_floor", "previous_leg", "literal", "fraction", "share", "leverage"] as const;
 const MAX_PLANS = 3;
 /** A plan may have as many legs as one approval can run; sizing refuses one that grows past it. */
 const MAX_LEGS = MAX_WORKFLOW_STEPS;
@@ -347,7 +347,7 @@ function parseSizing(raw: unknown): PlanSizing | null {
   if (value.kind === "fraction") {
     if (!exactKeys(value, ["kind", "percent", "of", "sourceQuote"]) || typeof value.percent !== "string" ||
       !/^\d+(\.\d{1,6})?$/.test(value.percent) || Number(value.percent) <= 0 || Number(value.percent) > 100 ||
-      (value.of !== "idle" && value.of !== "position") || !text(value.sourceQuote, 1600)) return drop(`fraction sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
+      (value.of !== "wallet" && value.of !== "position") || !text(value.sourceQuote, 1600)) return drop(`fraction sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
     return { kind: "fraction", percent: value.percent, of: value.of, sourceQuote: value.sourceQuote };
   }
   if (value.kind === "share") {
@@ -356,8 +356,8 @@ function parseSizing(raw: unknown): PlanSizing | null {
     // sizes a share of the wallet sizes this too; `allocation` is what tells them it is the model's.
     if (!exactKeys(value, ["kind", "percent", "of", "reason"]) || typeof value.percent !== "string" ||
       !/^\d+(\.\d{1,6})?$/.test(value.percent) || Number(value.percent) <= 0 || Number(value.percent) > 100 ||
-      value.of !== "idle" || !text(value.reason, 400)) return drop(`share sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
-    return { kind: "fraction", percent: value.percent, of: "idle", sourceQuote: "", allocation: { reason: value.reason } };
+      value.of !== "wallet" || !text(value.reason, 400)) return drop(`share sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
+    return { kind: "fraction", percent: value.percent, of: "wallet", sourceQuote: "", allocation: { reason: value.reason } };
   }
   if (value.kind === "leverage") {
     // Upper-bounded generously; the sizer's own floor-projection is what actually stops an
@@ -367,7 +367,7 @@ function parseSizing(raw: unknown): PlanSizing | null {
       !text(value.sourceQuote, 1600)) return drop(`leverage sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
     return { kind: "leverage", multiple: value.multiple, sourceQuote: value.sourceQuote };
   }
-  if (value.kind !== "literal") return exactKeys(value, ["kind"]) ? { kind: value.kind as "all_idle" | "all_position" | "to_floor" | "previous_leg" } : drop(`sizing ${String(value.kind)} takes no other keys, got ${Object.keys(value).join(",")}`);
+  if (value.kind !== "literal") return exactKeys(value, ["kind"]) ? { kind: value.kind as "all_wallet" | "all_position" | "to_floor" | "previous_leg" } : drop(`sizing ${String(value.kind)} takes no other keys, got ${Object.keys(value).join(",")}`);
   // amountAsset is optional — every non-swap leg, and the ordinary "spend" swap, omit it.
   const hasAmountAsset = Object.hasOwn(value, "amountAsset");
   const literalKeys = hasAmountAsset ? ["kind", "amount", "sourceQuote", "amountAsset"] : ["kind", "amount", "sourceQuote"];

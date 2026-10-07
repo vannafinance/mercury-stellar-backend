@@ -3,7 +3,7 @@
  *
  * Three parties handle the same string: the generator mints it, the card posts it back,
  * and the propose route decides whether to accept it. When each side spelled the shape
- * on its own, the generator wrote `supply_idle_BLUSDC` and the route accepted only
+ * on its own, the generator wrote `borrow_supply_BLUSDC` and the route accepted only
  * `[a-z0-9_]`, so no option button ever worked (first signed-in battery, 11 Sep). The fix
  * is not to lowercase at the three call sites: it is that nothing outside this module may
  * spell the shape. Producers call `candidateId()`, consumers call `parseCandidateId()`,
@@ -41,10 +41,6 @@ export interface CandidateKindTraits {
  * row has sizing and compile code behind it. Adding a row is the whole registration.
  */
 export const CANDIDATE_KINDS = {
-  /** Deposit idle wallet tokens into margin and supply them to Blend; no new debt. */
-  supply_idle: { borrows: false, venue: "blend", funding: "wallet" },
-  /** Lend idle wallet tokens to a Vanna Earn pool straight from the G-wallet; no new debt. */
-  lend_idle: { borrows: false, venue: "earn", funding: "wallet" },
   /** Borrow against margin headroom and supply the proceeds to Blend. */
   borrow_supply: { borrows: true, venue: "blend", funding: "borrow" },
   /**

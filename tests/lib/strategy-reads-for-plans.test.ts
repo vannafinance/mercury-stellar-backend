@@ -27,8 +27,8 @@ describe("readsForPlans — a swap is valued on both sides", () => {
 });
 
 describe("readsForPlans — a share reads the base it is a share of", () => {
-  it("of=idle wants the wallet; of=position wants the position the op spends", () => {
-    const idle = readsForPlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "idle", sourceQuote: "25% of xlm" } }])], [], NOW);
+  it("of=wallet wants the wallet; of=position wants the position the op spends", () => {
+    const idle = readsForPlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "wallet", sourceQuote: "25% of xlm" } }])], [], NOW);
     expect(idle.map((r) => r.capability)).toContain("wallet_balances");
     expect(idle.map((r) => r.capability)).toContain("account_collateral");
     const redeem = readsForPlans([plan([{ op: "redeem", asset: "AQUSDC", sizing: { kind: "fraction", percent: "50", of: "position", sourceQuote: "half" } }])], [], NOW);
@@ -39,8 +39,8 @@ describe("readsForPlans — a share reads the base it is a share of", () => {
 });
 
 describe("readsForPlans — a repay reads the debt whatever its sizing word", () => {
-  it("asks for account_debt on an all_idle repay", () => {
-    const reads = readsForPlans([plan([{ op: "repay", asset: "XLM", sizing: { kind: "all_idle" } }])], [], NOW);
+  it("asks for account_debt on an all_wallet repay", () => {
+    const reads = readsForPlans([plan([{ op: "repay", asset: "XLM", sizing: { kind: "all_wallet" } }])], [], NOW);
     expect(reads.map((r) => r.capability)).toEqual(expect.arrayContaining(["account_debt", "wallet_balances"]));
   });
 });
@@ -59,7 +59,7 @@ describe("readsForPlans — literal position exits", () => {
 describe("readsForPlans", () => {
   it("asks for the price, the wallet and the Blend reserves a deposit-then-supply plan needs", () => {
     const reads = readsForPlans([plan([
-      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
       { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
     ])], [], NOW);
     expect(reads).toEqual(expect.arrayContaining([

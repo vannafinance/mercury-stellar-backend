@@ -93,7 +93,6 @@ function evidenceObservations(): Observation[] {
       id: "e3", capability: "asset_price", args: { asset: "BLUSDC" },
       data: { price_usd: "1" },
     }),
-    // AQUSDC has no Blend reserve, so idle AQUSDC can only go to Earn.
     observation({
       id: "e5", capability: "earn_market", args: { asset: "AQUSDC" },
       data: { supply_apr_pct: "25.41", borrow_apr_pct: "30", utilization_pct: "90" },
@@ -108,7 +107,7 @@ function evidenceObservations(): Observation[] {
 function continuation(capturedAt = NOW) {
   const codec = researchCodec(SECRET, SERVER, () => NOW);
   const evidence = compactResearchEvidence(evidenceObservations(), CAPACITY, capturedAt);
-  evidence.allowedCandidateIds = [candidateId("borrow_supply", "BLUSDC"), candidateId("lend_idle", "AQUSDC")];
+  evidence.allowedCandidateIds = [candidateId("borrow_supply", "BLUSDC")];
   return codec.seal(SCOPE, ["Keep HF above 1.3. You can take new loans."], null, evidence);
 }
 
@@ -136,18 +135,6 @@ describe("proposeWorkflow evidence reuse", () => {
     expect(view.status).toBe("proposed");
     expect(view.steps.map((step) => step.op)).toEqual(["borrow", "supply_blend"]);
     expect(view.steps[0].amount).toBe(view.steps[1].amount);
-  });
-
-  it("prepares an Earn idle plan from the same sealed bundle", async () => {
-    const mcp = { call: vi.fn(async () => { throw new Error("MCP should not be called when evidence is fresh"); }) };
-    const view = await proposeWorkflow({
-      continuation: continuation(), candidateId: candidateId("lend_idle", "AQUSDC"),
-      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
-      mcp, signal: new AbortController().signal, now: NOW,
-    });
-    expect(mcp.call).not.toHaveBeenCalled();
-    expect(view.steps).toHaveLength(1);
-    expect(view.steps[0]).toMatchObject({ op: "lend", amount: "680", asset: "AQUSDC" });
   });
 
   it("falls back to live reads when the sealed bundle is older than a minute", async () => {

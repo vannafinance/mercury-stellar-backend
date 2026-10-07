@@ -25,7 +25,7 @@ const OBSERVATIONS: Observation[] = [
   obs("e2", "asset_price", { price_usd: "1" }, { asset: "BLUSDC" }),
   obs("e3", "earn_market", { supply_apr_pct: "19.16", borrow_apr_pct: "25", utilization_pct: "80" }, { asset: "BLUSDC" }),
 ];
-const lendBlusdc: ProposedPlan = { title: "Lend BLUSDC", rationale: "r", evidenceIds: ["e1"], legs: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "all_idle" } }] };
+const lendBlusdc: ProposedPlan = { title: "Lend BLUSDC", rationale: "r", evidenceIds: ["e1"], legs: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "all_wallet" } }] };
 const run = (messages: string[]) => resolvePlans([lendBlusdc], {
   scope: SCOPE, observations: OBSERVATIONS, now: NOW, messages,
   capacity: null, borrowing: "forbidden", comparisons: compareObservedRates(OBSERVATIONS, NOW),
@@ -66,7 +66,7 @@ describe("reading USDC names out of a sentence", () => {
 /** An asset the venue does not support is refused for THAT reason, not for a missing price. */
 describe("an unsupported asset", () => {
   it("names the missing Earn pool even when no price was read", () => {
-    const lendAqua: ProposedPlan = { title: "Lend AQUA", rationale: "r", evidenceIds: ["e1"], legs: [{ op: "lend", asset: "AQUA", sizing: { kind: "all_idle" } }] };
+    const lendAqua: ProposedPlan = { title: "Lend AQUA", rationale: "r", evidenceIds: ["e1"], legs: [{ op: "lend", asset: "AQUA", sizing: { kind: "all_wallet" } }] };
     const { rejected } = resolvePlans([lendAqua], {
       scope: SCOPE, observations: OBSERVATIONS, now: NOW, messages: ["lend my AQUA"],
       capacity: null, borrowing: "forbidden", comparisons: compareObservedRates(OBSERVATIONS, NOW),

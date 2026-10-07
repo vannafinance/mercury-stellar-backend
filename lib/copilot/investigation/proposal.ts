@@ -12,7 +12,7 @@ import { capacityFromBasis, computeSizingBasis, type SizingBasis } from "./capac
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { interruptible } from "./runtime";
 import {
-  generateCandidates, idleWalletAfterReserves, requestedBorrowFrom,
+  generateCandidates, spendableWalletAfterReserves, requestedBorrowFrom,
 } from "./candidates";
 import { collectStrategyReads, readsForPlans, STRATEGY_READS } from "./strategy-reads";
 import { parseCandidateId, requiresMarginAccount, REQUESTED_ACTIONS_ID } from "./candidate-id";
@@ -212,26 +212,26 @@ export async function proposeWorkflow(input: {
   const comparisons = compareObservedRates(observations, now);
   // The reserves sealed with the research; the same subtraction the investigation sized with.
   const walletReserves = prior.evidence?.walletReserves;
-  const { idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens } = idleWalletAfterReserves(observations, now, walletReserves);
-  const idleOnly = sealedPlan ? !sealedPlan.legs.some((leg) => leg.op === "borrow") : !parsed.traits.borrows;
+  const { spendableWalletUsd, spendableWalletByAssetUsd, spendableWalletByAssetTokens } = spendableWalletAfterReserves(observations, now, walletReserves);
+  const spendableOnly = sealedPlan ? !sealedPlan.legs.some((leg) => leg.op === "borrow") : !parsed.traits.borrows;
   /**
    * Same gates as `researchTurn`: an unvalued stated amount must not fall through to
    * sizing-to-the-floor, and a borrow shape still needs the user's floor. Idle supply
    * does not, but it still needs a comparison row — that is how the generator keys assets.
    */
-  const candidates = idleOnly
+  const candidates = spendableOnly
     ? generateCandidates({
         grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
         debtUsd: capacity?.debtUsd ?? "0",
         floor: capacity?.floor ?? null,
-          idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens, borrowingAllowed: false, comparisons,
+          spendableWalletUsd, spendableWalletByAssetUsd, spendableWalletByAssetTokens, borrowingAllowed: false, comparisons,
       })
     : capacity && comparisons.length && requestedBorrow?.usd !== null
       ? generateCandidates({
           grossCollateralUsd: capacity.grossCollateralUsd,
           debtUsd: capacity.debtUsd,
           floor: capacity.floor,
-          idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens,
+          spendableWalletUsd, spendableWalletByAssetUsd, spendableWalletByAssetTokens,
           borrowingAllowed: true,
           requestedBorrowUsd: requestedBorrow?.usd ?? null,
           comparisons,

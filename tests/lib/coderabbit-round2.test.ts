@@ -10,7 +10,7 @@ describe("the user's limits survive an all-idle amount turned into a question", 
     const out = askForUnstatedAmounts({
       kind: "research_complete",
       goal: { objective: "x", constraints: [], borrowing: "unspecified", intent: "strategy", walletReserves: [reserve], healthFactorFloor: floor,
-        actions: [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" }, sourceQuote: "deposit xlm" }] },
+        actions: [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" }, sourceQuote: "deposit xlm" }] },
       findings: [], openQuestions: [],
     } as never) as unknown as { kind: string; carried: unknown };
     expect(out.kind).toBe("clarify");

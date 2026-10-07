@@ -3,7 +3,7 @@ import { askForUnstatedAmounts } from "@/lib/copilot/investigation/unstated-amou
 
 /**
  * 25 Sep, live: "lend 20 blusdc and deposit xlm" became "lend 20, then deposit 7,648 XLM", the
- * whole idle balance, because the model sized the deposit `all_idle`. A stated action's amount
+ * whole idle balance, because the model sized the deposit `all_wallet`. A stated action's amount
  * is never chosen for the user: it is asked.
  */
 const goal = (actions: unknown[], plans?: unknown[]) => ({
@@ -12,7 +12,7 @@ const goal = (actions: unknown[], plans?: unknown[]) => ({
   findings: [], openQuestions: [], ...(plans ? { plans } : {}),
 });
 const lend20 = { op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "20", sourceQuote: "lend 20 blusdc" }, sourceQuote: "lend 20 blusdc" };
-const depositIdle = { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" }, sourceQuote: "deposit xlm" };
+const depositIdle = { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" }, sourceQuote: "deposit xlm" };
 
 describe("a stated action's all-idle amount is asked, never spent", () => {
   it("turns the idle deposit into a question and keeps the stated lend", () => {

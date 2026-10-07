@@ -2,23 +2,26 @@
  * Candidate strategies, generated and ranked deterministically.
  *
  * The model contributes nothing here. Given the rate comparisons the investigation already
- * gathered and the authoritative position, the feasible shapes are enumerable in code:
- * supply what is already idle, or borrow against headroom and supply that. Every amount
- * comes from `sizing.ts`, so each candidate is re-derivable from its inputs.
+ * gathered and the authoritative position, the one shape enumerable in code is: borrow
+ * against headroom and supply that. Every amount comes from `sizing.ts`, so each candidate
+ * is re-derivable from its inputs.
+ *
+ * Nothing that moves the user's own wallet is generated here. Lending or supplying what the
+ * wallet holds is a plan the model composes for what the user asked (and `plan.ts` sizes), or
+ * an instruction they gave; a generator that volunteered it offered to move their money when
+ * they had only asked a question (7 Oct: "how much more USDC can I borrow before my health
+ * factor drops to 1.5" came back as "lend your BLUSDC to Earn").
  *
  * Two rules the plan calls for explicitly, both enforced here rather than left to prose:
  *
- *  - **Permission to borrow is not an instruction to borrow.** When borrowing is
- *    unspecified or allowed, a non-borrowing alternative is offered whenever one exists,
- *    ranked ahead of any levered shape. When borrowing is required — typed on the goal
- *    or present as a borrow leg — idle shapes are not generated, so they cannot occupy
- *    the winner slot.
+ *  - **Permission to borrow is not an instruction to borrow.** The borrow shape is ranked
+ *    after any no-debt plan the model composed; when borrowing is required (typed on the
+ *    goal or present as a borrow leg) the borrow shape is the only kind left.
  *  - **A negative carry is rejected, not ranked, unless the borrow was required.** If
  *    the borrow cost meets or exceeds the supply rate the position loses money by
  *    construction. An unspecified/allowed ask reports that reason. A required borrow is
  *    still sized: the user already named the instruction, the same way a stated losing
- *    plan is kept. No headroom is not an idle substitute — it is reported as a deposit
- *    or transfer they can accept.
+ *    plan is kept. No headroom is reported as a deposit or transfer they can accept.
  *
  * Supplying is treated as health-factor NEUTRAL. Borrowed proceeds deployed into Blend
  * become a tracking receipt the contract still counts as collateral (measured: recorded
@@ -46,14 +49,14 @@ const APR_NOISE = decimalWad("0.2");
 export interface CandidateInput {
   grossCollateralUsd: string;
   debtUsd: string;
-  /** The user's stated floor. Null when none was stated: idle shapes need none, borrow shapes are then not offered. */
+  /** The user's stated floor. Null when none was stated: borrow shapes are then not offered. */
   floor: string | null;
-  /** Idle wallet value the user could commit without borrowing. Null when unknown. */
-  idleWalletUsd: string | null;
+  /** Spendable wallet value, kept for the callers that still pass it; the generator no longer reads it. */
+  spendableWalletUsd: string | null;
   /** Per-token funds. A combined USD total cannot fund every token's alternative. */
-  idleWalletByAssetUsd?: Partial<Record<RateComparison["asset"], string>>;
-  /** Token balances matching `idleWalletByAssetUsd`, for the computed decision copy. */
-  idleWalletByAssetTokens?: Partial<Record<RateComparison["asset"], string>>;
+  spendableWalletByAssetUsd?: Partial<Record<RateComparison["asset"], string>>;
+  /** Token balances matching `spendableWalletByAssetUsd`, for the computed decision copy. */
+  spendableWalletByAssetTokens?: Partial<Record<RateComparison["asset"], string>>;
   borrowingAllowed?: boolean;
   /** The user's borrowing intent, used only to order feasible candidates. */
   borrowing?: "unspecified" | "allowed" | "required" | "forbidden";
@@ -103,7 +106,7 @@ export interface Candidate {
    * a bound; a stated amount is the instruction and must not be quietly shrunk.
    */
   amountBasis: "stated" | "derived_max_at_floor";
-  /** Token amount already held, when this candidate spends idle wallet funds. */
+  /** Token amount already held, when this candidate spends wallet funds. */
   heldAmount?: string | null;
   /**
    * Why this candidate ranked first. Computed from the runner-up comparison, never
@@ -273,16 +276,16 @@ export function rankFeasible(
   feasible: Candidate[],
   borrowing: CandidateInput["borrowing"] = "unspecified",
 ): Candidate[] {
-  const idle = feasible.filter((candidate) => !candidate.borrows).sort(byExpectedReturn);
+  const noDebt = feasible.filter((candidate) => !candidate.borrows).sort(byExpectedReturn);
   const borrow = feasible.filter((candidate) => candidate.borrows).sort(byNetThenSize);
   // A required borrow is an instruction. Do not keep idle on the card: ranking it
   // second still let it win whenever the borrow failed to size.
   if (borrowing === "required") return borrow;
-  const ranked = [...idle, ...borrow];
-  const usdcIdle = idle.filter((candidate) => USDC_SET.has(candidate.asset));
-  const winner = usdcIdle[0];
+  const ranked = [...noDebt, ...borrow];
+  const usdcNoDebt = noDebt.filter((candidate) => USDC_SET.has(candidate.asset));
+  const winner = usdcNoDebt[0];
   if (!winner) return ranked;
-  const runnerUp = usdcIdle.find((candidate) => candidate.asset !== winner.asset);
+  const runnerUp = usdcNoDebt.find((candidate) => candidate.asset !== winner.asset);
   const decision = variantDecision(winner, runnerUp);
   return ranked.map((candidate) => candidate.id === winner.id ? { ...candidate, decision } : candidate);
 }
@@ -317,64 +320,8 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
       if (comparison.marginBorrowApr) borrow = decimalWad(comparison.marginBorrowApr);
     } catch { borrow = null; }
 
-    // 1. No new debt: commit what is already idle. Offered when something is idle and
-    //    the user did not require a borrow — permission is not an instruction.
-    const assetIdle = input.idleWalletByAssetUsd?.[comparison.asset];
-    const heldAmount = input.idleWalletByAssetTokens?.[comparison.asset] ?? null;
-    if (input.borrowing !== "required" && assetIdle !== undefined) {
-      let idle = ZERO;
-      try {
-        idle = decimalWad(assetIdle);
-      } catch {
-        idle = ZERO;
-      }
-      if (idle > ZERO) {
-        if (supply !== null) {
-          feasible.push({
-            ...shape("supply_idle", comparison.asset),
-            label: `Supply idle ${comparison.asset} to Blend — no new borrowing`,
-            netAprPct: null,
-            supplyAprPct: formatWad(supply),
-            supplyApyPct: pct(shownApyPct("blend_supply", formatWad(supply))),
-            netApyPct: null,
-            // Supplying idle wallet value does not touch margin collateral or debt.
-            legs: [],
-            finalHealthFactor: null,
-            amountUsd: formatWad(idle),
-            evidenceIds: [...comparison.evidenceIds],
-            amountBasis: "stated",
-            heldAmount,
-          });
-        }
-        /**
-         * Earn is a real idle venue when its supply APR beats Blend, or when there is
-         * no Blend reserve at all (AQUSDC / SOUSDC). Borrowed proceeds live in the
-         * C-address while vanna_lend spends the G-wallet, so there is no borrow-to-Earn
-         * shape — that would need a withdraw we have not audited.
-         */
-        if (comparison.earnSupplyApr) {
-          try {
-            const earn = decimalWad(comparison.earnSupplyApr);
-            if (supply === null || earn > supply) {
-              feasible.push({
-                ...shape("lend_idle", comparison.asset),
-                label: `Lend idle ${comparison.asset} to Earn — no new borrowing`,
-                netAprPct: null,
-                supplyAprPct: formatWad(earn),
-                supplyApyPct: pct(shownApyPct("earn_supply", formatWad(earn))),
-                netApyPct: null,
-                legs: [],
-                finalHealthFactor: null,
-                amountUsd: formatWad(idle),
-                evidenceIds: [...comparison.evidenceIds],
-                amountBasis: "stated",
-                heldAmount,
-              });
-            }
-          } catch { /* an unparseable Earn rate is not a candidate */ }
-        }
-      }
-    }
+    // The wallet is never offered back as a ready-made option here: moving a user's tokens is a plan the
+    // model composes for what they asked, or an instruction they gave, never a shape this generator volunteers.
 
     // A borrow needs a validated capacity floor. For a typed required-borrow goal the
     // service supplies the configured safety floor; without either source, do not size.
@@ -512,8 +459,6 @@ export function mergeCandidateSets(
 ): CandidateSet {
   // The op sequence a fixed shape compiles to, so it can be matched against a composed plan's steps.
   const FIXED_OPS: Record<Exclude<CandidateKind, "composed">, (asset: string) => string[]> = {
-    supply_idle: (asset) => [`deposit_collateral:${asset}`, `supply_blend:${asset}`],
-    lend_idle: (asset) => [`lend:${asset}`],
     borrow_supply: (asset) => [`borrow:${asset}`, `supply_blend:${asset}`],
   };
   const signature = (candidate: Candidate) => (candidate.steps
@@ -545,7 +490,7 @@ export function mergeCandidateSets(
  *
  * Sizing to the floor when someone asked for a specific amount answers a different
  * question, so the amount has to survive the trip into USD. It is valued ONLY from an
- * oracle price read during this same investigation — the same rule as `idleWalletUsdFrom`,
+ * oracle price read during this same investigation — the same rule as `spendableWalletUsdFrom`,
  * and for the same reason: treating a stable's ticker as exactly $1 is an assumption, and
  * here it would flow straight into a health-factor check the user is relying on.
  *
@@ -618,9 +563,9 @@ export function requestedBorrowFrom(
  * reserve instead of claiming the token is not held.
  */
 export function holdingsAfterReserves(
-  holdings: ReturnType<typeof idleWalletHoldingsFrom>,
+  holdings: ReturnType<typeof spendableWalletHoldingsFrom>,
   reserves: readonly { asset: string; amount: string }[] | undefined,
-): ReturnType<typeof idleWalletHoldingsFrom> {
+): ReturnType<typeof spendableWalletHoldingsFrom> {
   if (!reserves?.length) return holdings;
   const out = { ...holdings };
   for (const { asset, amount } of reserves) {
@@ -639,29 +584,29 @@ export function holdingsAfterReserves(
  * aside: the same subtraction the plan sizer applies, so a "supply idle XLM" option cannot
  * offer the XLM the user said to keep.
  */
-export function idleWalletAfterReserves(
+export function spendableWalletAfterReserves(
   observations: readonly Observation[],
   now: number,
   reserves: readonly { asset: string; amount: string }[] | undefined,
-): { idleWalletUsd: string | null; idleWalletByAssetUsd: Partial<Record<RateComparison["asset"], string>>; idleWalletByAssetTokens: Partial<Record<RateComparison["asset"], string>> } {
-  const before = idleWalletHoldingsFrom(observations, now);
+): { spendableWalletUsd: string | null; spendableWalletByAssetUsd: Partial<Record<RateComparison["asset"], string>>; spendableWalletByAssetTokens: Partial<Record<RateComparison["asset"], string>> } {
+  const before = spendableWalletHoldingsFrom(observations, now);
   const after = holdingsAfterReserves(before, reserves);
-  const idleWalletByAssetUsd: Partial<Record<RateComparison["asset"], string>> = {};
-  const idleWalletByAssetTokens: Partial<Record<RateComparison["asset"], string>> = {};
+  const spendableWalletByAssetUsd: Partial<Record<RateComparison["asset"], string>> = {};
+  const spendableWalletByAssetTokens: Partial<Record<RateComparison["asset"], string>> = {};
   let setAside = ZERO;
   for (const [asset, held] of Object.entries(after) as Array<[RateAsset, { usd: string; tokens: string }]>) {
-    idleWalletByAssetUsd[asset] = held.usd;
-    idleWalletByAssetTokens[asset] = held.tokens;
+    spendableWalletByAssetUsd[asset] = held.usd;
+    spendableWalletByAssetTokens[asset] = held.tokens;
     const was = before[asset];
     if (was) setAside += decimalWad(was.usd) - decimalWad(held.usd);
   }
-  const total = idleWalletUsdFrom(observations, now);
-  const idleWalletUsd = total === null ? null : formatWad(decimalWad(total) > setAside ? decimalWad(total) - setAside : ZERO);
-  return { idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens };
+  const total = spendableWalletUsdFrom(observations, now);
+  const spendableWalletUsd = total === null ? null : formatWad(decimalWad(total) > setAside ? decimalWad(total) - setAside : ZERO);
+  return { spendableWalletUsd, spendableWalletByAssetUsd, spendableWalletByAssetTokens };
 }
 
-export function idleWalletByAssetUsdFrom(observations: readonly Observation[], now: number): Partial<Record<RateComparison["asset"], string>> {
-  const holdings = idleWalletHoldingsFrom(observations, now);
+export function spendableWalletByAssetUsdFrom(observations: readonly Observation[], now: number): Partial<Record<RateComparison["asset"], string>> {
+  const holdings = spendableWalletHoldingsFrom(observations, now);
   const result: Partial<Record<RateComparison["asset"], string>> = {};
   for (const [asset, holding] of Object.entries(holdings) as Array<[RateAsset, { usd: string; tokens: string }]>) {
     result[asset] = holding.usd;
@@ -669,8 +614,8 @@ export function idleWalletByAssetUsdFrom(observations: readonly Observation[], n
   return result;
 }
 
-export function idleWalletByAssetTokensFrom(observations: readonly Observation[], now: number): Partial<Record<RateComparison["asset"], string>> {
-  const holdings = idleWalletHoldingsFrom(observations, now);
+export function spendableWalletByAssetTokensFrom(observations: readonly Observation[], now: number): Partial<Record<RateComparison["asset"], string>> {
+  const holdings = spendableWalletHoldingsFrom(observations, now);
   const result: Partial<Record<RateComparison["asset"], string>> = {};
   for (const [asset, holding] of Object.entries(holdings) as Array<[RateAsset, { usd: string; tokens: string }]>) {
     result[asset] = holding.tokens;
@@ -678,11 +623,11 @@ export function idleWalletByAssetTokensFrom(observations: readonly Observation[]
   return result;
 }
 
-export function idleWalletHoldingsFrom(
+export function spendableWalletHoldingsFrom(
   observations: readonly Observation[],
   now: number,
 ): Partial<Record<RateAsset, { usd: string; tokens: string }>> {
-  return walletHoldingsFrom(observations, now).idle;
+  return walletHoldingsFrom(observations, now).spendable;
 }
 
 /**
@@ -718,7 +663,7 @@ export function transactionFloorUsdWad(observations: readonly Observation[], now
 function walletHoldingsFrom(
   observations: readonly Observation[],
   now: number,
-): { idle: Partial<Record<RateAsset, { usd: string; tokens: string }>>; dust: Partial<Record<RateAsset, { usd: string; tokens: string }>> } {
+): { spendable: Partial<Record<RateAsset, { usd: string; tokens: string }>>; dust: Partial<Record<RateAsset, { usd: string; tokens: string }>> } {
   const result: Partial<Record<RateAsset, { usd: string; tokens: string }>> = {};
   const dust: Partial<Record<RateAsset, { usd: string; tokens: string }>> = {};
   const floor = transactionFloorUsdWad(observations, now);
@@ -738,13 +683,13 @@ function walletHoldingsFrom(
         ? observation.data.assets.filter(row => isRecord(row) && row.symbol === asset) : undefined },
     }).filter(observation => observation.capability !== "asset_price" || observation.args.asset === asset
       || (USDC_SET.has(asset) && USDC_SET.has(String(observation.args.asset ?? ""))));
-    const value = idleWalletUsdFrom(scoped, now);
-    const tokens = idleTokensFrom(scoped, now, asset);
+    const value = spendableWalletUsdFrom(scoped, now);
+    const tokens = spendableTokensFrom(scoped, now, asset);
     if (value === null || tokens === null) continue;
     if (floor !== null && decimalWad(value) < floor) dust[asset] = { usd: value, tokens };
     else result[asset] = { usd: value, tokens };
   }
-  return { idle: result, dust };
+  return { spendable: result, dust };
 }
 
 /** Reads no older than a minute. A price outside that window prices nothing. */
@@ -782,7 +727,7 @@ export function freshPrices(observations: readonly Observation[], now: number): 
 
 /**
  * What a wallet line can actually spend. The wallet read names the XLM it wants kept
- * back for transaction fees (`fee_reserve_xlm`); an "idle" amount that includes it would
+ * back for transaction fees (`fee_reserve_xlm`); a spendable amount that includes it would
  * leave the wallet unable to pay for the very deposit that moves it. The reserve is the
  * read's own number, applied to the native line only.
  */
@@ -827,7 +772,7 @@ export function unspendableWalletLine(observations: readonly Observation[], now:
   return null;
 }
 
-function idleTokensFrom(observations: readonly Observation[], now: number, asset: string): string | null {
+function spendableTokensFrom(observations: readonly Observation[], now: number, asset: string): string | null {
   const fresh = freshObservations(observations, now);
   const wallet = fresh.find((observation) => observation.capability === "wallet_balances");
   const assets = wallet?.data?.assets;
@@ -843,7 +788,7 @@ function idleTokensFrom(observations: readonly Observation[], now: number, asset
   return null;
 }
 
-export function idleWalletUsdFrom(observations: readonly Observation[], now: number): string | null {
+export function spendableWalletUsdFrom(observations: readonly Observation[], now: number): string | null {
   const fresh = freshObservations(observations, now);
   const prices = freshPrices(observations, now);
   if (prices.size === 0) return null;

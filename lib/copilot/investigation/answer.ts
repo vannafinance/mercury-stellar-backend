@@ -267,7 +267,7 @@ export function factualReplyBlocks(facts: readonly ResearchFact[], request?: str
 }
 
 /** What the wallet holds that a plan could use, from the wallet read's own rows — spendable where the read states it. */
-function idleSummary(facts: readonly ResearchFact[]): string | null {
+function spendableSummary(facts: readonly ResearchFact[]): string | null {
   const bySymbol = new Map<string, { balance?: string; spendable?: string }>();
   for (const fact of facts) {
     if (fact.venue !== "wallet") continue;
@@ -285,8 +285,8 @@ function idleSummary(facts: readonly ResearchFact[]): string | null {
   });
   const anything = [...bySymbol.values()].some((entry) => Number(usable(entry)) > 0);
   return anything
-    ? `Idle in the wallet: ${parts.join(", ")}.`
-    : `Nothing idle to deploy — wallet: ${parts.join(", ")} (XLM within the minimum balance plus fee reserve does not count).`;
+    ? `In your wallet: ${parts.join(", ")}.`
+    : `Nothing available to deploy in your wallet: ${parts.join(", ")} (XLM within the minimum balance plus fee reserve does not count).`;
 }
 
 function trimNumber(value: string): string {
@@ -380,10 +380,10 @@ export function strategyReply(input: {
           : top.supplyAprPct === null
             ? includesBorrow
               ? ` ${money(top.amountUsd)}; this plan includes borrowing, and the supply rate could not be read this time.`
-              : ` ${money(top.amountUsd)} using idle funds only; the supply rate could not be read this time.`
+              : ` ${money(top.amountUsd)} from your wallet only; the supply rate could not be read this time.`
             : includesBorrow
               ? ` About ${shownRate(top.supplyApyPct, top.supplyAprPct)} on ${money(top.amountUsd)}; this plan includes borrowing.`
-              : ` About ${shownRate(top.supplyApyPct, top.supplyAprPct)} on ${money(top.amountUsd)}, using idle funds only.`;
+              : ` About ${shownRate(top.supplyApyPct, top.supplyAprPct)} on ${money(top.amountUsd)}, from your wallet only.`;
       const hf = top.finalHealthFactor
         ? ` Health factor after this would be ${Number(top.finalHealthFactor).toFixed(2)}.`
         : top.repaysAllDebt ? " No debt would remain." : "";
@@ -395,7 +395,7 @@ export function strategyReply(input: {
     const rates = top.venue === "earn" ? "Earn and Blend supply rates" : "live farm rates";
     const carry = top.netAprPct
       ? `Blend’s supply rate minus borrow cost is about ${shownRate(top.netApyPct, top.netAprPct)} before fees.`
-      : "That uses idle funds only, so health factor does not move.";
+      : "That uses your wallet balance only, so health factor does not move.";
     const floor = input.capacity
       ? ` Sized so health stays at or above ${Number(input.capacity.floor).toFixed(2)}.`
       : "";
@@ -460,11 +460,11 @@ export function strategyReply(input: {
      * nothing idle — and the card must say so, from the wallet read, or the user is left
      * with a rate list and no reason (13 Sep: 3.97 XLM, all of it minimum balance).
      */
-    const idle = !input.candidates?.feasible.length && !input.candidates?.rejected.length ? idleSummary(input.facts) : null;
+    const inWallet = !input.candidates?.feasible.length && !input.candidates?.rejected.length ? spendableSummary(input.facts) : null;
     const findings = input.findings?.length ? input.findings.map((finding) => finding.summary).join(" ") : null;
     // The answer to what was asked comes first, then what is idle (owner, 23 Sep: "lend AQUA"
     // opened with a wallet list before saying Earn has no AQUA pool).
-    if (idle || findings) return [findings, idle].filter(Boolean).join(" ");
+    if (inWallet || findings) return [findings, inWallet].filter(Boolean).join(" ");
     return "The plan below uses the amounts in your request. Approve to run it.";
   }
   const facts = factualAnswer(input.facts, input.originalRequest);

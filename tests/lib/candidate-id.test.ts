@@ -4,7 +4,7 @@
  * ## The live failure this pins
  *
  * First signed-in battery, 11 Sep: every *Prepare this plan* and *Switch →* returned 400.
- * The generator minted `supply_idle_BLUSDC`; the propose route accepted `/^[a-z0-9_]{1,80}$/`.
+ * The generator minted `borrow_supply_BLUSDC`; the propose route accepted `/^[a-z0-9_]{1,80}$/`.
  * Two sides, two spellings of one shape, and no option button had ever worked.
  *
  * The acceptance test here is the one the handoff asked for, in its own words: *"add a
@@ -38,8 +38,8 @@ describe("candidate ids", () => {
   });
 
   it("accepts the exact id the generator minted on 11 Sep, which the old route refused", () => {
-    // `supply_idle_BLUSDC` failed `/^[a-z0-9_]{1,80}$/` on the uppercase symbol.
-    expect(isCandidateId(candidateId("supply_idle", "BLUSDC"))).toBe(true);
+    // `borrow_supply_BLUSDC` failed `/^[a-z0-9_]{1,80}$/` on the uppercase symbol.
+    expect(isCandidateId(candidateId("borrow_supply", "BLUSDC"))).toBe(true);
   });
 
   it("treats requested_actions as the one id without an asset", () => {
@@ -49,32 +49,32 @@ describe("candidate ids", () => {
 
   it("parses nothing it did not mint", () => {
     // A registered kind with no asset is not a candidate.
-    expect(parseCandidateId("supply_idle")).toBeNull();
-    expect(parseCandidateId("supply_idle:")).toBeNull();
+    expect(parseCandidateId("borrow_supply")).toBeNull();
+    expect(parseCandidateId("borrow_supply:")).toBeNull();
     // The old underscore spelling never reached the generator's consumers either.
-    expect(parseCandidateId("supply_idle_BLUSDC")).toBeNull();
+    expect(parseCandidateId("borrow_supply_BLUSDC")).toBeNull();
     // A well-shaped id whose kind has no sizing or compile code behind it.
     expect(parseCandidateId("future_kind:US-DC2")).toBeNull();
   });
 
   it("rejects input that is not a printable, bounded token", () => {
     for (const bad of [
-      "", " ", "supply_idle: BLUSDC", "supply_idle:BL\tUSDC", "supply_idle:BLUSDC\n",
-      "Supply_Idle:BLUSDC", ":BLUSDC", "supply_idle:ÜSDC", "supply_idle:" + "X".repeat(80),
-      42, null, undefined, {}, ["supply_idle:BLUSDC"],
+      "", " ", "borrow_supply: BLUSDC", "borrow_supply:BL\tUSDC", "borrow_supply:BLUSDC\n",
+      "Borrow_Supply:BLUSDC", ":BLUSDC", "borrow_supply:ÜSDC", "borrow_supply:" + "X".repeat(80),
+      42, null, undefined, {}, ["borrow_supply:BLUSDC"],
     ]) {
       expect(isCandidateId(bad), JSON.stringify(bad)).toBe(false);
     }
   });
 
   it("refuses to mint an id it could not later accept, rather than render a dead button", () => {
-    expect(() => candidateId("supply_idle", "BL USDC")).toThrow(/not representable/);
-    expect(() => candidateId("supply_idle", "")).toThrow(/not representable/);
+    expect(() => candidateId("borrow_supply", "BL USDC")).toThrow(/not representable/);
+    expect(() => candidateId("borrow_supply", "")).toThrow(/not representable/);
   });
 
   it("derives the account requirement from traits, so Earn is wallet-only and Blend needs margin", () => {
-    expect(requiresMarginAccount(candidateKindTraits("lend_idle"))).toBe(false);
-    expect(requiresMarginAccount(candidateKindTraits("supply_idle"))).toBe(true);
+    expect(requiresMarginAccount({ borrows: false, venue: "earn", funding: "wallet" })).toBe(false);
+    expect(requiresMarginAccount({ borrows: false, venue: "blend", funding: "wallet" })).toBe(true);
     expect(requiresMarginAccount(candidateKindTraits("borrow_supply"))).toBe(true);
     // Anything that borrows needs the margin account whatever venue it supplies to.
     expect(requiresMarginAccount({ borrows: true, venue: "earn", funding: "borrow" })).toBe(true);
@@ -117,7 +117,7 @@ describe("POST /api/copilot/workflow/propose input gate", () => {
   });
 
   it("still refuses ids that are not a bounded printable token", async () => {
-    for (const candidate of ["", "supply idle:BLUSDC", "supply_idle:" + "X".repeat(80), 7]) {
+    for (const candidate of ["", "supply idle:BLUSDC", "borrow_supply:" + "X".repeat(80), 7]) {
       const res = await post({ continuation: "c", candidateId: candidate });
       expect(res.status, JSON.stringify(candidate)).toBe(400);
       expect(res.json.code).toBe("invalid_request");

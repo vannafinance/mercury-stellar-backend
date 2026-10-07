@@ -15,8 +15,7 @@ import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { unpostedCollateralNote } from "./sizing-copy";
-import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
-import { venueCoveragePlans } from "./coverage";
+import { generateCandidates, spendableWalletAfterReserves, onlyNamedAssets, spendableWalletUsdFrom, spendableWalletByAssetUsdFrom, spendableWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
 import { askForUnstatedAmounts } from "./unstated-amount";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, usdcChoicesFor, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, type RejectedPlan, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
@@ -108,36 +107,40 @@ function optionalConversation(
 }
 
 /**
- * Ask the model once more, with the server's reasons, for the plans it built wrongly. The model sees
- * the same evidence it concluded from and is told which plans were refused and why; it returns a
- * fresh completion and only its plans are used. The goal, findings and everything else the first
- * answer established stand. Null when the model could not or would not produce plans.
+ * Ask the model once more, with a reason, for a completed research decision: the server refused some
+ * of its plans for how they were built, or it asked a question where the request calls for plans.
+ * The model sees the same evidence it concluded from and the feedback; it returns a fresh completion.
+ * Null when the model could not or would not produce one.
  */
-async function requestPlanRepair(args: {
+async function requestResearchRetry(args: {
   model: ResearchModel;
   message: string;
   history: Array<{ role: "user" | "assistant"; text: string }>;
   scope: Parameters<typeof readCapabilities>[0];
   observations: readonly Observation[];
   task: { messages: string[]; lastQuestion: string | null };
-  rejected: readonly RejectedPlan[];
+  feedback: string;
   signal: AbortSignal;
-}): Promise<ProposedPlan[] | null> {
-  const refused = args.rejected.map((entry) => `"${entry.title}"${entry.leg ? ` (${entry.leg})` : ""}: ${entry.reason}`).join("; ");
+}) {
   const raw = await args.model({
     message: args.message,
     history: structuredClone(args.history),
     context: { network: args.scope.network, hasWallet: !!args.scope.trader, hasSmartAccount: !!args.scope.trader && !!args.scope.smartAccount },
-    decisionFeedback:
-      `The server refused ${args.rejected.length} of your plans for how they were built, not because of the figures it read: ${refused}. ` +
-      "Return research_complete again with the same goal and findings and corrected plans: change only what each reason names, and keep every plan that was not refused as it was.",
+    decisionFeedback: args.feedback,
     capabilities: readCapabilities(args.scope),
     observations: structuredClone(args.observations),
     remaining: { turns: 1, toolCalls: 0 },
     task: structuredClone(args.task),
   }, args.signal);
   const decision = parseDecision(raw);
-  return decision?.kind === "research_complete" && decision.plans?.length ? decision.plans : null;
+  return decision?.kind === "research_complete" ? decision : null;
+}
+
+/** The plans the server refused for how they were built, as the feedback the model is shown. */
+function planRepairFeedback(rejected: readonly RejectedPlan[]): string {
+  const refused = rejected.map((entry) => `"${entry.title}"${entry.leg ? ` (${entry.leg})` : ""}: ${entry.reason}`).join("; ");
+  return `The server refused ${rejected.length} of your plans for how they were built, not because of the figures it read: ${refused}. ` +
+    "Return research_complete again with the same goal and findings and corrected plans: change only what each reason names, and keep every plan that was not refused as it was.";
 }
 
 export async function researchTurn(input: ResearchInput, dependencies: {
@@ -536,15 +539,37 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     toolCalls: result.usage.toolCalls,
     loopElapsedMs: result.usage.elapsedMs,
   });
-  // A stated action the model sized "all idle" is asked, never spent whole (unstated-amount.ts).
+  // A stated action the model sized "all wallet" is asked, never spent whole (unstated-amount.ts).
   /**
-   * A strategy is answered with plans, never a questionnaire (owner, 24 Sep): "put my idle usdc
-   * to work" names a goal, and the copilot chooses, with a plan per held asset and venue. The
-   * model marks that on its clarify (`intent: "strategy"`, a structured field, not the user's
-   * words); such a clarify becomes the strategy turn the fixed generator and venue coverage
-   * build plans for. 25 Sep, live, it came back as a which/where/how-much questionnaire.
+   * A strategy is answered with plans, never a questionnaire (owner, 24 Sep): a request that names a
+   * goal for the user's funds is answered by the copilot choosing. The model marks that on its clarify
+   * (`intent: "strategy"`, a structured field, not the user's words), and it is then asked once to
+   * compose the plans itself. The server no longer builds a fixed plan per held asset for it (7 Oct:
+   * that moved the user's tokens when they had asked a question). If the model still offers no plan,
+   * the turn ends with no option rather than with an invented one. 25 Sep, live, it came back as a
+   * which/where/how-much questionnaire.
    */
-  const decided = result.outcome.kind === "clarify" && result.outcome.intent === "strategy"
+  let strategyAnswer: Awaited<ReturnType<typeof requestResearchRetry>> = null;
+  if (result.outcome.kind === "clarify" && result.outcome.intent === "strategy" && Date.now() - turnStartedAt <= REPAIR_START_BY_MS) {
+    const retryStarted = Date.now();
+    try {
+      const retrySignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(REPAIR_BUDGET_MS)]);
+      strategyAnswer = await interruptible(() => requestResearchRetry({
+        model: dependencies.model, message: input.message, history: (input.history ?? []).slice(-8),
+        scope, observations: result.observations, task: { messages, lastQuestion: prior?.lastQuestion ?? null },
+        feedback: "You asked a question, but this request names a goal for the user's own funds, which is answered with plans, not a questionnaire. " +
+          "Return research_complete with intent strategy and one to three plans composed from the wallet, positions and rates in your observations. " +
+          "State each amount as a sizing word, and do not ask which venue or how much.",
+        signal: retrySignal,
+      }), retrySignal);
+      logPhase("strategy_retry", { offered: strategyAnswer?.plans?.length ?? 0, ms: Date.now() - retryStarted });
+    } catch (error) {
+      logPhase("strategy_retry", { failed: error instanceof Error ? error.name : "unknown", ms: Date.now() - retryStarted });
+    }
+  }
+  const decided = strategyAnswer?.plans?.length
+    ? strategyAnswer
+    : result.outcome.kind === "clarify" && result.outcome.intent === "strategy"
     ? {
         kind: "research_complete" as const,
         goal: {
@@ -887,7 +912,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       logPhase("strategy_inputs", { requested: stale.length });
     }
   }
-  const idleAfterReserves = idleWalletAfterReserves(result.observations, observedNow, walletReserves);
+  const spendableAfterReserves = spendableWalletAfterReserves(result.observations, observedNow, walletReserves);
   let candidates = null;
   try {
     /**
@@ -906,7 +931,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
           debtUsd: capacity?.debtUsd ?? "0",
           floor: capacity?.floor ?? null,
-          ...idleAfterReserves,
+          ...spendableAfterReserves,
           // A failed capacity (dropped-leg debt, sources disagree) must not
           // invent headroom from $0 / a default 1.30 floor.
           borrowingAllowed: Boolean(capacity) && !capacityResult.failed && borrowing !== "forbidden",
@@ -1050,13 +1075,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const usdcToChoose = modelPlans.some((plan) => plan.legs.some(unchosenIn));
   // Only the plans that need the choice wait for it; the rest ("deploy my XLM and USDC") still size.
   if (usdcToChoose) modelPlans = modelPlans.filter((plan) => !plan.legs.some(unchosenIn));
-  /**
-   * The remaining venues for the idle assets the fixed shapes already offer (the DEX pools),
-   * so a strategy's options cover every place that takes the asset, from the registry.
-   */
-  const coverage = strategyGoal && !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy"
-    ? venueCoveragePlans(onlyNamedAssets(candidates, messages), modelPlans, outcome.goal.objective)
-    : [];
   const onlyUsdcAsked = usdcToChoose && !modelPlans.length;
   let partsBeforeJoin: typeof modelPlans | null = null;
   let plansJoined = false;
@@ -1064,10 +1082,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     const joined = joinPlanParts(modelPlans);
     if ("plan" in joined) { partsBeforeJoin = modelPlans; modelPlans = [joined.plan]; plansJoined = true; }
     else logPhase("plans_not_joined", { reason: joined.reason });
-  }
-  if (coverage.length && !plansJoined) {
-    modelPlans.push(...coverage);
-    logPhase("venue_coverage", { plans: coverage.map((plan) => plan.title) });
   }
   if (outcome.kind === "research_complete" && outcome.droppedPlanReasons?.length) logPhase("plans_dropped", { reasons: outcome.droppedPlanReasons });
   if (outcome.kind === "research_complete" && outcome.droppedPlans) {
@@ -1214,11 +1228,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       const repairStarted = Date.now();
       try {
         const repairSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(REPAIR_BUDGET_MS)]);
-        const repairedPlans = await interruptible(() => requestPlanRepair({
+        const repairedPlans = (await interruptible(() => requestResearchRetry({
           model: dependencies.model, message: input.message, history: (input.history ?? []).slice(-8),
           scope, observations: result.observations, task: { messages, lastQuestion: prior?.lastQuestion ?? null },
-          rejected: repairable, signal: repairSignal,
-        }), repairSignal);
+          feedback: planRepairFeedback(repairable), signal: repairSignal,
+        }), repairSignal))?.plans ?? null;
         if (repairedPlans) {
           const needed = readsForPlans(repairedPlans, result.observations, Date.now());
           if (needed.length) result.observations.push(...await collectStrategyReads(scope, scopedMcp, repairSignal, Date.now(), needed, "qr"));
@@ -1420,7 +1434,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         candidatesBuilt: candidates !== null,
         rejected: candidates?.rejected.map((row) => `${row.label}: ${row.reason}`).slice(0, 8) ?? [],
         rateComparisons: rateComparisons.map((row) => JSON.stringify(row).slice(0, 120)).slice(0, 8),
-        idle: JSON.stringify(idleAfterReserves).slice(0, 400),
+        spendable: JSON.stringify(spendableAfterReserves).slice(0, 400),
         capacity: capacity ? "read" : "missing",
         requestedBorrowUsd: requestedBorrow?.usd ?? "none",
       }
@@ -1478,7 +1492,7 @@ function decidedWithoutUser(question: string): boolean {
 }
 
 const BORROW_AUTHORITY =
-  "May I borrow against your margin account, or should this use idle funds only?";
+  "May I borrow against your margin account, or should this use only what is in your wallet?";
 
 function simplifyQuestion(
   question: string | null,

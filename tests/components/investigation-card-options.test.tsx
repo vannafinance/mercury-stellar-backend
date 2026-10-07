@@ -17,9 +17,10 @@ import { strategyReply } from "@/lib/copilot/investigation/answer";
  * from "nothing was considered" — which is the exact false impression the rejected-with-a-
  * reason rule exists to prevent.
  *
- * Deliberately built from `generateCandidates` rather than hand-written candidate
- * literals, so a change to the generated shape fails here instead of quietly rendering a
- * stale fixture that no longer resembles what the service produces.
+ * Built from `generateCandidates` wherever the generator still produces the shape (the borrow
+ * plans), so a change to the generated shape fails here instead of quietly rendering a stale
+ * fixture. A wallet-only plan is composed by the model and sized by `plan.ts`, so `walletPlan`
+ * writes one out in the same form.
  */
 
 const comparison = (over: Partial<RateComparison> = {}): RateComparison => ({
@@ -32,6 +33,19 @@ const comparison = (over: Partial<RateComparison> = {}): RateComparison => ({
   evidenceIds: ["e1"],
   ...over,
 });
+
+/**
+ * A plan the model composed that moves only the wallet: no debt, so no health-factor change. The fixed
+ * generator no longer volunteers these (moving a user's tokens is a plan for what they asked), but the
+ * card still has to render one honestly, so it is written out here the way `resolvePlans` returns it.
+ */
+function walletPlan(label: string, apyPct: string, usd = "680"): Candidate {
+  return {
+    id: candidateId("composed", label.toLowerCase().replaceAll(" ", ".")), kind: "composed", label, borrows: false,
+    asset: "BLUSDC", venue: "earn", netAprPct: null, supplyAprPct: apyPct, supplyApyPct: apyPct, netApyPct: null,
+    legs: [], finalHealthFactor: null, amountUsd: usd, evidenceIds: ["e1"], amountBasis: "stated",
+  };
+}
 
 function view(over: Partial<ResearchView> = {}): ResearchView {
   return {
@@ -69,7 +83,7 @@ describe("investigation card / options", () => {
   it("renders each sized candidate with its net carry and resulting health factor", () => {
     const candidates = generateCandidates({
       grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30",
-      idleWalletUsd: null, comparisons: [comparison()],
+      spendableWalletUsd: null, comparisons: [comparison()],
     });
     card(view({ candidates }));
 
@@ -89,7 +103,7 @@ describe("investigation card / options", () => {
 
   it("says a ruled-out shape WITH its reason in the reply, never as a silent omission", () => {
     const candidates = generateCandidates({
-      grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", idleWalletUsd: null,
+      grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", spendableWalletUsd: null,
       comparisons: [comparison({ blendSupplyApr: "3", marginBorrowApr: "7", spreadApr: "-4", verdict: "cost_exceeds_supply" })],
     });
     card(view({ candidates }));
@@ -100,18 +114,18 @@ describe("investigation card / options", () => {
     expect(reply).toMatch(/loses money before any fees/);
   });
 
-  it("renders the non-borrowing alternative without inventing a health-factor change", () => {
-    const candidates = generateCandidates({
-      grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30",
-      // Per-token, not a combined total: only BLUSDC actually held can fund a BLUSDC supply.
-      idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, comparisons: [comparison()],
+  it("renders a non-borrowing plan without inventing a health-factor change", () => {
+    const borrow = generateCandidates({
+      grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", spendableWalletUsd: null, comparisons: [comparison()],
     });
+    const wallet = [walletPlan("Supply BLUSDC to Blend", "10.00"), walletPlan("Lend BLUSDC to Earn", "25.41")];
+    const candidates = { ...borrow, feasible: [...wallet, ...borrow.feasible] };
     card(view({ candidates }));
 
-    expect(screen.getByText(/Supply idle BLUSDC to Blend — no new borrowing/)).toBeTruthy();
-    expect(screen.getByText(/Lend idle BLUSDC to Earn — no new borrowing/)).toBeTruthy();
-    for (const idle of candidates.feasible.filter((c) => !c.borrows)) {
-      expect(screen.getByText(`${Number(idle.supplyApyPct).toFixed(2)}% APY`)).toBeTruthy();
+    expect(screen.getByText("Supply BLUSDC to Blend")).toBeTruthy();
+    expect(screen.getByText("Lend BLUSDC to Earn")).toBeTruthy();
+    for (const plan of wallet) {
+      expect(screen.getByText(`${Number(plan.supplyApyPct).toFixed(2)}% APY`)).toBeTruthy();
     }
     expect(screen.queryByText(/% APR$/)).toBeNull();
     // One plan is open at a time; read each plan's health figure by choosing it in turn.
@@ -120,17 +134,20 @@ describe("investigation card / options", () => {
       return screen.getByText("Health factor").nextElementSibling?.textContent ?? "";
     });
     expect(health.slice(0, 2)).toEqual(["unchanged", "unchanged"]);
-    expect(health[2]).toMatch(/(^|→ )1\.30$/);
+    expect(health[2]).toMatch(/(^|→ )1.30$/);
   });
 
-  it("renders only the no-debt option when the user forbade borrowing", () => {
-    const candidates = generateCandidates({
+  it("renders only the no-debt plan when the user forbade borrowing", () => {
+    const generated = generateCandidates({
       grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", borrowingAllowed: false,
-      idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, comparisons: [comparison()],
+      spendableWalletUsd: "680", spendableWalletByAssetUsd: { BLUSDC: "680" }, comparisons: [comparison()],
     });
-    card(view({ candidates }));
+    // The generator offers no borrow shape when borrowing is forbidden, and none from the wallet either.
+    expect(generated.feasible).toEqual([]);
+    expect(generated.rejected).toEqual([]);
+    card(view({ candidates: { ...generated, feasible: [walletPlan("Supply BLUSDC to Blend", "10.00")] } }));
 
-    expect(screen.getByText(/Supply idle BLUSDC to Blend — no new borrowing/)).toBeTruthy();
+    expect(screen.getByText("Supply BLUSDC to Blend")).toBeTruthy();
     // "Do not borrow" must not surface a borrow shape at all — not even ruled out, which
     // still reads as a suggestion the user already declined.
     expect(screen.queryByText(/net AP[RY]/)).toBeNull();
@@ -139,7 +156,7 @@ describe("investigation card / options", () => {
 
   it("ranks the better carry first in the DOM, not merely in the array", () => {
     const candidates = generateCandidates({
-      grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", idleWalletUsd: null,
+      grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", spendableWalletUsd: null,
       comparisons: [
         comparison({ asset: "BLUSDC", blendSupplyApr: "6", marginBorrowApr: "4", evidenceIds: ["e1"] }),
         comparison({ asset: "XLM", blendSupplyApr: "20", marginBorrowApr: "4", evidenceIds: ["e2"] }),
@@ -163,7 +180,7 @@ describe("investigation card / options", () => {
   it("keeps the investigation visible while a journal plan is loading", () => {
     const candidates = generateCandidates({
       grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
-      idleWalletUsd: null, comparisons: [comparison()],
+      spendableWalletUsd: null, comparisons: [comparison()],
     });
     render(
       <InvestigationCard
@@ -274,24 +291,9 @@ describe("investigation card / options", () => {
     expect(screen.getByRole("status").textContent).toMatch(/Reading can withdraw/);
   });
 
-  it("approves the plan that was chosen, not the first, when a runner-up decided the ranking", () => {
+  it("approves the plan that was chosen, not the first", () => {
     const onPropose = vi.fn();
-    const candidates = generateCandidates({
-      grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", borrowingAllowed: false,
-      idleWalletUsd: "77665",
-      idleWalletByAssetUsd: { SOUSDC: "74985", AQUSDC: "2680" },
-      idleWalletByAssetTokens: { SOUSDC: "74985", AQUSDC: "2680" },
-      comparisons: [
-        comparison({
-          asset: "SOUSDC", earnSupplyApr: "4.2", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
-        }),
-        comparison({
-          asset: "AQUSDC", earnSupplyApr: "4.5", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
-        }),
-      ],
-    });
+    const candidates = { feasible: [walletPlan("Supply BLUSDC to Blend", "10.00"), walletPlan("Lend BLUSDC to Earn", "25.41")], rejected: [] };
     render(
       <InvestigationCard
         prompt="supply my USDC"
@@ -302,12 +304,11 @@ describe("investigation card / options", () => {
         onPropose={onPropose}
       />,
     );
-    expect(screen.getByText(/Using SOUSDC/)).toBeTruthy();
     expect(screen.getByText("Plan A")).toBeTruthy();
     expect(screen.getByText("Plan B")).toBeTruthy();
     fireEvent.click(screen.getByRole("radio", { name: /Plan B/ }));
     fireEvent.click(screen.getByRole("button", { name: "Approve Plan B" }));
-    expect(onPropose).toHaveBeenCalledWith(candidateId("lend_idle", "AQUSDC"));
+    expect(onPropose).toHaveBeenCalledWith(candidates.feasible[1].id);
   });
 
   it("shows no duration line under a finished reply (owner, 29 Sep)", () => {

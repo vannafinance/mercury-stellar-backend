@@ -51,7 +51,7 @@ function compile(candidate: Candidate, observations: Observation[], floor: strin
 
 function borrowSupply(over: Partial<Parameters<typeof generateCandidates>[0]> = {}) {
   const { feasible } = generateCandidates({
-    ...BASE, idleWalletUsd: null, comparisons: [comparison()], ...over,
+    ...BASE, spendableWalletUsd: null, comparisons: [comparison()], ...over,
   });
   const candidate = feasible.find((entry) => entry.id === candidateId("borrow_supply", "BLUSDC"));
   if (!candidate) throw new Error("expected borrow_supply on BLUSDC");
@@ -75,27 +75,11 @@ describe("compiling a candidate into proposal steps", () => {
     expect(result.steps[0].amount).toBe(result.steps[1].amount);
   });
 
-  it("deposits wallet funds before supplying them from the margin account", () => {
-    const { feasible } = generateCandidates({
-      ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
-      borrowingAllowed: false, comparisons: [comparison()],
-    });
-    const idle = feasible.find((entry) => entry.id === candidateId("supply_idle", "BLUSDC"));
-    expect(idle?.legs).toEqual([]);
-    const result = compile(idle!, [price("BLUSDC", "1")]);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.steps).toHaveLength(2);
-    expect(result.steps[0].op).toBe("deposit_collateral");
-    expect(result.steps[1]).toMatchObject({
-      op: "supply_blend", tool: "vanna_blend_supply", amount: "680", asset: "BLUSDC",
-    });
-  });
 
   it("converts USD to tokens with the read price, rounded down", () => {
     // $6,541.04 of XLM at $0.19 — the exact WAD quotient, not a rounded comparison.
     const { feasible } = generateCandidates({
-      ...BASE, idleWalletUsd: null, comparisons: [comparison({ asset: "XLM" })],
+      ...BASE, spendableWalletUsd: null, comparisons: [comparison({ asset: "XLM" })],
     });
     const candidate = {
       ...feasible[0],
@@ -189,41 +173,4 @@ describe("compiling a candidate into proposal steps", () => {
     expect(result.steps.map((step) => step.op)).toEqual(["deposit_collateral", "borrow", "supply_blend"]);
   });
 
-  it("compiles Earn idle to vanna_lend with lender, not a Blend supply", async () => {
-    const { feasible } = generateCandidates({
-      ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
-      borrowingAllowed: false, comparisons: [comparison()],
-    });
-    const earn = feasible.find((entry) => entry.id === candidateId("lend_idle", "BLUSDC"));
-    expect(earn?.venue).toBe("earn");
-    const result = compile(earn!, [price("BLUSDC", "1")]);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.steps).toHaveLength(1);
-    expect(result.steps[0]).toMatchObject({
-      op: "lend",
-      tool: "vanna_lend",
-      amount: "680",
-      asset: "BLUSDC",
-      args: { symbol: "USDC", amount: "680", lender: SCOPE.trader },
-    });
-    expect(result.steps[0].args).not.toHaveProperty("smart_account");
-
-    let row: { value: WorkflowRecord; version: string } | null = null;
-    const store: RecordStore<WorkflowRecord> = {
-      read: async () => structuredClone(row),
-      write: async (_id, expected, value) => {
-        if ((row?.version ?? null) !== expected) return false;
-        row = { version: String(Number(expected ?? -1) + 1), value: structuredClone(value) };
-        return true;
-      },
-    };
-    const record = await new WorkflowJournal(store, () => NOW).create({
-      scope: SCOPE, server: "mcp", objective: earn!.label,
-      messages: ["Keep HF above 1.3"], assumptions: [], constraints: [],
-      floor: BASE.floor, steps: result.steps,
-    });
-    expect(record.proposal.steps[0].op).toBe("lend");
-    expect(record.proposal.digest).toMatch(/^[a-f0-9]{64}$/);
-  });
 });

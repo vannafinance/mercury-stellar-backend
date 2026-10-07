@@ -3,7 +3,7 @@
  *
  * The candidate's `legs` are the health-factor-moving operations only. Supplying borrowed
  * proceeds into Blend is health-factor neutral, so `borrow_supply` has one borrow leg
- * and `supply_idle` has none — the Blend supply the label promises is added here. Mapping
+ * and the Blend supply the label promises is added here. Mapping
  * `legs` alone would borrow and never supply.
  *
  * Which steps a shape implies is read from the kind's traits (`candidate-id.ts`), never
@@ -78,7 +78,6 @@ export function compileProposal(input: {
     }
     return { ok: true, steps: input.candidate.steps.map((step) => ({ ...step })) };
   }
-  if (input.candidate.venue === "earn") return compileEarn(input);
   if (input.candidate.venue !== "blend") {
     return { ok: false, reason: "unsupported_venue" };
   }
@@ -102,53 +101,13 @@ export function compileProposal(input: {
     const usd = supplyUsd(input.candidate);
     const amount = tokensFromUsd(usd, priced.price);
     if (!amount.ok) return amount;
-    // Wallet-funded Blend supply has to move the tokens into margin first; borrowed
-    // proceeds are already in the C-address.
-    if (candidateKindTraits(input.candidate.kind).funding === "wallet") {
-      steps.push({ id: "s0-deposit_collateral", op: "deposit_collateral", asset: input.candidate.asset,
-        amount: amount.tokens, label: `Deposit ${amount.tokens} ${input.candidate.asset} from wallet into margin`,
-        tool: "vanna_deposit_collateral", args: writeArgs(input.scope, wireSymbol(input.candidate.asset), amount.tokens), sizing });
-    }
+    // Borrowed proceeds are already in the C-address, so the supply needs no deposit first.
     steps.push(blendSupplyStep(input, amount.tokens, sizing, steps.length));
   }
 
   if (!steps.length) return { ok: false, reason: "unsupported_op" };
   steps.sort((a, b) => OP_RANK[a.op] - OP_RANK[b.op] || a.id.localeCompare(b.id));
   return { ok: true, steps };
-}
-
-function compileEarn(input: {
-  candidate: Candidate;
-  scope: InvestigationScope;
-  observations: readonly Observation[];
-  floor: string | null;
-  now: number;
-}): CompileResult {
-  // Idle Earn only. Borrow-to-Earn would move C-address proceeds to the G-wallet.
-  const traits = candidateKindTraits(input.candidate.kind);
-  if (input.candidate.borrows || input.candidate.legs.length || traits.venue !== "earn" || traits.funding !== "wallet") {
-    return { ok: false, reason: "unsupported_op" };
-  }
-  const priced = priceFor(input.candidate.asset, input.observations, input.now);
-  if (!priced.ok) return priced;
-  const amount = tokensFromUsd(input.candidate.amountUsd, priced.price);
-  if (!amount.ok) return amount;
-  const symbol = resolveAssetDef(input.candidate.asset)?.earnSymbol;
-  if (!symbol) return { ok: false, reason: "unsupported_venue" };
-  const label = resolveAssetDef(input.candidate.asset)?.displayLabel ?? input.candidate.asset;
-  return {
-    ok: true,
-    steps: [{
-      id: "s0-lend",
-      op: "lend",
-      asset: input.candidate.asset,
-      amount: amount.tokens,
-      label: `Lend ${amount.tokens} ${label} to Earn`,
-      tool: "vanna_lend",
-      args: { symbol, amount: amount.tokens, lender: input.scope.trader },
-      sizing: stepSizing(input.candidate, input.floor),
-    }],
-  };
 }
 
 function impliesBlendSupply(candidate: Candidate): boolean {

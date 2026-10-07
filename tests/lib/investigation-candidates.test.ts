@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateCandidates, idleWalletUsdFrom, plansBorrow, rankFeasible, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom } from "@/lib/copilot/investigation/candidates";
+import { generateCandidates, spendableWalletUsdFrom, plansBorrow, rankFeasible, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom } from "@/lib/copilot/investigation/candidates";
 import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
 
@@ -9,8 +9,9 @@ import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison
  * The model proposes nothing here: given rate evidence and the authoritative position,
  * the shapes are enumerable and every amount comes from the sizer. What these tests pin
  * are the two judgements the plan requires and that prose alone would not enforce —
- * a non-borrowing alternative is offered when idle exists and borrowing is not required,
- * and a negative carry is REJECTED with its reason unless the user required that borrow.
+ * the generator volunteers nothing that moves the user's wallet (that is a plan the model
+ * composes for what they asked), and a negative carry is REJECTED with its reason unless the
+ * user required that borrow.
  */
 
 // The live authorised account as dev computes it.
@@ -30,22 +31,15 @@ function comparison(over: Partial<RateComparison> = {}): RateComparison {
 }
 
 describe("candidate generation", () => {
-  it("never spends a combined wallet valuation as both XLM and BLUSDC", () => {
-    const { feasible } = generateCandidates({ ...BASE, idleWalletUsd: "500",
-      idleWalletByAssetUsd: { XLM: "20", BLUSDC: "480" }, borrowingAllowed: false,
-      comparisons: [comparison({ asset: "XLM" }), comparison()] });
-    expect(feasible.find(c => c.asset === "XLM")?.amountUsd).toBe("20");
-    expect(feasible.find(c => c.asset === "BLUSDC")?.amountUsd).toBe("480");
-    expect(feasible.every(c => !c.borrows)).toBe(true);
-  });
-  it("cannot turn an unallocated combined valuation into spendable tokens", () => {
-    const { feasible } = generateCandidates({ ...BASE, idleWalletUsd: "500", borrowingAllowed: false,
-      comparisons: [comparison({ asset: "XLM" }), comparison()] });
+  it("offers nothing from the wallet, however much is held: moving the user's tokens is never volunteered", () => {
+    const { feasible } = generateCandidates({ ...BASE, spendableWalletUsd: "500",
+      spendableWalletByAssetUsd: { XLM: "20", BLUSDC: "480" }, spendableWalletByAssetTokens: { XLM: "100", BLUSDC: "480" },
+      borrowingAllowed: false, comparisons: [comparison({ asset: "XLM" }), comparison()] });
     expect(feasible).toEqual([]);
   });
   it("sizes a borrow-and-supply candidate to the floor and reports its net carry", () => {
     const { feasible, rejected } = generateCandidates({
-      ...BASE, idleWalletUsd: null, comparisons: [comparison()],
+      ...BASE, spendableWalletUsd: null, comparisons: [comparison()],
     });
 
     expect(rejected).toEqual([]);
@@ -76,7 +70,7 @@ describe("candidate generation", () => {
 
   it("rejects a negative carry instead of ranking it", () => {
     const { feasible, rejected } = generateCandidates({
-      ...BASE, idleWalletUsd: null,
+      ...BASE, spendableWalletUsd: null,
       comparisons: [comparison({ blendSupplyApr: "3", marginBorrowApr: "7", spreadApr: "-4", verdict: "cost_exceeds_supply" })],
     });
 
@@ -89,38 +83,25 @@ describe("candidate generation", () => {
 
   it("rejects an exactly-break-even carry, which is not a strategy", () => {
     const { feasible, rejected } = generateCandidates({
-      ...BASE, idleWalletUsd: null,
+      ...BASE, spendableWalletUsd: null,
       comparisons: [comparison({ blendSupplyApr: "5", marginBorrowApr: "5", spreadApr: "0", verdict: "no_spread" })],
     });
     expect(feasible).toEqual([]);
     expect(rejected[0].reason).toMatch(/loses money|did not support/);
   });
 
-  it("always offers the non-borrowing alternative when something is idle", () => {
+  it("with a wallet balance and borrowing allowed, offers only the borrow shape, never a wallet one", () => {
     const { feasible } = generateCandidates({
-      ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, comparisons: [comparison()],
+      ...BASE, spendableWalletUsd: "680", spendableWalletByAssetUsd: { BLUSDC: "680" }, comparisons: [comparison()],
     });
-
-    expect(feasible.map((candidate) => candidate.borrows)).toContain(false);
-    const blendIdle = feasible.find((candidate) => candidate.id === candidateId("supply_idle", "BLUSDC"));
-    expect(blendIdle).toMatchObject({ amountUsd: "680", netAprPct: null, supplyAprPct: "10", venue: "blend" });
-    // Committing idle wallet value does not move margin collateral or debt.
-    expect(blendIdle?.legs).toEqual([]);
-    expect(blendIdle?.finalHealthFactor).toBeNull();
+    expect(feasible).toHaveLength(1);
+    expect(feasible[0]).toMatchObject({ id: candidateId("borrow_supply", "BLUSDC"), borrows: true });
   });
 
-  it("does not offer idle when a borrow is required", () => {
-    const { feasible } = generateCandidates({
-      ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, borrowing: "required",
-      comparisons: [comparison()],
-    });
-    expect(feasible.length).toBeGreaterThan(0);
-    expect(feasible.every((candidate) => candidate.borrows)).toBe(true);
-  });
 
   it("still sizes a required borrow when carry is negative", () => {
     const { feasible, rejected } = generateCandidates({
-      ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, borrowing: "required",
+      ...BASE, spendableWalletUsd: "680", spendableWalletByAssetUsd: { BLUSDC: "680" }, borrowing: "required",
       comparisons: [comparison({ blendSupplyApr: "2", marginBorrowApr: "9", verdict: "cost_exceeds_supply" })],
     });
     expect(feasible.some((candidate) => candidate.borrows)).toBe(true);
@@ -130,7 +111,7 @@ describe("candidate generation", () => {
   it("rejects a required borrow with no headroom as a deposit suggestion, not an idle substitute", () => {
     const { feasible, rejected } = generateCandidates({
       grossCollateralUsd: "1300", debtUsd: "1000", floor: "1.30",
-      idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, borrowing: "required",
+      spendableWalletUsd: "680", spendableWalletByAssetUsd: { BLUSDC: "680" }, borrowing: "required",
       comparisons: [comparison()],
     });
     expect(feasible).toEqual([]);
@@ -149,58 +130,22 @@ describe("candidate generation", () => {
     expect(rankingBorrowing("allowed", [{ op: "lend" }])).toBe("allowed");
   });
 
-  it("offers Earn idle when its supply APR beats Blend, compiling to a separate venue", () => {
-    const { feasible } = generateCandidates({
-      ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, comparisons: [comparison()],
-    });
-    const earn = feasible.find((candidate) => candidate.id === candidateId("lend_idle", "BLUSDC"));
-    expect(earn).toMatchObject({
-      venue: "earn",
-      borrows: false,
-      supplyAprPct: "25.41",
-      amountUsd: "680",
-      amountBasis: "stated",
-    });
-    expect(earn?.legs).toEqual([]);
-    // Higher Earn APR ranks above Blend idle 10% and levered Blend 6% net.
-    expect(feasible[0].id).toBe(candidateId("lend_idle", "BLUSDC"));
-  });
 
-  it("does not offer Earn idle when Blend pays as much or more, or Earn was not read", () => {
-    const worse = generateCandidates({
-      ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
-      comparisons: [comparison({ earnSupplyApr: "9", blendSupplyApr: "10" })],
-    });
-    expect(worse.feasible.some((candidate) => candidate.venue === "earn")).toBe(false);
-    expect(worse.feasible.some((candidate) => candidate.id === candidateId("supply_idle", "BLUSDC"))).toBe(true);
-
-    const missing = generateCandidates({
-      ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
-      comparisons: [comparison({ earnSupplyApr: null })],
-    });
-    expect(missing.feasible.some((candidate) => candidate.venue === "earn")).toBe(false);
-  });
 
   it("never borrows in order to lend to Earn", () => {
     const { feasible } = generateCandidates({
-      ...BASE, idleWalletUsd: null, comparisons: [comparison()],
+      ...BASE, spendableWalletUsd: null, comparisons: [comparison()],
     });
     expect(feasible.some((candidate) => candidate.venue === "earn")).toBe(false);
     expect(feasible.every((candidate) => candidate.kind === "borrow_supply")).toBe(true);
   });
 
-  it("offers no idle candidate when there is nothing idle, rather than a zero-size one", () => {
-    for (const idleWalletUsd of [null, "0", "not-a-number"]) {
-      const { feasible } = generateCandidates({ ...BASE, idleWalletUsd, comparisons: [comparison()] });
-      expect(feasible.every((candidate) => candidate.borrows)).toBe(true);
-    }
-  });
 
   it("reports no headroom as a reason rather than an empty result", () => {
     const { feasible, rejected } = generateCandidates({
       // Already exactly at the 1.30 floor, so there is nothing to borrow.
       grossCollateralUsd: "1300", debtUsd: "1000", floor: "1.30",
-      idleWalletUsd: null, comparisons: [comparison()],
+      spendableWalletUsd: null, comparisons: [comparison()],
     });
     expect(feasible).toEqual([]);
     expect(rejected[0].reason).toMatch(/No borrowing headroom/);
@@ -208,7 +153,7 @@ describe("candidate generation", () => {
 
   it("refuses a floor at or under the liquidation threshold", () => {
     const { feasible, rejected } = generateCandidates({
-      ...BASE, floor: "1.1", idleWalletUsd: null, comparisons: [comparison()],
+      ...BASE, floor: "1.1", spendableWalletUsd: null, comparisons: [comparison()],
     });
     expect(feasible).toEqual([]);
     expect(rejected[0].reason).toMatch(/floor below liquidation threshold/);
@@ -216,7 +161,7 @@ describe("candidate generation", () => {
 
   it("ranks the better carry first across assets", () => {
     const { feasible } = generateCandidates({
-      ...BASE, idleWalletUsd: null,
+      ...BASE, spendableWalletUsd: null,
       comparisons: [
         comparison({ asset: "BLUSDC", blendSupplyApr: "6", marginBorrowApr: "4", evidenceIds: ["e1"] }),
         comparison({ asset: "XLM", blendSupplyApr: "20", marginBorrowApr: "4", evidenceIds: ["e2"] }),
@@ -229,7 +174,7 @@ describe("candidate generation", () => {
 
   it("keeps a rejected asset out of the ranking while still sizing the viable one", () => {
     const { feasible, rejected } = generateCandidates({
-      ...BASE, idleWalletUsd: null,
+      ...BASE, spendableWalletUsd: null,
       comparisons: [
         comparison({ asset: "BLUSDC", blendSupplyApr: "2", marginBorrowApr: "9", verdict: "cost_exceeds_supply" }),
         comparison({ asset: "XLM", blendSupplyApr: "12", marginBorrowApr: "4" }),
@@ -242,10 +187,10 @@ describe("candidate generation", () => {
 
   it("does not treat unspecified borrowing as a prohibition when a floor exists", () => {
     const unspecified = generateCandidates({
-      ...BASE, idleWalletUsd: null, comparisons: [comparison()],
+      ...BASE, spendableWalletUsd: null, comparisons: [comparison()],
     });
     const forbidden = generateCandidates({
-      ...BASE, idleWalletUsd: "100", idleWalletByAssetUsd: { BLUSDC: "100" },
+      ...BASE, spendableWalletUsd: "100", spendableWalletByAssetUsd: { BLUSDC: "100" },
       borrowingAllowed: false, comparisons: [comparison()],
     });
     expect(unspecified.feasible.some((candidate) => candidate.borrows)).toBe(true);
@@ -254,7 +199,7 @@ describe("candidate generation", () => {
 
   it("never proposes an LP shape, whose collateral value is not validated", () => {
     const { feasible } = generateCandidates({
-      ...BASE, idleWalletUsd: "500", comparisons: [comparison()],
+      ...BASE, spendableWalletUsd: "500", comparisons: [comparison()],
     });
     expect(feasible.every((candidate) => candidate.venue === "blend" || candidate.venue === "earn")).toBe(true);
     expect(feasible.every((candidate) => !/lp|aquarius|soroswap/i.test(candidate.id + candidate.label))).toBe(true);
@@ -273,7 +218,7 @@ describe("idle wallet valuation", () => {
 
   it("values only the symbols whose price was actually read", () => {
     // XLM is priced; SOUSDC is not, so it contributes nothing rather than a guessed $1.
-    const total = idleWalletUsdFrom([
+    const total = spendableWalletUsdFrom([
       wallet([{ symbol: "XLM", balance: "100" }, { symbol: "SOUSDC", balance: "24948" }]),
       price("XLM", "0.2"),
     ], 1_000);
@@ -283,12 +228,12 @@ describe("idle wallet valuation", () => {
   it("returns null when nothing could be priced, rather than zero", () => {
     // Zero would read as "you have nothing idle", which is a different claim from
     // "the price needed to value it was never read".
-    expect(idleWalletUsdFrom([wallet([{ symbol: "XLM", balance: "100" }])], 1_000)).toBeNull();
-    expect(idleWalletUsdFrom([price("XLM", "0.2")], 1_000)).toBeNull();
+    expect(spendableWalletUsdFrom([wallet([{ symbol: "XLM", balance: "100" }])], 1_000)).toBeNull();
+    expect(spendableWalletUsdFrom([price("XLM", "0.2")], 1_000)).toBeNull();
   });
 
   it("counts a holding once, not twice via its _SAC alias", () => {
-    const total = idleWalletUsdFrom([
+    const total = spendableWalletUsdFrom([
       wallet([{ symbol: "XLM", balance: "100" }, { symbol: "XLM_SAC", balance: "100" }]),
       price("XLM", "0.2"),
     ], 1_000);
@@ -298,14 +243,14 @@ describe("idle wallet valuation", () => {
   it("ignores stale reads and a zero or unparseable price", () => {
     const stale = [wallet([{ symbol: "XLM", balance: "100" }]), price("XLM", "0.2")]
       .map((entry) => ({ ...entry, observedAt: 0 }));
-    expect(idleWalletUsdFrom(stale, 5_000_000)).toBeNull();
-    expect(idleWalletUsdFrom([
+    expect(spendableWalletUsdFrom(stale, 5_000_000)).toBeNull();
+    expect(spendableWalletUsdFrom([
       wallet([{ symbol: "XLM", balance: "100" }]), price("XLM", "0"),
     ], 1_000)).toBeNull();
   });
 
   it("skips a failed wallet read instead of valuing a partial list", () => {
-    expect(idleWalletUsdFrom([
+    expect(spendableWalletUsdFrom([
       { ...wallet([{ symbol: "XLM", balance: "100" }]), status: "error" as const },
       price("XLM", "0.2"),
     ], 1_000)).toBeNull();
@@ -320,7 +265,7 @@ describe("idle wallet valuation", () => {
 describe("an amount the user named outright", () => {
   it("sizes the candidate to the stated amount, not to the floor", () => {
     const { feasible } = generateCandidates({
-      ...BASE, idleWalletUsd: null, requestedBorrowUsd: "500", comparisons: [comparison()],
+      ...BASE, spendableWalletUsd: null, requestedBorrowUsd: "500", comparisons: [comparison()],
     });
     expect(feasible).toHaveLength(1);
     expect(feasible[0].amountUsd).toBe("500");
@@ -331,7 +276,7 @@ describe("an amount the user named outright", () => {
 
   it("refuses an amount that breaches the floor and names the amount that fits", () => {
     const { feasible, rejected } = generateCandidates({
-      ...BASE, idleWalletUsd: null, requestedBorrowUsd: "50000", comparisons: [comparison()],
+      ...BASE, spendableWalletUsd: null, requestedBorrowUsd: "50000", comparisons: [comparison()],
     });
     expect(feasible).toEqual([]);
     expect(rejected[0].reason).toMatch(/would take the health factor below your 1.30 floor/);
@@ -342,7 +287,7 @@ describe("an amount the user named outright", () => {
 
   it("does not report a floor breach when the amount was simply unusable", () => {
     const { rejected } = generateCandidates({
-      ...BASE, idleWalletUsd: null, requestedBorrowUsd: "not-a-number", comparisons: [comparison()],
+      ...BASE, spendableWalletUsd: null, requestedBorrowUsd: "not-a-number", comparisons: [comparison()],
     });
     // The floor may be named as context, but a breach must not be asserted, and no
     // "at most N fits" figure may be quoted off the back of an amount nothing could read.
@@ -351,72 +296,8 @@ describe("an amount the user named outright", () => {
     expect(rejected[0].reason).toMatch(/invalid leg amount/);
   });
 
-  it("ranks the already-held USDC variant by return at size, not by a higher APR on a small balance", () => {
-    const { feasible } = generateCandidates({
-      ...BASE, borrowingAllowed: false, idleWalletUsd: "77665",
-      idleWalletByAssetUsd: { SOUSDC: "74985", AQUSDC: "2680", BLUSDC: "193" },
-      idleWalletByAssetTokens: { SOUSDC: "74985", AQUSDC: "2680", BLUSDC: "193" },
-      comparisons: [
-        comparison({
-          asset: "SOUSDC", earnSupplyApr: "4.2", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
-        }),
-        comparison({
-          asset: "AQUSDC", earnSupplyApr: "4.5", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
-        }),
-        comparison({ asset: "BLUSDC", earnSupplyApr: "4.0", blendSupplyApr: "3.5" }),
-      ],
-    });
-    expect(feasible[0].id).toBe(candidateId("lend_idle", "SOUSDC"));
-    expect(feasible[0].decision?.factor).toBe("already_held");
-    expect(feasible[0].decision?.runnerUpId).toBe(candidateId("lend_idle", "AQUSDC"));
-    expect(feasible[0].decision?.reason).toMatch(/SOUSDC/);
-    expect(feasible[0].decision?.reason).toMatch(/74,985/);
-    expect(feasible[0].decision?.reason).toMatch(/AQUSDC/);
-    // AQUSDC is held (2,680): the reason is its smaller size, never a swap into it.
-    expect(feasible[0].decision?.reason).toMatch(/hold only 2,680 of it/);
-    expect(feasible[0].decision?.reason).not.toMatch(/swap .* into it/);
-  });
 
-  it("names a swap only for a runner-up the user does not hold", () => {
-    const { feasible } = generateCandidates({
-      ...BASE, borrowingAllowed: false, idleWalletUsd: "77665",
-      idleWalletByAssetUsd: { SOUSDC: "74985", AQUSDC: "2680" },
-      idleWalletByAssetTokens: { SOUSDC: "74985", AQUSDC: "2680" },
-      comparisons: [
-        comparison({ asset: "SOUSDC", earnSupplyApr: "4.2", blendSupplyApr: null, marginBorrowApr: null, spreadApr: null, verdict: "earn_only" }),
-        comparison({ asset: "AQUSDC", earnSupplyApr: "4.5", blendSupplyApr: null, marginBorrowApr: null, spreadApr: null, verdict: "earn_only" }),
-      ],
-    });
-    // The same runner-up as a composed plan naming a balance the wallet does not hold.
-    const unheld = feasible.map((c) => c.asset === "AQUSDC" ? { ...c, heldAmount: null } : c);
-    const [top] = rankFeasible(unheld);
-    expect(top.asset).toBe("SOUSDC");
-    expect(top.decision?.reason).toMatch(/swap 2,680 into it first/);
-  });
 
-  it("names a thin APR margin instead of claiming the yield decided it", () => {
-    const { feasible } = generateCandidates({
-      ...BASE, borrowingAllowed: false, idleWalletUsd: "77665",
-      idleWalletByAssetUsd: { SOUSDC: "74985", AQUSDC: "2680" },
-      idleWalletByAssetTokens: { SOUSDC: "74985", AQUSDC: "2680" },
-      comparisons: [
-        comparison({
-          asset: "SOUSDC", earnSupplyApr: "4.2", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
-        }),
-        comparison({
-          asset: "AQUSDC", earnSupplyApr: "4.3", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
-        }),
-      ],
-    });
-    expect(feasible[0].asset).toBe("SOUSDC");
-    expect(feasible[0].decision?.factor).toBe("thin_margin");
-    expect(feasible[0].decision?.reason).toMatch(/within 0\.2%/);
-    expect(feasible[0].decision?.reason).toMatch(/already hold/);
-  });
 });
 
 describe("valuing an amount the user named", () => {

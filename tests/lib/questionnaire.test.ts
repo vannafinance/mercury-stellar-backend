@@ -171,7 +171,7 @@ describe("an answer is checked against the questionnaire that was issued", () =>
     const fromAnswers = actionFromAnswers(issued, answers);
     const typed = {
       op: "lend" as const, asset: "BLUSDC", sourceQuote: answers.summary,
-      sizing: { kind: "fraction" as const, percent: "50", of: "idle" as const, sourceQuote: answers.summary },
+      sizing: { kind: "fraction" as const, percent: "50", of: "wallet" as const, sourceQuote: answers.summary },
     };
     const ctx = {
       scope: { subject: "user", network: "testnet", trader: "G".padEnd(56, "A"), smartAccount: "C".padEnd(56, "A") },

@@ -42,27 +42,27 @@ const steps = (p: ProposedPlan) => {
 
 describe("an account-spending op sized from the idle wallet", () => {
   it("becomes the deposit plus the op, on the idle balance", () => {
-    expect(steps(plan([{ op: "supply_blend", asset: "XLM", sizing: { kind: "all_idle" } }])).steps).toEqual([
+    expect(steps(plan([{ op: "supply_blend", asset: "XLM", sizing: { kind: "all_wallet" } }])).steps).toEqual([
       ["deposit_collateral", "10206.3356118"], ["supply_blend", "10206.3356118"],
     ]);
   });
 
   it("uses the deposit the model already wrote instead of depositing twice", () => {
     expect(steps(plan([
-      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
-      { op: "supply_blend", asset: "XLM", sizing: { kind: "all_idle" } },
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "all_wallet" } },
     ])).steps).toEqual([["deposit_collateral", "10206.3356118"], ["supply_blend", "10206.3356118"]]);
   });
 
   it("leaves the model's own deposit-then-supply exactly as before", () => {
     expect(steps(plan([
-      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
       { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
     ])).steps).toEqual([["deposit_collateral", "10206.3356118"], ["supply_blend", "10206.3356118"]]);
   });
 
   it("does not turn a withdraw to the wallet into a deposit", () => {
-    const result = steps(plan([{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_idle" } }]));
+    const result = steps(plan([{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_wallet" } }]));
     expect(result.steps).toBeUndefined();
     expect(result.rejected[0]).toMatch(/withdraw/i);
   });

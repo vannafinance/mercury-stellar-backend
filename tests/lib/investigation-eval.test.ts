@@ -109,7 +109,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     );
   });
 
-  it("owner strategy ranks candidates including a non-borrowing alternative", async () => {
+  it("owner strategy offers a borrowing plan beside the model's non-borrowing alternative", async () => {
     const prompt = "use both usdc and xlm to build a strategy in a way that health factor doesnt go below 1.3. You can use spot and farm markets yourself. You can even take new loans";
     const mcp = {
       call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
@@ -156,8 +156,13 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
               constraints: ["Health factor at or above 1.3"],
               borrowing: "allowed",
             },
-            findings: [{ summary: "Rates and idle balances were read", evidenceIds: ["e1", "e2", "e3"] }],
+            findings: [{ summary: "Rates and wallet balances were read", evidenceIds: ["e1", "e2", "e3"] }],
             openQuestions: [],
+            // The no-debt alternative is the model's to compose; the generator no longer volunteers one.
+            plans: [{
+              title: "Lend BLUSDC to Earn", rationale: "Earn pays on the BLUSDC in the wallet (e2, e4), with no new debt.", evidenceIds: ["e2", "e4"],
+              legs: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "all_wallet" } }],
+            }],
           }),
     );
     expect(["researched", "needs_input"]).toContain(result.status);
@@ -172,7 +177,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     expect(tools).toContain("vanna_get_price");
   });
 
-  it("a strategy clarify becomes plan cards, not a questionnaire: put my idle usdc to work (25 Sep, live)", async () => {
+  it("a strategy clarify is sent back for plans and becomes plan cards, not a questionnaire (25 Sep, live)", async () => {
     const mcp = {
       call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
         if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "19", supply_apy_pct: "19", borrow_apr_pct: "4", utilization_pct: "60" };
@@ -183,21 +188,36 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
       }),
     };
     let turn = 0;
+    let sentBack: string | null = null;
     const result = await researchTurn(
       { message: "put my idle usdc to work", wallet: SCOPE.trader, continuation: null, promptName: "strategy-clarify" },
-      deps(mcp, async () => turn++ === 0
-        ? { kind: "inspect", reads: [
-            { capability: "earn_market", args: { asset: "BLUSDC" } },
-            { capability: "blend_markets", args: {} },
-            { capability: "wallet_balances", args: {} },
-            { capability: "asset_price", args: { asset: "BLUSDC" } },
-          ] }
-        : {
-            kind: "clarify", intent: "strategy",
-            question: "Which venue would you like to put your idle USDC to work in?",
-            missing: [{ asset: "USDC", slots: ["asset", "venue", "amount"], sourceQuote: "put my idle usdc to work" }],
-          }),
+      deps(mcp, async (modelTurn) => {
+        if (turn++ === 0) return { kind: "inspect", reads: [
+          { capability: "earn_market", args: { asset: "BLUSDC" } },
+          { capability: "blend_markets", args: {} },
+          { capability: "wallet_balances", args: {} },
+          { capability: "asset_price", args: { asset: "BLUSDC" } },
+        ] };
+        if (turn === 2) return {
+          kind: "clarify", intent: "strategy",
+          question: "Which venue would you like to put your USDC to work in?",
+          missing: [{ asset: "USDC", slots: ["asset", "venue", "amount"], sourceQuote: "put my idle usdc to work" }],
+        };
+        // Asked again, with the reason, the model composes the plan itself.
+        sentBack = modelTurn.decisionFeedback ?? null;
+        return {
+          kind: "research_complete",
+          goal: { intent: "strategy", relation: "new", objective: "Put USDC to work", constraints: [], borrowing: "unspecified" },
+          findings: [{ summary: "The wallet holds BLUSDC and Earn pays on it.", evidenceIds: ["e1"] }],
+          openQuestions: [],
+          plans: [{
+            title: "Lend BLUSDC to Earn", rationale: "Earn pays 19% on the BLUSDC in the wallet (e1).", evidenceIds: ["e1"],
+            legs: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "all_wallet" } }],
+          }],
+        };
+      }),
     );
+    expect(sentBack).toMatch(/plans, not a questionnaire/);
     expect(result.questionnaire).toBeUndefined();
     expect(result.candidates?.feasible.length ?? 0).toBeGreaterThan(0);
     expect(result.executionAllowed).toBe(false);

@@ -8,9 +8,9 @@ type Decided = ResearchDecision & { kind: "clarify" | "blocked" | "research_comp
  * "All idle" is never an amount the copilot may choose for you (owner, 25 Sep).
  *
  * The model sizes a stated action with no amount ("deposit xlm", "lend 20 blusdc and deposit
- * xlm") as `all_idle`, which is the whole idle balance: live, "deposit xlm" became a deposit of
+ * xlm") as `all_wallet`, which is the whole idle balance: live, "deposit xlm" became a deposit of
  * 7,648 XLM, and under auto-approve a direct action runs as soon as it is prepared. A stated
- * action's `all_idle` therefore becomes a missing amount: the questionnaire asks how much, with
+ * action's `all_wallet` therefore becomes a missing amount: the questionnaire asks how much, with
  * the balance and Max one click away. Decided from the sizing kind alone, never from the user's
  * words, so every phrasing is covered the same way. Plans the model composes are untouched: they
  * always wait for Approve.
@@ -31,7 +31,7 @@ export function askForUnstatedAmounts<T extends { kind: string }>(input: T): T {
     const kept: StatedAction[] = [];
     const missing: QuestionnaireMissing[] = [];
     for (const action of actions ?? []) {
-      if (action.sizing.kind === "all_idle") {
+      if (action.sizing.kind === "all_wallet") {
         missing.push({ op: action.op, asset: action.asset, slots: ["amount"], sourceQuote: action.sourceQuote });
       } else kept.push(action);
     }

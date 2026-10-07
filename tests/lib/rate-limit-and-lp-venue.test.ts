@@ -114,7 +114,7 @@ describe("a venue named on a one-asset LP leg", () => {
   });
 
   it("is still an unknown key on an op that never touches a pool", () => {
-    const parsed = plansOf({ op: "lend", asset: single.tokens[1], sizing: { kind: "all_idle" }, venue: single.venue });
+    const parsed = plansOf({ op: "lend", asset: single.tokens[1], sizing: { kind: "all_wallet" }, venue: single.venue });
     expect(parsed.plans ?? []).toEqual([]);
   });
 });

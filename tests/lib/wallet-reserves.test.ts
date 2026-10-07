@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { resolvePlans } from "@/lib/copilot/investigation/plan";
-import { holdingsAfterReserves, idleWalletAfterReserves, idleWalletHoldingsFrom } from "@/lib/copilot/investigation/candidates";
+import { holdingsAfterReserves, spendableWalletAfterReserves, spendableWalletHoldingsFrom } from "@/lib/copilot/investigation/candidates";
 import { anchoredWalletReserves } from "@/lib/copilot/investigation/floor";
 import { parseDecision } from "@/lib/copilot/investigation/decision";
 import { compareObservedRates } from "@/lib/copilot/investigation/rate-comparison";
@@ -41,7 +41,7 @@ const ctx = (over: Partial<Parameters<typeof resolvePlans>[1]> = {}) => ({
 });
 const plan = (legs: ProposedPlan["legs"]): ProposedPlan => ({ title: "Move idle XLM into Blend", rationale: "Because e1/e6.", evidenceIds: ["e1", "e6"], legs });
 const intoBlend = plan([
-  { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+  { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
   { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
 ]);
 
@@ -73,9 +73,9 @@ describe("the sizer never spends into a stated reserve", () => {
   });
 
   it("gives the fixed shapes the same smaller balance", () => {
-    const after = idleWalletAfterReserves(OBSERVATIONS, NOW, [{ asset: "XLM", amount: "100" }]);
-    expect(after.idleWalletByAssetTokens.XLM).toBe("10106.3356118");
-    const before = idleWalletHoldingsFrom(OBSERVATIONS, NOW);
+    const after = spendableWalletAfterReserves(OBSERVATIONS, NOW, [{ asset: "XLM", amount: "100" }]);
+    expect(after.spendableWalletByAssetTokens.XLM).toBe("10106.3356118");
+    const before = spendableWalletHoldingsFrom(OBSERVATIONS, NOW);
     expect(holdingsAfterReserves(before, undefined)).toBe(before);
   });
 });

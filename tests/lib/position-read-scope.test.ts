@@ -34,7 +34,7 @@ describe("structured answer coverage", () => {
   });
   it("never narrows strategy or action dependencies even with selected metadata", () => {
     fullCoverage(missingPositionReads(observed, { ...goal, intent: "strategy" }, [request]));
-    fullCoverage(missingPositionReads(observed, { ...goal, actions: [{ op: "lend", asset: "XLM", sizing: { kind: "all_idle" }, sourceQuote: request }] }, [request]));
+    fullCoverage(missingPositionReads(observed, { ...goal, actions: [{ op: "lend", asset: "XLM", sizing: { kind: "all_wallet" }, sourceQuote: request }] }, [request]));
   });
   it("does not treat a failed required read as coverage", () => {
     expect(missingPositionReads([...observed, { id: "e1", capability: "account_debt", args: {}, status: "error", observedAt: 1 }], goal, [request])).toEqual([{ capability: "account_debt", args: {} }]);

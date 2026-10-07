@@ -58,7 +58,7 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       // A leg that carries a rate needs its rate row: the Earn market, and the Blend reserves for a Blend rate.
       if (flow.rate !== null) want("earn_market", leg.asset);
       if (flow.rate === "blend_supply") want("blend_markets");
-      const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
+      const ofIdle = leg.sizing.kind === "all_wallet" || (leg.sizing.kind === "fraction" && leg.sizing.of === "wallet");
       const ofPosition = leg.sizing.kind === "all_position" || (leg.sizing.kind === "fraction" && leg.sizing.of === "position");
       if (ofIdle) want("wallet_balances");
       // Every declared position read is required for deterministic sizing, including literal

@@ -100,7 +100,7 @@ export type PlanOp = WorkflowOp;
  * How a leg is sized — a WORD, never a number. The model says what the amount is a
  * function of; `plan.ts` computes it from observations and the user's floor:
  *
- *   all_idle      the asset's idle wallet balance (less the fee reserve for XLM)
+ *   all_wallet      the asset's idle wallet balance (less the fee reserve for XLM)
  *   all_position  the whole of what the op draws on: the Earn position for a redeem, the
  *                 posted collateral for a withdraw, the outstanding debt for a repay
  *   to_floor      the largest borrow that keeps the health factor at the stated floor
@@ -109,7 +109,7 @@ export type PlanOp = WorkflowOp;
  *   literal       an amount the user typed, quoted verbatim so it can be anchored
  */
 export type PlanSizing =
-  | { kind: "all_idle" }
+  | { kind: "all_wallet" }
   | { kind: "all_position" }
   | { kind: "to_floor" }
   | { kind: "previous_leg" }
@@ -133,13 +133,13 @@ export type PlanSizing =
    */
   | { kind: "literal"; amount: string; sourceQuote: string; amountAsset?: "asset" | "assetOut" }
   /**
-   * A share of what the leg draws on, as the user said it: `of: "idle"` is the wallet's
+   * A share of what the leg draws on, as the user said it: `of: "wallet"` is the wallet's
    * spendable balance, `of: "position"` the position the op spends (the Earn position, the
    * posted collateral, the debt). `percent` is the user's figure ("25") or the figure a word
    * of theirs means ("half" → 50), anchored to their quote; code reads the base and sizes.
    */
   | {
-      kind: "fraction"; percent: string; of: "idle" | "position"; sourceQuote: string;
+      kind: "fraction"; percent: string; of: "wallet" | "position"; sourceQuote: string;
       /**
        * Set when the MODEL chose this share, not the user: `sizing.kind: "share"` in the
        * declared schema, normalised to a fraction by `parseSizing`. There is no quote to anchor

@@ -105,7 +105,7 @@ const modelComplete = {
       rationale: "The wallet's idle XLM (e1) earns nothing; Blend pays 168.6% APR (e2). Deposit it, supply it, then borrow XLM to the 1.2 floor and supply that too.",
       evidenceIds: ["e1", "e2"],
       legs: [
-        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
         { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
         { op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } },
         { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
@@ -116,7 +116,7 @@ const modelComplete = {
       rationale: "Same first two legs without borrowing (e1, e2).",
       evidenceIds: ["e1", "e2"],
       legs: [
-        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
         { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
       ],
     },
@@ -124,7 +124,7 @@ const modelComplete = {
       title: "Lend idle USDC to Earn",
       rationale: "Would use idle AQUSDC (e1).",
       evidenceIds: ["e1"],
-      legs: [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_idle" } }],
+      legs: [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_wallet" } }],
     },
   ],
 };
@@ -364,7 +364,7 @@ describe("model proposes, code disposes — end to end", () => {
           : { ...modelComplete, goal: { ...modelComplete.goal, objective: "Lend a quarter of the XLM and repay a quarter of the XLM debt", borrowing: "forbidden" },
               plans: [{ title: "Lend 25% XLM and Repay 25% XLM Debt", rationale: "A quarter each way (e1, e2).", evidenceIds: ["e1", "e2"],
                 legs: [
-                  { op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "idle", sourceQuote: "lend 25% of xlm that i hold" } },
+                  { op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "wallet", sourceQuote: "lend 25% of xlm that i hold" } },
                   { op: "repay", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "position", sourceQuote: "repay 25% of xlm debt" } },
                 ] }] },
       },
@@ -389,7 +389,7 @@ describe("model proposes, code disposes — end to end", () => {
           ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "account_debt", args: {} }] }
           : { ...modelComplete, goal: { ...modelComplete.goal, objective: "Repay all debt without withdrawing collateral", borrowing: "forbidden" },
               plans: [{ title: "Repay XLM debt using idle wallet XLM", rationale: "Wallet XLM covers part of the XLM debt (e1, e2).", evidenceIds: ["e1", "e2"],
-                legs: [{ op: "repay", asset: "XLM", sizing: { kind: "all_idle" } }] }] },
+                legs: [{ op: "repay", asset: "XLM", sizing: { kind: "all_wallet" } }] }] },
       },
     );
     const target = "composed:re.XLM";
@@ -533,31 +533,40 @@ describe("a strategy over a bare USDC", () => {
     );
   };
 
-  it("offers every held variant as a plan instead of asking which USDC", async () => {
+  it("volunteers no plan of its own when the model composed none: moving the wallet is never a default", async () => {
     const view = await turn();
-    const offered = (view.candidates?.feasible ?? []).map((c) => `${c.venue}:${c.asset}`);
-    expect(offered).toEqual(expect.arrayContaining(["earn:AQUSDC", "earn:BLUSDC", "blend:BLUSDC"]));
-    // Nothing held is asked about.
+    expect(view.candidates?.feasible ?? []).toEqual([]);
     expect(view.question ?? "").not.toMatch(/without saying which one/);
-    // SOUSDC is held at zero, so it is not offered anywhere.
-    expect(offered.some((entry) => entry.endsWith(":SOUSDC"))).toBe(false);
+    expect(view.message).not.toMatch(/idle/i);
   });
 
-  it("also tries the pool that takes the held variant, from the registry", async () => {
-    const view = await turn();
-    const everything = [
-      ...(view.candidates?.feasible ?? []).map((c) => c.label),
-      ...(view.candidates?.rejected ?? []).map((r) => r.label),
-    ];
-    // AQUSDC pairs with XLM on Aquarius. The wallet has no XLM for the pair, so the plan may be
-    // refused, but it is considered and its reason is on record rather than never tried.
-    expect(everything.some((label) => /AQUSDC/.test(label) && /aquarius/i.test(label))).toBe(true);
+  it("offers each held variant the model composed as its own plan, and asks nothing about which USDC", async () => {
+    const composed = { ...goal, plans: [
+      { title: "Lend AQUSDC to Earn", rationale: "Earn pays on AQUSDC (e1).", evidenceIds: ["e1"], legs: [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_wallet" } }] },
+      { title: "Lend BLUSDC to Earn", rationale: "Earn pays on BLUSDC (e1).", evidenceIds: ["e1"], legs: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "all_wallet" } }] },
+      { title: "Supply BLUSDC to Blend", rationale: "Blend pays on BLUSDC (e1).", evidenceIds: ["e1"], legs: [{ op: "supply_blend", asset: "BLUSDC", sizing: { kind: "all_wallet" } }] },
+    ] };
+    let n = 0;
+    const view = await researchTurn(
+      { message: "put my idle usdc to work", wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: usdcMcp, signal: new AbortController().signal,
+        model: async () => n++ === 0
+          ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "blend_markets", args: {} }] }
+          : composed,
+      },
+    );
+    const shapes = (view.candidates?.feasible ?? []).map((c) => (c.steps ?? []).map((step) => `${step.op}:${step.asset}`).join("+"));
+    expect(shapes).toEqual(expect.arrayContaining(["lend:AQUSDC", "lend:BLUSDC", "deposit_collateral:BLUSDC+supply_blend:BLUSDC"]));
+    expect(view.question ?? "").not.toMatch(/without saying which one/);
+    // SOUSDC is held at zero, and the model did not compose it, so it is not offered anywhere.
+    expect(shapes.some((shape) => shape.includes("SOUSDC"))).toBe(false);
   });
 });
 
 /**
  * 7 Oct, live: "use both usdc and xlm ... take new loans" — the model's combined plans drew on one
- * idle balance twice (all_idle in two legs). The sizer refused them, rightly, and only single-asset
+ * idle balance twice (all_wallet in two legs). The sizer refused them, rightly, and only single-asset
  * options were left, with the combined strategy dropped without a word. The refusal names a fault in
  * how the PLAN is built, so the model is told and tries once more; a refusal that is a fact is not
  * asked about again.
@@ -570,8 +579,8 @@ describe("a plan the sizer refuses for how it is built gets one repair", () => {
       rationale: "Part earns in Earn (e1), part is posted as collateral for headroom (e1).",
       evidenceIds: ["e1"],
       legs: [
-        { op: "lend", asset: "XLM", sizing: { kind: "all_idle" } },
-        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+        { op: "lend", asset: "XLM", sizing: { kind: "all_wallet" } },
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
       ],
     }],
   };
@@ -580,8 +589,8 @@ describe("a plan the sizer refuses for how it is built gets one repair", () => {
     plans: [{
       ...split.plans[0],
       legs: [
-        { op: "lend", asset: "XLM", sizing: { kind: "share", percent: "60", of: "idle", reason: "most earns while the rest backs borrowing" } },
-        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "share", percent: "40", of: "idle", reason: "the rest posted as collateral" } },
+        { op: "lend", asset: "XLM", sizing: { kind: "share", percent: "60", of: "wallet", reason: "most earns while the rest backs borrowing" } },
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "share", percent: "40", of: "wallet", reason: "the rest posted as collateral" } },
       ],
     }],
   };
@@ -619,8 +628,8 @@ describe("a plan the sizer refuses for how it is built gets one repair", () => {
       plans: [{
         ...split.plans[0],
         legs: [
-          { op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "idle", sourceQuote: "split it half and half" } },
-          { op: "deposit_collateral", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "idle", sourceQuote: "split it half and half" } },
+          { op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "wallet", sourceQuote: "split it half and half" } },
+          { op: "deposit_collateral", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "wallet", sourceQuote: "split it half and half" } },
         ],
       }],
     };

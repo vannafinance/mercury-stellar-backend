@@ -62,7 +62,7 @@ const plan = (title: string, legs: ProposedPlan["legs"]): ProposedPlan => ({ tit
 describe("resolvePlans — the 13 Sep prompt gets its options", () => {
   it("sizes 'deposit idle XLM, supply it to Blend' from the wallet read, allowlists both steps", () => {
     const { candidates, rejected } = resolvePlans([plan("Move idle XLM into Blend", [
-      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
       { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
     ])], ctx());
     expect(rejected).toEqual([]);
@@ -139,7 +139,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       { found: true, pool: { available: true, reserves: { XLM: "100000", AQUSDC: "20000" }, total_share: "40000", fee: "0.0030" } },
       { asset: "AQUSDC" });
     const exactOutLeg = (amount: string, sourceQuote: string): ProposedPlan["legs"] => [
-      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
       { op: "swap", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "literal", amount, sourceQuote, amountAsset: "assetOut" } },
     ];
 
@@ -688,13 +688,13 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     // supply, as a repay from idle already was. Pinned in idle-into-account-ops.test.ts.
     ["a literal Blend supply with nothing put in before it", { messages: ["supply 100 XLM to Blend"] }, [{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "supply 100 XLM" } }], "supply blend XLM", /add that leg before it/],
     ["a literal Blend supply larger than the deposit before it", { messages: ["deposit 100 XLM and supply 200 XLM to Blend"] }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } }, { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "200", sourceQuote: "supply 200 XLM" } }], "supply blend XLM", "only 100 XLM is in the margin account after the legs before it"],
-    ["nothing idle", {}, [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_idle" } }], "lend AQUSDC", "AQUSDC is not in the connected wallet"],
-    ["previous_leg across assets", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }, { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } }], "supply blend BLUSDC", /preceding leg in the same asset/],
-    ["margin position not read", { capacity: null }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin position was not read/],
-    ["no margin account", { scope: { ...SCOPE, smartAccount: null } }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin account is needed/],
+    ["nothing idle", {}, [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_wallet" } }], "lend AQUSDC", "AQUSDC is not in the connected wallet"],
+    ["previous_leg across assets", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } }, { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } }], "supply blend BLUSDC", /preceding leg in the same asset/],
+    ["margin position not read", { capacity: null }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } }], "deposit collateral XLM", /margin position was not read/],
+    ["no margin account", { scope: { ...SCOPE, smartAccount: null } }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } }], "deposit collateral XLM", /margin account is needed/],
     // 23 Sep: AQUA has no Earn pool, which is now the reason given for it (the registry is checked first).
     // The missing-price path is exercised with an asset that is held and has a pool, minus its price read.
-    ["no price read", { observations: OBSERVATIONS.filter((o) => !(o.capability === "asset_price" && o.args.asset === "XLM")) }, [{ op: "lend", asset: "XLM", sizing: { kind: "all_idle" } }], "lend XLM", "no XLM price was read this investigation"],
+    ["no price read", { observations: OBSERVATIONS.filter((o) => !(o.capability === "asset_price" && o.args.asset === "XLM")) }, [{ op: "lend", asset: "XLM", sizing: { kind: "all_wallet" } }], "lend XLM", "no XLM price was read this investigation"],
     ["to_floor on a deposit", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "to_floor" } }], "deposit collateral XLM", /only a withdraw or a borrow can be sized to the health-factor floor/],
   ])("rejects with a readable reason: %s", (_name, over, legs, leg, reason) => {
     const { candidates, rejected } = resolvePlans([plan("Try", legs as ProposedPlan["legs"])], ctx(over as Partial<Parameters<typeof resolvePlans>[1]>));
@@ -715,7 +715,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
   });
 
   it("treats the same shape proposed twice as one option, and gives each shape a stable id", () => {
-    const shape: ProposedPlan["legs"] = [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }, { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } }];
+    const shape: ProposedPlan["legs"] = [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } }, { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } }];
     const { candidates } = resolvePlans([plan("A", shape), plan("B", shape)], ctx());
     expect(candidates).toHaveLength(1);
     expect(candidates[0].label).toBe("A");
@@ -727,25 +727,25 @@ describe("mergeCandidateSets — composed plans beside the fixed shapes", () => 
   it("dedupes a composed plan against the fixed shape it equals and keeps the rationale", () => {
     const fixed = generateCandidates({
       grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, floor: CAPACITY.floor,
-      idleWalletUsd: "1837.14", idleWalletByAssetUsd: { XLM: "1837.14" }, idleWalletByAssetTokens: { XLM: "10206.3356118" },
+      spendableWalletUsd: "1837.14", spendableWalletByAssetUsd: { XLM: "1837.14" }, spendableWalletByAssetTokens: { XLM: "10206.3356118" },
       borrowingAllowed: true, comparisons: compareObservedRates(OBSERVATIONS, NOW),
     });
-    expect(fixed.feasible.map((c) => c.id)).toContain("supply_idle:XLM");
-    const composed = resolvePlans([plan("Move idle XLM into Blend", [
-      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+    expect(fixed.feasible.map((c) => c.id)).toContain("borrow_supply:XLM");
+    const composed = resolvePlans([plan("Borrow XLM and supply it to Blend", [
+      { op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } },
       { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
     ])], ctx());
     const merged = mergeCandidateSets(fixed, composed);
     const ids = merged.feasible.map((c) => c.id);
-    expect(ids).toContain("composed:dc.XLM+sb.XLM");
-    expect(ids).not.toContain("supply_idle:XLM");
-    expect(merged.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM")?.rationale).toBeTruthy();
+    expect(ids).toContain("composed:bo.XLM+sb.XLM");
+    expect(ids).not.toContain("borrow_supply:XLM");
+    expect(merged.feasible.find((c) => c.id === "composed:bo.XLM+sb.XLM")?.rationale).toBeTruthy();
   });
 
-  it("does not keep idle on the card after merging when a borrow is required", () => {
+  it("keeps only borrowing candidates on the card after merging when a borrow is required", () => {
     const fixed = generateCandidates({
       grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, floor: CAPACITY.floor,
-      idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, borrowingAllowed: true,
+      spendableWalletUsd: "680", spendableWalletByAssetUsd: { BLUSDC: "680" }, borrowingAllowed: true,
       borrowing: "required", comparisons: compareObservedRates(OBSERVATIONS, NOW),
     });
     const plainBorrow = resolvePlans([plan("Borrow XLM", [
@@ -770,7 +770,7 @@ describe("mergeCandidateSets — composed plans beside the fixed shapes", () => 
  */
 describe("resolvePlans — floor semantics", () => {
   const deposit: ProposedPlan["legs"] = [
-    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
     { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
   ];
   const lever: ProposedPlan["legs"] = [
@@ -859,7 +859,7 @@ describe("resolvePlans — an account already under its floor", () => {
   it("still sizes a deposit that brings it back up (the PR #58 defect)", () => {
     // HF 1.2946 today; the user's floor is 1.5. Depositing raises HF to 1.65 — allowed.
     const { candidates, rejected } = resolvePlans([plan("Deposit", [
-      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
     ])], ctx({ capacity: { ...CAPACITY, floor: "1.5" } }));
     expect(rejected).toEqual([]);
     expect(Number(candidates[0].finalHealthFactor)).toBeCloseTo(1.6546, 3);
@@ -883,7 +883,7 @@ describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% 
 
   it("lends a share of the idle balance, cut to the token's precision", () => {
     const { candidates, rejected } = resolvePlans(
-      [plan("Lend a quarter", [{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "idle", sourceQuote: "lend 25% of xlm that i hold" } }])],
+      [plan("Lend a quarter", [{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "wallet", sourceQuote: "lend 25% of xlm that i hold" } }])],
       ctx({ observations, messages: ["lend 25% of xlm that i hold and also repay 25% of xlm debt"] }),
     );
     expect(rejected).toEqual([]);
@@ -912,12 +912,12 @@ describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% 
 
   it("understands a share said in words, and refuses one the user never said", () => {
     const half = resolvePlans(
-      [plan("Lend half", [{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "idle", sourceQuote: "lend half of my idle xlm" } }])],
+      [plan("Lend half", [{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "wallet", sourceQuote: "lend half of my idle xlm" } }])],
       ctx({ observations, messages: ["lend half of my idle xlm to earn"] }),
     );
     expect(half.candidates[0]?.steps?.[0]).toEqual(expect.objectContaining({ op: "lend", amount: "4999.9386123" }));
     const invented = resolvePlans(
-      [plan("Lend a third", [{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "40", of: "idle", sourceQuote: "lend some of my xlm" } }])],
+      [plan("Lend a third", [{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "40", of: "wallet", sourceQuote: "lend some of my xlm" } }])],
       ctx({ observations, messages: ["lend some of my xlm"] }),
     );
     expect(invented.candidates).toEqual([]);
@@ -928,12 +928,12 @@ describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% 
 
   /**
    * 7 Oct, live: "use both usdc and xlm ... take new loans" — the model's combined plan drew on the
-   * same 675 BLUSDC twice (all_idle in two legs) and the sizer rightly refused it, leaving only
+   * same 675 BLUSDC twice (all_wallet in two legs) and the sizer rightly refused it, leaving only
    * single-asset options. The model had no way to say "part of it here, part there" without a user
    * quote. A `share` is that way: the model's allocation, held to what the wallet has.
    */
   describe("the model's own split of one idle balance (allocation)", () => {
-    const split = (percent: string): PlanSizing => ({ kind: "fraction", percent, of: "idle", sourceQuote: "", allocation: { reason: "split" } });
+    const split = (percent: string): PlanSizing => ({ kind: "fraction", percent, of: "wallet", sourceQuote: "", allocation: { reason: "split" } });
     const noQuote = ctx({ observations, messages: ["put my xlm to work, use both earn and collateral"] });
 
     it("sizes two legs from one balance by their shares, with no quote from the user", () => {
@@ -954,9 +954,9 @@ describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% 
       expect(rejected[0]?.reason).toMatch(/already use 6999\.9140572 of the 9999\.8772246 XLM the wallet can spend, so 50% more does not fit/);
     });
 
-    it("lets a later all_idle leg take exactly what the shares left", () => {
+    it("lets a later all_wallet leg take exactly what the shares left", () => {
       const { candidates, rejected } = resolvePlans(
-        [plan("Share then the rest", [{ op: "lend", asset: "XLM", sizing: split("60") }, { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }])],
+        [plan("Share then the rest", [{ op: "lend", asset: "XLM", sizing: split("60") }, { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } }])],
         noQuote,
       );
       expect(rejected).toEqual([]);
@@ -975,9 +975,9 @@ describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% 
       expect(rejected[0]?.repairable).toBe(true);
     });
 
-    it("still refuses two all_idle legs on one balance: only a share splits it", () => {
+    it("still refuses two all_wallet legs on one balance: only a share splits it", () => {
       const { candidates, rejected } = resolvePlans(
-        [plan("Twice", [{ op: "lend", asset: "XLM", sizing: { kind: "all_idle" } }, { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }])],
+        [plan("Twice", [{ op: "lend", asset: "XLM", sizing: { kind: "all_wallet" } }, { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } }])],
         noQuote,
       );
       expect(candidates).toEqual([]);
@@ -1013,7 +1013,7 @@ describe("resolvePlans — two legs may not spend the same idle balance twice (1
   it("collapses a repay that follows the model's own funding deposit, instead of asking the wallet twice", () => {
     const { candidates, rejected } = resolvePlans(
       [plan("Deposit then repay", [
-        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
         { op: "repay", asset: "XLM", sizing: { kind: "all_position" } },
       ])],
       ctx({ observations, messages: ["repay all the debt, if i dont have the fund please deposit in my margin acc"] }),
@@ -1028,8 +1028,8 @@ describe("resolvePlans — two legs may not spend the same idle balance twice (1
   it("refuses a second leg that draws on an idle balance the first already spent", () => {
     const { candidates, rejected } = resolvePlans(
       [plan("Lend it and deposit it", [
-        { op: "lend", asset: "XLM", sizing: { kind: "all_idle" } },
-        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+        { op: "lend", asset: "XLM", sizing: { kind: "all_wallet" } },
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
       ])],
       ctx({ observations, messages: ["lend all my idle XLM and deposit all my idle XLM"] }),
     );
@@ -1044,7 +1044,7 @@ describe("resolvePlans — two legs may not spend the same idle balance twice (1
     const { candidates, rejected } = resolvePlans(
       [plan("Redeem then deposit", [
         { op: "redeem", asset: "AQUSDC", sizing: { kind: "all_position" } },
-        { op: "deposit_collateral", asset: "AQUSDC", sizing: { kind: "all_idle" } },
+        { op: "deposit_collateral", asset: "AQUSDC", sizing: { kind: "all_wallet" } },
       ])],
       ctx({ observations: [...observations, position], messages: ["move my AQUSDC from Earn into collateral"] }),
     );
@@ -1106,7 +1106,7 @@ describe("resolvePlans — withdraw to the floor (14 Sep: 'how much xlm can i wi
 describe("resolvePlans — repay from what the wallet has", () => {
   /**
    * 13 Sep, "I want zero debt but keep all my collateral": the model sized the repay
-   * `all_idle` — repay from the wallet — and the card said only "an idle wallet balance
+   * `all_wallet` — repay from the wallet — and the card said only "an idle wallet balance
    * does not size a repay". What was owed never appeared. And the account is what repays
    * (`vanna_repay` draws on the smart account; "to repay from the wallet, deposit first"),
    * so the plan is two protocol legs: deposit, capped by the debt, then repay it.
@@ -1121,7 +1121,7 @@ describe("resolvePlans — repay from what the wallet has", () => {
     ],
     messages: ["I want zero debt but keep all my collateral"],
   });
-  const legs: ProposedPlan["legs"] = [{ op: "repay", asset: "XLM", sizing: { kind: "all_idle" } }];
+  const legs: ProposedPlan["legs"] = [{ op: "repay", asset: "XLM", sizing: { kind: "all_wallet" } }];
 
   it("deposits what the wallet can cover, capped by the debt, then repays it — two protocol legs", () => {
     const partial = resolvePlans([plan("Repay from wallet", legs)], ctx(withDebt("100")));
@@ -1195,7 +1195,7 @@ describe("resolvePlans — dust is not idle", () => {
       { symbol: "AQUSDC", balance: "0.0003729", decimals: 7, status: "ok" },
     ], fee_reserve_xlm: "0.5" }));
     const { candidates, rejected } = resolvePlans(
-      [plan("Lend idle AQUSDC in Earn", [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_idle" } }])],
+      [plan("Lend idle AQUSDC in Earn", [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_wallet" } }])],
       ctx({ observations: [...observations, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })] }),
     );
     expect(candidates).toEqual([]);
@@ -1209,7 +1209,7 @@ describe("resolvePlans — dust is not idle", () => {
       { symbol: "XLM_SAC", balance: "0.01", decimals: 7, status: "ok" },
     ] }));
     const { candidates } = resolvePlans(
-      [plan("Lend idle XLM in Earn", [{ op: "lend", asset: "XLM", sizing: { kind: "all_idle" } }])],
+      [plan("Lend idle XLM in Earn", [{ op: "lend", asset: "XLM", sizing: { kind: "all_wallet" } }])],
       ctx({ observations }),
     );
     expect(candidates).toHaveLength(1);
@@ -1220,7 +1220,7 @@ describe("resolvePlans — dust is not idle", () => {
 describe("resolvePlans — negative carry and spendable balance", () => {
   it("rules out borrowing BLUSDC at 32% to supply Blend at 0.9%, with the rates (13 Sep live card)", () => {
     const { candidates, rejected } = resolvePlans([plan("Lever BLUSDC", [
-      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
       { op: "borrow", asset: "BLUSDC", sizing: { kind: "to_floor" } },
       { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
     ])], ctx({ capacity: { ...CAPACITY, floor: "1.3" } }));
@@ -1242,7 +1242,7 @@ describe("resolvePlans — negative carry and spendable balance", () => {
         { symbol: "XLM", balance: "10206.8356118", spendable: "10202.8356118", min_balance: "3.5", decimals: 7, status: "ok" },
       ] },
     });
-    const { candidates } = resolvePlans([plan("Deposit", [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }])], ctx({ observations }));
+    const { candidates } = resolvePlans([plan("Deposit", [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } }])], ctx({ observations }));
     expect(candidates[0].steps![0].amount).toBe("10202.8356118");
   });
 });

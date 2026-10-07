@@ -18,9 +18,9 @@ const LIFECYCLE_WRITES_TEXT = LIFECYCLE_WRITES.join(", ");
 
 /** What each op does, for the prompt. `Record<WorkflowOp, …>` so a new op cannot ship without its sentence. */
 const OP_MEANING: Record<WorkflowOp, string> = {
-  lend: "idle wallet token into a Vanna Earn pool",
+  lend: "wallet token into a Vanna Earn pool",
   redeem: "Earn vTokens back to the wallet as the underlying token",
-  deposit_collateral: "idle wallet token into the margin account",
+  deposit_collateral: "wallet token into the margin account",
   withdraw_collateral: "posted collateral out of the margin account to the wallet; lowers health",
   borrow: "from a Vanna pool against margin collateral; proceeds stay in the account",
   repay: "margin debt from the account",
@@ -97,7 +97,7 @@ not executable here: ${NON_EXECUTABLE_VENUES_TEXT} — when the user asks for on
 limitation and never substitute another venue silently. When the user names NO venue and more than one
 executable venue fits the request, that is the user's choice, not a rate comparison: ask ONE closed
 question naming those venues with the rates you read. When exactly one executable venue fits, use it and
-say so in findings. Default how-much to the idle amount of the chosen variant and state it; do not ask.
+say so in findings. Default how-much to the wallet amount of the chosen variant and state it; do not ask.
 Slippage, pool pair, paired amounts and routing are yours too. Otherwise clarify ONLY a choice that no
 read can settle and that changes what would be executed — typically whether new borrowing is allowed,
 when the user has not said. Ask at most ONE closed question. Asking which USDC, which pair, or what
@@ -157,15 +157,15 @@ Use an empty actions array for open-ended strategy sizing and read-only question
 For an open-ended strategy (intent=strategy, no literal amounts), YOU compose the strategy: include plans — one to three
 ordered shapes built from these operations only: ${PLAN_OPS_TEXT}. Each leg is sized by a WORD, never a number:
 ${PLAN_SIZINGS_TEXT} (literal carries the user's own quoted amount; fraction carries the share the user stated — "25%" as
-percent "25", "half" as "50" — with of=idle for a share of the wallet balance and of=position for a share of the Earn
-position, the posted collateral or the debt, and the user's quote; share carries YOUR OWN split of one idle wallet balance
-across the legs of a plan — percent, of=idle and a one-sentence reason, no quote — and is how two legs draw on the same
-asset: an idle balance funds one all_idle leg, so otherwise give each leg a share and keep an asset's shares at or under
+percent "25", "half" as "50" — with of=wallet for a share of the wallet balance and of=position for a share of the Earn
+position, the posted collateral or the debt, and the user's quote; share carries YOUR OWN split of one wallet balance
+across the legs of a plan — percent, of=wallet and a one-sentence reason, no quote — and is how two legs draw on the same
+asset: a wallet balance funds one all_wallet leg, so otherwise give each leg a share and keep an asset's shares at or under
 100 in total; leverage carries the user's own stated multiple — "6x" as multiple "6" — and their quote). The server computes every amount,
 projects the health factor after each leg against the user's floor, rejects what does not fit, ranks what does, and
-shows the user why. Build from what the user actually holds (read the wallet, positions, rates first): idle wallet
-tokens must be deposited (deposit_collateral, all_idle) before supply_blend can use them; a borrow (to_floor) is
-followed by supply_blend (previous_leg) of the same asset; Earn lending spends the wallet directly (lend, all_idle).
+shows the user why. Build from what the user actually holds (read the wallet, positions, rates first): wallet
+tokens must be deposited (deposit_collateral, all_wallet) before supply_blend can use them; a borrow (to_floor) is
+followed by supply_blend (previous_leg) of the same asset; Earn lending spends the wallet directly (lend, all_wallet).
 "How much can I withdraw / withdraw as much as keeps HF above X" is withdraw_collateral (to_floor) — never a question back.
 When the user states an explicit multiple ("6x leverage", "at 3x"), size the borrow with leverage, not to_floor — the
 borrow leg immediately follows the deposit it multiplies (deposit_collateral, then borrow with sizing.kind=leverage). A
@@ -192,10 +192,10 @@ sizes it.
 Add "venue" only when the user named the DEX. A swap spends the margin account, so the tokens must already be in it.
 remove_liquidity (all_position) exits an LP pool. Its asset is the token XLM is paired with — AQUSDC for Aquarius,
 SOUSDC for Soroswap — never XLM itself, which is the other side of every pair.
-add_liquidity enters one: asset is whichever side the user stated an amount for (literal, all_idle or fraction —
+add_liquidity enters one: asset is whichever side the user stated an amount for (literal, all_wallet or fraction —
 never all_position, which sizes what a leg takes OUT of something held and applies only to ${POSITION_SIZED_OPS_TEXT};
 entering a pool has no position to take all of yet), assetOut is REQUIRED and is the other side of the pair.
-When the user gives no amount and asks to be asked, ask — one closed question naming the side and their idle balance.
+When the user gives no amount and asks to be asked, ask — one closed question naming the side and their wallet balance.
 Never reach for a sizing word to stand in for an amount they said they would give you. Never state an amount
 for both sides or compute the paired amount yourself — the server derives it from the pool's live reserves. "Add 100
 XLM to the AQUSDC pool" is exactly {"op":"add_liquidity","asset":"XLM","assetOut":"AQUSDC","sizing":{"kind":"literal","amount":"100","sourceQuote":"Add 100 XLM to the AQUSDC pool"}}.
@@ -204,7 +204,7 @@ Tokens sitting in Earn come back to the wallet with redeem (all_position) and ca
 Use borrow only when the user allowed or required it. A borrow sized to_floor still needs a stated floor above 1.1; a literal or leverage borrow is sized from the user's amount or multiple and is checked against the liquidation line when no floor was stated. A borrow-to-supply shape only pays
 when the supply rate you read exceeds the borrow rate you read for the asset you borrow — compare them per asset and
 do not propose one that loses money by construction unless the user required that borrow; the server rules an unrequired losing shape out with the rates. When borrowing is unspecified or allowed, propose the
-non-borrowing shape whenever one exists, beside any levered one. When the user required a borrow, size that borrow — do not rank an idle alternative first, and do not substitute idle if the borrow cannot be sized. Give each plan a short title and a rationale that cites the observation
+non-borrowing shape whenever one exists, beside any levered one. When the user required a borrow, size that borrow — do not rank a wallet-only alternative first, and do not substitute idle if the borrow cannot be sized. Give each plan a short title and a rationale that cites the observation
 ids it rests on. A request that mixes a literal amount with anything that needs sizing ("deposit 10 XLM and borrow to
 the floor") is ONE plan whose first leg is literal — do not split it into goal.actions. If the user's goal needs an
 operation not in this list, say so in findings as a limitation — name the unsupported step — and still propose the

@@ -2,7 +2,7 @@
  * Model proposes, code disposes.
  *
  * The model composes strategy SHAPES — ordered legs from a closed op vocabulary, each
- * sized by a word (`all_idle`, `to_floor`, `previous_leg`, `literal`). This module turns
+ * sized by a word (`all_wallet`, `to_floor`, `previous_leg`, `literal`). This module turns
  * a shape into a `Candidate` the rest of the pipeline already understands, or rejects it
  * with a reason the user can read. Nothing the model wrote reaches a transaction: every
  * amount comes from a wallet read, a price read, the user's own quoted number, or the
@@ -20,7 +20,7 @@ import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_DONE, OP_FLOW, POSITION_POCKETS, producedAsset, SIZED_OPS, touchesMarginAccount, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
 import { candidateId, isCandidateId } from "./candidate-id";
-import { dustWalletHoldingsFrom, freshPrices, holdingsAfterReserves, idleWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
+import { dustWalletHoldingsFrom, freshPrices, holdingsAfterReserves, spendableWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
 import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { pct, planApy, type RateKind } from "./apy";
@@ -158,7 +158,7 @@ type SizerLeg = ProposedPlan["legs"][number] & {
 /**
  * The account is what repays — `vanna_repay` draws on the smart account's balance, and
  * "to repay from the trader's wallet, deposit first" (MCP). So a repay the model sizes
- * from idle wallet funds (`all_idle`) is two protocol legs: deposit the asset, capped by
+ * from idle wallet funds (`all_wallet`) is two protocol legs: deposit the asset, capped by
  * the debt, then repay what that deposit put in. The plan's id stays the model's; the
  * steps, the projection and the approval-time risk check all see the two real legs.
  * 13 Sep: sized as one leg, the approve-time check read the account (which held none of
@@ -166,8 +166,8 @@ type SizerLeg = ProposedPlan["legs"][number] & {
  */
 /** Whether a sizing word takes its amount from the wallet's idle balance. */
 function drawsOnWallet(sizing: PlanSizing): boolean {
-  return sizing.kind === "all_idle" || sizing.kind === "all_position"
-    || (sizing.kind === "fraction" && sizing.of === "idle") || sizing.kind === "literal";
+  return sizing.kind === "all_wallet" || sizing.kind === "all_position"
+    || (sizing.kind === "fraction" && sizing.of === "wallet") || sizing.kind === "literal";
 }
 
 function postedBalance(ctx: PlanContext, asset: string): bigint | null {
@@ -185,7 +185,7 @@ function spendableWallet(ctx: PlanContext, asset: string): bigint | null {
   const read = ctx.observations.some((observation) =>
     observation.capability === "wallet_balances" && observation.status === "ok" && observation.data && ctx.now - observation.observedAt <= 60_000);
   if (!read) return null;
-  const row = idleWalletHoldingsFrom(ctx.observations, ctx.now)[asset as keyof ReturnType<typeof idleWalletHoldingsFrom>];
+  const row = spendableWalletHoldingsFrom(ctx.observations, ctx.now)[asset as keyof ReturnType<typeof spendableWalletHoldingsFrom>];
   if (!row?.tokens) return ZERO;
   try { return decimalWad(row.tokens); } catch { return ZERO; }
 }
@@ -212,10 +212,10 @@ function heldAfterEarlier(ctx: PlanContext, asset: string, earlier: readonly Pro
     let tokens: string | null = null;
     if (leg.sizing.kind === "literal") {
       tokens = leg.sizing.amount;
-    } else if (leg.sizing.kind === "all_idle" && OP_FLOW[leg.op].from === "wallet") {
+    } else if (leg.sizing.kind === "all_wallet" && OP_FLOW[leg.op].from === "wallet") {
       const w = spendableWallet(ctx, leg.asset);
       if (w !== null) tokens = formatWad(w);
-    } else if (leg.sizing.kind === "fraction" && leg.sizing.of === "idle" && OP_FLOW[leg.op].from === "wallet") {
+    } else if (leg.sizing.kind === "fraction" && leg.sizing.of === "wallet" && OP_FLOW[leg.op].from === "wallet") {
       const w = spendableWallet(ctx, leg.asset);
       if (w !== null) {
         try {
@@ -336,7 +336,7 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
        * A deposit the model already wrote is used, not doubled, exactly as for a repay.
        */
       const flow = OP_FLOW[leg.op];
-      const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
+      const ofIdle = leg.sizing.kind === "all_wallet" || (leg.sizing.kind === "fraction" && leg.sizing.of === "wallet");
       if (!ofIdle || flow.from !== "account" || flow.to === "wallet") {
         const funded = literalFarmFunding(leg, ctx, expanded);
         return funded ?? [leg];
@@ -364,7 +364,7 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
      * itself when it can. Injecting a wallet deposit unconditionally refused the repay for
      * want of wallet funds it never needed: 14 Sep, an account holding 842.46 XLM against
      * 68.49 XLM of debt was told the wallet had nothing spendable. "Repay with my idle
-     * XLM" (`all_idle`) does name the wallet, so that one still deposits first.
+     * XLM" (`all_wallet`) does name the wallet, so that one still deposits first.
      */
     if (leg.sizing.kind === "all_position") {
       const def = resolveAssetDef(leg.asset);
@@ -372,14 +372,14 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
       const held = def?.marginSymbol ? positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol, def.id, ctx.now) : null;
       if (owed !== null && held !== null && decimalWad(held) >= decimalWad(owed) && decimalWad(owed) > ZERO) return [leg];
     }
-    if (leg.sizing.kind === "all_idle" || leg.sizing.kind === "all_position") {
-      return [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_idle" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
+    if (leg.sizing.kind === "all_wallet" || leg.sizing.kind === "all_position") {
+      return [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_wallet" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
     }
     // "repay 25% of my debt" (of: position) or "repay with a quarter of my idle XLM" (of: idle):
     // the deposit leg takes the share; the repay takes what the deposit put in.
     if (leg.sizing.kind === "fraction") {
       return leg.sizing.of === "position"
-        ? [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_idle" }, fundsRepay: true, repayShare: leg.sizing }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }]
+        ? [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_wallet" }, fundsRepay: true, repayShare: leg.sizing }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }]
         : [{ op: "deposit_collateral", asset: leg.asset, sizing: leg.sizing, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
     }
     // "repay 100 XLM": from the account when it holds that much, else the wallet puts it in first.
@@ -412,12 +412,12 @@ function anchoredShare(sizing: PlanSizing & { kind: "fraction" }, messages: read
   // bound is the one the parser already holds (a percent above 0 and up to 100) and the sizer's
   // check that the legs together never draw more than the wallet has.
   if (sizing.allocation) return decimalWad(Number(sizing.percent).toFixed(9)) / BigInt(100);
-  if (!messages.some((m) => m.includes(sizing.sourceQuote))) throw new PlanFault(name, `the share "${sizing.sourceQuote}" does not appear in your request, so it is not a share you were given: split a balance across legs with a share and a reason, or size the leg all_idle`);
+  if (!messages.some((m) => m.includes(sizing.sourceQuote))) throw new PlanFault(name, `the share "${sizing.sourceQuote}" does not appear in your request, so it is not a share you were given: split a balance across legs with a share and a reason, or size the leg all_wallet`);
   const percent = Number(sizing.percent);
   const numbers = (sizing.sourceQuote.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
   const byNumber = numbers.some((n) => Math.abs(n - percent) < 1e-9);
   const byWord = FRACTION_WORDS.some((w) => w.pattern.test(sizing.sourceQuote) && Math.abs(w.percent - percent) < 1e-6);
-  if (!byNumber && !byWord) throw new PlanFault(name, `the share ${sizing.percent}% does not appear in your request, so it is not a share you were given: split a balance across legs with a share and a reason, or size the leg all_idle`);
+  if (!byNumber && !byWord) throw new PlanFault(name, `the share ${sizing.percent}% does not appear in your request, so it is not a share you were given: split a balance across legs with a share and a reason, or size the leg all_wallet`);
   return decimalWad(percent.toFixed(9)) / BigInt(100);
 }
 /**
@@ -749,7 +749,7 @@ function withLendPocketBridge(plan: ProposedPlan, ctx: PlanContext): ProposedPla
 function lendPocketMismatch(leg: PlanLeg, ctx: PlanContext): PocketMismatch | null {
   const flow = OP_FLOW[leg.op];
   if (leg.op !== "lend" || flow.from !== "wallet") return null;
-  const holdings = idleWalletHoldingsFrom(ctx.observations, ctx.now);
+  const holdings = spendableWalletHoldingsFrom(ctx.observations, ctx.now);
   const held = holdings[leg.asset as keyof typeof holdings];
   if (held && decimalWad(held.tokens) > ZERO) return null;
   const def = resolveAssetDef(leg.asset);
@@ -791,7 +791,7 @@ function spendableAfter(asset: string, ctx: PlanContext, earlierLegs: boolean): 
 }
 
 function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
-  const holdings = holdingsAfterReserves(idleWalletHoldingsFrom(ctx.observations, ctx.now), ctx.walletReserves);
+  const holdings = holdingsAfterReserves(spendableWalletHoldingsFrom(ctx.observations, ctx.now), ctx.walletReserves);
   const dust = dustWalletHoldingsFrom(ctx.observations, ctx.now);
   const txFloor = transactionFloorUsdWad(ctx.observations, ctx.now);
   const prices = freshPrices(ctx.observations, ctx.now);
@@ -1029,21 +1029,21 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const sizing = leg.sizing;
     const flow = OP_FLOW[leg.op];
     // An idle wallet balance feeds the ops that draw from the wallet; `all_position` on those is the same thing.
-    if (sizing.kind === "all_idle" || (sizing.kind === "all_position" && flow.from === "wallet")) {
+    if (sizing.kind === "all_wallet" || (sizing.kind === "all_position" && flow.from === "wallet")) {
       if (flow.from !== "wallet") {
         throw new PlanFault(name, flow.from === "account"
-          ? `${verbOf(leg.op)} spends the margin account — deposit the idle tokens as collateral first`
-          : `an idle wallet balance does not size a ${verbOf(leg.op).toLowerCase()}`);
+          ? `${verbOf(leg.op)} spends the margin account — deposit the tokens from your wallet as collateral first`
+          : `a wallet balance does not size a ${verbOf(leg.op).toLowerCase()}`);
       }
       /**
        * What the wallet can still fund, not what it held before this plan started: two legs
        * that both draw on the idle balance may not each take all of it. Legs that LAND in
        * the wallet (a redeem, a withdraw) add to it in the same pass.
        */
-      const idle = walletAfterEarlierLegs(holdings[leg.asset as keyof typeof holdings], drafts, leg.asset);
-      const held = idle.tokens === null ? null : { tokens: idle.tokens, usd: formatWad(mulDown(decimalWad(idle.tokens), price.price, WAD)) };
-      if (idle.spent && (!held || decimalWad(held.tokens) <= ZERO)) {
-        throw new PlanFault(name, `the legs before this one already use all ${idle.startedWith ?? "0"} ${leg.asset} the wallet can spend`, walletShortageMismatch(leg), true);
+      const afterEarlier = walletAfterEarlierLegs(holdings[leg.asset as keyof typeof holdings], drafts, leg.asset);
+      const held = afterEarlier.tokens === null ? null : { tokens: afterEarlier.tokens, usd: formatWad(mulDown(decimalWad(afterEarlier.tokens), price.price, WAD)) };
+      if (afterEarlier.spent && (!held || decimalWad(held.tokens) <= ZERO)) {
+        throw new PlanFault(name, `the legs before this one already use all ${afterEarlier.startedWith ?? "0"} ${leg.asset} the wallet can spend`, walletShortageMismatch(leg), true);
       }
       /**
        * A deposit that exists to fund a repay ("repay from what I have") is capped by what
@@ -1067,7 +1067,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         const mismatch = lendPocketMismatch(leg, ctx);
         throw new Reject(name, mismatch
           ? `${leg.asset} is held in the margin account, not the wallet — withdraw it to the wallet before lending, or skip this leg`
-          : noIdleReason(leg.asset, dust, txFloor, ctx), mismatch ?? walletShortageMismatch(leg), true);
+          : noSpendableReason(leg.asset, dust, txFloor, ctx), mismatch ?? walletShortageMismatch(leg), true);
       }
       if (leg.fundsRepay && owed !== null) {
         const stillOwed = pocketBalance("debt", decimalWad(owed), drafts, leg.asset);
@@ -1309,10 +1309,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     }
     if (sizing.kind === "fraction") {
       const share = anchoredShare(sizing, ctx.messages, name);
-      if (sizing.of === "idle") {
+      if (sizing.of === "wallet") {
         if (flow.from !== "wallet") throw new Reject(name, `a share of the wallet balance sizes ${walletOps()}`);
         const held = holdings[leg.asset as keyof typeof holdings];
-        if (!held || decimalWad(held.tokens) <= ZERO) throw new Reject(name, `no idle ${leg.asset} in the wallet`, walletShortageMismatch(leg), true);
+        if (!held || decimalWad(held.tokens) <= ZERO) throw new Reject(name, `no ${leg.asset} in the wallet`, walletShortageMismatch(leg), true);
         const tokens = precise(shareOf(held.tokens, share), leg.asset, name);
         if (decimalWad(tokens) <= ZERO) throw new Reject(name, `${sizing.percent}% of ${held.tokens} ${leg.asset} rounds to nothing`);
         /**
@@ -1324,7 +1324,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           // A share divides one balance between legs. With only this leg drawing on the asset there is
           // nothing to divide: the percent would be an amount the model made up, which only the user may state.
           const competing = expanded.filter((other) => other.asset === leg.asset && drawsOnWallet(other.sizing)).length;
-          if (competing < 2) throw new PlanFault(name, `a share splits one wallet balance between legs, and this is the only leg drawing on ${leg.asset}: size it all_idle, or use the amount you were given`);
+          if (competing < 2) throw new PlanFault(name, `a share splits one wallet balance between legs, and this is the only leg drawing on ${leg.asset}: size it all_wallet, or use the amount you were given`);
           const left = walletAfterEarlierLegs(held, drafts, leg.asset);
           if (left.tokens === null || decimalWad(tokens) > decimalWad(left.tokens)) {
             const used = left.tokens === null ? held.tokens : formatWad(decimalWad(held.tokens) - decimalWad(left.tokens));
@@ -1435,14 +1435,14 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const amountWad = decimalWad(sizing.amount);
     const earlier = drafts.slice(0, index).filter((d) => d.leg.asset === leg.asset);
     if (flow.from === "wallet") {
-      const idle = walletAfterEarlierLegs(holdings[leg.asset as keyof typeof holdings], drafts, leg.asset);
-      if (idle.tokens === null) {
+      const afterEarlier = walletAfterEarlierLegs(holdings[leg.asset as keyof typeof holdings], drafts, leg.asset);
+      if (afterEarlier.tokens === null) {
         const mismatch = lendPocketMismatch(leg, ctx);
         throw new Reject(name, mismatch
           ? `${leg.asset} is held in the margin account, not the wallet — withdraw it to the wallet before lending, or skip this leg`
-          : noIdleReason(leg.asset, dust, txFloor, ctx), mismatch ?? walletShortageMismatch(leg), true);
+          : noSpendableReason(leg.asset, dust, txFloor, ctx), mismatch ?? walletShortageMismatch(leg), true);
       }
-      const available = decimalWad(idle.tokens);
+      const available = decimalWad(afterEarlier.tokens);
       if (available < amountWad) throw new Reject(name, `only ${formatUserAmount(available, leg.asset)} ${leg.asset} is spendable in the wallet${spendableAfter(leg.asset, ctx, earlier.length > 0)}`, walletShortageMismatch(leg), true);
     }
     if (flow.from === "account") {
@@ -1925,7 +1925,7 @@ function trimAmount(value: string): string {
 function shortfallAdvice(
   capacity: { grossCollateralUsd: string; debtUsd: string; floor: string | null },
   result: { reason: string; failingLeg: string | null; legs: SizedLeg[] },
-  holdings: ReturnType<typeof idleWalletHoldingsFrom>,
+  holdings: ReturnType<typeof spendableWalletHoldingsFrom>,
   prices: Map<string, bigint>,
 ): string | null {
   if (!capacity.floor) return null;
@@ -2164,7 +2164,7 @@ function walletAfterEarlierLegs(
   return { tokens: available > ZERO ? formatWad(available) : "0", spent: consumed, startedWith: held?.tokens ?? "0" };
 }
 
-function noIdleReason(asset: string, dust: Partial<Record<string, { usd: string; tokens: string }>>, txFloor: bigint | null, ctx: PlanContext): string {
+function noSpendableReason(asset: string, dust: Partial<Record<string, { usd: string; tokens: string }>>, txFloor: bigint | null, ctx: PlanContext): string {
   const speck = dust[asset];
   if (speck && txFloor !== null) {
     return `${speck.tokens} ${asset} ($${Number(speck.usd).toFixed(2)}) is worth less than the fee reserve one transaction needs ($${Number(formatWad(txFloor)).toFixed(2)}) — not worth moving`;
@@ -2205,8 +2205,8 @@ function statedActionLabel(action: StatedAction): string {
   const amount =
     sizing.kind === "literal" ? sizing.amount
       : sizing.kind === "leverage" ? `${sizing.multiple}x`
-        : sizing.kind === "fraction" ? `${sizing.percent}% of ${sizing.of === "idle" ? "idle" : "the position"}`
-          : sizing.kind === "all_idle" ? "all idle"
+        : sizing.kind === "fraction" ? `${sizing.percent}% of ${sizing.of === "wallet" ? "your wallet balance" : "the position"}`
+          : sizing.kind === "all_wallet" ? "all"
             : sizing.kind === "all_position" ? "the whole position"
               : sizing.kind === "to_floor" ? "to the floor"
                 : "the previous leg";

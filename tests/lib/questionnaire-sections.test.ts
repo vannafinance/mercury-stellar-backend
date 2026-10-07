@@ -406,16 +406,16 @@ describe("one questionnaire, one section per action", () => {
       borrowing: "unspecified" as const, comparisons: [],
     };
 
-    // 1. Earlier leg is all_idle deposit into account, followed by supply_blend
-    const idleCtx = { ...ctx, messages: ["deposit all idle and supply 100 to blend"] };
-    const allIdlePlan = {
+    // 1. Earlier leg is all_wallet deposit into account, followed by supply_blend
+    const spendableCtx = { ...ctx, messages: ["deposit all idle and supply 100 to blend"] };
+    const allSpendablePlan = {
       title: "idle then blend", rationale: "r", evidenceIds: [],
       legs: [
-        { op: "deposit_collateral" as const, asset: "XLM", sizing: { kind: "all_idle" as const, sourceQuote: "deposit" } },
+        { op: "deposit_collateral" as const, asset: "XLM", sizing: { kind: "all_wallet" as const, sourceQuote: "deposit" } },
         { op: "supply_blend" as const, asset: "XLM", sizing: { kind: "literal" as const, amount: "100", sourceQuote: "100" } },
       ],
     };
-    const res1 = resolvePlans([allIdlePlan], idleCtx);
+    const res1 = resolvePlans([allSpendablePlan], spendableCtx);
     // supply_blend kept its stated amount 100 without enlarging or adding a second deposit
     expect(res1.candidates[0]?.steps?.filter((s) => s.op === "deposit_collateral")).toHaveLength(1);
     expect(res1.candidates[0]?.steps?.find((s) => s.op === "supply_blend")?.amount).toBe("100");
@@ -425,7 +425,7 @@ describe("one questionnaire, one section per action", () => {
     const fractionPlan = {
       title: "fraction then blend", rationale: "r", evidenceIds: [],
       legs: [
-        { op: "deposit_collateral" as const, asset: "XLM", sizing: { kind: "fraction" as const, percent: "50", of: "idle" as const, sourceQuote: "50%" } },
+        { op: "deposit_collateral" as const, asset: "XLM", sizing: { kind: "fraction" as const, percent: "50", of: "wallet" as const, sourceQuote: "50%" } },
         { op: "supply_blend" as const, asset: "XLM", sizing: { kind: "literal" as const, amount: "100", sourceQuote: "100" } },
       ],
     };

@@ -141,7 +141,7 @@ function context(asset: AssetId, world: World, messages: string[]): PlanContext 
 
 /** A share of the idle balance the model chose, as the parser hands it on. */
 function allocated(percent: number): PlanSizing {
-  return { kind: "fraction", percent: String(percent), of: "idle", sourceQuote: "", allocation: { reason: "matrix split" } };
+  return { kind: "fraction", percent: String(percent), of: "wallet", sourceQuote: "", allocation: { reason: "matrix split" } };
 }
 
 /** The sizing variants a word has, with the words the user would have said for it. */
@@ -152,7 +152,7 @@ function sizingsOf(kind: (typeof PLAN_SIZINGS)[number], asset: AssetId): Array<{
       { sizing: { kind, amount: "999999", sourceQuote: `999999 ${asset}` }, said: `999999 ${asset}`, tag: "literal:over" },
     ];
     case "fraction": return [
-      { sizing: { kind, percent: "25", of: "idle", sourceQuote: `25% of my ${asset}` }, said: `25% of my ${asset}`, tag: "fraction:idle" },
+      { sizing: { kind, percent: "25", of: "wallet", sourceQuote: `25% of my ${asset}` }, said: `25% of my ${asset}`, tag: "fraction:idle" },
       { sizing: { kind, percent: "25", of: "position", sourceQuote: `25% of my ${asset}` }, said: `25% of my ${asset}`, tag: "fraction:position" },
     ];
     // The model's own split of an idle balance (`sizing.kind: "share"`, normalised to a fraction that
@@ -171,7 +171,7 @@ function sizingsOf(kind: (typeof PLAN_SIZINGS)[number], asset: AssetId): Array<{
 /** The one sizing word that draws on an op's own source pocket — how a first leg is naturally sized. */
 function naturalSizing(op: WorkflowOp, asset: AssetId): { sizing: PlanSizing; said: string } {
   const flow = OP_FLOW[op];
-  if (flow.from === "wallet") return { sizing: { kind: "all_idle" }, said: `all my ${asset}` };
+  if (flow.from === "wallet") return { sizing: { kind: "all_wallet" }, said: `all my ${asset}` };
   if (flow.from === "debt") return { sizing: { kind: "to_floor" }, said: `as much ${asset} as the floor allows` };
   if (flow.positionRead) return { sizing: { kind: "all_position" }, said: `all my ${asset}` };
   return { sizing: { kind: "literal", amount: "100", sourceQuote: `100 ${asset}` }, said: `100 ${asset}` };

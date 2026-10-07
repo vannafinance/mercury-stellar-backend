@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { normalizeResearchFacts } from "@/lib/copilot/investigation/normalize";
 import { strategyReply } from "@/lib/copilot/investigation/answer";
 import { generateCandidates } from "@/lib/copilot/investigation/candidates";
+import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
 
 const comparison = (over: Partial<RateComparison> = {}): RateComparison => ({
@@ -19,7 +20,7 @@ describe("strategyReply", () => {
   it("cites the ranked candidate size and APR, never an invented 1000 USDC deposit", () => {
     const candidates = generateCandidates({
       grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
-      idleWalletUsd: null, comparisons: [comparison()],
+      spendableWalletUsd: null, comparisons: [comparison()],
     });
     const top = candidates.feasible[0];
     expect(top).toBeTruthy();
@@ -57,7 +58,7 @@ describe("strategyReply", () => {
   it("does not describe a composed borrow plan as idle funded when its supply rate is unavailable", () => {
     const candidate = generateCandidates({
       grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
-      idleWalletUsd: null, comparisons: [comparison()],
+      spendableWalletUsd: null, comparisons: [comparison()],
     }).feasible[0];
     const composed = {
       ...candidate,
@@ -83,10 +84,10 @@ describe("strategyReply", () => {
     expect(reply).not.toMatch(/% (?:APR|APY)/);
   });
 
-  it("keeps idle-funds wording for a non-borrowing composed plan with unavailable rates", () => {
+  it("keeps wallet-funds wording for a non-borrowing composed plan with unavailable rates", () => {
     const candidate = generateCandidates({
       grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
-      idleWalletUsd: null, comparisons: [comparison()],
+      spendableWalletUsd: null, comparisons: [comparison()],
     }).feasible[0];
     const composed = {
       ...candidate,
@@ -105,7 +106,7 @@ describe("strategyReply", () => {
       capacity: null, question: null,
     });
 
-    expect(reply).toMatch(/using idle funds only; the supply rate could not be read/);
+    expect(reply).toMatch(/from your wallet only; the supply rate could not be read/);
     expect(reply).not.toMatch(/includes borrowing/);
   });
 
@@ -116,7 +117,7 @@ describe("strategyReply", () => {
   it("gives a plan that only takes money out no rate or idle-funds sentence", () => {
     const candidate = generateCandidates({
       grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
-      idleWalletUsd: null, comparisons: [comparison()],
+      spendableWalletUsd: null, comparisons: [comparison()],
     }).feasible[0];
     const redeems = {
       ...candidate, decision: undefined, netAprPct: null, supplyAprPct: null, supplyApyPct: null, netApyPct: null,
@@ -148,7 +149,7 @@ describe("strategyReply", () => {
     expect(reply).not.toMatch(/completed checks/);
   });
 
-  it("says what is idle when a strategy turn has no option and nothing ruled out (13 Sep: 3.97 XLM, all minimum balance)", () => {
+  it("says what the wallet holds when a strategy turn has no option and nothing ruled out (13 Sep: 3.97 XLM, all minimum balance)", () => {
     const wallet = (label: string, value: string) => ({ id: label, label, value, unit: label.split(" ")[0], venue: "wallet" as const, evidenceId: "e1", sourcePath: label, readAt: 0 });
     const reply = strategyReply({
       status: "researched",
@@ -159,9 +160,9 @@ describe("strategyReply", () => {
       intent: "strategy",
       findings: [{ summary: "The reported supply rates are BLUSDC Earn: 29.08 % APR; AQUSDC Earn: 20.18 % APR." }],
     });
-    // The answer first, then what is idle (owner, 23 Sep).
+    // The answer first, then what the wallet holds (owner, 23 Sep).
     expect(reply).toMatch(/^The reported supply rates/);
-    expect(reply).toMatch(/Idle in the wallet: XLM 0 spendable of 3\.9737, AQUSDC 0\.0004\.$/);
+    expect(reply).toMatch(/In your wallet: XLM 0 spendable of 3\.9737, AQUSDC 0\.0004\.$/);
     expect(reply).toMatch(/reported supply rates/);
   });
 
@@ -276,18 +277,18 @@ describe("strategyReply", () => {
     expect(reply).not.toMatch(/Your reported health factor is 25\.50/);
   });
 
-  it("names Earn when that idle path ranks first", () => {
-    const candidates = generateCandidates({
-      grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
-      idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
-      borrowingAllowed: false, comparisons: [comparison()],
-    });
-    expect(candidates.feasible[0].venue).toBe("earn");
+  it("names Earn when that path ranks first", () => {
+    // A plan the model composed from the wallet (the generator no longer volunteers one), without sized steps.
+    const earn = {
+      id: candidateId("composed", "le.BLUSDC"), kind: "composed" as const, label: "Lend BLUSDC to Earn", borrows: false, asset: "BLUSDC",
+      venue: "earn" as const, netAprPct: null, supplyAprPct: "25.41", supplyApyPct: "25.41", netApyPct: null, legs: [],
+      finalHealthFactor: null, amountUsd: "680", evidenceIds: ["e1"], amountBasis: "stated" as const,
+    };
     const reply = strategyReply({
-      status: "researched", facts: [], candidates, capacity: null, question: null,
+      status: "researched", facts: [], candidates: { feasible: [earn], rejected: [] }, capacity: null, question: null,
     });
     expect(reply).toMatch(/Earn and Blend supply rates/);
-    expect(reply).toMatch(/Lend idle BLUSDC to Earn/);
+    expect(reply).toMatch(/Lend BLUSDC to Earn/);
     expect(reply).toMatch(/\$680\.00/);
     expect(reply).not.toMatch(/1000 USDC/i);
   });

@@ -16,7 +16,7 @@ const base = {
   findings: [{ summary: "s", evidenceIds: ["e1"] }],
   openQuestions: [],
 };
-const leg = (op: string, asset = "XLM", sizing: unknown = { kind: "all_idle" }) => ({ op, asset, sizing });
+const leg = (op: string, asset = "XLM", sizing: unknown = { kind: "all_wallet" }) => ({ op, asset, sizing });
 const plan = (legs: unknown[], over: Record<string, unknown> = {}) => ({ title: "t", rationale: "r", evidenceIds: ["e1"], legs, ...over });
 
 describe("research_complete plans", () => {
@@ -29,7 +29,7 @@ describe("research_complete plans", () => {
     if (decision?.kind !== "research_complete") return;
     expect(decision.plans).toHaveLength(1);
     expect(decision.plans![0].legs.map((l) => l.sizing)).toEqual([
-      { kind: "all_idle" }, { kind: "previous_leg" }, { kind: "to_floor" }, { kind: "literal", amount: "50", sourceQuote: "lend 50 BLUSDC" },
+      { kind: "all_wallet" }, { kind: "previous_leg" }, { kind: "to_floor" }, { kind: "literal", amount: "50", sourceQuote: "lend 50 BLUSDC" },
     ]);
     expect(decision.droppedPlans).toBeUndefined();
   });
@@ -53,8 +53,8 @@ describe("research_complete plans", () => {
   });
 
   it("accepts a bare sizing word, as a model without schema enforcement would send it", () => {
-    const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", "all_idle")])] });
-    expect(decision?.kind === "research_complete" && decision.plans?.[0].legs[0].sizing).toEqual({ kind: "all_idle" });
+    const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", "all_wallet")])] });
+    expect(decision?.kind === "research_complete" && decision.plans?.[0].legs[0].sizing).toEqual({ kind: "all_wallet" });
   });
 
   it.each([
@@ -110,7 +110,7 @@ describe("a swap leg", () => {
   it("parses with the asset it buys, and with a venue only when the user named one", () => {
     const bare = parseDecision({ ...base, plans: [plan([{ ...leg("swap"), assetOut: "BLUSDC" }])] });
     expect(bare?.kind === "research_complete" && bare.plans?.[0]?.legs[0]).toEqual({
-      op: "swap", asset: "XLM", sizing: { kind: "all_idle" }, assetOut: "BLUSDC",
+      op: "swap", asset: "XLM", sizing: { kind: "all_wallet" }, assetOut: "BLUSDC",
     });
     const routed = parseDecision({ ...base, plans: [plan([{ ...leg("swap"), assetOut: "BLUSDC", venue: "aquarius" }])] });
     expect(routed?.kind === "research_complete" && routed.plans?.[0]?.legs[0]).toMatchObject({ venue: "aquarius" });
@@ -122,10 +122,10 @@ describe("a fraction sizing", () => {
     const ok = parseDecision({ ...base, plans: [plan([leg("repay", "XLM", { kind: "fraction", percent: "25", of: "position", sourceQuote: "repay 25% of xlm debt" })])] });
     expect(ok?.kind === "research_complete" && ok.plans?.[0]?.legs[0]?.sizing).toEqual({ kind: "fraction", percent: "25", of: "position", sourceQuote: "repay 25% of xlm debt" });
     for (const bad of [
-      { kind: "fraction", percent: "0", of: "idle", sourceQuote: "q" },
-      { kind: "fraction", percent: "150", of: "idle", sourceQuote: "q" },
+      { kind: "fraction", percent: "0", of: "wallet", sourceQuote: "q" },
+      { kind: "fraction", percent: "150", of: "wallet", sourceQuote: "q" },
       { kind: "fraction", percent: "25", of: "debt", sourceQuote: "q" },
-      { kind: "fraction", percent: "25", of: "idle" },
+      { kind: "fraction", percent: "25", of: "wallet" },
     ]) {
       const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", bad as never)])] });
       expect(decision?.kind === "research_complete" && decision.plans).toBeFalsy();
@@ -136,20 +136,20 @@ describe("a fraction sizing", () => {
 
 describe("a share sizing — the model's own split of one idle balance", () => {
   it("needs no user quote: it arrives as a fraction of idle that carries the model's reason", () => {
-    const ok = parseDecision({ ...base, plans: [plan([leg("lend", "AQUSDC", { kind: "share", percent: "60", of: "idle", reason: "keep the rest for collateral" })])] });
+    const ok = parseDecision({ ...base, plans: [plan([leg("lend", "AQUSDC", { kind: "share", percent: "60", of: "wallet", reason: "keep the rest for collateral" })])] });
     expect(ok?.kind === "research_complete" && ok.plans?.[0]?.legs[0]?.sizing).toEqual({
-      kind: "fraction", percent: "60", of: "idle", sourceQuote: "", allocation: { reason: "keep the rest for collateral" },
+      kind: "fraction", percent: "60", of: "wallet", sourceQuote: "", allocation: { reason: "keep the rest for collateral" },
     });
   });
 
   it("is dropped, and counted, when malformed", () => {
     for (const bad of [
-      { kind: "share", percent: "0", of: "idle", reason: "r" },
-      { kind: "share", percent: "150", of: "idle", reason: "r" },
+      { kind: "share", percent: "0", of: "wallet", reason: "r" },
+      { kind: "share", percent: "150", of: "wallet", reason: "r" },
       { kind: "share", percent: "25", of: "position", reason: "r" },
-      { kind: "share", percent: "25", of: "idle" },
-      { kind: "share", percent: "25", of: "idle", reason: "   " },
-      { kind: "share", percent: "25", of: "idle", reason: "r", sourceQuote: "q" },
+      { kind: "share", percent: "25", of: "wallet" },
+      { kind: "share", percent: "25", of: "wallet", reason: "   " },
+      { kind: "share", percent: "25", of: "wallet", reason: "r", sourceQuote: "q" },
     ]) {
       const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", bad as never)])] });
       expect(decision?.kind === "research_complete" && decision.plans).toBeFalsy();

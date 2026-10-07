@@ -39,11 +39,11 @@ const ctx = () => ({
 });
 const part = (title: string, legs: ProposedPlan["legs"]): ProposedPlan => ({ title, rationale: `${title}.`, evidenceIds: ["e1"], legs });
 const xlmToBlend = part("Supply idle XLM to Blend", [
-  { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+  { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
   { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
 ]);
 const blusdcToBlend = part("Supply idle BLUSDC to Blend", [
-  { op: "deposit_collateral", asset: "BLUSDC", sizing: { kind: "all_idle" } },
+  { op: "deposit_collateral", asset: "BLUSDC", sizing: { kind: "all_wallet" } },
   { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
 ]);
 
@@ -62,7 +62,7 @@ describe("joining the parts of one request", () => {
   });
 
   it("never joins two ways of using the same tokens", () => {
-    const alsoXlm = part("Lend idle XLM", [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }]);
+    const alsoXlm = part("Lend idle XLM", [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } }]);
     expect(joinPlanParts([xlmToBlend, alsoXlm])).toMatchObject({ reason: expect.stringContaining("deposit_collateral XLM") });
   });
 
@@ -96,7 +96,7 @@ describe("the joined plan, or the parts exactly as before", () => {
 
   it("falls back to the separate parts when the joined plan does not size", () => {
     const noSuchFunds = part("Supply idle AQUSDC to Blend", [
-      { op: "deposit_collateral", asset: "AQUSDC", sizing: { kind: "all_idle" } },
+      { op: "deposit_collateral", asset: "AQUSDC", sizing: { kind: "all_wallet" } },
       { op: "supply_blend", asset: "AQUSDC", sizing: { kind: "previous_leg" } },
     ]);
     const joined = joinPlanParts([xlmToBlend, noSuchFunds]);

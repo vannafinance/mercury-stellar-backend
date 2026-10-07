@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { InvestigationCard } from "@/components/copilot/investigation-card";
 import { ChatTurns } from "@/components/copilot/chat-message";
-import { generateCandidates } from "@/lib/copilot/investigation/candidates";
+import type { Candidate, CandidateSet } from "@/lib/copilot/investigation/candidates";
+import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
@@ -24,16 +25,14 @@ function view(over: Partial<ResearchView> = {}): ResearchView {
   };
 }
 
-const twoPlans = () => generateCandidates({
-  grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", borrowingAllowed: false,
-  idleWalletUsd: "77665",
-  idleWalletByAssetUsd: { SOUSDC: "74985", AQUSDC: "2680" },
-  idleWalletByAssetTokens: { SOUSDC: "74985", AQUSDC: "2680" },
-  comparisons: (["SOUSDC", "AQUSDC"] as const).map((asset, i) => ({
-    asset, earnSupplyApr: i ? "4.5" : "4.2", blendSupplyApr: null, marginBorrowApr: null,
-    spreadApr: null, verdict: "earn_only" as const, evidenceIds: ["e1"],
-  })),
+// Plans the model composed from the wallet, written out the way `resolvePlans` returns them: the fixed
+// generator no longer volunteers wallet options, but the card has to lay out any set of plans.
+const walletPlan = (asset: string, apyPct: string): Candidate => ({
+  id: candidateId("composed", `le.${asset}`), kind: "composed", label: `Lend ${asset} to Earn`, borrows: false, asset, venue: "earn",
+  netAprPct: null, supplyAprPct: apyPct, supplyApyPct: apyPct, netApyPct: null, legs: [], finalHealthFactor: null,
+  amountUsd: "680", evidenceIds: ["e1"], amountBasis: "stated",
 });
+const twoPlans = (): CandidateSet => ({ feasible: [walletPlan("SOUSDC", "4.20"), walletPlan("AQUSDC", "4.50")], rejected: [] });
 
 const cardFor = (result: ResearchView, extra: Partial<Parameters<typeof InvestigationCard>[0]> = {}) =>
   render(<InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} {...extra} />);

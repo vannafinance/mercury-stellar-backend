@@ -278,7 +278,7 @@ describe("what the table decides downstream", () => {
 
   it("previous_leg follows the tokens: a borrow takes nothing from the leg before it", () => {
     const { rejected } = resolvePlans([plan([
-      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
       { op: "borrow", asset: "XLM", sizing: { kind: "previous_leg" } },
     ])], { ...ctx(rows("500", "0", "0"), ["deposit and borrow, HF above 1.3"]), capacity: { grossCollateralUsd: "144", debtUsd: "54", floor: "1.3" } });
     // The list of takers is read from the table, so a new account-drawing op joins it by itself.
