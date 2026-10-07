@@ -827,6 +827,14 @@ export async function advanceWorkflow(input: {
 
   // A returned error can occur after broadcasting. Without a transaction reference
   // or a proven pre-broadcast rejection, don't claim that nothing was submitted.
+  // The MCP's own words are logged (7 Oct: a deposit came back "outcome unknown" and nothing recorded why).
+  console.warn("[copilot] write returned no transaction reference, step marked uncertain", {
+    tool: invocation.tool,
+    error: typeof build.error === "string" ? build.error.slice(0, 200) : build.error,
+    message: typeof build.message === "string" ? build.message.slice(0, 400) : undefined,
+    submissionUncertain: build.submission_uncertain,
+    signingStatus: build.signing_status,
+  });
   record = await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" });
   return workflowView(record);
 }
