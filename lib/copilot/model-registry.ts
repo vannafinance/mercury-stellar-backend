@@ -15,6 +15,11 @@
  * model fails with HTTP 404, which is why a retired id is dropped from the candidates instead of
  * being tried and failing. Only dates Google has published belong in MODEL_RETIREMENTS; a model
  * without an entry is not claimed to be permanent, only not known to be retiring.
+ *
+ * Checked against Google's "Model versions and lifecycle" table on 7 Oct 2026: gemini-3.8-flash "No
+ * retirement date announced"; gemini-3.5-flash "May 19, 2027 or later" and gemini-3.5-flash-lite
+ * "July 21, 2027 or later" are earliest dates, not announced retirements, so neither has an entry.
+ * Re-check that table when adding one.
  */
 export const MODEL_DEFAULTS = {
   research: "gemini-3.8-flash",
