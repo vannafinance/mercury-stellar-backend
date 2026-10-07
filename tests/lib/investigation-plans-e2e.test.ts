@@ -554,3 +554,73 @@ describe("a strategy over a bare USDC", () => {
     expect(everything.some((label) => /AQUSDC/.test(label) && /aquarius/i.test(label))).toBe(true);
   });
 });
+
+/**
+ * 7 Oct, live: "use both usdc and xlm ... take new loans" — the model's combined plans drew on one
+ * idle balance twice (all_idle in two legs). The sizer refused them, rightly, and only single-asset
+ * options were left, with the combined strategy dropped without a word. The refusal names a fault in
+ * how the PLAN is built, so the model is told and tries once more; a refusal that is a fact is not
+ * asked about again.
+ */
+describe("a plan the sizer refuses for how it is built gets one repair", () => {
+  const split = {
+    ...modelComplete,
+    plans: [{
+      title: "Split idle XLM between Earn and the account",
+      rationale: "Part earns in Earn (e1), part is posted as collateral for headroom (e1).",
+      evidenceIds: ["e1"],
+      legs: [
+        { op: "lend", asset: "XLM", sizing: { kind: "all_idle" } },
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+      ],
+    }],
+  };
+  const repaired = {
+    ...split,
+    plans: [{
+      ...split.plans[0],
+      legs: [
+        { op: "lend", asset: "XLM", sizing: { kind: "share", percent: "60", of: "idle", reason: "most earns while the rest backs borrowing" } },
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "share", percent: "40", of: "idle", reason: "the rest posted as collateral" } },
+      ],
+    }],
+  };
+  const run = async (answers: unknown[]) => {
+    const turns: Array<{ decisionFeedback?: string; remaining: { toolCalls: number } }> = [];
+    let n = 0;
+    const view = await researchTurn(
+      { message: PROMPT, wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+        model: async (turn) => { turns.push(turn); return answers[Math.min(n++, answers.length - 1)]; },
+      },
+    );
+    return { view, turns };
+  };
+  const reads = { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "blend_markets", args: {} }] };
+
+  it("tells the model why, and offers the corrected plan with the balance split between the legs", async () => {
+    const { view, turns } = await run([reads, split, repaired]);
+    expect(turns).toHaveLength(3);
+    expect(turns[2].decisionFeedback).toMatch(/Split idle XLM between Earn and the account/);
+    expect(turns[2].decisionFeedback).toMatch(/already use all/);
+    expect(turns[2].remaining.toolCalls).toBe(0);
+    const option = view.candidates?.feasible.find((c) => c.steps?.map((s) => s.op).join() === "lend,deposit_collateral");
+    expect(option, "the repaired split is offered").toBeTruthy();
+    const [first, second] = option!.steps!.map((s) => Number(s.amount));
+    expect(first / 10206.3356118).toBeCloseTo(0.6, 4);
+    expect(second / 10206.3356118).toBeCloseTo(0.4, 4);
+    expect(first + second).toBeLessThanOrEqual(10206.3356118);
+  });
+
+  it("keeps the original refusal when the second answer is no better", async () => {
+    const { view, turns } = await run([reads, split, split]);
+    expect(turns).toHaveLength(3);
+    expect(view.candidates?.feasible.find((c) => c.steps?.map((s) => s.op).join() === "lend,deposit_collateral")).toBeUndefined();
+  });
+
+  it("does not ask again about a refusal that is a fact (no AQUSDC in the wallet)", async () => {
+    const { turns } = await run([reads, modelComplete]);
+    expect(turns).toHaveLength(2);
+  });
+});

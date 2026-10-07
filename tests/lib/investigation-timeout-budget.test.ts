@@ -58,6 +58,15 @@ describe("investigation timeout budgets", () => {
     expect(scopeMs + positionMs + runtimeMs).toBeLessThanOrEqual(routeMs);
   });
 
+  it("lets the plan repair start only while it can still finish, with room left to answer", () => {
+    // The repair runs after the loop, so it spends the route's time: the latest it may start plus
+    // its own budget must leave at least 10s of the route for sizing the retry and composing the reply.
+    const service = read("lib/copilot/investigation/service.ts");
+    const startByMs = onlyNumber(service, /REPAIR_START_BY_MS\s*=\s*([\d_]+)/, "repair start bound");
+    const budgetMs = onlyNumber(service, /REPAIR_BUDGET_MS\s*=\s*([\d_]+)/, "repair budget");
+    expect(startByMs + budgetMs + 10_000).toBeLessThanOrEqual(routeMs);
+  });
+
   it("bounds the position read, since an unbounded one can spend the whole route", () => {
     expect(positionMs).toBeGreaterThan(0);
     expect(positionMs).toBeLessThan(runtimeMs);

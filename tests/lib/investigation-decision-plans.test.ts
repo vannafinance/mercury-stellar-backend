@@ -134,6 +134,30 @@ describe("a fraction sizing", () => {
   });
 });
 
+describe("a share sizing — the model's own split of one idle balance", () => {
+  it("needs no user quote: it arrives as a fraction of idle that carries the model's reason", () => {
+    const ok = parseDecision({ ...base, plans: [plan([leg("lend", "AQUSDC", { kind: "share", percent: "60", of: "idle", reason: "keep the rest for collateral" })])] });
+    expect(ok?.kind === "research_complete" && ok.plans?.[0]?.legs[0]?.sizing).toEqual({
+      kind: "fraction", percent: "60", of: "idle", sourceQuote: "", allocation: { reason: "keep the rest for collateral" },
+    });
+  });
+
+  it("is dropped, and counted, when malformed", () => {
+    for (const bad of [
+      { kind: "share", percent: "0", of: "idle", reason: "r" },
+      { kind: "share", percent: "150", of: "idle", reason: "r" },
+      { kind: "share", percent: "25", of: "position", reason: "r" },
+      { kind: "share", percent: "25", of: "idle" },
+      { kind: "share", percent: "25", of: "idle", reason: "   " },
+      { kind: "share", percent: "25", of: "idle", reason: "r", sourceQuote: "q" },
+    ]) {
+      const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", bad as never)])] });
+      expect(decision?.kind === "research_complete" && decision.plans).toBeFalsy();
+      expect(decision?.kind === "research_complete" && decision.droppedPlans).toBe(1);
+    }
+  });
+});
+
 describe("a malformed literal action", () => {
   it("is dropped and counted, and no longer voids the research or the plans beside it", () => {
     const decision = parseDecision({ ...base, goal: { ...base.goal, actions: [{ op: "redeem", asset: "AQUSDC", sizing: { kind: "literal", amount: "all", sourceQuote: "use my AqUSDC" }, sourceQuote: "use my AqUSDC" }] },

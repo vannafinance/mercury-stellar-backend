@@ -139,6 +139,11 @@ function context(asset: AssetId, world: World, messages: string[]): PlanContext 
 
 // ── the legs: every sizing word, in every form it takes ─────────────────────────────────
 
+/** A share of the idle balance the model chose, as the parser hands it on. */
+function allocated(percent: number): PlanSizing {
+  return { kind: "fraction", percent: String(percent), of: "idle", sourceQuote: "", allocation: { reason: "matrix split" } };
+}
+
 /** The sizing variants a word has, with the words the user would have said for it. */
 function sizingsOf(kind: (typeof PLAN_SIZINGS)[number], asset: AssetId): Array<{ sizing: PlanSizing; said: string; tag: string }> {
   switch (kind) {
@@ -149,6 +154,11 @@ function sizingsOf(kind: (typeof PLAN_SIZINGS)[number], asset: AssetId): Array<{
     case "fraction": return [
       { sizing: { kind, percent: "25", of: "idle", sourceQuote: `25% of my ${asset}` }, said: `25% of my ${asset}`, tag: "fraction:idle" },
       { sizing: { kind, percent: "25", of: "position", sourceQuote: `25% of my ${asset}` }, said: `25% of my ${asset}`, tag: "fraction:position" },
+    ];
+    // The model's own split of an idle balance (`sizing.kind: "share"`, normalised to a fraction that
+    // carries `allocation`): no user quote to anchor, so it is sized on its own and held to the pockets.
+    case "share": return [
+      { sizing: allocated(60), said: `part of my ${asset}`, tag: "share:60" },
     ];
     // As a lone single-leg cell this always refuses (no preceding deposit to multiply) —
     // the happy path needs two legs and is covered by plan-resolve.test.ts's own suite;
@@ -237,7 +247,19 @@ function cells(asset: AssetId): Cell[] {
       { op: "add_liquidity", asset, sizing: { kind: "previous_leg" }, ...withOut("add_liquidity", asset) },
     ],
   }] : [];
-  return [...single, ...pairs, ...sameSource, ...leveraged, ...pooled];
+  /**
+   * One idle balance split across two legs of ANY two ops, by the model's own shares: 60 + 40 fits
+   * the wallet exactly, 70 + 50 asks for 120% of it. The invariant below then holds both to the
+   * pockets — the second leg may take what the first left and no more — for every op pair,
+   * asset and funding state, not for the prompts that first showed the gap (a plan that spent
+   * 675 BLUSDC twice, 7 Oct).
+   */
+  const allocatedPairs = WORKFLOW_OPS.flatMap((first) => WORKFLOW_OPS.flatMap((second) => ([[60, 40], [70, 50]] as const).map(([a, b]) => ({
+    title: `${first} ${a}% + ${second} ${b}% ${asset} (allocated)`, said: `split my ${asset}`,
+    legs: [{ op: first, asset, sizing: allocated(a), ...withOut(first, asset) },
+           { op: second, asset, sizing: allocated(b), ...withOut(second, asset) }],
+  }))));
+  return [...single, ...pairs, ...sameSource, ...leveraged, ...pooled, ...allocatedPairs];
 }
 
 // ── the invariant ───────────────────────────────────────────────────────────────────────
@@ -328,7 +350,11 @@ describe("the shape matrix — every op × sizing × asset × funding state", ()
         const outcome = checkCell(asset, world, cell);
         outcomes[outcome] += 1;
         if (outcome === "plan") {
-          for (const leg of cell.legs) { plansBy.op.add(leg.op); plansBy.sizing.add(leg.sizing.kind); }
+          for (const leg of cell.legs) {
+            plansBy.op.add(leg.op);
+            // A share is the parser's `share` word turned into a fraction that carries `allocation`.
+            plansBy.sizing.add(leg.sizing.kind === "fraction" && leg.sizing.allocation ? "share" : leg.sizing.kind);
+          }
           plansBy.asset.add(asset);
         }
       }

@@ -1,5 +1,7 @@
 import type { MCPClient } from "../mcp-client";
-import type { ResearchModel, InvestigationProgress, InvestigationLimits, Observation } from "./types";
+import type { ResearchModel, InvestigationProgress, InvestigationLimits, Observation, ProposedPlan } from "./types";
+import { parseDecision } from "./decision";
+import { readCapabilities } from "./catalog";
 import { StrKey } from "@stellar/stellar-sdk";
 import { MarginAccountService } from "@/lib/margin-utils";
 import type { ResearchView } from "./view";
@@ -17,7 +19,7 @@ import { generateCandidates, idleWalletAfterReserves, onlyNamedAssets, idleWalle
 import { venueCoveragePlans } from "./coverage";
 import { askForUnstatedAmounts } from "./unstated-amount";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
-import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, usdcChoicesFor, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
+import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, usdcChoicesFor, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, type RejectedPlan, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { touchesMarginAccount } from "../workflow/types";
 import { missingPositionReads } from "./position-coverage";
 import { actionsFromAnswers, answerProblem, buildQuestionnaireSet, opsInPlay, readsForQuestionnaire } from "./questionnaire";
@@ -61,6 +63,15 @@ export const POSITION_BUDGET_MS = 8_000;
 export const ACCOUNT_READ_BUDGET_MS = 12_000;
 export const HEALTH_READ_BUDGET_MS = ACCOUNT_READ_BUDGET_MS;
 export const CAPACITY_BUDGET_MS = 15_000;
+/**
+ * One more attempt at the plans the sizer refused for how they were built (two legs spending one
+ * balance, a sizing word on the wrong op). It runs after the loop, so it spends the route's time
+ * rather than the loop's: it may only START while the turn is young enough, and is cut off at its
+ * own budget, so a slow retry costs the answer nothing but the retry. `investigation-timeout-budget
+ * .test.ts` holds the two numbers to the route's reply guarantee.
+ */
+export const REPAIR_START_BY_MS = 45_000;
+export const REPAIR_BUDGET_MS = 15_000;
 
 export interface ResearchInput {
   message: string;
@@ -94,6 +105,39 @@ function optionalConversation(
     }
     throw error;
   }
+}
+
+/**
+ * Ask the model once more, with the server's reasons, for the plans it built wrongly. The model sees
+ * the same evidence it concluded from and is told which plans were refused and why; it returns a
+ * fresh completion and only its plans are used. The goal, findings and everything else the first
+ * answer established stand. Null when the model could not or would not produce plans.
+ */
+async function requestPlanRepair(args: {
+  model: ResearchModel;
+  message: string;
+  history: Array<{ role: "user" | "assistant"; text: string }>;
+  scope: Parameters<typeof readCapabilities>[0];
+  observations: readonly Observation[];
+  task: { messages: string[]; lastQuestion: string | null };
+  rejected: readonly RejectedPlan[];
+  signal: AbortSignal;
+}): Promise<ProposedPlan[] | null> {
+  const refused = args.rejected.map((entry) => `"${entry.title}"${entry.leg ? ` (${entry.leg})` : ""}: ${entry.reason}`).join("; ");
+  const raw = await args.model({
+    message: args.message,
+    history: structuredClone(args.history),
+    context: { network: args.scope.network, hasWallet: !!args.scope.trader, hasSmartAccount: !!args.scope.trader && !!args.scope.smartAccount },
+    decisionFeedback:
+      `The server refused ${args.rejected.length} of your plans for how they were built, not because of the figures it read: ${refused}. ` +
+      "Return research_complete again with the same goal and findings and corrected plans: change only what each reason names, and keep every plan that was not refused as it was.",
+    capabilities: readCapabilities(args.scope),
+    observations: structuredClone(args.observations),
+    remaining: { turns: 1, toolCalls: 0 },
+    task: structuredClone(args.task),
+  }, args.signal);
+  const decision = parseDecision(raw);
+  return decision?.kind === "research_complete" && decision.plans?.length ? decision.plans : null;
 }
 
 export async function researchTurn(input: ResearchInput, dependencies: {
@@ -134,6 +178,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   logPhase?: (phase: string, extra?: Record<string, unknown>) => void;
 }): Promise<ResearchView> {
   const logPhase = dependencies.logPhase ?? (() => undefined);
+  const turnStartedAt = Date.now();
   const codec = researchCodec(dependencies.secret, dependencies.server);
   /**
    * Answer before spending anything, when there is nothing to investigate. This runs ahead
@@ -1159,6 +1204,44 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
     // A plan sized past one approval is refused with the count, not failed later at propose.
     resolved = capToOneApproval(resolved, MAX_WORKFLOW_STEPS);
+    /**
+     * Plans the sizer refused for how they were built, not for the facts: the model is told which
+     * and why and gets one more try, bounded in time. Refusals that are facts (a balance that is not
+     * there, a floor that would be breached) are never retried; asking again would only reword them.
+     */
+    const repairable = resolved.rejected.filter((entry) => entry.repairable);
+    if (!partsBeforeJoin && repairable.length && Date.now() - turnStartedAt <= REPAIR_START_BY_MS) {
+      const repairStarted = Date.now();
+      try {
+        const repairSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(REPAIR_BUDGET_MS)]);
+        const repairedPlans = await interruptible(() => requestPlanRepair({
+          model: dependencies.model, message: input.message, history: (input.history ?? []).slice(-8),
+          scope, observations: result.observations, task: { messages, lastQuestion: prior?.lastQuestion ?? null },
+          rejected: repairable, signal: repairSignal,
+        }), repairSignal);
+        if (repairedPlans) {
+          const needed = readsForPlans(repairedPlans, result.observations, Date.now());
+          if (needed.length) result.observations.push(...await collectStrategyReads(scope, scopedMcp, repairSignal, Date.now(), needed, "qr"));
+          observedNow = Date.now();
+          planComparisons = analyseObservedRates(result.observations, observedNow).comparisons;
+          const retry = capToOneApproval(resolvePlans(repairedPlans, { ...planContext, observations: result.observations, now: observedNow, comparisons: planComparisons }), MAX_WORKFLOW_STEPS);
+          const known = new Set(resolved.candidates.map((candidate) => candidate.id));
+          const gained = retry.candidates.filter((candidate) => !known.has(candidate.id));
+          if (gained.length) {
+            resolved = {
+              candidates: [...resolved.candidates, ...gained],
+              rejected: [...retry.rejected, ...resolved.rejected.filter((entry) => !entry.repairable)],
+            };
+            modelPlans = [...modelPlans.filter((plan) => !repairable.some((entry) => entry.title === plan.title)), ...repairedPlans];
+          }
+          logPhase("plan_repair", { refused: repairable.length, offered: repairedPlans.length, gained: gained.length, ms: Date.now() - repairStarted });
+        } else {
+          logPhase("plan_repair", { refused: repairable.length, offered: 0, gained: 0, ms: Date.now() - repairStarted });
+        }
+      } catch (error) {
+        logPhase("plan_repair", { refused: repairable.length, failed: error instanceof Error ? error.name : "unknown", ms: Date.now() - repairStarted });
+      }
+    }
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     // Fixed options only for the assets the user named; the model's composed plans are untouched.
     candidates = mergeCandidateSets(onlyNamedAssets(candidates, messages), resolved, borrowing);

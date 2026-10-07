@@ -158,8 +158,10 @@ For an open-ended strategy (intent=strategy, no literal amounts), YOU compose th
 ordered shapes built from these operations only: ${PLAN_OPS_TEXT}. Each leg is sized by a WORD, never a number:
 ${PLAN_SIZINGS_TEXT} (literal carries the user's own quoted amount; fraction carries the share the user stated — "25%" as
 percent "25", "half" as "50" — with of=idle for a share of the wallet balance and of=position for a share of the Earn
-position, the posted collateral or the debt, and the user's quote; leverage carries the user's own stated multiple —
-"6x" as multiple "6" — and their quote). The server computes every amount,
+position, the posted collateral or the debt, and the user's quote; share carries YOUR OWN split of one idle wallet balance
+across the legs of a plan — percent, of=idle and a one-sentence reason, no quote — and is how two legs draw on the same
+asset: an idle balance funds one all_idle leg, so otherwise give each leg a share and keep an asset's shares at or under
+100 in total; leverage carries the user's own stated multiple — "6x" as multiple "6" — and their quote). The server computes every amount,
 projects the health factor after each leg against the user's floor, rejects what does not fit, ranks what does, and
 shows the user why. Build from what the user actually holds (read the wallet, positions, rates first): idle wallet
 tokens must be deposited (deposit_collateral, all_idle) before supply_blend can use them; a borrow (to_floor) is

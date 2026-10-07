@@ -138,7 +138,18 @@ export type PlanSizing =
    * posted collateral, the debt). `percent` is the user's figure ("25") or the figure a word
    * of theirs means ("half" → 50), anchored to their quote; code reads the base and sizes.
    */
-  | { kind: "fraction"; percent: string; of: "idle" | "position"; sourceQuote: string }
+  | {
+      kind: "fraction"; percent: string; of: "idle" | "position"; sourceQuote: string;
+      /**
+       * Set when the MODEL chose this share, not the user: `sizing.kind: "share"` in the
+       * declared schema, normalised to a fraction by `parseSizing`. There is no quote to anchor
+       * (`sourceQuote` is empty); what stands in for it is the reason the model gave and the
+       * sizer's own check that the shares drawn on one asset never exceed what the wallet holds.
+       * A split of one balance across several legs is the model's allocation to make, so it
+       * is never something the user's words have to contain.
+       */
+      allocation?: { reason: string };
+    }
   /**
    * A stated leverage multiple on a borrow that feeds off the leg before it — "borrow with
    * 6x leverage" after a deposit. `multiple` is the industry-standard "Nx position" figure

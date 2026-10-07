@@ -113,6 +113,8 @@ export interface RejectedPlan {
   reason: string;
   /** Structured source-pocket mismatch, when a leg is asking the wrong holder. */
   pocket?: PocketMismatch;
+  /** The refusal names a fault in how the plan is built, which the model can fix when told (see `PlanFault`). */
+  repairable?: true;
   /** Set when the leg needs a margin account and none is connected. No steps are produced. */
   accountRequired?: { code: "accountRequired"; actions: string[] };
   /**
@@ -406,6 +408,10 @@ const FRACTION_WORDS: ReadonlyArray<{ pattern: RegExp; percent: number }> = [
   { pattern: /\b(a\s+)?tenth\b/i, percent: 10 },
 ];
 function anchoredShare(sizing: PlanSizing & { kind: "fraction" }, messages: readonly string[], name: string): bigint {
+  // The model's own split of a balance across legs (`share`): no user words to anchor, so the
+  // bound is the one the parser already holds (a percent above 0 and up to 100) and the sizer's
+  // check that the legs together never draw more than the wallet has.
+  if (sizing.allocation) return decimalWad(Number(sizing.percent).toFixed(9)) / BigInt(100);
   if (!messages.some((m) => m.includes(sizing.sourceQuote))) throw new Reject(name, `the share "${sizing.sourceQuote}" does not appear in your request`);
   const percent = Number(sizing.percent);
   const numbers = (sizing.sourceQuote.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
@@ -507,6 +513,18 @@ class Reject extends Error {
   ) { super(message); }
 }
 
+/**
+ * A refusal that comes from how the PLAN is built, not from the facts it was sized against: two
+ * legs spending one balance, a sizing word on an op it cannot size, a leg that takes more than the
+ * pocket holds after the legs before it. The model can fix these when it is told which, so the
+ * service gives it one more try with the reasons. A `Reject` that is not a `PlanFault` is a fact
+ * (a balance that is not there, a floor that is breached): asking again would only reword it.
+ */
+class PlanFault extends Reject {
+  readonly repairable = true as const;
+}
+const repairFlag = (error: Reject) => (error instanceof PlanFault ? { repairable: true as const } : {});
+
 const SIZER_REASONS: Record<string, string> = {
   floor_below_liquidation_threshold: "a health-factor floor at or below 1.1 is the liquidation line, not a safety margin — state a floor above it",
   would_be_liquidatable: "this would leave the account liquidatable",
@@ -571,7 +589,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
     if (bridged) {
       try { remember(resolvePlan(bridged, ctx)); bridgedResolved = true; }
       catch (error) {
-        if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}) });
+        if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...repairFlag(error) });
         else rejected.push({ title: bridged.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
       }
     }
@@ -582,7 +600,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
         remember(resolvePlan(candidatePlan, ctx));
         rejected.push(...accountCheck.rejected.map((entry) => ({ title: plan.title, ...entry })));
       } catch (error) {
-        if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}) });
+        if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...repairFlag(error) });
         else rejected.push({ title: plan.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
       }
       continue;
@@ -600,7 +618,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
       // The bridged path already answers this plan's unfunded leg; its plain attempt failing
       // for want of those same funds is not a second outcome (shape matrix: 1 plan, 2 results).
       if (bridgedResolved) continue;
-      if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}) });
+      if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...repairFlag(error) });
       else rejected.push({ title: plan.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
     }
   }
@@ -1013,7 +1031,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     // An idle wallet balance feeds the ops that draw from the wallet; `all_position` on those is the same thing.
     if (sizing.kind === "all_idle" || (sizing.kind === "all_position" && flow.from === "wallet")) {
       if (flow.from !== "wallet") {
-        throw new Reject(name, flow.from === "account"
+        throw new PlanFault(name, flow.from === "account"
           ? `${verbOf(leg.op)} spends the margin account — deposit the idle tokens as collateral first`
           : `an idle wallet balance does not size a ${verbOf(leg.op).toLowerCase()}`);
       }
@@ -1025,7 +1043,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const idle = walletAfterEarlierLegs(holdings[leg.asset as keyof typeof holdings], drafts, leg.asset);
       const held = idle.tokens === null ? null : { tokens: idle.tokens, usd: formatWad(mulDown(decimalWad(idle.tokens), price.price, WAD)) };
       if (idle.spent && (!held || decimalWad(held.tokens) <= ZERO)) {
-        throw new Reject(name, `the legs before this one already use all ${idle.startedWith ?? "0"} ${leg.asset} the wallet can spend`, walletShortageMismatch(leg), true);
+        throw new PlanFault(name, `the legs before this one already use all ${idle.startedWith ?? "0"} ${leg.asset} the wallet can spend`, walletShortageMismatch(leg), true);
       }
       /**
        * A deposit that exists to fund a repay ("repay from what I have") is capped by what
@@ -1104,7 +1122,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         });
         continue;
       }
-      if (flow.positionRead === null) throw new Reject(name, `all_position applies to ${positionOps()}`);
+      if (flow.positionRead === null) throw new PlanFault(name, `all_position applies to ${positionOps()}`);
       const raw = positionRowBalance(ctx.observations, flow.positionRead, POSITION_ROWS[flow.positionRead as keyof typeof POSITION_ROWS], def.marginSymbol!, def.id, ctx.now);
       const holds = flow.positionRead === "account_debt" ? "debt"
         : flow.positionRead === "blend_position" ? "Blend supply" : "posted collateral";
@@ -1117,9 +1135,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const pocket = flow.positionRead === "account_debt" ? "debt"
         : flow.positionRead === "blend_position" ? "blend" : "account";
       const left = pocketBalance(pocket, decimalWad(raw), drafts, leg.asset);
-      if (left.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — use the amount from the earlier step`);
+      if (left.unsized) throw new PlanFault(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — use the amount from the earlier step`);
       if (left.available <= ZERO) {
-        throw new Reject(name, pocket === "debt"
+        throw new PlanFault(name, pocket === "debt"
           ? `the legs before this one already repay the whole ${raw} ${leg.asset} debt`
           : pocket === "blend"
             ? `the legs before this one already withdraw the whole ${raw} ${leg.asset} Blend supply`
@@ -1142,7 +1160,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (decimalWad(posted) <= ZERO) throw new Reject(name, `no ${leg.asset} is posted as collateral`);
       const stillPosted = pocketBalance("account", decimalWad(posted), drafts, leg.asset);
       if (stillPosted.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — use the amount from the earlier step`);
-      if (stillPosted.available <= ZERO) throw new Reject(name, `the legs before this one already use all ${posted} ${leg.asset} in the margin account`);
+      if (stillPosted.available <= ZERO) throw new PlanFault(name, `the legs before this one already use all ${posted} ${leg.asset} in the margin account`);
       const capUsd = formatWad(mulDown(stillPosted.available, price.price, WAD));
       /**
        * "How much can I withdraw?" with no floor stated: the liquidation line is the only
@@ -1297,6 +1315,18 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         if (!held || decimalWad(held.tokens) <= ZERO) throw new Reject(name, `no idle ${leg.asset} in the wallet`, walletShortageMismatch(leg), true);
         const tokens = precise(shareOf(held.tokens, share), leg.asset, name);
         if (decimalWad(tokens) <= ZERO) throw new Reject(name, `${sizing.percent}% of ${held.tokens} ${leg.asset} rounds to nothing`);
+        /**
+         * A share the user said is theirs to ask for. A share the model chose splits one balance
+         * across legs, so together the legs may never draw more of it than the wallet holds: this
+         * leg must fit in what the earlier legs of the plan, of any sizing, left.
+         */
+        if (sizing.allocation) {
+          const left = walletAfterEarlierLegs(held, drafts, leg.asset);
+          if (left.tokens === null || decimalWad(tokens) > decimalWad(left.tokens)) {
+            const used = left.tokens === null ? held.tokens : formatWad(decimalWad(held.tokens) - decimalWad(left.tokens));
+            throw new PlanFault(name, `the legs before this one already use ${used} of the ${held.tokens} ${leg.asset} the wallet can spend, so ${sizing.percent}% more does not fit`, walletShortageMismatch(leg), true);
+          }
+        }
         const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
         drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: held.tokens });
         continue;
@@ -1320,7 +1350,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (decimalWad(posted) <= ZERO) throw new Reject(name, `no ${leg.asset} is posted as collateral`);
       const stillPosted = pocketBalance("account", decimalWad(posted), drafts, leg.asset);
       if (stillPosted.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — use the amount from the earlier step`);
-      if (stillPosted.available <= ZERO) throw new Reject(name, `the legs before this one already use all ${posted} ${leg.asset} in the margin account`);
+      if (stillPosted.available <= ZERO) throw new PlanFault(name, `the legs before this one already use all ${posted} ${leg.asset} in the margin account`);
       const tokens = precise(shareOf(formatWad(stillPosted.available), share), leg.asset, name);
       const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
       drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: null });

@@ -39,8 +39,9 @@ function legSchema(extra?: { properties: Record<string, JsonSchema>; required: s
           kind: { type: "string", enum: [...PLAN_SIZINGS] },
           amount: { type: "string", description: "literal only: the user's exact decimal." },
           multiple: { type: "string", description: "leverage only: the multiplier the user stated, e.g. '2' for '2x'." },
-          percent: { type: "string", description: "fraction only: the share as a percentage, e.g. '25' for '25%' or '50' for 'half'." },
-          of: { type: "string", enum: ["idle", "position"], description: "fraction only: idle = the wallet's spendable balance; position = what the op spends (Earn position, posted collateral, debt)." },
+          percent: { type: "string", description: "fraction: the share the user stated, as a percentage, e.g. '25' for '25%' or '50' for 'half'. share: the percentage of the wallet's idle balance you allocate to this leg, between 0 and 100." },
+          of: { type: "string", enum: ["idle", "position"], description: "fraction: idle = the wallet's spendable balance; position = what the op spends (Earn position, posted collateral, debt). share: always idle." },
+          reason: { type: "string", description: "share only: one sentence on why this leg gets this share of the asset, e.g. what the rest of the balance is for." },
           sourceQuote: { type: "string", description: "literal/fraction/leverage only: exact substring of the user message containing the amount, the share or the multiplier." },
           amountAsset: {
             type: "string", enum: ["asset", "assetOut"],
@@ -197,7 +198,9 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
             "previous_leg (the amount the previous leg produced, e.g. supply what was just borrowed), " +
             "literal (an amount the user typed, with sourceQuote), fraction (a share the user stated — '25%', 'half' — " +
             "of what the leg draws on: of=idle for the wallet balance, of=position for the Earn position, the posted collateral " +
-            "or the debt; with sourceQuote). The server sizes, checks and ranks every plan.",
+            "or the debt; with sourceQuote), share (YOUR split of one idle wallet balance across the legs of this plan: percent, " +
+            "of=idle and a reason; no quote). One idle balance can fund only one all_idle leg, so when two or more legs draw on " +
+            "the same asset, give each a share of it, totalling at most 100. The server sizes, checks and ranks every plan.",
           items: {
             type: "object",
             properties: {

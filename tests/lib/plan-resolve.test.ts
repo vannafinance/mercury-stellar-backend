@@ -18,7 +18,8 @@ import { describe, expect, it } from "vitest";
 import { resolvePlans, planCandidateId, withSharedLiteralAmount } from "@/lib/copilot/investigation/plan";
 import { mergeCandidateSets, generateCandidates } from "@/lib/copilot/investigation/candidates";
 import { compareObservedRates } from "@/lib/copilot/investigation/rate-comparison";
-import type { Observation, ProposedPlan } from "@/lib/copilot/investigation/types";
+import type { Observation, PlanSizing, ProposedPlan } from "@/lib/copilot/investigation/types";
+import { decimalWad } from "@/lib/copilot/investigation/fixed";
 
 const NOW = 1_700_000_000_000;
 const SCOPE = {
@@ -921,6 +922,55 @@ describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% 
     );
     expect(invented.candidates).toEqual([]);
     expect(invented.rejected[0]?.reason).toBe("the share 40% does not appear in your request");
+  });
+
+  /**
+   * 7 Oct, live: "use both usdc and xlm ... take new loans" — the model's combined plan drew on the
+   * same 675 BLUSDC twice (all_idle in two legs) and the sizer rightly refused it, leaving only
+   * single-asset options. The model had no way to say "part of it here, part there" without a user
+   * quote. A `share` is that way: the model's allocation, held to what the wallet has.
+   */
+  describe("the model's own split of one idle balance (allocation)", () => {
+    const split = (percent: string): PlanSizing => ({ kind: "fraction", percent, of: "idle", sourceQuote: "", allocation: { reason: "split" } });
+    const noQuote = ctx({ observations, messages: ["put my xlm to work, use both earn and collateral"] });
+
+    it("sizes two legs from one balance by their shares, with no quote from the user", () => {
+      const { candidates, rejected } = resolvePlans(
+        [plan("Split XLM", [{ op: "lend", asset: "XLM", sizing: split("60") }, { op: "deposit_collateral", asset: "XLM", sizing: split("40") }])],
+        noQuote,
+      );
+      expect(rejected).toEqual([]);
+      expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["lend", "5999.9263347"], ["deposit_collateral", "3999.9508898"]]);
+    });
+
+    it("refuses shares that add up to more than the wallet holds, naming what is already used", () => {
+      const { candidates, rejected } = resolvePlans(
+        [plan("Over-allocated", [{ op: "lend", asset: "XLM", sizing: split("70") }, { op: "deposit_collateral", asset: "XLM", sizing: split("50") }])],
+        noQuote,
+      );
+      expect(candidates).toEqual([]);
+      expect(rejected[0]?.reason).toMatch(/already use 6999\.9140572 of the 9999\.8772246 XLM the wallet can spend, so 50% more does not fit/);
+    });
+
+    it("lets a later all_idle leg take exactly what the shares left", () => {
+      const { candidates, rejected } = resolvePlans(
+        [plan("Share then the rest", [{ op: "lend", asset: "XLM", sizing: split("60") }, { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }])],
+        noQuote,
+      );
+      expect(rejected).toEqual([]);
+      const [first, second] = candidates[0]?.steps ?? [];
+      expect(first?.amount).toBe("5999.9263347");
+      expect(decimalWad(first!.amount) + decimalWad(second!.amount)).toBeLessThanOrEqual(decimalWad("9999.8772246"));
+    });
+
+    it("still refuses two all_idle legs on one balance: only a share splits it", () => {
+      const { candidates, rejected } = resolvePlans(
+        [plan("Twice", [{ op: "lend", asset: "XLM", sizing: { kind: "all_idle" } }, { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }])],
+        noQuote,
+      );
+      expect(candidates).toEqual([]);
+      expect(rejected[0]?.reason).toMatch(/already use all 9999\.8772246 XLM the wallet can spend/);
+    });
   });
 
   it("withdraws a share of the posted collateral, against the floor", () => {
