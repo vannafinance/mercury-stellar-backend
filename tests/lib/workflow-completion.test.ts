@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyWorkflowCompletion, completionMatches, immediateCompletion, receiptKey, settledTransactions, shortTransactionHash, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
+import { applyWorkflowCompletion, completionMatches, completionStep, immediateCompletion, receiptKey, settledTransactions, shortTransactionHash, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 
 export function receipt(): ExecutionReceiptSnapshot {
@@ -87,5 +87,31 @@ describe("immediateCompletion and shortTransactionHash", () => {
   it("shows the ends of a hash, and leaves a short value alone", () => {
     expect(shortTransactionHash("73f69a1791b34ea5c6d076d42c259e93c2aabd616836d9a61f58be4e2f2d512b")).toBe("73f69a…512b");
     expect(shortTransactionHash("abc")).toBe("abc");
+  });
+});
+
+/**
+ * 7 Oct: a finished run sat with no summary because the summary only started once an earlier step (saving the receipt) had
+ * succeeded, and nothing said what to do when it had not. The next step for a finished run is now decided from the run itself.
+ */
+describe("completionStep: a finished run always has a next step toward its summary", () => {
+  const settled = { workflowId: "wf", status: "completed" as const, network: "testnet",
+    steps: [{ operation: "lend" as const, asset: "XLM", amount: "5", status: "settled" as const, txHash: "c".repeat(64), settledLedger: 9 }] };
+  const noBuild = () => null;
+
+  it("composes when the turn already carries a settled receipt", () => {
+    expect(completionStep({ status: "completed" }, settled, noBuild)).toEqual({ kind: "compose", receipt: settled });
+  });
+
+  it("builds the receipt from the run when the turn has none, instead of waiting for something else to put it there", () => {
+    expect(completionStep({ status: "completed" }, null, () => settled)).toEqual({ kind: "attach", receipt: settled });
+    expect(completionStep({ status: "completed" }, undefined, () => settled)).toEqual({ kind: "attach", receipt: settled });
+  });
+
+  it("waits only for a run that has not finished, or has nothing settled to say", () => {
+    expect(completionStep({ status: "running" }, null, () => settled)).toEqual({ kind: "wait" });
+    expect(completionStep({ status: "completed" }, null, noBuild)).toEqual({ kind: "wait" });
+    expect(completionStep({ status: "completed" }, { ...settled, steps: [] }, noBuild)).toEqual({ kind: "wait" });
+    expect(completionStep({ status: "completed" }, null, () => ({ ...settled, steps: [{ ...settled.steps[0], status: "failed" as const, txHash: undefined }] }))).toEqual({ kind: "wait" });
   });
 });

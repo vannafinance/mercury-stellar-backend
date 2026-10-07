@@ -39,6 +39,23 @@ export function immediateCompletion(receipt: ExecutionReceiptSnapshot, now: numb
   };
 }
 
+/**
+ * What a finished run needs next so that it always ends with a summary, decided from the run itself and from whether its turn already
+ * carries a receipt. It does not depend on any other step having happened first (the receipt being saved, an effect having run in a
+ * given order): a finished run whose turn has no receipt is given one built from the run, and one whose turn has a settled receipt is
+ * composed. Waiting is only for a run that has not finished or has nothing settled.
+ */
+export function completionStep(
+  run: { status: string },
+  onTurn: ExecutionReceiptSnapshot | null | undefined,
+  fromRun: () => ExecutionReceiptSnapshot | null,
+): { kind: "wait" } | { kind: "attach"; receipt: ExecutionReceiptSnapshot } | { kind: "compose"; receipt: ExecutionReceiptSnapshot } {
+  if (run.status !== "completed") return { kind: "wait" };
+  if (onTurn) return settledTransactions(onTurn) ? { kind: "compose", receipt: onTurn } : { kind: "wait" };
+  const built = fromRun();
+  return built && settledTransactions(built) ? { kind: "attach", receipt: built } : { kind: "wait" };
+}
+
 export function receiptKey(receipt: ExecutionReceiptSnapshot): string {
   return JSON.stringify([receipt.workflowId, receipt.status, receipt.network,
     receipt.steps.map((s) => [s.operation, s.label ?? null, s.asset, s.amount, s.status, s.txHash ?? null, s.settledLedger ?? null])]);

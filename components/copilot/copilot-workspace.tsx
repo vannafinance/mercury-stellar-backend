@@ -73,7 +73,7 @@ import {
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
 import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import { completionReply } from "@/lib/copilot/investigation/completion";
-import { completionMatches, immediateCompletion, settledTransactions, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
+import { completionMatches, completionStep, immediateCompletion, settledTransactions, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import { REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { buildRunReceipt } from "./run-receipt";
 import { answerToText } from "@/lib/copilot/answer-schema";
@@ -5666,7 +5666,16 @@ export function CopilotWorkspace() {
     const conversationId = investigation.conversationId;
     const receipt = investigation.turns.find((turn) => turn.executionReceipt?.workflowId === view.id)?.executionReceipt;
     if (view.status === "completed") {
-      if (!conversationId || !receipt || !settledTransactions(receipt)) return;
+      const network = investigation.result?.scope.network;
+      const step = completionStep(view, receipt, () => (network ? executionReceiptFromWorkflowView(view, network) : null));
+      if (!conversationId || step.kind === "wait") return;
+      if (step.kind === "attach") {
+        // The turn has no receipt yet (the save-and-attach path has not run, or failed): give it one from the run itself. The turns
+        // change, and this effect runs again and composes.
+        const attachKey = `${address}:${conversationId}:${view.id}:attach`;
+        if (completedTextRef.current !== attachKey) { completedTextRef.current = attachKey; void updateExecutionReceipt(step.receipt); }
+        return;
+      }
       const key = `${address}:${conversationId}:${view.id}:completed`;
       if (completedTextRef.current === key) return;
       completedTextRef.current = key;
@@ -5675,7 +5684,7 @@ export function CopilotWorkspace() {
       // The finished execution card stays on screen until the model-worded summary arrives: showing a short sentence first and
       // replacing it a few seconds later put two different replies in front of the user (7 Oct). The receipt-only sentence is the
       // fallback, drawn only if the summary never comes.
-      const immediate = immediateCompletion(receipt);
+      const immediate = immediateCompletion(step.receipt);
       // Presentation retries cannot resubmit or sign transactions. The server persists first.
       void (async () => {
         for (let attempt = 0; attempt < 3; attempt += 1) {
