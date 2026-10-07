@@ -536,28 +536,35 @@ export function useInvestigation(wallet: string | null) {
     const owner = activeWallet.current;
     const id = conversationId.current;
     if (!owner || !id) return false;
+    /**
+     * The receipt goes onto its turn FIRST, here, and is saved to the server after. Everything that follows a settled run - the
+     * summary above all - finds the receipt on the turn, so tying that to the save meant one slow or failed save (the sign-in token
+     * fetch before it timed out) left a finished run with no summary ever, and nothing retried it (7 Oct, live, auto-approve on).
+     * The save still reports whether it worked, so the caller can try again.
+     */
+    setState((previous) => {
+      if (previous.wallet !== owner || previous.conversationId !== id) return previous;
+      const reversed = [...previous.turns].map((turn, index) => ({ turn, index })).reverse();
+      const matching = reversed.find(({ turn }) =>
+        turn.role === "assistant" && turn.executionReceipt?.workflowId === receipt.workflowId);
+      const index = matching?.index ?? reversed.find(({ turn }) =>
+        turn.role === "assistant" && !turn.executionReceipt)?.index;
+      if (index == null) return previous;
+      if (completionMatches(previous.turns[index].executionReceipt, previous.turns[index].completion)) return previous;
+      const turns = [...previous.turns];
+      turns[index] = { ...turns[index], executionReceipt: receipt };
+      writeStoredThread(owner, {
+        wallet: owner, continuation: continuation.current, turns,
+        result: lastResult.current, conversationId: id,
+      });
+      return { ...previous, turns };
+    });
     try {
       const headers = await requestHeaders(AbortSignal.timeout(8_000), owner);
       const response = await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, {
         method: "PATCH", headers, cache: "no-store", body: JSON.stringify({ executionReceipt: receipt }),
       });
       if (!response.ok || activeWallet.current !== owner || conversationId.current !== id) return false;
-      setState((previous) => {
-        const reversed = [...previous.turns].map((turn, index) => ({ turn, index })).reverse();
-        const matching = reversed.find(({ turn }) =>
-          turn.role === "assistant" && turn.executionReceipt?.workflowId === receipt.workflowId);
-        const index = matching?.index ?? reversed.find(({ turn }) =>
-          turn.role === "assistant" && !turn.executionReceipt)?.index;
-        if (index == null) return previous;
-        if (completionMatches(previous.turns[index].executionReceipt, previous.turns[index].completion)) return previous;
-        const turns = [...previous.turns];
-        turns[index] = { ...turns[index], executionReceipt: receipt };
-        writeStoredThread(owner, {
-          wallet: owner, continuation: continuation.current, turns,
-          result: lastResult.current, conversationId: id,
-        });
-        return { ...previous, turns };
-      });
       void refreshConversations(owner);
       return true;
     } catch { return false; }

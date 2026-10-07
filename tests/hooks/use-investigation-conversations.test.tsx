@@ -212,6 +212,30 @@ describe("useInvestigation - conversations", () => {
     expect(result.current.turns[1]?.executionReceipt?.steps[0]?.txHash).toBe(hash);
   });
 
+  // 7 Oct, live (auto-approve on): a finished run's receipt was attached to its turn only after the save succeeded; the save never went
+  // out, so the run had no summary at all. The turn gets the receipt first, and the save reports whether it worked so it can be retried.
+  it("puts a receipt on its turn even when saving it fails, and says the save failed", async () => {
+    const calls = server([{ result: view("unused") }]);
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await waitFor(() => expect(result.current.conversations.length).toBe(2));
+    await act(async () => { await result.current.open("c-newer"); });
+    const hash = "b".repeat(64);
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { method?: string }) => {
+      if (init?.method === "PATCH") return new Response("{}", { status: 500 });
+      return new Response("{}");
+    }));
+    let saved = true;
+    await act(async () => {
+      saved = await result.current.updateExecutionReceipt({
+        workflowId: "wf-2", status: "completed", network: "testnet",
+        steps: [{ operation: "lend", asset: "XLM", amount: "5", status: "settled", txHash: hash, settledLedger: 7 }],
+      });
+    });
+    expect(saved).toBe(false);
+    expect(result.current.turns[1]?.executionReceipt?.steps[0]?.txHash).toBe(hash);
+    expect(calls).toBeDefined();
+  });
+
   it("sends the open conversation's id with a turn, and adopts the id the server records a first turn under", async () => {
     const calls = server([{ result: view("Repay …", "r2"), conversationId: "c-newer" }, { result: view("1.46"), conversationId: "c-fresh" }]);
     const { result } = renderHook(() => useInvestigation(WALLET));
