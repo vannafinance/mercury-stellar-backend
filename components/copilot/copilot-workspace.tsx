@@ -5653,10 +5653,10 @@ export function CopilotWorkspace() {
       completedTextRef.current = key;
       const controller = new AbortController();
       const owner = address;
-      // Shown at once, from the receipt alone. The model-worded reply below replaces it when it arrives, so
-      // the user is never left looking at a finished execution card waiting for a sentence.
+      // The finished execution card stays on screen until the model-worded summary arrives: showing a short sentence first and
+      // replacing it a few seconds later put two different replies in front of the user (7 Oct). The receipt-only sentence is the
+      // fallback, drawn only if the summary never comes.
       const immediate = immediateCompletion(receipt);
-      if (immediate) updateWorkflowCompletion(immediate, conversationId, owner);
       // Presentation retries cannot resubmit or sign transactions. The server persists first.
       void (async () => {
         for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -5668,6 +5668,7 @@ export function CopilotWorkspace() {
           if (controller.signal.aborted) return;
           if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1_000));
         }
+        if (!controller.signal.aborted && immediate) updateWorkflowCompletion(immediate, conversationId, owner);
       })();
       // Wallet/conversation isolation is checked by the hook at delivery. Poll renders do not abort composition.
       return;
