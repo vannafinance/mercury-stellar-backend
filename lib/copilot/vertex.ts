@@ -581,6 +581,16 @@ export async function generateJson(system: string, user: string): Promise<Record
   });
 }
 
+/**
+ * Output budget of one research turn. On Gemini 3 the model's thinking is spent from the same
+ * `maxOutputTokens` as the answer, so a cap sized for the answer alone starves a turn that thinks:
+ * at the old 4096 every MEDIUM or HIGH turn stopped near 3.9k thinking tokens with MAX_TOKENS (or a
+ * truncated function call) and the decision was lost. Measured 7 Oct 2026 on 3.8 Flash: raising it to
+ * 16,384 let MEDIUM finish (2.3k-3.7k thinking, ~20-27 s) where it had failed. LOW is unaffected
+ * (it rarely thinks), and the cap is a ceiling on spend, not a target: ~6 cents at the 3.8 output rate.
+ */
+export const INVESTIGATION_MAX_OUTPUT_TOKENS = 16_384;
+
 /** Bounded research turn. Separate from the legacy router; no model fallback. */
 export async function generateInvestigationJson(
   model: string,
@@ -597,7 +607,7 @@ export async function generateInvestigationJson(
   return withModelCall(model, {
     outputType: useTools ? undefined : "json",
     reasoningLevel: thinkingLevel,
-    maxTokens: 4096,
+    maxTokens: INVESTIGATION_MAX_OUTPUT_TOKENS,
   }, async () => {
   signal.throwIfAborted();
   const token = await getAccessToken();
@@ -615,7 +625,7 @@ export async function generateInvestigationJson(
       } : {}),
       generationConfig: {
         ...(useTools ? {} : { responseMimeType: "application/json", ...(responseSchema ? { responseSchema } : {}) }),
-        maxOutputTokens: 4096,
+        maxOutputTokens: INVESTIGATION_MAX_OUTPUT_TOKENS,
         // 3.8 retires sampling knobs; reasoning level is set per turn by the caller.
         ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel } } : { temperature: 0 }),
       },
