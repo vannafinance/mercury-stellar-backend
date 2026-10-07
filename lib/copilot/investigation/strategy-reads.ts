@@ -16,7 +16,7 @@ import { ASSET_OUT_OPS, OP_FLOW } from "../workflow/types";
 
 export interface StrategyRead { capability: string; args: Record<string, unknown> }
 
-/** Every asset with an Earn pool, from the registry — no separate list of "strategy assets". */
+/** Every asset with an Earn pool, from the registry - no separate list of "strategy assets". */
 const EARN_ASSETS = allAssets().filter((asset) => asset.earnSymbol).map((asset) => asset.id);
 
 export const STRATEGY_READS: readonly StrategyRead[] = [
@@ -64,7 +64,7 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       // Every declared position read is required for deterministic sizing, including literal
       // exits such as "withdraw 26000 XLM from Blend". The sizer checks literal amounts against
       // the source position too; skipping this read made valid Blend withdrawals look empty.
-      // earn_position and farm_lp_position are read per asset — one pair or one pool per call,
+      // earn_position and farm_lp_position are read per asset - one pair or one pool per call,
       // not a shared table.
       if (flow.positionRead) {
         want(flow.positionRead, flow.positionRead === "earn_position" || flow.positionRead === "farm_lp_position" ? leg.asset : undefined);
@@ -75,7 +75,7 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
        * Anything that touches an Aquarius pool needs the pool's live reserves: entering it
        * sizes the paired amount against the real ratio (the model's own number is never
        * trusted for it), and a swap quotes its floor against the curve it actually settles
-       * on rather than at oracle parity — the gap between the two is what the DEX refused
+       * on rather than at oracle parity - the gap between the two is what the DEX refused
        * outright on 15 Sep. Soroswap needs no read to ENTER (its contract corrects an
        * imperfect ratio itself), but it does to SWAP: falling back to the oracle quote
        * there proposed "100 XLM for at least 17.4469985 SOUSDC" against a pool paying

@@ -11,11 +11,11 @@ import type { Observation, ProposedPlan } from "@/lib/copilot/investigation/type
 const NOW = 1_000_000;
 const plan = (legs: ProposedPlan["legs"]): ProposedPlan => ({ title: "t", rationale: "r", evidenceIds: [], legs });
 
-describe("readsForPlans — a swap is valued on both sides", () => {
+describe("readsForPlans - a swap is valued on both sides", () => {
   it("asks for the price of the asset it buys as well as the one it spends", () => {
     /**
      * 15 Sep, live: "swap 10 XLM to AqUSDC" was refused with "no BLUSDC price was read this
-     * investigation" on the earlier pair — the plan fetched a price for the asset it spent
+     * investigation" on the earlier pair - the plan fetched a price for the asset it spent
      * and none for the asset it bought, so the leg could never be valued.
      */
     const reads = readsForPlans([plan([
@@ -26,7 +26,7 @@ describe("readsForPlans — a swap is valued on both sides", () => {
   });
 });
 
-describe("readsForPlans — a share reads the base it is a share of", () => {
+describe("readsForPlans - a share reads the base it is a share of", () => {
   it("of=wallet wants the wallet; of=position wants the position the op spends", () => {
     const idle = readsForPlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "wallet", sourceQuote: "25% of xlm" } }])], [], NOW);
     expect(idle.map((r) => r.capability)).toContain("wallet_balances");
@@ -38,14 +38,14 @@ describe("readsForPlans — a share reads the base it is a share of", () => {
   });
 });
 
-describe("readsForPlans — a repay reads the debt whatever its sizing word", () => {
+describe("readsForPlans - a repay reads the debt whatever its sizing word", () => {
   it("asks for account_debt on an all_wallet repay", () => {
     const reads = readsForPlans([plan([{ op: "repay", asset: "XLM", sizing: { kind: "all_wallet" } }])], [], NOW);
     expect(reads.map((r) => r.capability)).toEqual(expect.arrayContaining(["account_debt", "wallet_balances"]));
   });
 });
 
-describe("readsForPlans — literal position exits", () => {
+describe("readsForPlans - literal position exits", () => {
   it("asks for Blend position evidence before sizing a literal withdrawal", () => {
     const reads = readsForPlans([plan([{
       op: "blend_withdraw",

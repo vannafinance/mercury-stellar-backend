@@ -4,7 +4,7 @@
  * A serial Flash classify in front of every investigate/lend turn would add
  * seconds. This only runs when the cheap domain firewall did not already see
  * product vocabulary (and is not the greeting cheap-allow, which exists so "hi"
- * is not refused — it is not a product request). Mixed "hi, lend 10 XLM" is
+ * is not refused - it is not a product request). Mixed "hi, lend 10 XLM" is
  * product and falls through untouched.
  *
  * Model: VERTEX_SOCIAL_MODEL (default gemini-3.5-flash-lite), MINIMAL thinking,

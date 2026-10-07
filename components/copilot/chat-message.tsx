@@ -108,7 +108,7 @@ export function AssistantMessage({
   );
 }
 
-/** Prose only — the headline paragraph, without the figures `answerToText` appended. */
+/** Prose only - the headline paragraph, without the figures `answerToText` appended. */
 export function chatProseFromStored(text: string): string {
   const first = chatBlocksFromStored(text).find((b) => b.kind === "p");
   return first && first.kind === "p" ? first.text : "";
@@ -119,14 +119,14 @@ export function chatProseFromStored(text: string): string {
  *
  * WHY A PARSER AND NOT A NEW RESPONSE FIELD
  *
- * The read path builds a `StructuredAnswer` — headline, facts, sections, tables — and
+ * The read path builds a `StructuredAnswer` - headline, facts, sections, tables - and
  * flattens it with `answerToText` (answer-schema.ts) to get the `message` that every
  * surface stores. This renderer threw away everything after the headline, so a read that
  * had already fetched the numbers printed only the sentence: "3 supplied, ~$100,239.97
  * total" with the three pools it had just read deleted one layer above the screen.
  *
  * `answerToText` and this function are a serialiser/parser pair over one format, so every
- * answer shape that exists — and every one added later — renders without anything here
+ * answer shape that exists - and every one added later - renders without anything here
  * naming a tool, a template or an asset. It also repairs turns already in storage, which
  * a new response field could not.
  *
@@ -281,8 +281,8 @@ function Segments({ segments }: { segments: readonly ReplySegment[] }) {
 }
 
 /**
- * A reply the model wrote around audited figures (compose.ts). Plain blocks only — the
- * figures inside are code's, bound before they reach here — so nothing is parsed from text.
+ * A reply the model wrote around audited figures (compose.ts). Plain blocks only - the
+ * figures inside are code's, bound before they reach here - so nothing is parsed from text.
  */
 export function ReplyBlocksBody({ blocks }: { blocks: readonly ReplyBlock[] }) {
   return (
@@ -343,7 +343,7 @@ export function ReplyBlocksBody({ blocks }: { blocks: readonly ReplyBlock[] }) {
   );
 }
 
-/** Every block the turn actually carries — prose, figures, tables. */
+/** Every block the turn actually carries - prose, figures, tables. */
 export function AssistantBody({ text, color = null }: { text: string; color?: string | null }) {
   const blocks = chatBlocksFromStored(text);
   if (!blocks.length) return null;

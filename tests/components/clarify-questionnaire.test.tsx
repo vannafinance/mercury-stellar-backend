@@ -201,7 +201,7 @@ describe("ClarifyQuestionnaire Component", () => {
       />
     );
 
-    // Pick AQUSDC — its venue has only 1 option (pool_xlm_aqusdc)
+    // Pick AQUSDC - its venue has only 1 option (pool_xlm_aqusdc)
     const aqusdcOption = screen.getByTestId("option-aqusdc");
     fireEvent.click(aqusdcOption);
 

@@ -73,7 +73,7 @@ function isWalletNotBound(r: Record<string, unknown> | null | undefined): boolea
  * assertion's `sub` onto the pending connect request at /wallets/connect/start, and
  * that stored sub is what becomes the `identity_wallet_bindings` row when the user
  * finishes. Called without the assertion the flow still returns a working link and
- * still connects the wallet — and still writes no binding, so auto-sign keeps
+ * still connects the wallet - and still writes no binding, so auto-sign keeps
  * failing with the same 403. A connect that cannot bind is the trap this replaces.
  *
  * `retry` is the user's original request, carried through the detour so it can be
@@ -89,7 +89,7 @@ async function startWalletBind(
     max_per_tx_tokens?: number | string | null;
     max_per_day_tokens?: number | string | null;
   },
-  /** Why we are here, in the user's terms — prepended to the instruction. May be "". */
+  /** Why we are here, in the user's terms - prepended to the instruction. May be "". */
   because: string,
 ): Promise<ChatResponse> {
   /** Join the optional preamble without leaving a leading space when there is none. */
@@ -103,7 +103,7 @@ async function startWalletBind(
       kind: "needs_wallet_bind",
       message: lead(
         `Vanna needs your permission to sign for this wallet, but the consent link ` +
-          `could not be created (${msg}). Nothing changed — every write still asks ` +
+          `could not be created (${msg}). Nothing changed - every write still asks ` +
           `for your signature.`,
       ),
       wallet_bind: { status: "unavailable", wallet_address: trader },
@@ -120,7 +120,7 @@ async function startWalletBind(
       kind: "needs_wallet_bind",
       message: lead(
         `Vanna needs your permission to sign for this wallet, but the signing service ` +
-          `could not issue a consent link (${why}). Writes still work — they will ask ` +
+          `could not issue a consent link (${why}). Writes still work - they will ask ` +
           `for your signature each time.`,
       ),
       wallet_bind: { status: "unavailable", wallet_address: trader },
@@ -147,7 +147,7 @@ async function startWalletBind(
   return {
     kind: "needs_wallet_bind",
     message: lead(
-      `Your wallet is connected, but Vanna is not yet authorized to sign for it — ` +
+      `Your wallet is connected, but Vanna is not yet authorized to sign for it - ` +
         `those are two separate permissions, which is why reconnecting your wallet ` +
         `does not fix it. Approving Vanna as an additional signer on your own wallet ` +
         `finishes it. You keep custody; Vanna is only added alongside your own key, ` +
@@ -184,7 +184,7 @@ async function startWalletBind(
  *
  * It does NOT trust the browser's word that the consent happened. Register makes the
  * main Sign Service re-verify quorum-is-signer against Privy and write the binding,
- * and the enable that follows is the same gated call as ever — so a page that lied
+ * and the enable that follows is the same gated call as ever - so a page that lied
  * about `addSigners` gets a `quorum_not_signer` refusal here, not a session.
  */
 async function handleBindRegister(
@@ -214,14 +214,14 @@ async function handleBindRegister(
   );
   if (!registered.ok) {
     // `already_used` means a concurrent poll or a second click already consumed the
-    // request — the binding may well exist, so fall through to the status check
+    // request - the binding may well exist, so fall through to the status check
     // rather than reporting a failure the user would not recognise.
     if (registered.code !== "already_used") {
       return {
         kind: "needs_wallet_bind",
         message:
           `Vanna could not finish authorizing this wallet. ` +
-          `Nothing changed — writes still ask for your signature each time.` +
+          `Nothing changed - writes still ask for your signature each time.` +
           (registered.expired ? " The authorization request expired; start it again." : ""),
         wallet_bind: {
           status: registered.expired ? "expired" : "unavailable",
@@ -246,7 +246,7 @@ async function handleBindRegister(
  *
  * The retry is done here rather than left to the client on purpose. `connected` from
  * the connect flow means the quorum is now a signer on the wallet AND the binding row
- * was written — it does NOT mean auto-sign is on; that still needs a policy session,
+ * was written - it does NOT mean auto-sign is on; that still needs a policy session,
  * which is the call that 403'd in the first place. Reporting "connected" and stopping
  * would leave the user exactly one unexplained step short of what they asked for,
  * looking at a success message and a still-broken toggle.
@@ -317,7 +317,7 @@ async function handleBindStatus(
     return {
       kind: "answer",
       message:
-        "Vanna is now authorized to sign for this wallet. Auto-sign is not on yet — " +
+        "Vanna is now authorized to sign for this wallet. Auto-sign is not on yet - " +
         "enable it with your spend limits when you want hands-free writes.",
       data: factsForUi(st),
       request_id,
@@ -343,14 +343,14 @@ async function handleBindStatus(
   );
 
   // A second wallet_not_bound after a completed consent is not a UX problem to loop
-  // on — it means the binding did not land for the subject the assertion carries.
+  // on - it means the binding did not land for the subject the assertion carries.
   if (retried.kind === "needs_wallet_bind") {
     return {
       ...retried,
       message:
         "You completed the authorization, but the signing service still reports this " +
         "wallet as unbound. That is a server-side fault, not something you can fix by " +
-        "reconnecting — please report it. Writes still work with a signature each time.",
+        "reconnecting - please report it. Writes still work with a signature each time.",
       wallet_bind: { ...(retried.wallet_bind ?? {}), status: "unavailable", wallet_address: trader },
     };
   }
@@ -397,7 +397,7 @@ export async function handleAutoSignAction(
 
     if (action === "status") {
       // Read-only. A silent poll on wallet connect must not mint a connect
-      // request, open the bind UI, or create a session — it only tells the
+      // request, open the bind UI, or create a session - it only tells the
       // Autonomy card whether GET /sessions is already enforcing.
       const r = await mcp.call("vanna_auto_sign_status", { wallet_address: trader }, userId);
       const tx = Number(r.max_per_tx_tokens);
@@ -477,7 +477,7 @@ export async function handleAutoSignAction(
       const defaults = defaultTestnetBudget(r);
       const defaultLabel = defaults ? `${defaults.tx} units per transaction · ${defaults.day} units per day` : "Defaults are unavailable until the signer confirms its testnet policy";
       // Ask for the missing consent BEFORE asking for spend caps. Caps chosen now
-      // cannot be applied — the 403 lands before any session is created — so showing
+      // cannot be applied - the 403 lands before any session is created - so showing
       // the cap picker first collects an answer only to throw it away, and the user
       // reads the failure that follows as "my limits were rejected".
       if (isWalletNotBound(r)) {
@@ -530,7 +530,7 @@ export async function handleAutoSignAction(
     }
 
     if (action === "use_defaults") {
-      // Only use_default_caps — do not also send max_per_tx_tokens (MCP then applies SS defaults).
+      // Only use_default_caps - do not also send max_per_tx_tokens (MCP then applies SS defaults).
       const r = await enableAutoSign(mcp, {
         wallet: trader,
         userId: userId || trader,

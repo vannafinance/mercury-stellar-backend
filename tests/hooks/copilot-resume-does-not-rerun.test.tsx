@@ -15,7 +15,7 @@ import type { WorkflowView } from "@/lib/copilot/workflow/types";
  * and re-posted `originalRequest`.
  *
  * Two things are pinned here, because the workspace effects read both:
- *  - where a view came from — a turn this page ran (`live`) versus one read back
+ *  - where a view came from - a turn this page ran (`live`) versus one read back
  *    (`restored`), for the investigation and for the journal;
  *  - that a claim to dispatch is granted once per subject and survives a remount, and is
  *    handed back when the dispatch did not happen.

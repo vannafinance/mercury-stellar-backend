@@ -3,7 +3,7 @@
  *
  * Reproduced live on 2026-08-10 with a fresh wallet and auto-approve OFF (the default for
  * every new user): "create a margin account for me" returned `kind: "error"` with
- * `wallet_not_bound`, no Approve & sign button, and MCP's internal plumbing prose — while
+ * `wallet_not_bound`, no Approve & sign button, and MCP's internal plumbing prose - while
  * the transaction MCP had already built sat unused in the very same response
  * (`has_unsigned_xdr: true`).
  *
@@ -29,14 +29,14 @@ const walletNotBound = {
     "Could not auto-complete account creation via the Sign Service: This wallet is not bound " +
     "to the authenticated user. Run wallet connect again WHILE SIGNED IN, then retry. The " +
     "binding is stamped at /wallets/connect/start from the forwarded user assertion, so a " +
-    "connect performed with only the app's M2M credential — or before sign-in existed — " +
+    "connect performed with only the app's M2M credential - or before sign-in existed - " +
     "records no binding.. You can still sign the unsigned_xdr with your own wallet.",
   unsigned_xdr: XDR,
   auto_sign: null,
   auto_sign_error: null,
 };
 
-describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for the wallet", () => {
+describe("executeMcpWrite - an auto-sign refusal with a usable XDR stages for the wallet", () => {
   it("wallet_not_bound + XDR → needs_wallet_sign, not error", async () => {
     const r = await executeMcpWrite(fakeMcp(walletNotBound), STEP, CTX);
     expect(r.status).toBe("needs_wallet_sign");
@@ -58,7 +58,7 @@ describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for 
     expect(String(r.mcp_trace.auto_sign_error)).toMatch(/wallet_not_bound/i);
   });
 
-  it("the same refusal with NO XDR is still an error — nothing is invented", async () => {
+  it("the same refusal with NO XDR is still an error - nothing is invented", async () => {
     const r = await executeMcpWrite(
       fakeMcp({ ...walletNotBound, unsigned_xdr: undefined }),
       STEP,
@@ -71,7 +71,7 @@ describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for 
   /**
    * The guard is deliberately keyed on the error CODE. A real simulation failure that
    * happens to return an envelope must still be reported, never quietly offered for
-   * signature — signing an unsimulated envelope is the one thing this path must not do.
+   * signature - signing an unsimulated envelope is the one thing this path must not do.
    */
   it("a genuine simulation failure is not re-routed to the wallet", async () => {
     const r = await executeMcpWrite(
@@ -115,14 +115,14 @@ describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for 
   });
 
   /**
-   * The Sign Service's policy engine is "THE security boundary" (its own docs) — spend
+   * The Sign Service's policy engine is "THE security boundary" (its own docs) - spend
    * caps, allowlists, session checks. Live on 2026-08-12: "borrow 8000 XLM" against a
    * $1000/tx cap. MCP's `maybe_auto_sign` reports this as `auto_sign: "rejected"`,
    * `reason: "over_per_tx_cap"`, with the built `unsigned_xdr` still attached (so a human
    * could sign it manually if they chose to override the cap themselves). Before this
    * fix, `as === "rejected"` matched none of the specific auto_sign branches and fell
    * through to the generic "no auto_sign field, try sign_and_submit" path, which
-   * ultimately returned `needs_wallet_sign` with that same XDR — and the CLIENT's own
+   * ultimately returned `needs_wallet_sign` with that same XDR - and the CLIENT's own
    * embedded-session-key auto-approve (gated only on `riskDecision !== "block"`) signed
    * and submitted it anyway, confirmed via the Sign Service's own logs rejecting the
    * exact same transaction twice moments apart while it landed on-chain a third time.
@@ -197,7 +197,7 @@ describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for 
     },
   );
 
-  it("XDR with no auto_sign field stages — never calls vanna_sign_and_submit", async () => {
+  it("XDR with no auto_sign field stages - never calls vanna_sign_and_submit", async () => {
     const calls: string[] = [];
     const mcp = {
       call: async (tool: string) => {

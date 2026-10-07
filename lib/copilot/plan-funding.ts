@@ -43,7 +43,7 @@ export function spendPocket(op: WorkflowOp): FundingPocket | null {
 }
 
 /**
- * `null` means the live read is missing — do not block Approve; the server re-checks.
+ * `null` means the live read is missing - do not block Approve; the server re-checks.
  * `false` means we know the pocket cannot cover the sealed amount.
  */
 export function fundingCovers(available: number | null, needed: number): boolean | null {

@@ -2,14 +2,14 @@
  * Reported live, four related routing gaps that all fell through to the generic
  * capabilities blurb instead of being recognized:
  *
- *   11a. "In My margin account How much Interest accrued till date in BLUSDC" — no
+ *   11a. "In My margin account How much Interest accrued till date in BLUSDC" - no
  *        tool tracks accrued interest separately from principal at all.
- *   11b. "Now Can You Transfer Collateral Margin to Wallet 20 XLM" — the same
+ *   11b. "Now Can You Transfer Collateral Margin to Wallet 20 XLM" - the same
  *        instruction as "withdraw 20 XLM collateral", phrased with "transfer" instead
  *        of "withdraw"/"take out"/"pull".
- *   11c. "Now Can you tell me my margin account details" — names none of
+ *   11c. "Now Can you tell me my margin account details" - names none of
  *        "position"/"holdings"/"supply"/"net worth" either.
- *   12.  "Now Can you Perform Swap From XLM to SoUSDC in Soroswap" — named both
+ *   12.  "Now Can you Perform Swap From XLM to SoUSDC in Soroswap" - named both
  *        tokens and a venue but no size, so it matched neither swap branch (both
  *        required an amount or balance fraction) and never executed anything.
  */

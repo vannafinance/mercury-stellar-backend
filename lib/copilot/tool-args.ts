@@ -134,7 +134,7 @@ export function buildToolArgs(
        * `vanna_lend` deposits from the trader's wallet and the pool mints vTokens back to
        * that same address. This preferred the C-address whenever one was known, so the
        * read looked up a holder that never receives vTokens and confidently answered
-       * "0 VSOUSDC" — verified wrong: a live lend of 5 SOUSDC settled on chain while this
+       * "0 VSOUSDC" - verified wrong: a live lend of 5 SOUSDC settled on chain while this
        * still reported zero, and probing the pool by G-address showed 19.885 vSOUSDC.
        *
        * "You have no deposits earning yield" is the kind of wrong answer a user acts on,

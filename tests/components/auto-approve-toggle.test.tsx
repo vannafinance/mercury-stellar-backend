@@ -4,7 +4,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { AutoApproveMenu } from "@/components/copilot/auto-approve-menu";
 import { setAutoApprove, useCopilotSettingsStore } from "@/store/copilot-settings";
 
-describe("AutoApproveMenu — optimistic toggle and immediate UI synchronization", () => {
+describe("AutoApproveMenu - optimistic toggle and immediate UI synchronization", () => {
   it("renders 'On' and aria-checked='true' when on is true", () => {
     render(
       <AutoApproveMenu

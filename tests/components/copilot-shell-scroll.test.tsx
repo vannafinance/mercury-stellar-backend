@@ -21,7 +21,7 @@ function frames() {
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("CopilotShell — the chat scrolls with the page", () => {
+describe("CopilotShell - the chat scrolls with the page", () => {
   it("opens and dismisses the phone drawer without replacing the thread or draft", () => {
     vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() } as unknown as MediaQueryList);
     const { container } = render(<CopilotShell collapsed onToggleCollapsed={vi.fn()} empty={false} railTop={<button>New chat</button>} railBody={<p>Positions</p>} railMini={<p>Mini</p>} thread={<p>Server explanation above its card</p>} composer={<textarea aria-label="Copilot intent" defaultValue="My draft" />} />);

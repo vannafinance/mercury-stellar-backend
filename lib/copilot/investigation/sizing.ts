@@ -6,7 +6,7 @@
  * arithmetic. That split is the point: a model that cannot choose a number cannot invent
  * one, and a number that came from code can be re-derived from its inputs.
  *
- * Authority (owner decision, 2026-09-08 — see FLASH_AGENT_UPGRADE_PLAN.md):
+ * Authority (owner decision, 2026-09-08 - see FLASH_AGENT_UPGRADE_PLAN.md):
  *   health factor = grossCollateralUsd / debtUsd
  *   liquidatable  = HF <= 1.1
  * matching `lib/margin-health.ts`, which is byte-identical to `origin/dev`. Independently
@@ -85,7 +85,7 @@ export interface SizedLeg {
   amountUsd: string;
   grossAfterUsd: string;
   debtAfterUsd: string;
-  /** Null when the leg leaves no debt — a health factor without debt is not a number. */
+  /** Null when the leg leaves no debt - a health factor without debt is not a number. */
   healthFactorAfter: string | null;
 }
 
@@ -104,7 +104,7 @@ function healthFactorWad(grossWad: bigint, debtWad: bigint): bigint | null {
  *   (G + x) / (D + x) >= F   with F > 1
  *   =>  x <= (G - F*D) / (F - 1)
  *
- * Returns zero when the account is already at or below the floor — never a negative size.
+ * Returns zero when the account is already at or below the floor - never a negative size.
  * Solved in closed form rather than searched, so the answer is exact rather than the last
  * value some loop happened to accept.
  */
@@ -121,7 +121,7 @@ export function maxBorrowForFloorWad(grossWad: bigint, debtWad: bigint, floorWad
  *   (G - x) / D >= F   =>   x <= G - F*D
  *
  * With no debt nothing can liquidate, so all of G is withdrawable. Zero when the account is
- * already at or below the floor — never a negative size.
+ * already at or below the floor - never a negative size.
  */
 export function maxWithdrawForFloorWad(grossWad: bigint, debtWad: bigint, floorWad: bigint): bigint {
   if (floorWad <= WAD) throw new Error("floor_must_exceed_one");
@@ -140,7 +140,7 @@ export function maxWithdrawForFloorWad(grossWad: bigint, debtWad: bigint, floorW
 /**
  * `floor` is the user's stated health-factor floor. When they gave none (`null`), the
  * contract's own liquidation line is the stop condition: a sequence may not pass through
- * a liquidatable state, and nothing may be sized "to the max" — a max needs a floor the
+ * a liquidatable state, and nothing may be sized "to the max" - a max needs a floor the
  * user chose. That is not a default floor invented for them; it is the one line the chain
  * enforces regardless.
  */

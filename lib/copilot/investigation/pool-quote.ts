@@ -1,5 +1,5 @@
 /**
- * What a DEX pool actually pays — its own reserves, its own fee, its own curve.
+ * What a DEX pool actually pays - its own reserves, its own fee, its own curve.
  *
  * ## Why this exists
  *
@@ -8,7 +8,7 @@
  * pool does not fill at the oracle's price. It fills at its own curve, after its own fee,
  * and its price drifts from the oracle's between arbitrages. 15 Sep, live: a 1,000 XLM →
  * AQUSDC swap was refused by the DEX outright (HostError #2006) because the floor demanded
- * oracle-parity output the pool was never going to pay — while the identical swap, quoted
+ * oracle-parity output the pool was never going to pay - while the identical swap, quoted
  * against the pool itself, filled fine.
  *
  * Both the propose-time floor and the broadcast-time re-check read through here, so the
@@ -32,8 +32,8 @@ export interface PoolReserves {
  * The reserves of one Aquarius pool from a `vanna_get_aquarius_pool_stats` payload.
  *
  * The reserves dict is keyed by the AMM API's OWN token label, not our registry spelling
- * ("USDC", not "AQUSDC") — the same venue-vs-registry mismatch documented throughout this
- * codebase — so this reads by position (the "XLM" key is always exactly that; whichever
+ * ("USDC", not "AQUSDC") - the same venue-vs-registry mismatch documented throughout this
+ * codebase - so this reads by position (the "XLM" key is always exactly that; whichever
  * other key remains is the paired side) rather than assume the paired token's key matches
  * `marginSymbol` literally.
  *
@@ -64,13 +64,13 @@ function isNumeric(value: unknown): value is string | number {
 }
 
 /**
- * What a constant-product pool pays for `amountIn` — the Uniswap-V2 formula every such
+ * What a constant-product pool pays for `amountIn` - the Uniswap-V2 formula every such
  * pool settles by, which Aquarius's own contract implements:
  *
  *   out = reserveOut x inAfterFee / (reserveIn + inAfterFee),  inAfterFee = in x (1 - fee)
  *
  * Ignoring the fee would promise more than the pool pays and set a floor the pool can
- * never meet — the same failure in a different disguise — so the fee is required, not
+ * never meet - the same failure in a different disguise - so the fee is required, not
  * defaulted. Null when any input makes the quote meaningless rather than returning a zero
  * a caller could mistake for a real answer.
  */
@@ -91,16 +91,16 @@ export function constantProductOut(
 /**
  * The most a swap may lose against the oracle's valuation before it is refused, in percent.
  *
- * THE SAME NUMBER THE WEBSITE'S OWN SWAP CARD BLOCKS ON — `components/spot/
+ * THE SAME NUMBER THE WEBSITE'S OWN SWAP CARD BLOCKS ON - `components/spot/
  * spot-nonorderbook/SwapCard.tsx` (`isHighPriceImpact`, `pct > 5`), with the same formula:
  * impact = (in_usd - out_usd) / in_usd. The copilot must not accept a trade the site's own
  * UI would refuse to let through, so if that threshold moves, this moves with it.
  *
  * Why a floor alone is not enough: the floor says "settle at no worse than this", and a
- * pool-quoted floor is by construction always meetable — so on a pool too thin for the
+ * pool-quoted floor is by construction always meetable - so on a pool too thin for the
  * size, a correct floor happily authorises a catastrophic fill. 15 Sep, live: the protocol's
  * own Aquarius XLM/AQUSDC pool held ~1,571 AQUSDC against ~133,000 XLM, so 1,000 XLM
- * (~$190) quoted ~11.7 AQUSDC — a 94% loss, which the website itself flags as "this pool's
+ * (~$190) quoted ~11.7 AQUSDC - a 94% loss, which the website itself flags as "this pool's
  * liquidity is too thin for this trade size".
  */
 export const MAX_PRICE_IMPACT_PCT = 5;
@@ -132,14 +132,14 @@ export function slippageFloor(quotedOutWad: bigint): bigint {
 }
 
 /**
- * The input a constant-product pool needs for an EXACT output — the same curve as
+ * The input a constant-product pool needs for an EXACT output - the same curve as
  * `constantProductOut`, solved backwards:
  *
  *   inAfterFee = out x reserveIn / (reserveOut - out),  in = inAfterFee / (1 - fee)
  *
  * Null whenever the output cannot be sized honestly: non-positive inputs, a fee outside
  * [0, 1), or an output at or past the pool's own reserve of it (which does not fill at
- * any finite price — a pool cannot pay out more than it holds).
+ * any finite price - a pool cannot pay out more than it holds).
  */
 export function exactOutputIn(
   amountOutWad: bigint,

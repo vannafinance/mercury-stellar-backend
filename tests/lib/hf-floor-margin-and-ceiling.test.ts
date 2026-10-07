@@ -33,7 +33,7 @@ describe("a derived max is sized inside the floor, not onto it", () => {
     expect(hf).toBeGreaterThan(1.3);
   });
 
-  it("gives up only a sliver of borrowing power — it is a margin, not a different answer", () => {
+  it("gives up only a sliver of borrowing power - it is a margin, not a different answer", () => {
     if (!sized.ok) throw new Error(sized.reason);
     const hf = Number(sized.finalHealthFactor);
     // One basis point of a 1.3 floor is 0.00013 of health factor.
@@ -65,7 +65,7 @@ describe("a derived max is sized inside the floor, not onto it", () => {
   });
 
   it("still refuses a stated amount that genuinely breaches the floor", () => {
-    // 24700 pushes HF to ~1.2996 — under the floor, and correctly refused.
+    // 24700 pushes HF to ~1.2996 - under the floor, and correctly refused.
     const tooBig = sizeLegs(base, [{ op: "borrow", amountUsd: "24700", label: "Borrow 24700" }], "1.3");
     expect(tooBig.ok).toBe(false);
     if (!tooBig.ok) expect(tooBig.reason).toBe("health_floor_breached");
@@ -90,7 +90,7 @@ describe("a health-factor ceiling is read, not silently dropped", () => {
     expect(matchHealthFactorCeiling("keep hf under 1.25")).toBe(1.25);
   });
 
-  it("a ceiling is not a floor — it must not be quietly turned into one", () => {
+  it("a ceiling is not a floor - it must not be quietly turned into one", () => {
     expect(statedFloorFrom(["keep HF < 1.3"])).toBeNull();
     expect(statedCeilingFrom(["keep HF < 1.3"])).toBe("1.3");
   });

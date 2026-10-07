@@ -65,7 +65,7 @@ describe("immediateCompletion and shortTransactionHash", () => {
     const reply = immediateCompletion(r, 1_000)!;
     expect(reply.completion).toEqual({ workflowId: r.workflowId, receiptKey: receiptKey(r), generatedAt: 1_000, source: "fallback" });
     expect(completionMatches(r, reply.completion)).toBe(true);
-    expect(reply.message).toMatch(/ — settled on-chain\.$/);
+    expect(reply.message).toMatch(/ - settled on-chain\.$/);
     const [paragraph] = reply.replyBlocks;
     expect(paragraph).toMatchObject({ type: "paragraph" });
     // The plain text and the blocks say the same thing, and what was done is the bold figure.

@@ -1,7 +1,7 @@
 /**
  * The questionnaire, end to end through the service: a direct action with inputs missing is
  * asked as a questionnaire, and the answers come back as that SAME instruction with the inputs
- * filled — no second model turn, no plan card (REQUESTED_ACTIONS_ID), sized from the sealed reads.
+ * filled - no second model turn, no plan card (REQUESTED_ACTIONS_ID), sized from the sealed reads.
  * The unit and component tests cover each half; nothing drove both halves through researchTurn.
  */
 vi.mock("@/lib/copilot/workflow/risk", () => ({ validateWorkflowRisk: vi.fn(async () => null) }));

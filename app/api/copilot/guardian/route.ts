@@ -1,7 +1,7 @@
 /**
  * Server-side liquidation guardian (cron / Cloud Scheduler target).
  *
- * Single check — POST JSON:
+ * Single check - POST JSON:
  *   {
  *     "user_id": "…",
  *     "trader": "G…",
@@ -10,7 +10,7 @@
  *     "dry_run": true
  *   }
  *
- * Batch (all opted-in targets) — POST { "batch": true, "dry_run": true }
+ * Batch (all opted-in targets) - POST { "batch": true, "dry_run": true }
  *   or GET ?batch=1&dry_run=1
  * Targets from env COPILOT_GUARDIAN_TARGETS JSON array:
  *   [{"trader":"G…","user_id":"…","min_hf":1.4,"smart_account":"C…"}]
@@ -174,7 +174,7 @@ async function runOneCheck(opts: {
       repay: { asset, amount: repayAmt },
       smart_account: smartAccount,
       trader,
-      message: `HF ${hf.toFixed(3)} < ${minHf} — would repay ~${repayAmt} ${asset}.`,
+      message: `HF ${hf.toFixed(3)} < ${minHf} - would repay ~${repayAmt} ${asset}.`,
     };
   }
 

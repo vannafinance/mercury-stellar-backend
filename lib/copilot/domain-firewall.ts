@@ -1,5 +1,5 @@
 /**
- * LLM domain firewall — hard boundary so Vanna Copilot/MCP only burns
+ * LLM domain firewall - hard boundary so Vanna Copilot/MCP only burns
  * model tokens on Vanna Finance / Stellar DeFi product work.
  *
  * Why: open-ended chatbots get used for free coding/homework and rack up
@@ -22,7 +22,7 @@ export type FirewallResult =
   | { allow: false; reason: string; message: string };
 
 const BLOCK_MESSAGE =
-  "I only help with Vanna Finance on Stellar — Earn, Farm, Margin, wallet connect, " +
+  "I only help with Vanna Finance on Stellar - Earn, Farm, Margin, wallet connect, " +
   "swaps, health factor, and related product questions.\n\n" +
   "I can’t help with general coding, homework, or unrelated chat. " +
   "Try something like “what’s my health factor?”, “lend 10 XLM”, or " +
@@ -92,7 +92,7 @@ function finishAllow(message: string, reason: string): FirewallResult {
   return { allow: true, reason };
 }
 
-/** Narrow abuse tripwire — cost backstop, not the primary domain gate. */
+/** Narrow abuse tripwire - cost backstop, not the primary domain gate. */
 const ABUSE_TRIPWIRE: RegExp[] = [
   /\b(write|generate|debug|fix|implement|refactor|code\s+review)\b.+\b(code|function|class|script|program|api|endpoint)\b/i,
   /\b(leetcode|hackerrank|coding\s+interview|solve\s+this\s+problem|coding\s+challenge)\b/i,
@@ -124,7 +124,7 @@ const PAGE_REFERENTIAL: RegExp[] = [
  * Questions about the assistant itself.
  *
  * "what can you do", "who are you", "help" are the first things a new user types, and
- * they were refused with "I only help with Vanna Finance…" — an answer that is both
+ * they were refused with "I only help with Vanna Finance…" - an answer that is both
  * unhelpful and self-contradictory, since describing what it helps with is precisely
  * what was asked. These are in-domain by definition: the subject is the product.
  */
@@ -148,7 +148,7 @@ export const SELF_REFERENTIAL: RegExp[] = [
  *
  * It used to be `/\b(…|position|balance|pool|price|…)\b/i`, and a trailing `\b` after a
  * singular stem does not match the plural: `position\b` fails on "positions" because `s`
- * is a word character. That one detail refused an entire class of ordinary questions —
+ * is a word character. That one detail refused an entire class of ordinary questions -
  * "show my positions", "list all pools", "what are my balances", "what are the prices",
  * "am I close to liquidation", "what is my portfolio worth" all came back with "I only
  * help with Vanna Finance on Stellar", which is exactly the surface they were asking
@@ -172,13 +172,13 @@ const DOMAIN_WORDS = [
    * spelling variant), read from the ONE place that defines what an asset is
    * (`registry/assets.ts`) instead of hand-copied here. Hand-copied is exactly how "What
    * is Current Rate of bXLM?" got refused as off-topic chat: bXLM was added to the asset
-   * registry's XLM aliases, and this list — a second, independent copy of "which asset
-   * words exist" — was never told. Adding a spelling to the registry now reaches this
+   * registry's XLM aliases, and this list - a second, independent copy of "which asset
+   * words exist" - was never told. Adding a spelling to the registry now reaches this
    * list automatically; see `tests/lib/asset-recognition-consistency.test.ts`.
    */
   ...ASSET_DOMAIN_WORDS,
   // Bare "USDC" deliberately has no `AssetId` of its own (see registry/assets.ts's file
-  // header — BLUSDC/AQUSDC/SOUSDC are three separate tokens and naming none of them is
+  // header - BLUSDC/AQUSDC/SOUSDC are three separate tokens and naming none of them is
   // an unresolved question, not an asset) but is still a real product concept this
   // firewall must recognise, so it is listed explicitly rather than derived.
   "usdc",
@@ -214,10 +214,10 @@ const DOMAIN_WORDS = [
   /**
    * Credit is the product.
    *
-   * Undercollateralised credit is what Vanna sells — "available credit" is a field on
+   * Undercollateralised credit is what Vanna sells - "available credit" is a field on
    * the account state and one of the first things a trader asks for. It was missing
    * here, so "what is my available credit right now?" hit the no-product-noun rule at
-   * step 5 and was refused with "I only help with Vanna Finance on Stellar" — the
+   * step 5 and was refused with "I only help with Vanna Finance on Stellar" - the
    * firewall turning away the headline feature.
    */
   "credit", "credits", "creditworthiness",
@@ -228,8 +228,8 @@ const DOMAIN_WORDS = [
   "reserve", "reserves",
   "liquidity",
   /**
-   * "remove 50% of my LP" was refused as off-domain chat — the generic "I only help
-   * with Vanna Finance" message — while "remove half my liquidity" (same request, one
+   * "remove 50% of my LP" was refused as off-domain chat - the generic "I only help
+   * with Vanna Finance" message - while "remove half my liquidity" (same request, one
    * word different) got a real, specific answer. Neither "remove" nor "LP" was in this
    * list; "liquidity" was, so only the phrasing that happened to use it passed. "LP" is
    * unambiguous in this domain (liquidity-pool position/token) and, with the `\b`
@@ -244,8 +244,8 @@ const DOMAIN_WORDS = [
   "wallet", "wallets",
   /**
    * "do I have inactive accounts" was refused as off-domain chat. Bare "account" /
-   * "accounts" was never in this list — only compound phrases like "smart account" and
-   * "open margin account" were — so a question naming the noun on its own had nothing to
+   * "accounts" was never in this list - only compound phrases like "smart account" and
+   * "open margin account" were - so a question naming the noun on its own had nothing to
    * match. The router already has a read for this ("inactive account" / "dormant" at
    * query_inactive_accounts); the firewall in front of it was the actual block.
    */
@@ -257,7 +257,7 @@ const DOMAIN_WORDS = [
  *
  * Longest-first matters inside an alternation: regex alternatives are tried in order, so
  * with "suppl" ahead of "supplies" the engine matches "suppl" and then fails the closing
- * `\b` against the "i" — the shorter alternative shadows the longer one and the word is
+ * `\b` against the "i" - the shorter alternative shadows the longer one and the word is
  * rejected. Sorting by length removes that ordering trap for every entry at once.
  */
 const DOMAIN_WORD_RE = new RegExp(
@@ -286,7 +286,7 @@ const ALLOW_PATTERNS: RegExp[] = [
    * These are first-class product reads (`vanna_list_protocol_addresses`) and appear in
    * the Copilot prompt palette ("List protocol addresses"). Without this, "list"/"show"/
    * "what" hit the off-domain question rule while "protocol addresses" never matched the
-   * vocabulary — so a built-in Vanna prompt was refused as unrelated chat.
+   * vocabulary - so a built-in Vanna prompt was refused as unrelated chat.
    *
    * Compound forms only: bare "address" alone stays out (home address, etc.).
    */
@@ -294,7 +294,7 @@ const ALLOW_PATTERNS: RegExp[] = [
   /\blist\s+(the\s+)?(protocol\s+|contract\s+|registry\s+)?addresses?\b/i,
   /**
    * "what's my net value" / "what's my net worth" / "what is my net asset value" were
-   * refused as off-domain chat — the generic "I only help with Vanna Finance" message,
+   * refused as off-domain chat - the generic "I only help with Vanna Finance" message,
    * for a plain account question. Bare "net"/"worth"/"value"/"asset" are too broad for
    * `DOMAIN_WORDS` (a standalone-word list without this context would catch genuinely
    * unrelated chat too), but the compound phrases below only ever mean the account's
@@ -342,7 +342,7 @@ function messageWords(message: string): string[] {
 }
 
 /**
- * A word the resolver calls an asset, venue, or op — exact or near — is a domain
+ * A word the resolver calls an asset, venue, or op - exact or near - is a domain
  * name. An off-domain refusal must not fire on one. The resolver owns the distance.
  */
 export function messageNamesDomain(message: string): boolean {
@@ -407,7 +407,7 @@ export function evaluateDomainFirewall(
   }
 
   // Default: allow a short leftover that looks like an asset ticker (e.g. "BLUSDC"),
-  // not an English sentence — "give me a lasagna recipe" is 24 characters and used
+  // not an English sentence - "give me a lasagna recipe" is 24 characters and used
   // to sneak through this gate once the recipe tripwire was narrowed.
   if (m.length <= 24 && /^[A-Za-z0-9._-]+\??$/.test(m)) {
     return finishAllow(m, "allow:short_token");

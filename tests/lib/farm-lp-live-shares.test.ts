@@ -21,7 +21,7 @@ vi.mock("@/lib/soroswap-utils", () => ({
 
 import { readFarmAmmLpShares } from "@/lib/copilot/farm-lp";
 
-describe("readFarmAmmLpShares — same number as Farm LP page", () => {
+describe("readFarmAmmLpShares - same number as Farm LP page", () => {
   it("reads Aquarius via getUserLpBalance (pool shares), not a tracking-token zero", async () => {
     mocks.getUserLpBalance.mockResolvedValue("12.64");
     const r = await readFarmAmmLpShares({ smartAccount: "CACCT", tokenB: "AQUSDC" });

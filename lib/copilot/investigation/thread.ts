@@ -1,9 +1,9 @@
 /**
  * Session rows that used to move as one switch. They move independently:
  *
- *   Transcript  — what's on screen. Never reset on a new goal.
- *   Evidence    — facts read from chain. Carry across runs, with staleness.
- *   Commitment  — the open question, the proposal, the approval fingerprint.
+ *   Transcript  - what's on screen. Never reset on a new goal.
+ *   Evidence    - facts read from chain. Carry across runs, with staleness.
+ *   Commitment  - the open question, the proposal, the approval fingerprint.
  *
  * "Start fresh" means only the third row. Independent-vs-continuation is a
  * heuristic and will misfire; keeping transcript and evidence makes a wrong
@@ -40,7 +40,7 @@ export function isRefinement(message: string): boolean {
   return /instead|make it|change (the )?(floor|budget|hf|health)|use \S+ too|also use|don'?t borrow|no (new )?borrow|you can borrow|may borrow|switch|higher floor|lower floor|\b1\.\d\b/i.test(text);
 }
 
-/** Health / price / "am I safe" — a new objective that must not inherit the last plan. */
+/** Health / price / "am I safe" - a new objective that must not inherit the last plan. */
 export function isFactualIndependent(message: string): boolean {
   return /^(what'?s|whats|wats|how much is|price of|am i|is my)\b/i.test(message.trim());
 }
@@ -84,7 +84,7 @@ export function shouldReplacePlan(message: string, last: LastInvestigation | nul
 
 const STORAGE_PREFIX = "vanna.copilot.thread.";
 const LIST_PREFIX = "vanna.copilot.conversations.";
-/** On-screen chat that the server has not recorded yet — never sent as conversationId. */
+/** On-screen chat that the server has not recorded yet - never sent as conversationId. */
 export const LIVE_CONVERSATION_ID = "local:current";
 const TITLE_LIMIT = 80;
 
@@ -108,7 +108,7 @@ export function conversationsStorageKey(wallet: string): string {
   return `${LIST_PREFIX}${wallet}`;
 }
 
-/** First user prompt, cut to a line — same rule the server uses to title a conversation. */
+/** First user prompt, cut to a line - same rule the server uses to title a conversation. */
 export function titleForConversation(firstPrompt: string): string {
   const line = firstPrompt.replace(/\s+/g, " ").trim();
   return line.length > TITLE_LIMIT ? `${line.slice(0, TITLE_LIMIT - 1).trimEnd()}…` : line || "New chat";
@@ -145,7 +145,7 @@ export function writeStoredConversations(wallet: string | null, items: readonly 
   if (!wallet || typeof sessionStorage === "undefined") return;
   try {
     sessionStorage.setItem(conversationsStorageKey(wallet), JSON.stringify(items.slice(0, 30)));
-  } catch { /* quota — the live thread still works */ }
+  } catch { /* quota - the live thread still works */ }
 }
 
 /** Newest first. Replaces an existing row with the same id rather than duplicating it. */
@@ -179,7 +179,7 @@ export function writeStoredThread(wallet: string | null, value: StoredThread): v
       result: value.result,
       conversationId: value.conversationId ?? null,
     }));
-  } catch { /* quota — the live thread still works until reload */ }
+  } catch { /* quota - the live thread still works until reload */ }
 }
 
 export function clearStoredThread(wallet: string | null): void {
@@ -218,7 +218,7 @@ export function writeStoredLocalThread(wallet: string | null, localId: string, v
       }),
     );
   } catch {
-    /* quota — the live thread still works */
+    /* quota - the live thread still works */
   }
 }
 

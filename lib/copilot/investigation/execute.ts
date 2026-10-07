@@ -79,20 +79,20 @@ export type StaleLiquidityVerdict =
  * ## The race this closes
  *
  * The floor is derived when the plan is built; the swap is sent when the user approves it,
- * seconds or minutes later. A pool does not stand still in between — 15 Sep, live, the same
+ * seconds or minutes later. A pool does not stand still in between - 15 Sep, live, the same
  * 1,000 XLM → AQUSDC swap was refused by the DEX (HostError #2006) at approve time on a
  * floor that had been perfectly fine moments before.
  *
  * A moved price is not, by itself, a reason to stop: the user asked to swap 100 XLM, not to
  * receive exactly one number or nothing. So the pool is re-quoted here, and the write
- * proceeds whenever the fresh fill is still a FAIR one — only a fill that is itself
+ * proceeds whenever the fresh fill is still a FAIR one - only a fill that is itself
  * dangerous (the same oracle-price-impact threshold the propose-time card refuses on) stops
  * the write, and it stops BEFORE anything is sent, naming both figures:
  *
  * - Pool still pays the approved floor → send it UNCHANGED.
  * - Pool pays less, but the fresh fill is still fair (within the impact threshold) → send it
  *   with the floor LOWERED to what the pool actually offers, minus the same slippage margin
- *   the original floor used. The eventual result names the price it actually settled at —
+ *   the original floor used. The eventual result names the price it actually settled at -
  *   never a silent substitution the user has to discover from their balance afterward.
  * - Pool pays so much less that the fresh fill is itself a bad trade → refuse, naming both
  *   figures. This is the one case a floor must not be lowered to fit: an already-thin pool
@@ -100,7 +100,7 @@ export type StaleLiquidityVerdict =
  *   of the approval it happens on.
  *
  * Fails OPEN. If the pool or price reads are unavailable, slow, or not an Aquarius pair, the
- * write proceeds unchanged — the DEX's own floor check is still the backstop, and a stats
+ * write proceeds unchanged - the DEX's own floor check is still the backstop, and a stats
  * endpoint being down is not a reason to block a swap the user approved.
  */
 export async function staleSwapFloor(
@@ -113,7 +113,7 @@ export async function staleSwapFloor(
   const unchanged: StaleFloorVerdict = { kind: "unchanged" };
   // Re-quote ANY swap venue, not just Aquarius. A price that moved between the plan and
   // the approval is the normal case, and a Soroswap leg that skipped this carried its
-  // plan-time floor all the way to signing — which is how a floor sized at oracle parity
+  // plan-time floor all the way to signing - which is how a floor sized at oracle parity
   // reached the wallet against a pool paying less than half of it (16 Sep, live).
   const swapVenue = typeof step.args.venue === "string" ? step.args.venue : "";
   if (step.op !== "swap" || (swapVenue !== "aquarius" && swapVenue !== "soroswap")) return unchanged;
@@ -133,7 +133,7 @@ export async function staleSwapFloor(
       AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
     );
     // `swap_killed` is the AMM API's description of a pool, not the chain's answer, and
-    // refusing on it blocked swaps that settle — see the note in plan.ts. The re-quote
+    // refusing on it blocked swaps that settle - see the note in plan.ts. The re-quote
     // below is the real check: it refuses when the pool cannot actually fill the floor.
     reserves = poolReservesFrom(payload);
   } catch { return step.targetOut ? { kind: "refuse", message: "The live pool could not be re-quoted for the exact output you approved. Nothing was submitted." } : unchanged; }
@@ -153,7 +153,7 @@ export async function staleSwapFloor(
   if (quoted >= floorWad) return unchanged;
 
   // The pool pays less than approved. Whether that is fine or dangerous is not a question
-  // the pool's own reserves can answer — it needs the oracle, the same way the propose-time
+  // the pool's own reserves can answer - it needs the oracle, the same way the propose-time
   // guard does, so both ends of the same trade are judged by the same yardstick.
   let inUsd: unknown, outUsd: unknown;
   try {
@@ -175,11 +175,11 @@ export async function staleSwapFloor(
   // A user who accepted the loss gets the trade, re-quoted: the floor drops to what the
   // pool pays NOW, which is what "execute at whatever price" has to mean if it is to mean
   // anything safe. Sending no floor at all would leave the fill to whoever moves the pool
-  // next in the same ledger, so the fresh quote — not nothing — becomes the floor.
+  // next in the same ledger, so the fresh quote - not nothing - becomes the floor.
   if (isDangerousFill(inUsdWad, outUsdWad) && !slippageAccepted) {
     return {
       kind: "refuse",
-      message: `Not submitted — the pool's price moved after you approved this, and now fills at a loss: `
+      message: `Not submitted - the pool's price moved after you approved this, and now fills at a loss: `
         + `${tokenIn} → ${tokenOut} would settle for about ${formatWad(quoted)} ${tokenOut} for ${amountIn} ${tokenIn}, `
         + `well below the ${minOut} ${tokenOut} floor you approved and below what ${tokenIn} is worth. `
         + `Ask again for a fresh quote, or say you accept the loss and it will be swapped as asked.`,
@@ -220,11 +220,11 @@ function tokenAmount(value: bigint, places = 7): string {
  * ## The race this closes
  *
  * A full exit is sized from a position read, frozen into the proposal as a literal, and
- * then waits — for the proposal to build, for a person to press Approve, and with
+ * then waits - for the proposal to build, for a person to press Approve, and with
  * auto-sign off for that person to sign. A Blend supply does not hold still through any
  * of that: the b-rate accrues, so the underlying the plan named is quietly no longer the
  * underlying the position holds. Send the frozen figure and the exit either leaves dust
- * behind or, when the balance moved the other way, reverts on chain — after signing,
+ * behind or, when the balance moved the other way, reverts on chain - after signing,
  * which is the worst moment to learn it.
  *
  * Only steps whose sizing recorded `whole_position` are touched. A number the user stated
@@ -232,7 +232,7 @@ function tokenAmount(value: bigint, places = 7): string {
  * distinction `StepSizing` exists to carry.
  *
  * Fails OPEN. A read that is unavailable, slow or shaped unexpectedly leaves the approved
- * amount alone — the protocol's own balance check is still the backstop, and a read being
+ * amount alone - the protocol's own balance check is still the backstop, and a read being
  * down is not a reason to refuse an exit the user approved. A position that now reads ZERO
  * is the one hard stop: there is nothing to withdraw, and saying so beats a revert.
  */
@@ -552,7 +552,7 @@ export async function lookupTransaction(hash: string): Promise<{ found: true; su
     const ledger = Number(tx.ledger);
     if (!Number.isSafeInteger(ledger) || ledger <= 0) return { found: false };
     return { found: true, success: tx.status === "SUCCESS", ledger };
-  } catch { /* RPC unavailable — leave the step submitted */ }
+  } catch { /* RPC unavailable - leave the step submitted */ }
   return { found: false };
 }
 
@@ -675,9 +675,9 @@ export async function advanceWorkflow(input: {
   }
   /**
    * Re-quote the pool before spending the user's approval on a price that has already moved.
-   * A moved price alone does not stop the write — only a fill that would itself be a bad
+   * A moved price alone does not stop the write - only a fill that would itself be a bad
    * trade does (`staleSwapFloor`'s own "refuse" case). Otherwise the floor is sent as
-   * approved, or lowered to what the pool actually offers with a note recording it — never
+   * approved, or lowered to what the pool actually offers with a note recording it - never
    * a silent substitution the user only discovers from their balance afterward.
    */
   const acceptedLoss = stored.value.proposal.slippageAccepted === true;
@@ -748,7 +748,7 @@ export async function advanceWorkflow(input: {
     // This catch used to be silent: a step went "uncertain" with nothing in any log
     // explaining why, so a timeout, a transport error and a malformed payload were
     // indistinguishable from the outside. `error` is never a broadcast proof either way,
-    // so the outcome is unchanged — only the diagnostic trail is new.
+    // so the outcome is unchanged - only the diagnostic trail is new.
     console.warn("[copilot] write call failed, step marked uncertain", {
       tool: invocation.tool,
       name: error instanceof Error ? error.name : typeof error,
@@ -763,7 +763,7 @@ export async function advanceWorkflow(input: {
    *
    * A write it could not auto-sign is not a write that failed: `maybe_auto_sign` keeps the
    * built envelope and annotates it `signing_status: "needs_wallet_sign"` with the reason
-   * auto-sign was unavailable in `error` — an unbound wallet, a dead session, a cap. This
+   * auto-sign was unavailable in `error` - an unbound wallet, a dead session, a cap. This
    * line used to read `unsigned && !build.error`, so any reason at all disqualified a
    * perfectly signable transaction from the wallet-sign route below and dropped it into
    * "error", where `preBroadcastRejection` reported the MCP's own signing instructions to
@@ -776,8 +776,8 @@ export async function advanceWorkflow(input: {
 
   /**
    * The MCP's error envelope (`mcp_server/error_handling.py`) attaches `reason`, `code`
-   * or `contract_diagnostic` only to failures it classified INSIDE the tool — simulation
-   * and validation, before anything was submitted — and a submitted transaction always
+   * or `contract_diagnostic` only to failures it classified INSIDE the tool - simulation
+   * and validation, before anything was submitted - and a submitted transaction always
    * carries its hash. Such an envelope is a rejection with a reason, and the reason is
    * the one line the user needs; filing it as "uncertain" hid it (13 Sep deposit).
    */
@@ -802,7 +802,7 @@ export async function advanceWorkflow(input: {
 
   if (result.status === "needs_wallet_sign" && result.unsigned_xdr) {
     /**
-     * Auto sign was armed and the transaction still came back unsigned — the Sign
+     * Auto sign was armed and the transaction still came back unsigned - the Sign
      * Service refused this one. Say why.
      *
      * Its reason is the thing the user needs and the only thing that tells them what to
@@ -832,13 +832,13 @@ export async function advanceWorkflow(input: {
 }
 
 /**
- * Why auto sign did not sign this one — MCP's own sentence, or null when it signed or
+ * Why auto sign did not sign this one - MCP's own sentence, or null when it signed or
  * was never armed.
  *
  * `auto_sign` is the Sign Service's verdict on this transaction: "on" when it signed,
  * and anything else ("rejected" over a cap or an allowlist, "disabled" with no session,
  * "unavailable" when unreachable) when it did not. Only the refusals carry a message,
- * and it is passed through verbatim — which reason exists, and what to do about each,
+ * and it is passed through verbatim - which reason exists, and what to do about each,
  * is the Sign Service's to say, not something this file should keep its own copy of.
  */
 /**
@@ -880,12 +880,12 @@ export function preBroadcastRejection(
   if (!classified) return null;
   const message = typeof build.message === "string" && build.message.trim() ? build.message.trim() : `${build.error}${build.reason ? ` (${String(build.reason).replaceAll("_", " ")})` : ""}`;
   const note = swapFloorNote(step, message);
-  return `Not submitted — the protocol rejected this step before broadcast: ${message}${note ? ` ${note}` : ""}`;
+  return `Not submitted - the protocol rejected this step before broadcast: ${message}${note ? ` ${note}` : ""}`;
 }
 
 /**
  * A swap carries a floor (`min_out`) the DEX must meet or the call reverts, and the raw
- * revert is a bare contract code — "HostError #2006" told the user nothing (15 Sep, live).
+ * revert is a bare contract code - "HostError #2006" told the user nothing (15 Sep, live).
  * The floor is the one thing about that failure we can state as fact, so it is named, and
  * the likeliest reading of it is offered AS a reading, not as a diagnosis: the error codes
  * belong to the DEX's own contract, not to Vanna's, so their meanings are not ours to
@@ -893,7 +893,7 @@ export function preBroadcastRejection(
  *
  * This is now the SECOND line of defence, not the first: `staleSwapFloor` re-quotes the
  * pool before the write and states "the price moved" in plain words with both figures.
- * A rejection that still reaches here is one that re-quote could not foresee — the pool
+ * A rejection that still reaches here is one that re-quote could not foresee - the pool
  * read was unavailable, the pair is not Aquarius, or the pool moved inside the last moment.
  */
 function swapFloorNote(step: { op?: string; args?: Record<string, unknown> } | undefined, message: string): string | null {
@@ -901,7 +901,7 @@ function swapFloorNote(step: { op?: string; args?: Record<string, unknown> } | u
   const floor = typeof step.args?.min_out === "string" ? step.args.min_out : null;
   const bought = typeof step.args?.token_out === "string" ? step.args.token_out : null;
   if (!floor || !bought || !/contract|hosterror|simulation/i.test(message)) return null;
-  return `This swap would only settle for at least ${floor} ${bought}; a DEX refuses the call outright when its pool cannot meet that, which is the most likely reading here — the code itself belongs to the DEX's contract, so it is not proof.`;
+  return `This swap would only settle for at least ${floor} ${bought}; a DEX refuses the call outright when its pool cannot meet that, which is the most likely reading here - the code itself belongs to the DEX's contract, so it is not proof.`;
 }
 
 export async function confirmWorkflow(input: {

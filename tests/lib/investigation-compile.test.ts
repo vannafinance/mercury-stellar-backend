@@ -60,7 +60,7 @@ function borrowSupply(over: Partial<Parameters<typeof generateCandidates>[0]> = 
 
 describe("compiling a candidate into proposal steps", () => {
   it("emits the Blend supply even though borrow_supply has only the borrow leg", () => {
-    // Mapping `legs` alone would borrow and never supply — the supply is health-factor
+    // Mapping `legs` alone would borrow and never supply - the supply is health-factor
     // neutral, so the generator never puts it in the array.
     const result = compile(borrowSupply(), [price("BLUSDC", "1")]);
     expect(result.ok).toBe(true);
@@ -77,7 +77,7 @@ describe("compiling a candidate into proposal steps", () => {
 
 
   it("converts USD to tokens with the read price, rounded down", () => {
-    // $6,541.04 of XLM at $0.19 — the exact WAD quotient, not a rounded comparison.
+    // $6,541.04 of XLM at $0.19 - the exact WAD quotient, not a rounded comparison.
     const { feasible } = generateCandidates({
       ...BASE, spendableWalletUsd: null, comparisons: [comparison({ asset: "XLM" })],
     });

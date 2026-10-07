@@ -17,7 +17,7 @@ export interface RateComparison {
 }
 
 /**
- * A supply rate that was read but not used, and why — so the card can say so. A rate
+ * A supply rate that was read but not used, and why - so the card can say so. A rate
  * that vanishes silently leaves the model's prose and the ranked options disagreeing,
  * which is exactly what the first signed-in battery showed with Blend XLM.
  */
@@ -72,11 +72,11 @@ function rate(value: unknown): bigint | null {
  * receive a share of what borrowers pay, scaled by utilization, and never more than all
  * of it. That relationship holds on every lending venue whatever its fee take, and it
  * is the check that distinguishes a real 168% APR on a 90%-utilised testnet pool from a
- * 366% one produced by a decimals slip. A size cap cannot tell those apart — the old
+ * 366% one produced by a decimals slip. A size cap cannot tell those apart - the old
  * 100% ceiling silently threw away the real one.
  *
  * A row that does not carry the borrow rate and utilization cannot be vouched for, so it
- * is excluded too — loudly, with the reason, never silently.
+ * is excluded too - loudly, with the reason, never silently.
  */
 function supplyRateOf(row: Record<string, unknown> | undefined, supplyRaw: unknown, label: string):
   { ok: true; supply: bigint } | { ok: false; reason: ExcludedRate["reason"]; detail: string } {
@@ -89,7 +89,7 @@ function supplyRateOf(row: Record<string, unknown> | undefined, supplyRaw: unkno
   if (borrow === null || utilization === null) {
     return { ok: false, reason: "not_cross_checkable", detail: `${label}: supply ${formatWad(supply)}% APR was read without a borrow rate and utilization to check it against, so it was not used.` };
   }
-  // borrow% × utilization% / 100 — what borrowers pay per unit supplied, before any take.
+  // borrow% × utilization% / 100 - what borrowers pay per unit supplied, before any take.
   const ceiling = (borrow * utilization) / (BigInt(100) * WAD);
   const bound = (ceiling * CROSS_CHECK_TOLERANCE) / WAD;
   if (supply > bound) {
@@ -108,7 +108,7 @@ export function analyseObservedRates(observations: readonly Observation[], now: 
     o.observedAt <= now && now - o.observedAt <= 60_000);
   const results: RateComparison[] = [];
   const excluded: ExcludedRate[] = [];
-  // Every registry asset whose Earn market was read this investigation — no separate list of "rate assets".
+  // Every registry asset whose Earn market was read this investigation - no separate list of "rate assets".
   const assets = ASSET_IDS.filter((asset) => fresh.some((o) => o.capability === "earn_market" && o.args.asset === asset));
   for (const asset of assets) {
     const earn = fresh.filter((o) => o.capability === "earn_market" && o.args.asset === asset);
@@ -168,7 +168,7 @@ export function analyseObservedRates(observations: readonly Observation[], now: 
     /**
      * Earn only: AQUSDC / SOUSDC have no Blend reserve, and a Blend-listed token whose Blend
      * market was NOT read this investigation still has an Earn rate. Until 14 Sep the second
-     * case produced no row at all, so a plain lend of XLM — which fetches only earn_market —
+     * case produced no row at all, so a plain lend of XLM - which fetches only earn_market -
      * was refused for "no usable Earn supply rate". A Blend market that WAS read but whose
      * reserve is unusable keeps the gate above: an excluded reserve is not quietly forgotten.
      */

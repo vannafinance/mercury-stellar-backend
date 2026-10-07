@@ -21,14 +21,14 @@ describe("two readings that disagree about creating debt", () => {
 
   it("does not fire when both readings agree about debt", () => {
     expect(disagreesOnNewDebt("lend", "lend")).toBe(false);
-    // Different destination, same answer on debt — "put money in" either way. Asking here
+    // Different destination, same answer on debt - "put money in" either way. Asking here
     // would cost more than the mistake, which is the whole reason this axis is narrow.
     expect(disagreesOnNewDebt("lend", "deposit_collateral")).toBe(false);
     expect(disagreesOnNewDebt("supply_blend", "lend")).toBe(false);
     expect(disagreesOnNewDebt("repay", "withdraw_collateral")).toBe(false);
   });
 
-  it("is symmetric — neither reading is privileged", () => {
+  it("is symmetric - neither reading is privileged", () => {
     expect(disagreesOnNewDebt("borrow", "lend")).toBe(disagreesOnNewDebt("lend", "borrow"));
   });
 

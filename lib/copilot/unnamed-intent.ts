@@ -50,7 +50,7 @@ function isBlendRead(routed: RoutedIntent): boolean {
  * Measure how much of the message the deterministic extractor accounted for, and log it.
  *
  * Shadow only: nothing here changes the response. The point is to collect a real over-ask
- * rate before the coverage check is allowed to interrupt anyone — turning it loud on an
+ * rate before the coverage check is allowed to interrupt anyone - turning it loud on an
  * assumed rate is how a safety check becomes a nuisance the user learns to click past.
  * Scoped to plan-shaped messages, since residue on "what is XLM worth" is not the signal.
  */
@@ -86,7 +86,7 @@ function logPlanCoverageShadow(
   // ── Route intent (hybrid: fast keywords + smart Vertex for complex goals) ─
   // Simple single-action prompts (swap/lend/deposit…) skip Vertex for speed.
   // Multi-goal / long / strategy language always uses Gemini so understanding is
-  // free-form — not a fixed prompt list. Keyword router still corrects venue
+  // free-form - not a fixed prompt list. Keyword router still corrects venue
   // mistakes after Vertex (Blend vs Earn, USDC variants, etc.).
   // Copilot and assistant-write never reach here.
   const kwFast = routeMessage(message);
@@ -120,7 +120,7 @@ function logPlanCoverageShadow(
   }
 
   // Prefer deterministic keyword routes for Sanujit earn multi-pool / farm / lend
-  // phrases — Vertex often collapses "list all earn pools", mis-routes highest-APY,
+  // phrases - Vertex often collapses "list all earn pools", mis-routes highest-APY,
   // or maps "supply to Blend" onto deposit_collateral.
   {
     const unsupported = findUnsupportedAsset(message);
@@ -128,7 +128,7 @@ function logPlanCoverageShadow(
       unsupported &&
       // LP and swap verbs belong here too. Without them "add liquidity to the XLM/BTC
       // pool" skipped this gate entirely and was answered with "how much of each token?"
-      // — asking a user to size a position in a token that does not exist on this
+      // - asking a user to size a position in a token that does not exist on this
       // network, and only failing once the amounts came back.
       /\b(lend|supply|earn|deposit|borrow|repay|farm|swap|provide|add|remove|park|invest|deploy|redeem|withdraw)\b/i.test(
         message,
@@ -139,7 +139,7 @@ function logPlanCoverageShadow(
         template_id: "unsupported_asset",
         message:
           `“${unsupported}” is not supported on Vanna testnet. Use XLM, BLUSDC, AQUSDC, or SOUSDC ` +
-          `(not bare USDC without a variant — pick BLUSDC / AQUSDC / SOUSDC when you mean a dollar token).`,
+          `(not bare USDC without a variant - pick BLUSDC / AQUSDC / SOUSDC when you mean a dollar token).`,
         slots: { asset: unsupported },
       };
     }
@@ -147,7 +147,7 @@ function logPlanCoverageShadow(
     const lowerMsg = message.toLowerCase();
     /**
      * "Can You Remove 50 BLUSDC fom Farm's Blend Pool" executed a real SUPPLY instead of
-     * a withdrawal — router.ts's own `withdraw_from_blend` route (added for exactly this
+     * a withdrawal - router.ts's own `withdraw_from_blend` route (added for exactly this
      * report) correctly classified it, but this SEPARATE, independent regex re-derives
      * "is this a Blend write" from the raw message and force-overrides `routed` to
      * `deploy_to_blend` a few lines down whenever it fires, clobbering whatever `kw` said.
@@ -166,7 +166,7 @@ function logPlanCoverageShadow(
       !/\b(stats|apy|position|btoken|how much)\b/.test(lowerMsg);
     /**
      * "What is my Holdings in Blend Pool" said "Holdings", not any of the words this
-     * list already knew — `blendRead` was FALSE for it, so this whole override never
+     * list already knew - `blendRead` was FALSE for it, so this whole override never
      * ran and the message fell through to router.ts's/Vertex's original pool-wide
      * `query_blend`/`vanna_list_blend_reserves` pick, answering with the pool's total
      * supply instead of the user's own position (reported live, reproduced exactly).
@@ -195,16 +195,16 @@ function logPlanCoverageShadow(
       routed.kind !== "plan"
     ) {
       /**
-       * "Swap 10 XLM to AQUSDC and add liquidity in Aquarius" executed ONLY the swap —
+       * "Swap 10 XLM to AQUSDC and add liquidity in Aquarius" executed ONLY the swap -
        * the add_liquidity clause never even reached a "how much?" follow-up, it was
        * silently discarded at intent-parsing time. Root cause: this override exists so
        * Vertex misclassifying a single LP/swap write as `deposit_collateral` gets
-       * corrected back — but `routeMessage` (the deterministic router `kw` comes from)
+       * corrected back - but `routeMessage` (the deterministic router `kw` comes from)
        * can only ever see ONE clause of a multi-clause sentence, since it returns at
        * the FIRST matching `if` block; for this message it returns just the swap half.
        * Without this guard, that partial single-op guess unconditionally overwrote
        * `routed` even when `routed` was ALREADY a correct, complete multi-step PLAN
-       * from Vertex that covered both clauses — throwing away the second leg. A plan
+       * from Vertex that covered both clauses - throwing away the second leg. A plan
        * was never the failure mode this override was written for (Vertex recognising
        * 2 steps is not "misclassified as deposit_collateral"), so it no longer fires
        * once `routed` is already one.
@@ -227,7 +227,7 @@ function logPlanCoverageShadow(
       };
     } else if (kw.kind === "write" && kw.op === "withdraw_from_blend") {
       // Same "always honor the keyword router's own classification" rule as the supply
-      // case above — explicit, not left to fall through the blendWrite/blendRead chain
+      // case above - explicit, not left to fall through the blendWrite/blendRead chain
       // below, precisely because that chain is what clobbered this router decision before.
       const named = assetFromMessage();
       routed = {
@@ -259,7 +259,7 @@ function logPlanCoverageShadow(
         leverage: fromKw?.leverage ?? null,
       };
     } else if (
-      // Vertex sometimes plans LP as deposit_collateral — override when Aquarius/LP named.
+      // Vertex sometimes plans LP as deposit_collateral - override when Aquarius/LP named.
       // Never fire on a swap+LP sentence: this rewrite is a SINGLE add_liquidity write,
       // which is exactly how "Swap 10 XLM to AQUSDC and add liquidity in Aquarius"
       // lost the swap (or, after the plan-builder landed, clobbered a 2-step plan).
@@ -292,7 +292,7 @@ function logPlanCoverageShadow(
         };
       }
     } else if (blendRead) {
-      // Naming two reserves is a comparison — always list both (never single-symbol).
+      // Naming two reserves is a comparison - always list both (never single-symbol).
       const named = [
         /\bxlm\b/i.test(message) ? "XLM" : null,
         /\busdc\b/i.test(message) ? "USDC" : null,
@@ -305,12 +305,12 @@ function logPlanCoverageShadow(
         /\b(supplied|positions?|btoken|holdings?|how much)\b/i.test(message) ||
         personalBlendSupply;
       /**
-       * "What is my Holdings in Blend Pool" — Vertex/router had already picked
+       * "What is my Holdings in Blend Pool" - Vertex/router had already picked
        * `vanna_list_blend_reserves` (the pool-wide stats tool), and `isBlendRead`
        * only checks "is this SOME blend-read tool", so it counted that as "Vertex got
        * it right" and skipped this override entirely, even though the message clearly
        * asked for the user's OWN position, not the pool's totals (reported live,
-       * reproduced exactly — same root cause the `blendRead` gate above had to fix,
+       * reproduced exactly - same root cause the `blendRead` gate above had to fix,
        * one layer deeper). `vertexOk` must check Vertex picked the SAME category
        * (personal position vs pool stats) the message actually asks for, not merely
        * that it picked *a* Blend tool.
@@ -398,7 +398,7 @@ function logPlanCoverageShadow(
   // (template_id "delta_neutral_carry", from step-extractor.ts). That decomposition
   // needs no network call and is already correct; a Vertex round-trip here could only
   // replace it with a plan of equal or greater length that still has to win the
-  // `>=` comparison below — and this exact strategy has previously come back from the
+  // `>=` comparison below - and this exact strategy has previously come back from the
   // model with the wrong asset on the borrow leg and the legs out of order. Once the
   // deterministic path has it right, a model call is pure downside: latency with a
   // chance of a wrong swap, no chance of an improvement.
@@ -410,7 +410,7 @@ function logPlanCoverageShadow(
    *
    * `accountCoverage` records which character ranges of the prompt some component claimed
    * and what was left over; `residueIsMaterial` says whether the leftovers mean anything.
-   * That measurement was already being computed every multi-goal turn and only LOGGED —
+   * That measurement was already being computed every multi-goal turn and only LOGGED -
    * it is the exact question "is there anything here the model could still add?", and the
    * answer was being thrown away while the model was called regardless.
    *
@@ -418,7 +418,7 @@ function logPlanCoverageShadow(
    * ~950 prompt plus 400–1800 THINKING tokens, thinking bills at output rates, and on a
    * fully-covered prompt it can only return the plan we already have. Gated on a complete
    * decomposition of at least two legs, so anything ambiguous, partial or single-leg still
-   * gets the model — this trades no understanding for the saving, which is why it is safe
+   * gets the model - this trades no understanding for the saving, which is why it is safe
    * to apply by default rather than behind a flag.
    */
   const deterministicPlanIsComplete = (() => {

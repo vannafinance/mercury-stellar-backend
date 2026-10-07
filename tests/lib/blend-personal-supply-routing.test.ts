@@ -20,7 +20,7 @@ import { routeMessage } from "@/lib/copilot/router";
  *
  * This used to assert the whole-farm overview. That answer is headlined with the Farm
  * page's Deposit TVL and lists every venue's holdings, so the reported prompt came back
- * "Your Blend Deposit TVL is $0.00" with a dust row under it — the right venue, the wrong
+ * "Your Blend Deposit TVL is $0.00" with a dust row under it - the right venue, the wrong
  * question. `vanna_get_blend_position` answers the reserve that was actually named.
  */
 describe("personal Blend supply routing", () => {

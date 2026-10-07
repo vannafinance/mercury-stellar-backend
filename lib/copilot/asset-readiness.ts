@@ -23,7 +23,7 @@ import { AquariusService } from "@/lib/aquarius-utils";
 const BLEND_FAUCET_URL =
   "https://ewqw4hx7oa.execute-api.us-east-1.amazonaws.com/getAssets";
 
-/** Aquarius testnet distribution key — same as faucet-utils (public in Aquarius app). */
+/** Aquarius testnet distribution key - same as faucet-utils (public in Aquarius app). */
 const AQUARIUS_FAUCET_SECRET =
   "SBPQCB4DOUQ26OC43QNAA3ODZOGECHJUVHDHYRHKYPL4SA22RRYGHQCX";
 const AQUARIUS_USDC_CODE = "USDC";
@@ -98,7 +98,7 @@ export async function walletSacBalance(trader: string, display: string): Promise
     } catch (e) {
       /**
        * A failed balance check is not the same fact as a zero balance, and reporting it
-       * as one is a false claim, not a safe default — the preflight this feeds built
+       * as one is a false claim, not a safe default - the preflight this feeds built
        * "You asked for 10 XLM but the wallet only has ~0.0000 XLM" for an account the
        * Margin page showed holding 9,806 XLM at the same moment. This Horizon call is a
        * SEPARATE read path from the one `vanna_get_wallet_balance` uses (that one kept
@@ -106,9 +106,9 @@ export async function walletSacBalance(trader: string, display: string): Promise
        * the one failing, not that the wallet emptied.
        *
        * A 404 is different: Horizon's own way of saying the account has never been
-       * funded, which genuinely is zero. Anything else — timeout, DNS, 5xx — is "we don't
+       * funded, which genuinely is zero. Anything else - timeout, DNS, 5xx - is "we don't
        * know," and "unknown" must never render as a specific, confident, wrong number.
-       * The non-XLM branch below already treats "unknown" as "don't block" — an
+       * The non-XLM branch below already treats "unknown" as "don't block" - an
        * unrecognised contract returns `Number.POSITIVE_INFINITY`, not 0. XLM was the one
        * branch that didn't follow that rule, which is why this bug only ever showed up
        * for XLM deposits.
@@ -117,14 +117,14 @@ export async function walletSacBalance(trader: string, display: string): Promise
         e instanceof Error && (/not\s*found/i.test(e.message) || /404/.test(e.message));
       if (notFound) return 0;
       console.warn(
-        `[copilot] Horizon balance check failed for ${trader} — treating as unknown, not zero:`,
+        `[copilot] Horizon balance check failed for ${trader} - treating as unknown, not zero:`,
         e instanceof Error ? e.message : e,
       );
       return Number.POSITIVE_INFINITY;
     }
   }
   const contract = sacContractFor(display);
-  if (!contract) return Number.POSITIVE_INFINITY; // unknown — don't block
+  if (!contract) return Number.POSITIVE_INFINITY; // unknown - don't block
   try {
     const bal = await ContractService.getSorobanTokenWalletBalance(contract, trader, trader, {
       decimals: 7,
@@ -133,7 +133,7 @@ export async function walletSacBalance(trader: string, display: string): Promise
     return parseFloat(bal) || 0;
   } catch (e) {
     console.warn(
-      `[copilot] SAC balance check failed for ${trader} (${display}) — treating as unknown, not zero:`,
+      `[copilot] SAC balance check failed for ${trader} (${display}) - treating as unknown, not zero:`,
       e instanceof Error ? e.message : e,
     );
     return Number.POSITIVE_INFINITY;
@@ -222,7 +222,7 @@ export async function buildAquariusChangeTrustXdr(
   return buildAquariusUsdcSetupXdr(gAddress, { mintIfMissing: false });
 }
 
-/** Soroswap faucet mints without a user signature — safe to call server-side. */
+/** Soroswap faucet mints without a user signature - safe to call server-side. */
 export async function autoMintSoroswapUsdc(
   gAddress: string,
 ): Promise<{ ok: true; hash?: string } | { ok: false; error: string }> {
@@ -250,7 +250,7 @@ export async function autoMintSoroswapUsdc(
 
 /**
  * Detect trustline / HostError #13 style failures for fallback humanization.
- * Prefer calling this only after preflight — prevention is the primary path.
+ * Prefer calling this only after preflight - prevention is the primary path.
  */
 export function isTrustlineMissingError(raw: string): boolean {
   const t = raw.toLowerCase();
@@ -281,7 +281,7 @@ export function classifyTrustlineFailure(raw: string, opts?: {
       reason: "wallet_setup",
       message:
         `${asset} is not set up in your wallet yet (missing trustline). ` +
-        `Copilot will open the trustline / faucet funding first on retry — no raw contract error.`,
+        `Copilot will open the trustline / faucet funding first on retry - no raw contract error.`,
     };
   }
 
@@ -306,7 +306,7 @@ export function classifyTrustlineFailure(raw: string, opts?: {
       reason: "destination_trustline",
       message:
         `Destination token trustline is missing in your wallet for this ${asset} swap/LP. ` +
-        `Open the trustline (Faucet / changeTrust) then retry — Copilot will try to set it up automatically next time.`,
+        `Open the trustline (Faucet / changeTrust) then retry - Copilot will try to set it up automatically next time.`,
     };
   }
 
@@ -332,7 +332,7 @@ async function ensureWalletAssetReady(
         reason: "insufficient_balance",
         message:
           `You asked for ${amount} XLM but the wallet only has ~${bal.toFixed(4)} XLM. ` +
-          `Reduce the amount (leave ~1 XLM for fees) — no transaction was built.`,
+          `Reduce the amount (leave ~1 XLM for fees) - no transaction was built.`,
         facts: { available: bal, requested: amount, asset: "XLM" },
       };
     }
@@ -386,7 +386,7 @@ async function ensureWalletAssetReady(
           message:
             `AQUSDC is not ready in your wallet yet` +
             (!hasClassic ? " (classic trustline missing)" : "") +
-            (needFunds ? ` — need ${amount}, have ~${bal.toFixed(4)}` : "") +
+            (needFunds ? ` - need ${amount}, have ~${bal.toFixed(4)}` : "") +
             `. Sign this setup transaction first; Copilot continues your original action automatically after it confirms.`,
         };
       }
@@ -432,11 +432,11 @@ async function ensureWalletAssetReady(
         label: "Setup BLUSDC trustline / Blend faucet",
         message:
           `BLUSDC is not set up in your wallet yet (trustline / Blend faucet funding). ` +
-          `Sign this setup transaction first — it opens the required trustlines and funds Blend USDC. ` +
+          `Sign this setup transaction first - it opens the required trustlines and funds Blend USDC. ` +
           `Copilot continues your original action automatically after it confirms.`,
       };
     }
-    // alreadyReady — trustlines exist; still need enough SAC balance
+    // alreadyReady - trustlines exist; still need enough SAC balance
     const bal = await walletSacBalance(trader, "BLUSDC");
     if (amount > 0 && bal + 1e-7 < amount) {
       return {
@@ -444,7 +444,7 @@ async function ensureWalletAssetReady(
         reason: "insufficient_balance",
         message:
           `Blend trustlines are open, but the wallet only has ~${bal.toFixed(4)} BLUSDC ` +
-          `and you asked for ${amount}. Reduce the amount or fund BLUSDC another way — ` +
+          `and you asked for ${amount}. Reduce the amount or fund BLUSDC another way - ` +
           `no deposit was simulated.`,
         facts: { available: bal, requested: amount, asset: "BLUSDC" },
       };

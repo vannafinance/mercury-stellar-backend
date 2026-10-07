@@ -10,7 +10,7 @@ import type { GoalUnderstanding } from "./types";
  * Whether the user accepted a bad fill, verified against their own words.
  *
  * Consent is the one thing a model must never supply on a user's behalf, so the quote it
- * cites has to appear verbatim in a message the user actually sent — the same anchoring
+ * cites has to appear verbatim in a message the user actually sent - the same anchoring
  * `anchoredGoalFloor` applies to a stated health-factor floor. A model that paraphrases,
  * infers agreement from impatience, or quotes its own earlier sentence fails this and the
  * protective refusal stays in place.
@@ -64,10 +64,10 @@ export function anchoredGoalFloor(goal: Pick<GoalUnderstanding, "healthFactorFlo
  * The health-factor floor the user stated, as a decimal string, or null when they stated
  * none. The latest explicit floor wins, the same precedence the research prompt states
  * for any later user instruction superseding an earlier one. Returned even when it is at
- * or below the liquidation line — callers say so; nothing here substitutes a default.
+ * or below the liquidation line - callers say so; nothing here substitutes a default.
  *
  * Six decimals, NOT eighteen. `parseMinHealthFactor` returns a JS float, and
- * `(1.3).toFixed(18)` is "1.300000000000000044" — binary representation noise. At 18
+ * `(1.3).toFixed(18)` is "1.300000000000000044" - binary representation noise. At 18
  * places that noise reaches the WAD value, and a stated floor of exactly 1.1 became
  * 1.100000000000000089, which is GREATER than the liquidation threshold and so slipped
  * past the guard. Truncating first discards the tail: a health-factor floor is never

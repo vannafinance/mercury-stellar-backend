@@ -1,11 +1,11 @@
 /**
  * In-process MCP client for the Vanna Finance MCP server.
  *
- * Auth: two credentials that answer two different questions, sent together — not
+ * Auth: two credentials that answer two different questions, sent together - not
  * one credential doing both jobs (see RoutingMCPClient at the bottom).
  *   Authorization: Bearer …      WorkOS M2M. Which application is calling.
  *                                Every call, signed in or not.
- *   X-Vanna-User-Assertion: …    the end user's own token — Privy by default, a
+ *   X-Vanna-User-Assertion: …    the end user's own token - Privy by default, a
  *                                WorkOS Connect OAuth login if they have one.
  *                                Writes only, and only when someone is signed in.
  *                                The Sign Service verifies this and it is the only
@@ -182,7 +182,7 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_get_margin_snapshot: { tool: "vanna_margin_status", action: "snapshot" },
   vanna_get_max_borrow: { tool: "vanna_margin_status", action: "max_borrow" },
   vanna_get_liquidation_snapshot: { tool: "vanna_margin_status", action: "liquidation_snapshot" },
-  // Propose-time simulation (simulate.ts): the read dispatcher's `preview` — RiskEngine snapshot
+  // Propose-time simulation (simulate.ts): the read dispatcher's `preview` - RiskEngine snapshot
   // arithmetic plus the contract's is_borrow_allowed / is_withdraw_allowed and the pool ceiling.
   vanna_preview_margin: { tool: "vanna_margin_status", action: "preview" },
   // margin writes + preflights
@@ -206,7 +206,7 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_get_blend_reserve_stats: { tool: "vanna_farm_blend", action: "reserve_stats" },
   vanna_list_blend_reserves: { tool: "vanna_farm_blend", action: "list_reserves" },
   vanna_get_blend_position: { tool: "vanna_farm_blend", action: "position" },
-  // Farm Blend writes — legacy names → consolidated farm_blend dispatcher.
+  // Farm Blend writes - legacy names → consolidated farm_blend dispatcher.
   // Plain supply (FW1) uses action=supply; leveraged entry uses action=deploy.
   vanna_deploy_to_blend: { tool: "vanna_farm_blend", action: "deploy" },
   vanna_blend_supply: { tool: "vanna_farm_blend", action: "supply" },
@@ -219,16 +219,16 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_add_liquidity: { tool: "vanna_farm_lp", action: "add_liquidity" },
   vanna_remove_liquidity: { tool: "vanna_farm_lp", action: "remove_liquidity" },
   /**
-   * DEX swap via margin account — DELIBERATELY ABSENT from this map.
+   * DEX swap via margin account - DELIBERATELY ABSENT from this map.
    *
    * `vanna_swap` was never consolidated into a dispatcher: it is still its own tool, taking
    * flat arguments (smart_account, token_in, token_out, amount_in, min_out, trader, venue).
-   * It was listed here as `{ tool: "vanna_swap", action: "swap" }` — mapping the name to
-   * ITSELF — which still sent it down the wrapping path, so the server received
+   * It was listed here as `{ tool: "vanna_swap", action: "swap" }` - mapping the name to
+   * ITSELF - which still sent it down the wrapping path, so the server received
    * `{action: "swap", kwargs: {…}}` and answered "4 validation errors for
    * vanna_swapArguments: smart_account Field required" (15 Sep, live: every copilot swap
    * died as "The tool response could not be confirmed", while the website's own Swap page
-   * — which never goes through this translation — worked fine).
+   * - which never goes through this translation - worked fine).
    *
    * An unmapped name passes through untouched, which is what this tool needs, and is what
    * the block comment above already describes. It was the only self-referential entry in
@@ -255,7 +255,7 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
 /**
  * Legacy call → the consolidated `{ name, arguments }` the server now expects.
  *
- * A name that maps to ITSELF is not a dispatcher entry — it is a tool that was never
+ * A name that maps to ITSELF is not a dispatcher entry - it is a tool that was never
  * consolidated, and wrapping its flat arguments in `{action, kwargs}` makes the server
  * reject the call for missing required fields (15 Sep, live, on `vanna_swap`). Such an
  * entry is treated as unmapped rather than trusted, so the mistake cannot come back by
@@ -276,12 +276,12 @@ export function toServerCall(
 /**
  * Where a bearer token comes from. Two implementations:
  *
- *   M2M      — the app's own client_credentials token. Fine for reads; its `sub`
+ *   M2M      - the app's own client_credentials token. Fine for reads; its `sub`
  *              is the client id, so it cannot prove WHO is asking.
- *   end user — a Connect OAuth token with `aud` = the MCP resource URI and
+ *   end user - a Connect OAuth token with `aud` = the MCP resource URI and
  *              `sub` = user_…, bound to the request (see user-context.ts).
  *
- * `key` identifies the credential so each one gets its own cached MCP session —
+ * `key` identifies the credential so each one gets its own cached MCP session -
  * a Streamable-HTTP session is opened under a specific bearer and must not be
  * shared across identities.
  */
@@ -322,7 +322,7 @@ class M2MTokenSource implements TokenSource {
 
   /**
    * Constant. This source is a long-lived singleton that mints and rotates its
-   * own token in place, so the client holding it never needs replacing — which
+   * own token in place, so the client holding it never needs replacing - which
    * is exactly why reads never hit the expiry bug that writes did.
    */
   fingerprint(): string {
@@ -371,7 +371,7 @@ class M2MTokenSource implements TokenSource {
   }
 }
 
-// There was a second TokenSource here — one built per request from the signed-in
+// There was a second TokenSource here - one built per request from the signed-in
 // user's own token, which became the bearer. It is gone on purpose: an end-user
 // token is now sent as X-Vanna-User-Assertion beside the M2M bearer (see
 // RoutingMCPClient), so there is exactly one credential minting tokens for the
@@ -380,7 +380,7 @@ class M2MTokenSource implements TokenSource {
 // ── live ────────────────────────────────────────────────────────────────────
 
 class LiveMCPClient implements MCPClient {
-  /** Cached Streamable-HTTP session — see getSession. */
+  /** Cached Streamable-HTTP session - see getSession. */
   private sessionId: string | null = null;
   private sessionPromise: Promise<string> | null = null;
   /** JSON-RPC ids must be unique per in-flight call on a shared session. */
@@ -394,15 +394,15 @@ class LiveMCPClient implements MCPClient {
    * Adopt a refreshed credential for the same identity.
    *
    * The MCP session is deliberately KEPT. Sessions are not bound to a specific
-   * bearer — the M2M source has always rotated its token every few minutes
-   * behind a stable session id in production — so re-handshaking on every
+   * bearer - the M2M source has always rotated its token every few minutes
+   * behind a stable session id in production - so re-handshaking on every
    * refresh would cost three extra round-trips for nothing. If that assumption
    * ever stops holding, the 401 path in RoutingMCPClient evicts the client and
    * rebuilds it from scratch, so the failure is self-correcting rather than
    * sticky.
    */
   useTokens(next: TokenSource): void {
-    if (next.key !== this.tokens.key) return; // different identity — not ours to adopt
+    if (next.key !== this.tokens.key) return; // different identity - not ours to adopt
     if (next.fingerprint() === this.tokens.fingerprint()) return;
     this.tokens = next;
   }
@@ -430,7 +430,7 @@ class LiveMCPClient implements MCPClient {
       try {
         // One dropped packet on initialize used to kill the whole turn: call()
         // only retries a stale session, which is a different case. Timeout and
-        // auth stay single-shot — retrying those just waits longer for a cold
+        // auth stay single-shot - retrying those just waits longer for a cold
         // server or replays a rejected token.
         initRes = await withRetry(RETRY.mcpRead, async () => {
           try {
@@ -454,7 +454,7 @@ class LiveMCPClient implements MCPClient {
             const msg = e instanceof Error ? e.message : String(e);
             if (/abort|timeout/i.test(msg)) {
               throw new MCPCallError(
-                `MCP initialize timed out after ${LiveMCPClient.TIMEOUT_MS / 1000}s — MCP may be cold. Retry.`,
+                `MCP initialize timed out after ${LiveMCPClient.TIMEOUT_MS / 1000}s - MCP may be cold. Retry.`,
               );
             }
             throw e;
@@ -576,7 +576,7 @@ class LiveMCPClient implements MCPClient {
       // The last hop this app controls, stated positively.
       //
       // Without it, "the app never sent the assertion" and "the app sent it and
-      // something downstream lost it" look identical from outside — and they did,
+      // something downstream lost it" look identical from outside - and they did,
       // for a deploy cycle: the header was on the wire the whole time while the MCP
       // read the identity of the request that OPENED the session rather than the one
       // making the call. Writes are rare enough that one line each is cheap, and it
@@ -593,7 +593,7 @@ class LiveMCPClient implements MCPClient {
       // A write leaving without an assertion is the exact condition that made
       // auto-sign fail live, and it was invisible: the MCP then forwards its own
       // machine credential, and the Sign Service reports "subject is not an end
-      // user" — an error naming the wrong hop. One greppable line here says which
+      // user" - an error naming the wrong hop. One greppable line here says which
       // side actually dropped the identity.
       //
       // Not an error: a signed-out visitor doing a write is legitimate and falls
@@ -631,7 +631,7 @@ class LiveMCPClient implements MCPClient {
       const msg = e instanceof Error ? e.message : String(e);
       if (/abort|timeout/i.test(msg)) {
         throw new MCPCallError(
-          `MCP call '${tool}' timed out after ${LiveMCPClient.TIMEOUT_MS / 1000}s — server may be cold or overloaded. Retry.`,
+          `MCP call '${tool}' timed out after ${LiveMCPClient.TIMEOUT_MS / 1000}s - server may be cold or overloaded. Retry.`,
         );
       }
       throw new MCPCallError(
@@ -655,7 +655,7 @@ class LiveMCPClient implements MCPClient {
         );
       }
       // A cached session the server has since dropped: 404 (unknown session) or a
-      // 400 naming the session. Re-handshake once and replay — invisible to callers.
+      // 400 naming the session. Re-handshake once and replay - invisible to callers.
       const staleSession =
         callRes.status === 404 || (callRes.status === 400 && /session/i.test(text));
       if (staleSession && retryOnStaleSession) {
@@ -666,8 +666,8 @@ class LiveMCPClient implements MCPClient {
        * The status travels as a field, not only inside the sentence.
        *
        * Without `httpStatus` here every non-auth transport failure reached the user as the
-       * raw string — `MCP call 'vanna_blend_withdraw' failed (429): {"error":"rate_limited"…}`
-       * — because nothing downstream could see what the status was and act on it. It is
+       * raw string - `MCP call 'vanna_blend_withdraw' failed (429): {"error":"rate_limited"…}`
+       * - because nothing downstream could see what the status was and act on it. It is
        * parsed out of the payload where possible so a coded refusal keeps its code too.
        */
       const parsed = parseErrorObject(text);
@@ -925,7 +925,7 @@ function liveClientFor(tokens: TokenSource): LiveMCPClient {
   while (liveClients.size > MAX_CLIENTS) {
     const oldest = liveClients.keys().next();
     if (oldest.done) break;
-    // Never evict the shared M2M client — every signed-out read depends on it.
+    // Never evict the shared M2M client - every signed-out read depends on it.
     if (oldest.value === m2mTokens.key) {
       const m2m = liveClients.get(m2mTokens.key)!;
       liveClients.delete(m2mTokens.key);

@@ -1,6 +1,6 @@
 /**
  * Propose-time simulation: before a plan is shown, its steps are put to the protocol's
- * own preview — the MCP `preview` actions, which read the RiskEngine's liquidation
+ * own preview - the MCP `preview` actions, which read the RiskEngine's liquidation
  * snapshot and the oracle and ask the contract's `is_borrow_allowed` /
  * `is_withdraw_allowed`, the pool's borrow ceiling and Earn's minimum. The sizer projects
  * with the facts it read; the preview asks the thing that will actually say yes or no.
@@ -10,7 +10,7 @@
  * Every preview answers against the CURRENT chain state. A step whose funds or health
  * depend on an earlier step of the same plan (a Blend supply that takes what the deposit
  * before it put in; a borrow after a deposit that raises health) cannot be previewed
- * truthfully — the preview would refuse what the run would allow. Those steps are
+ * truthfully - the preview would refuse what the run would allow. Those steps are
  * `dependent`: the sizer's projection stands for them, and the card says so. Which steps
  * depend on which is read from the op-flow table, not from the op names.
  *
@@ -74,7 +74,7 @@ export interface PlanSimulation {
 
 /** The preview each venue offers, by the legacy name the transport maps to `{ tool, action: "preview" }`.
  * Blend supply/withdraw is valued on the same RiskEngine snapshot as margin (b-token
- * receipt = underlying × b_rate), so it uses `vanna_preview_margin` — not a second
+ * receipt = underlying × b_rate), so it uses `vanna_preview_margin` - not a second
  * Blend-only preview, and not a venue lock. Aquarius/Soroswap writes are margin-venue
  * ops (`add_liquidity` / `remove_liquidity` / `swap`); those rows stay null. */
 const PREVIEW_TOOL: Record<Venue, string | null> = {
@@ -92,8 +92,8 @@ function operationOf(op: WorkflowOp): string {
 
 /**
  * A step can be previewed against the current state only when nothing before it in the
- * plan changes what the preview would look at: the pocket it draws from, or — for a
- * margin step — the account's health.
+ * plan changes what the preview would look at: the pocket it draws from, or - for a
+ * margin step - the account's health.
  */
 export function dependsOnEarlier(steps: readonly ProposalStep[], index: number): boolean {
   const step = steps[index];
@@ -107,7 +107,7 @@ export function dependsOnEarlier(steps: readonly ProposalStep[], index: number):
 }
 
 /**
- * A swap's args carry no `symbol`/`amount` at all — `writeArgsFor` built them as
+ * A swap's args carry no `symbol`/`amount` at all - `writeArgsFor` built them as
  * `token_in`/`amount_in` (plus `token_out`/`min_out`), since a swap moves two assets, not
  * one. Sourcing the spent side from the op's own argument shape here, and passing the
  * SAME `min_out` the write carries, is what lets `vanna_preview_margin`'s swap branch
@@ -214,7 +214,7 @@ function summarise(steps: readonly ProposalStep[], results: StepSimulation[]): P
   }).join("; ");
   /**
    * What the margin preview answers for a swap is "does the account stay healthy if this
-   * fills at its floor" — it reads the RiskEngine and the oracle, and asks the pool
+   * fills at its floor" - it reads the RiskEngine and the oracle, and asks the pool
    * nothing. Saying only "allowed" let that read as "this trade will go through", which
    * is how a card stayed clickable for a swap the DEX then refused (15 Sep, live). The
    * pool has the final word at approve time, so the card says which question was answered.

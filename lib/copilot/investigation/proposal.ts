@@ -1,7 +1,7 @@
 /**
  * Rebuild a candidate from investigation evidence and hold it as a journal proposal.
  *
- * The browser may name a candidate by id. It may not supply amounts, tools or args —
+ * The browser may name a candidate by id. It may not supply amounts, tools or args -
  * those are compiled here from sealed investigation evidence when that bundle is still
  * fresh, otherwise from a new world-read, then the same generator that produced the card.
  * A compiled step list that `create()` would refuse never reaches the user.
@@ -109,7 +109,7 @@ export async function proposeWorkflow(input: {
     const floor = prior.evidence?.capacity?.floor ?? null;
     /**
      * The acceptance travels with the steps. A stated swap is proposed through THIS branch,
-     * not the composed one below — so leaving it off here dropped the user's own words at
+     * not the composed one below - so leaving it off here dropped the user's own words at
      * the last hop: the plan gate lifted and the card appeared, then the pre-write re-quote
      * and the MCP's impact gate both still saw an unaccepted fill and withheld the swap the
      * user had already agreed to. The same field the composed path seals, sealed here.
@@ -157,16 +157,16 @@ export async function proposeWorkflow(input: {
   const now = wallNow;
   /**
    * A stale bundle is re-read. The market set alone is not enough for a composed plan: a
-   * repay needs the debt, a withdraw the posted collateral, a redeem the Earn position —
+   * repay needs the debt, a withdraw the posted collateral, a redeem the Earn position -
    * without them the plan re-resolves as "no XLM debt was read" and the card says the
    * option "is no longer available" (13 Sep, one minute after it was offered).
    */
   /**
-   * The world-read and the app snapshot are independent MCP round trips — neither's result
-   * feeds the other — so a stale propose ran them one after another for no reason: up to
+   * The world-read and the app snapshot are independent MCP round trips - neither's result
+   * feeds the other - so a stale propose ran them one after another for no reason: up to
    * 15s for the reads, THEN up to another 15s for the snapshot, on top of whatever the
    * scope re-resolution above already cost. On a cold cache (five minutes of reading the
-   * card is all it takes — the scope cache and the evidence freshness window both lapse
+   * card is all it takes - the scope cache and the evidence freshness window both lapse
    * together) that sequential stack was most of what pushed a propose past the browser's
    * 90s budget (15 Sep, D4). Running them together does not change what either reads.
    */
@@ -176,12 +176,12 @@ export async function proposeWorkflow(input: {
         sealedPlan ? [...STRATEGY_READS, ...readsForPlans([sealedPlan], [], now).filter((r) => !STRATEGY_READS.some((s) => s.capability === r.capability && JSON.stringify(s.args) === JSON.stringify(r.args)))] : STRATEGY_READS);
   /**
    * On a stale bundle the floor is the one sealed at investigation (model-anchored to the
-   * user's words), not a fresh regex pass over the messages — the regex missed "stays
+   * user's words), not a fresh regex pass over the messages - the regex missed "stays
    * above 1.14" and a 409 followed (13 Sep).
    */
   /**
-   * Stale path: the app snapshot is attempted ONCE, bounded — it is the slow, uncancellable
-   * read — and the basis is computed from that single attempt. Headroom for the fixed
+   * Stale path: the app snapshot is attempted ONCE, bounded - it is the slow, uncancellable
+   * read - and the basis is computed from that single attempt. Headroom for the fixed
    * shapes and the position for a composed plan both derive from it; nothing is read twice.
    * Reading it twice, unbounded, took a propose past the browser's 90s (13 Sep).
    */
@@ -217,7 +217,7 @@ export async function proposeWorkflow(input: {
   /**
    * Same gates as `researchTurn`: an unvalued stated amount must not fall through to
    * sizing-to-the-floor, and a borrow shape still needs the user's floor. Idle supply
-   * does not, but it still needs a comparison row — that is how the generator keys assets.
+   * does not, but it still needs a comparison row - that is how the generator keys assets.
    */
   const candidates = spendableOnly
     ? generateCandidates({
@@ -250,12 +250,12 @@ export async function proposeWorkflow(input: {
         // Only shapes that sized under the user's real permission were sealed as proposable.
         borrowing: "allowed", comparisons,
         /**
-         * The re-propose here has no fresh model turn — the acceptance was already
+         * The re-propose here has no fresh model turn - the acceptance was already
          * anchored to the user's own words when the investigation sealed it (service.ts),
          * and compacted onto `evidence.slippageAccepted`. Omitting it here (as before) left
          * `ctx.goal` undefined on every composed-plan approval, so `resolvePlans` refused
          * the exact-output AQUSDC swap a second time even after the user said "I accept
-         * the loss" — the sizer and the card never saw the word.
+         * the loss" - the sizer and the card never saw the word.
          */
         goal: prior.evidence?.slippageAccepted ? { slippageAccepted: { accepted: true, sourceQuote: "" } } : undefined,
         walletReserves,
@@ -269,7 +269,7 @@ export async function proposeWorkflow(input: {
     const why = resolved?.rejected.map((r) => `${r.leg}: ${r.reason}`).join("; ");
     console.warn("[copilot] proposal candidate no longer resolves", { candidateId: input.candidateId, reused, why: why ?? null });
     throw new ResearchError("candidate_unavailable", why
-      ? `That option no longer sizes on the current reads — ${why}. Start a new investigation.`
+      ? `That option no longer sizes on the current reads - ${why}. Start a new investigation.`
       : "That option is no longer available at the current rates and position. Start a new investigation.");
   }
 

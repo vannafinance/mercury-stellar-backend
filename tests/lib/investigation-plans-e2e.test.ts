@@ -1,9 +1,9 @@
 /**
- * A prompt outside the three fixed shapes gets a working option — end to end.
+ * A prompt outside the three fixed shapes gets a working option - end to end.
  *
  * ## The live failure this pins
  *
- * 13 Sep: *"deploy my XLM and USDC in farm, HF above 1.2"* — five warnings, zero options,
+ * 13 Sep: *"deploy my XLM and USDC in farm, HF above 1.2"* - five warnings, zero options,
  * Start over. Not because the reads failed (they did not) and not because the model
  * misunderstood (it did not), but because the strategy layer only knew three shapes.
  *
@@ -138,7 +138,7 @@ beforeEach(() => {
   mcp.call.mockClear();
 });
 
-describe("model proposes, code disposes — end to end", () => {
+describe("model proposes, code disposes - end to end", () => {
   it("turns a composed plan into a ranked option with sized steps, and rejects the one that cannot be sized", async () => {
     let turn = 0;
     const view = await researchTurn(
@@ -232,7 +232,7 @@ describe("model proposes, code disposes — end to end", () => {
       { message: "Supply idle XLM to Blend without new borrowing", wallet: SCOPE.trader, continuation: null },
       {
         subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
-        // The model reads the wallet only — no price, no Blend reserves — and composes anyway.
+        // The model reads the wallet only - no price, no Blend reserves - and composes anyway.
         model: async () => turn++ === 0
           ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }] }
           : {
@@ -256,9 +256,9 @@ describe("model proposes, code disposes — end to end", () => {
   /**
    * 15 Sep, live: "Deposit 50 XLM, borrow BLUSDC to HF floor 1.40" answered "You asked to
    * borrow 1.4 BLUSDC, but no BLUSDC price was read, so that amount could not be checked
-   * against your floor" — then `plan_reads` read BLUSDC's price ~4.7s later in the SAME
+   * against your floor" - then `plan_reads` read BLUSDC's price ~4.7s later in the SAME
    * turn. This message names no strategy keyword (`needsMarketSeed` does not fire), so
-   * nothing seeds BLUSDC's price ahead of time the way "deploy"/"invest" wording does —
+   * nothing seeds BLUSDC's price ahead of time the way "deploy"/"invest" wording does -
    * `plan_reads` is the only thing that ever fetches it, and it runs AFTER the point the
    * warning used to be checked at.
    */
@@ -405,7 +405,7 @@ describe("model proposes, code disposes — end to end", () => {
   });
 
   it("when the Margin page and the liquidation engine disagree, sizes BOTH from the contract and names the unposted gap", async () => {
-    // 13 Sep live: app $6,605.84 / $5,102.54 vs contract $6,457.32 / $5,110.67 — past the drift band.
+    // 13 Sep live: app $6,605.84 / $5,102.54 vs contract $6,457.32 / $5,110.67 - past the drift band.
     harness.computeSizingBasis.mockResolvedValue({
       grossCollateralUsd: "6457.32", debtUsd: "5110.67", source: "contract", issue: "sizing_sources_disagree",
       app: { grossCollateralUsd: "6605.84", debtUsd: "5102.54" }, contract: { grossCollateralUsd: "6457.32", debtUsd: "5110.67" },
@@ -430,7 +430,7 @@ describe("model proposes, code disposes — end to end", () => {
     /**
      * The disagreement no longer refuses the borrow: the app counts what the account holds
      * and the contract counts what is posted, so they disagree permanently on any account
-     * with an unposted token — and the sizer is on the contract's figures either way. The
+     * with an unposted token - and the sizer is on the contract's figures either way. The
      * levered option is offered, projected to the stated 1.2 floor on those figures.
      */
     const levered = view.candidates?.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM");
@@ -439,7 +439,7 @@ describe("model proposes, code disposes — end to end", () => {
     expect(Number(last.healthFactorAfter)).toBeCloseTo(1.2, 3);
     const shownAfter = (6605.84 + Number(last.grossAfterUsd) - 6457.32) / (5102.54 + Number(last.debtAfterUsd) - 5110.67);
     expect(Number(levered!.finalHealthFactor)).toBeCloseTo(shownAfter, 3);
-    // The gap is stated as what it is — $6,605.84 − $6,457.32 of unposted collateral.
+    // The gap is stated as what it is - $6,605.84 − $6,457.32 of unposted collateral.
     // Logged server-side as `unposted_collateral`, not a note on the card: the plans above are already sized
     // from the contract, which is the part the user needs.
     expect(view.warnings.some((warning) => /not posted as collateral/.test(warning))).toBe(false);
@@ -565,7 +565,7 @@ describe("a strategy over a bare USDC", () => {
 });
 
 /**
- * 7 Oct, live: "use both usdc and xlm ... take new loans" — the model's combined plans drew on one
+ * 7 Oct, live: "use both usdc and xlm ... take new loans" - the model's combined plans drew on one
  * idle balance twice (all_wallet in two legs). The sizer refused them, rightly, and only single-asset
  * options were left, with the combined strategy dropped without a word. The refusal names a fault in
  * how the PLAN is built, so the model is told and tries once more; a refusal that is a fact is not

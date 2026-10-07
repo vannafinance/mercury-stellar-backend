@@ -1,9 +1,9 @@
 /**
  * "Supply Liquidity in XLM Lending Pool" asked how much XLM the user WANTS to
- * supply, with no figure to decide against — the real Earn page shows "Bal:
+ * supply, with no figure to decide against - the real Earn page shows "Bal:
  * 3134.68 XLM" right next to the same input for exactly this reason (reported
  * live, issue #4). The clarify now includes the wallet's own balance for the
- * named asset, best-effort — a failed balance read still falls through to the
+ * named asset, best-effort - a failed balance read still falls through to the
  * plain question rather than blocking the clarify.
  */
 import { describe, expect, it } from "vitest";

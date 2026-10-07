@@ -25,7 +25,7 @@ export interface InvestigationCardProps {
   turns?: ThreadTurn[];
   /** Workspace already paints the transcript; the card then only holds research/plan. */
   omitTranscript?: boolean;
-  /** Act on what was understood — the plan card takes over from here. */
+  /** Act on what was understood - the plan card takes over from here. */
   onContinue?: () => void;
   continueLabel?: string;
   /** Prepare the journal proposal for one of the sized options. */
@@ -344,7 +344,7 @@ export function InvestigationCard({
   /**
    * Another option may be prepared once the current plan can no longer submit anything:
    * blocked before broadcast, finished, or cancelled. While a plan is proposed, approved,
-   * running, awaiting a signature — or uncertain, where a transaction may be in flight —
+   * running, awaiting a signature - or uncertain, where a transaction may be in flight -
    * a second plan would race it, so the buttons wait.
    */
   const planInFlight = !!workflow && !finished(workflow);
@@ -356,7 +356,7 @@ export function InvestigationCard({
    * the swap's EXECUTION PROGRESS stepper in the conversation AND again inside this
    * card, one above the other, both settled, same tx. The workspace copies every
    * `workflow.view` onto the assistant turn as a durable receipt
-   * (`executionReceiptFromWorkflowView`), which `ChatTurns` renders — so once that
+   * (`executionReceiptFromWorkflowView`), which `ChatTurns` renders - so once that
    * receipt exists, both components are painting the same steps from the same source.
    *
    * `workflowId` is what the receipt is keyed by, so it settles which run a receipt
@@ -394,8 +394,8 @@ export function InvestigationCard({
   const lastTurn = turns[turns.length - 1];
   /**
    * Hide the previous research while a new user turn is in flight (last row is
-   * the question). Empty `turns` still shows `result` so a live research card —
-   * and the options tests — keep the sized answer without a matching transcript row.
+   * the question). Empty `turns` still shows `result` so a live research card -
+   * and the options tests - keep the sized answer without a matching transcript row.
    */
   const resultIsLatest = !!result && lastTurn?.role !== "user";
   const hasCardContent = Boolean(
@@ -447,7 +447,7 @@ export function InvestigationCard({
           )}
 
           {/*
-            * While the next turn is running, `result` is still the PREVIOUS turn's — the
+            * While the next turn is running, `result` is still the PREVIOUS turn's - the
             * hook keeps it deliberately so the column does not go blank. Rendering it here
             * put the last reply on screen twice: clamped in the thread above, and again in
             * full BELOW the question just asked, where it reads as the answer to it. The
@@ -671,7 +671,7 @@ export function InvestigationCard({
             </article>
           )}
 
-          {/* "New chat" lives in the page header now — one control, not one per card. */}
+          {/* "New chat" lives in the page header now - one control, not one per card. */}
           {!loading && onContinue && result && (
             <div className="flex flex-wrap items-center gap-2">
               <button type="button" onClick={onContinue} className={BTN_PRIMARY}>{continueLabel ?? "Continue"}</button>

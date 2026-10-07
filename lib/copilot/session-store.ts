@@ -1,6 +1,6 @@
 /**
  * Subject-keyed conversation store: every conversation a signed-in user has had with the
- * copilot — its transcript, its last sealed evidence token and its last research view —
+ * copilot - its transcript, its last sealed evidence token and its last research view -
  * plus which one is open.
  *
  * ## Durable where it runs
@@ -16,7 +16,7 @@
  * ## Two collections, on purpose
  *
  * A conversation carries its turns AND the last `ResearchView`, which holds every fact and
- * candidate the card showed — tens of kilobytes. Thirty of those in one document would
+ * candidate the card showed - tens of kilobytes. Thirty of those in one document would
  * pass Firestore's 1 MiB limit, so each conversation is its own document and a small index
  * per subject holds the summaries and the pointer to the open one.
  *
@@ -99,7 +99,7 @@ function summarise(conversation: CopilotConversation): ConversationSummary {
   return { id: conversation.id, title: conversation.title, createdAt: conversation.createdAt, updatedAt: conversation.updatedAt };
 }
 
-/** Newest first — the order the list shows. */
+/** Newest first - the order the list shows. */
 function ordered(conversations: readonly ConversationSummary[]): ConversationSummary[] {
   return [...conversations].sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -168,7 +168,7 @@ export async function closeActiveConversation(subject: string): Promise<void> {
 /**
  * Delete a conversation: drop it from the index, then overwrite its document with a
  * tombstone so the encrypted payload no longer holds the transcript. The record store has
- * no delete verb — an overwrite is how content goes away, and Firestore keeps no prior
+ * no delete verb - an overwrite is how content goes away, and Firestore keeps no prior
  * version of it.
  */
 export async function deleteConversation(subject: string, id: string): Promise<boolean> {

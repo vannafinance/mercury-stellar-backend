@@ -5,7 +5,7 @@ import { ClaimRegistry, collectStandardConstraints, matchMinHealthFactor, parseM
  * "floor" is how the product names this number, so a user echoing it back must be read.
  *
  * The approval card says "your 1.3 health-factor floor", and #84's refusal says "does
- * not pass your 1.3 health-factor floor" — then "borrow BLUSDC to HF floor 1.40"
+ * not pass your 1.3 health-factor floor" - then "borrow BLUSDC to HF floor 1.40"
  * matched none of the floor patterns, because the connector list held `above`, `over`
  * and `at least` but not the product's own word.
  *
@@ -40,7 +40,7 @@ describe("THE LIVE BUG: a floor stated as 'floor' was read as neither", () => {
 
   /**
    * The registry is what keeps the number away from the amount scan, so the span has
-   * to be claimed — not merely parsed.
+   * to be claimed - not merely parsed.
    */
   it("claims the floor's span so the amount scan cannot see it", () => {
     const text = "borrow BLUSDC to HF floor 1.40";

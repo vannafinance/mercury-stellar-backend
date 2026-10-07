@@ -8,7 +8,7 @@ import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 /**
  * Live, 22 Sep, wallet GDW3B2…VJ52: "deposit 100 XLM, borrow 20 BLUSDC and supply it to
  * blend" settled all three legs on-chain, and the finished EXECUTION PROGRESS card showed
- * exactly one — deposit_collateral — while the turn beside it said the run was done.
+ * exactly one - deposit_collateral - while the turn beside it said the run was done.
  *
  * The receipt's steps were built from the single write that had just been signed, so each
  * settling leg overwrote the last with a fresh one-element array. The last writer won and
@@ -45,7 +45,7 @@ describe("a run's receipt describes the run, not the last leg to settle", () => 
   it("keys on the run, so a later leg updates the same receipt instead of a new one", () => {
     const afterLeg1 = buildRunReceipt({ ...base, legs: RUN.slice(0, 1), requestId: "req-leg-1" });
     const afterLeg3 = buildRunReceipt({ ...base, legs: RUN, requestId: "req-leg-3" });
-    // Different requests, same run — the receipt must not fork.
+    // Different requests, same run - the receipt must not fork.
     expect(afterLeg1.workflowId).toBe(afterLeg3.workflowId);
   });
 
@@ -69,7 +69,7 @@ describe("a run's receipt describes the run, not the last leg to settle", () => 
     const receipt = buildRunReceipt({ ...base, legs: RUN });
     const turns: ThreadTurn[] = [
       { role: "user", text: "deposit 100 XLM, borrow 20 BLUSDC and supply it to blend" },
-      { role: "assistant", text: "Supply 19.998 BLUSDC to Blend — settled on-chain.", executionReceipt: receipt },
+      { role: "assistant", text: "Supply 19.998 BLUSDC to Blend - settled on-chain.", executionReceipt: receipt },
     ];
     const { container } = render(<ChatTurns turns={turns} sessionSigning={true} />);
     const text = (container.textContent || "").replace(/\s+/g, " ");

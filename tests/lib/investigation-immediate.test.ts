@@ -13,7 +13,7 @@ import { immediateReply } from "@/lib/copilot/investigation/immediate";
 import { isProductInvestigationTurn } from "@/lib/copilot/investigation/social-lane";
 
 const SOCIAL_REPLY =
-  "Hi — I’m Vanna Copilot. Ask about your margin account, Earn, Farm, or a move you want sized from live reads.";
+  "Hi - I’m Vanna Copilot. Ask about your margin account, Earn, Farm, or a move you want sized from live reads.";
 
 beforeEach(() => {
   mocks.classifySocialLane.mockReset();
@@ -27,7 +27,7 @@ afterEach(() => {
 /**
  * The gate that answers a turn with nothing to investigate.
  *
- * The risk here is not missing a greeting — it is swallowing a real instruction. So the
+ * The risk here is not missing a greeting - it is swallowing a real instruction. So the
  * tests that matter most are the ones proving a financial request still falls through, even
  * when it is wrapped in pleasantries, and that those turns never wait on Flash-Lite.
  */
@@ -60,7 +60,7 @@ describe("turns answered without investigating", () => {
     for (const text of [
       "hi, can I borrow 500 USDC",
       "hey what's my health factor",
-      "hello — lend 10 XLM please",
+      "hello - lend 10 XLM please",
       "thanks, now deposit 5 XLM as collateral",
     ]) {
       expect(await immediateReply(text), text).toBeNull();

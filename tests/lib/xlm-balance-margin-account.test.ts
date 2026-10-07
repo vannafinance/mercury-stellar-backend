@@ -1,12 +1,12 @@
 /**
  * Reported live: "What is my XLM Balance in Margin account?" answered "No XLM balance
  * figure is available because only the margin smart account address was resolved... its
- * token positions were not returned in this lookup." — it had been routed to
+ * token positions were not returned in this lookup." - it had been routed to
  * `query_resolve` (account-address resolution), not a real balance read. `query_resolve`'s
  * own match (`any(text, "resolve", "smart account", "margin account") && any(text, "look
  * up", "resolve", "find my", "what is my")`) is broad enough that ANY possessive question
  * mentioning "margin account" wins there, because no earlier branch had a pattern for
- * "<asset> balance ... in margin account" at all — `asksAboutOwnCollateral` required the
+ * "<asset> balance ... in margin account" at all - `asksAboutOwnCollateral` required the
  * literal word "collateral", which this question never says.
  */
 import { describe, expect, it } from "vitest";

@@ -11,8 +11,8 @@ export interface InvestigationScope {
    * (an empty bindings list is not proof the wallet is unlinked).
    * `session` = the page sent a G-address but this request was not signed in.
    * `claimed` = signed in with no binding yet, so `trader` is the address the browser
-   * asserted rather than one the account proved. A plan may still be prepared for it —
-   * that wallet's own key has to sign the XDR — but nothing may treat it as proof of
+   * asserted rather than one the account proved. A plan may still be prepared for it -
+   * that wallet's own key has to sign the XDR - but nothing may treat it as proof of
    * ownership, and it is never cached for the next request.
    */
   unverified?: "bindings" | "session" | "claimed";
@@ -27,7 +27,7 @@ export interface InvestigationRequest {
   /**
    * Evidence the SERVER already holds, presented to the model as observations it need not
    * read. Not a shortcut: it is the same authoritative snapshot the Margin page renders, so
-   * asking MCP for it again spends turns and time to obtain a number the app already has —
+   * asking MCP for it again spends turns and time to obtain a number the app already has -
    * and when that MCP read came back without a scalar ratio, the card reported the health
    * factor as unavailable next to a rail showing it.
    */
@@ -45,7 +45,7 @@ export interface GoalUnderstanding {
   relation?: "new" | "refine";
   actions?: StatedAction[];
   /**
-   * A lifecycle write — not a sized plan. Opening a margin account is one of these:
+   * A lifecycle write - not a sized plan. Opening a margin account is one of these:
    * it has no token amount and runs for the connected G-wallet.
    */
   write?: { op: import("../workflow/lifecycle").LifecycleWriteOp; sourceQuote: string };
@@ -57,7 +57,7 @@ export interface GoalUnderstanding {
    * of their message that contains it. Understanding which sentence states a floor is
    * the model's job ("HF stays above 1.3", "never let health dip under 1.25"); the
    * number is verified against the user's own words in code and never invented. Absent
-   * when no number was stated — "avoid liquidation" is not a floor.
+   * when no number was stated - "avoid liquidation" is not a floor.
    */
   healthFactorFloor?: { value: string; sourceQuote: string };
   /**
@@ -69,7 +69,7 @@ export interface GoalUnderstanding {
    */
   walletReserves?: { asset: string; amount: string; sourceQuote: string }[];
   /**
-   * The user accepting a bad price, in their own words — "i dont care if i lose",
+   * The user accepting a bad price, in their own words - "i dont care if i lose",
    * "swap anyway". Structural, because the model already understood it: on 16 Sep it
    * wrote "User explicitly accepts potential loss/slippage" into `constraints`, a
    * free-text list nothing downstream reads, so the sizer, the floor and the auto-sign
@@ -88,7 +88,7 @@ export interface GoalUnderstanding {
   /**
    * Whether the user asked to act when something happens later. `none` is a sizing
    * limit ("borrow until HF is 1.5"). `future_condition` is an action held for a
-   * later event, and only that is refused — after the quote is found in their words.
+   * later event, and only that is refused - after the quote is found in their words.
    */
   trigger?: { kind: "none" | "future_condition"; sourceQuote?: string };
 }
@@ -97,7 +97,7 @@ export interface GoalUnderstanding {
 export type PlanOp = WorkflowOp;
 
 /**
- * How a leg is sized — a WORD, never a number. The model says what the amount is a
+ * How a leg is sized - a WORD, never a number. The model says what the amount is a
  * function of; `plan.ts` computes it from observations and the user's floor:
  *
  *   all_wallet      the asset's idle wallet balance (less the fee reserve for XLM)
@@ -115,18 +115,18 @@ export type PlanSizing =
   | { kind: "previous_leg" }
   /**
    * `amountAsset` names which of the leg's two assets the literal amount is denominated
-   * in — only meaningful on a swap (the only op with two assets). Absent, or "asset", means
+   * in - only meaningful on a swap (the only op with two assets). Absent, or "asset", means
    * the ordinary case: the amount is what the leg spends. "assetOut" means the user stated
-   * what they want to RECEIVE ("give me 15 SOUSDC", "swap XLM to receive 961 AQUSDC") — the
+   * what they want to RECEIVE ("give me 15 SOUSDC", "swap XLM to receive 961 AQUSDC") - the
    * server inverts the DEX's own quote to size the spend, on venues where that inversion is
    * possible, and refuses by name elsewhere.
    *
    * This is a structural field, not a re-derived guess: earlier, exact-output intent was
    * inferred by regexing sourceQuote for a fixed list of phrasings ("receive", "get", "for
-   * at least"), which is the same failure mode a hardcoded vocabulary always has — a model
+   * at least"), which is the same failure mode a hardcoded vocabulary always has - a model
    * that (correctly) understood "give me 15 SOUSDC" as a receive-amount, phrased in words
    * the list did not enumerate, produced a leg indistinguishable from "spend 15 XLM", which
-   * was then silently executed (16 Sep, live — see PROMPT-LIBRARY.md). The model already
+   * was then silently executed (16 Sep, live - see PROMPT-LIBRARY.md). The model already
    * gets the semantics right every time it is asked in its own words ("Understood as:
    * Swap XLM to receive 15 SOUSDC"); this field lets it say so structurally instead of
    * leaving that understanding to be reconstructed from prose downstream.
@@ -151,16 +151,16 @@ export type PlanSizing =
       allocation?: { reason: string };
     }
   /**
-   * A stated leverage multiple on a borrow that feeds off the leg before it — "borrow with
+   * A stated leverage multiple on a borrow that feeds off the leg before it - "borrow with
    * 6x leverage" after a deposit. `multiple` is the industry-standard "Nx position" figure
    * (borrow = prior leg's amount × (N − 1), the exact split `splitLeverageAmounts` already
-   * uses elsewhere in this codebase — reused as one formula, not reinvented here). A floor
+   * uses elsewhere in this codebase - reused as one formula, not reinvented here). A floor
    * stated in the SAME message is not an alternative sizing method the model may substitute
    * this for: it is the existing floor-projection check every borrow already goes through,
    * refusing with the figures when leverage at this size would breach it, exactly as a
    * literal amount that breaches the floor already refuses. 15 Sep, live: "borrow with 6x
    * leverage... HF > 1.19" had no way to state the 6x at all, so the model substituted
-   * `to_floor` — a completely different amount — without saying it had dropped the 6x.
+   * `to_floor` - a completely different amount - without saying it had dropped the 6x.
    */
   | { kind: "leverage"; multiple: string; sourceQuote: string };
 
@@ -175,7 +175,7 @@ export interface PlanLeg {
    */
   assetOut?: string;
   /**
-   * The DEX a swap or add_liquidity leg routes through — the MCP's own `venue` argument,
+   * The DEX a swap or add_liquidity leg routes through - the MCP's own `venue` argument,
    * "soroswap" or "aquarius". Absent means the registry decides: an asset that names its
    * venue (AQUSDC is Aquarius's USDC, SOUSDC is Soroswap's) fixes it.
    */
@@ -190,8 +190,8 @@ export interface PlanLeg {
  * when the free-form `plans` array is empty or gets dropped. That only works if an action
  * can hold everything a leg can hold.
  *
- * It could not. `actions` used to be `{op, asset, amount, sourceQuote}` — a bare decimal
- * and nothing else — while `PlanLeg` had `sizing`, `assetOut` and `venue`. So the narrower
+ * It could not. `actions` used to be `{op, asset, amount, sourceQuote}` - a bare decimal
+ * and nothing else - while `PlanLeg` had `sizing`, `assetOut` and `venue`. So the narrower
  * form fed the wider one, and every instruction using leverage ("borrow 2x"), a pool pair
  * ("SOUSDC and XLM in Soroswap") or any sizing word fell off the deterministic path
  * entirely: `exactKeys` dropped the action for carrying an unknown key, and `"2x"` failed
@@ -201,7 +201,7 @@ export interface PlanLeg {
  *
  * Defining it as `PlanLeg` rather than repeating the fields is the point: the two cannot
  * drift apart again, and a new leg capability is available to a stated instruction the
- * moment a plan can express it. `sourceQuote` is the only addition — where in the user's
+ * moment a plan can express it. `sourceQuote` is the only addition - where in the user's
  * message this action came from, which a leg has no reason to carry.
  */
 export type StatedAction = PlanLeg & { sourceQuote: string };
@@ -227,7 +227,7 @@ export interface ReadRequest {
 export type ResearchDecision =
   /**
    * One or more reads to run before the next decision. Batched because most reads are
-   * independent — wallet balances, debt, collateral and health do not inform each other —
+   * independent - wallet balances, debt, collateral and health do not inform each other -
    * and charging a whole model round-trip for each one re-sent the system prompt plus every
    * observation so far, making input cost grow quadratically in the number of reads.
    */
@@ -249,7 +249,7 @@ export type ResearchDecision =
       droppedFindings?: number;
       /**
        * The run hit its deadline and this outcome was synthesised from whatever reads
-       * finished — the model never produced a goal or any plans. A structured fact
+       * finished - the model never produced a goal or any plans. A structured fact
        * because the caller has to act on it: `service.ts` used to detect this by
        * regex-matching the prose in `goal.constraints`, which silently stops working
        * the moment that sentence is reworded.

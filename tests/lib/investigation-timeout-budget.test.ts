@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
  * Four independent timers govern one investigation: the loop's own deadline, the bound on
  * scope resolution (which runs BEFORE the loop, so it is not covered by that deadline),
  * the route's reply guarantee, and the browser's backstop. The client's was once the
- * tightest of the four, so it fired first — the user saw "the investigation timed out"
+ * tightest of the four, so it fired first - the user saw "the investigation timed out"
  * and every read already completed was thrown away, instead of the partial result the
  * server was about to send.
  *

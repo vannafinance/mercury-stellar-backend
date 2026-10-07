@@ -12,7 +12,7 @@
  *
  * Vanna's own connect page does all three by being served FROM the Connect Gateway,
  * so its step 3 is a same-origin fetch. Our copilot page is a different origin and
- * the gateway ships no CORS headers, so the browser cannot make that call — which is
+ * the gateway ships no CORS headers, so the browser cannot make that call - which is
  * the only reason the "open the authorization page" detour existed at all.
  *
  * Step 3 normally goes through the authenticated MCP channel. The gateway POST stays
@@ -122,7 +122,7 @@ const signerIdByOrigin = new Map<string, string>();
  *
  * Read from env when set. Otherwise taken from that same injected script, which
  * makes the in-app path work against an already-deployed gateway with no new
- * configuration — and keeps one source of truth, so the in-app consent can never
+ * configuration - and keeps one source of truth, so the in-app consent can never
  * authorize a different quorum than the fallback page would. Never fatal: no signer
  * id just means the silent path is unavailable and the link fallback is used.
  */
@@ -141,7 +141,7 @@ export async function resolvePrivySignerId(origin: string): Promise<string | nul
     });
     if (!res.ok) return null;
     const html = await res.text();
-    // `[^]` rather than `.` with the `s` flag — the build targets an ES version
+    // `[^]` rather than `.` with the `s` flag - the build targets an ES version
     // where `dotAll` is unavailable, and the injected script may span lines.
     const m = html.match(/window\.__VANNA_CONNECT__\s*=\s*(\{[^]*?\})\s*;/);
     if (!m) return null;
@@ -162,7 +162,7 @@ export type RegisterBindResult =
        * Whether the Sign Service actually wrote the `identity_wallet_bindings` row.
        *
        * A 200 from register means "the wallet is connected", which is NOT the same as
-       * "this identity is now bound to it" — and for a long time nothing could tell the
+       * "this identity is now bound to it" - and for a long time nothing could tell the
        * two apart, because the response said `connected: true` either way and this
        * function discarded the body. Callers then reported success while every consumer
        * downstream still refused the wallet as unbound.
@@ -180,7 +180,7 @@ export type RegisterBindResult =
       /** Error code from the Sign Service, or a transport code we generated. */
       code: string;
       message: string;
-      /** True when the single-use request expired (HTTP 410) — needs a fresh one. */
+      /** True when the single-use request expired (HTTP 410) - needs a fresh one. */
       expired: boolean;
     };
 

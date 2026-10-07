@@ -1,20 +1,20 @@
 /**
  * The user accepting a bad price is a decision they STATE, located by the model and
- * verified against their own words — not inferred from their prose, and not inferred
+ * verified against their own words - not inferred from their prose, and not inferred
  * for them at all.
  *
  * ## The live failure this pins
  *
  * 16 Sep: "Swap 100 XLM for SOUSDC and i dont care if i loss please swap anywayu".
  * The model understood it perfectly and wrote "User explicitly accepts potential
- * loss/slippage" onto the card — into `constraints`, a free-text list nothing
+ * loss/slippage" onto the card - into `constraints`, a free-text list nothing
  * downstream reads. So the sizer still refused the thin-pool fill, the pre-write
  * re-quote still refused it, and the MCP still withheld auto-sign: three guards all
  * declining a trade the user had plainly agreed to, with no way for them to lift it.
  *
  * The fix is the same shape as `amountAsset` and `healthFactorFloor`: give the model a
  * FIELD to state the decision in, and verify the quote against the real message. What
- * must never happen is the opposite — consent conjured from a paraphrase.
+ * must never happen is the opposite - consent conjured from a paraphrase.
  */
 import { describe, expect, it } from "vitest";
 import { anchoredSlippageAccepted } from "@/lib/copilot/investigation/floor";
@@ -29,7 +29,7 @@ describe("anchoredSlippageAccepted", () => {
     )).toBe(true);
   });
 
-  it("rejects a quote the user never said — consent is not the model's to supply", () => {
+  it("rejects a quote the user never said - consent is not the model's to supply", () => {
     expect(anchoredSlippageAccepted(
       { slippageAccepted: { accepted: true, sourceQuote: "the user is fine with any price" } },
       [PROMPT],
@@ -43,7 +43,7 @@ describe("anchoredSlippageAccepted", () => {
     )).toBe(false);
   });
 
-  it("is absent by default — the protective refusal holds unless asked to lift", () => {
+  it("is absent by default - the protective refusal holds unless asked to lift", () => {
     expect(anchoredSlippageAccepted({}, [PROMPT])).toBe(false);
     expect(anchoredSlippageAccepted(undefined, [PROMPT])).toBe(false);
     expect(anchoredSlippageAccepted(null, [PROMPT])).toBe(false);
@@ -91,7 +91,7 @@ describe("parseDecision carries slippageAccepted", () => {
  * The model's answer has to survive the hop from function-call args into `goal`.
  *
  * `wrapComplete` copies fields by name. A field the model answers and it does not forward
- * is a field that silently does not exist — 16 Sep, the card said "Understood as: Swap 100
+ * is a field that silently does not exist - 16 Sep, the card said "Understood as: Swap 100
  * XLM for SOUSDC with explicit slippage acceptance" while the sizer refused that very swap
  * for slippage, because the acceptance was dropped between the two.
  */

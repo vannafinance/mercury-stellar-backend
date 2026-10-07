@@ -31,7 +31,7 @@ describe("multi-leg-agent expand", () => {
     expect(expanded[1].amount).toBe(10);
     expect(expanded[2].amount).toBe(10);
     // Supply is net of borrow origination fee (rounding buffer only, now the
-    // on-chain fee itself is 0% — see lib/borrow-fee.ts) — gross 10 would HostError #10.
+    // on-chain fee itself is 0% - see lib/borrow-fee.ts) - gross 10 would HostError #10.
     expect(expanded[3].amount).toBe(netOfOriginationFee(10));
     for (const e of expanded) {
       expect(e.label).not.toMatch(/leg\s*\d|2×\s*leg/i);
@@ -195,7 +195,7 @@ describe("resumable legs keep amount-less steps", () => {
   it("keeps a leg whose amount is not known yet", () => {
     // The amount filter used to require > 0, which made these legs invisible to the
     // resume machinery: can_resume went false, the chain had nothing to continue, and the
-    // only way forward was re-sending the prompt — which re-planned and re-deposited.
+    // only way forward was re-sending the prompt - which re-planned and re-deposited.
     const legs = resumableLegsFromSteps(carryMidRun);
     expect(legs.map((l) => l.op)).toEqual(["borrow", "lend"]);
     expect(legs[0].amount).toBeNull();

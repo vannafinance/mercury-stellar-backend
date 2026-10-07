@@ -64,7 +64,7 @@ describe("shouldSessionAutoSubmit", () => {
   });
 
   it("needs_confirmation is NOT a click gate (staged borrow after deposit)", () => {
-    // Live: risk chip said "confirm" and UI claimed "risk gate flagged — needs your
+    // Live: risk chip said "confirm" and UI claimed "risk gate flagged - needs your
     // click" while auto-approve was on. Confirmation is normal staged copy.
     expect(
       shouldSessionAutoSubmit({
@@ -79,7 +79,7 @@ describe("shouldSessionAutoSubmit", () => {
 
   it("does NOT re-prompt for enable when needs_auto_sign has XDR", () => {
     // The live multi-leg bug: hop 2 came back needs_auto_sign while hop 1 was
-    // needs_wallet_sign — auto-approve was on but only the first kind auto-fired.
+    // needs_wallet_sign - auto-approve was on but only the first kind auto-fired.
     expect(
       shouldSessionAutoSubmit({
         kind: "needs_auto_sign",
@@ -144,7 +144,7 @@ describe("shouldAutoApproveProposedWorkflow", () => {
    * "deposit my idle XLM and supply it to Blend" sized itself and settled with nothing
    * to click (17 Sep, live). The rail promises the prompt goes away, not the review.
    */
-  it("does not auto-click a non-swap plan — the signing prompt is what auto sign skips", () => {
+  it("does not auto-click a non-swap plan - the signing prompt is what auto sign skips", () => {
     expect(
       shouldAutoApproveProposedWorkflow({
         sessionSigning: true,
@@ -161,7 +161,7 @@ describe("shouldAutoApproveProposedWorkflow", () => {
     ).toBe(false);
   });
 
-  it("does not auto-click a swap plan — that click is the price-impact acknowledgement", () => {
+  it("does not auto-click a swap plan - that click is the price-impact acknowledgement", () => {
     expect(
       shouldAutoApproveProposedWorkflow({
         sessionSigning: true,
@@ -173,7 +173,7 @@ describe("shouldAutoApproveProposedWorkflow", () => {
 
   /**
    * The acknowledgement the click stands for, the user already gave in words, before
-   * the plan was sealed — and the sealed plan carries it. Demanding the click anyway
+   * the plan was sealed - and the sealed plan carries it. Demanding the click anyway
    * is asking them to agree twice to one price, which is the dead end that made an
    * accepted swap unexecutable (17 Sep: "swap xlm so i will get 1 AqUSDC", accepted,
    * refused). The proposal's own flag is what distinguishes the two cases.

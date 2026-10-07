@@ -14,7 +14,7 @@ import { strategyReply } from "@/lib/copilot/investigation/answer";
  * `investigation-candidates.test.ts` proves the sizing and the ranking; this proves the
  * numbers survive the trip to the screen. The gap matters: a candidate set that generates
  * correctly and renders as an empty div is indistinguishable, to the person reading it,
- * from "nothing was considered" — which is the exact false impression the rejected-with-a-
+ * from "nothing was considered" - which is the exact false impression the rejected-with-a-
  * reason rule exists to prevent.
  *
  * Built from `generateCandidates` wherever the generator still produces the shape (the borrow
@@ -94,7 +94,7 @@ describe("investigation card / options", () => {
     const levered = candidates.feasible.find((c) => c.borrows)!;
     expect(screen.getByText(`+${Number(levered.netApyPct).toFixed(2)}% net APY`)).toBeTruthy();
     // The full-precision $6,541.043333… reads at the precision a person uses, and the
-    // projected floor is shown next to it — a size with no health consequence beside it
+    // projected floor is shown next to it - a size with no health consequence beside it
     // is the number that gets approved without being understood.
     expect(screen.getByText("$6,537.46")).toBeTruthy();
     // The plan card says where health goes (mockup board 5), ending at the projected floor.
@@ -148,7 +148,7 @@ describe("investigation card / options", () => {
     card(view({ candidates: { ...generated, feasible: [walletPlan("Supply BLUSDC to Blend", "10.00")] } }));
 
     expect(screen.getByText("Supply BLUSDC to Blend")).toBeTruthy();
-    // "Do not borrow" must not surface a borrow shape at all — not even ruled out, which
+    // "Do not borrow" must not surface a borrow shape at all - not even ruled out, which
     // still reads as a suggestion the user already declined.
     expect(screen.queryByText(/net AP[RY]/)).toBeNull();
     expect(screen.queryByText(/Ruled out/)).toBeNull();

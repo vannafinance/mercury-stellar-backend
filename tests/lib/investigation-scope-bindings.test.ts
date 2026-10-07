@@ -164,7 +164,7 @@ describe("investigation scope bindings", () => {
    *
    * The empty-bindings fallback takes `trader` from the request body. Caching that for
    * five minutes would leave an address the browser merely named sitting where a later
-   * turn reads it as established — and a binding created in between, or a claim that was
+   * turn reads it as established - and a binding created in between, or a claim that was
    * never true, would both be invisible. The fallback stays; its result is not kept.
    */
   it("does not cache the scope it took from an unproved claim", async () => {
@@ -184,8 +184,8 @@ describe("investigation scope bindings", () => {
 
   /**
    * The claim decides whose positions are read, so it must never look established.
-   * A subject with no bindings can name any public G-address — that is what the
-   * fallback is for — but the scope it produces has to carry the marker downstream,
+   * A subject with no bindings can name any public G-address - that is what the
+   * fallback is for - but the scope it produces has to carry the marker downstream,
    * where the card and the caches decide what to trust.
    */
   it("marks a foreign address the subject never proved", async () => {

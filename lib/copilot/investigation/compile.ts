@@ -193,7 +193,7 @@ export function writeArgs(scope: InvestigationScope, symbol: string, amount: str
   return { smart_account: scope.smartAccount, symbol, amount, trader: scope.trader };
 }
 
-/** The symbol the margin contract and Blend pool want — BLUSDC is USDC on the wire. */
+/** The symbol the margin contract and Blend pool want - BLUSDC is USDC on the wire. */
 export function wireSymbol(asset: string): string {
   return resolveAssetDef(asset)?.marginSymbol ?? asset;
 }

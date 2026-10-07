@@ -12,8 +12,8 @@ const SCOPE = {
   trader: "GBH5G2WPAAFZ5MS76GDJ4HKHYXSRGF2MBLYDIRQOHGVS4HPU6NNOFIHA",
   smartAccount: "CCKITLMKA2VKSWGOTFABSUFA3RMOZHRP5YNP6HLG73JSWMMUUNCTHDMC",
 };
-const UNKNOWN = "removing liquidity pays back two tokens, not one, so how much of either is not known in advance — state the next leg's amount yourself";
-const POCKET = "a remove puts tokens in the account — withdraw, repay, supply, swap or add them next, not a lend";
+const UNKNOWN = "removing liquidity pays back two tokens, not one, so how much of either is not known in advance - state the next leg's amount yourself";
+const POCKET = "a remove puts tokens in the account - withdraw, repay, supply, swap or add them next, not a lend";
 
 const obs = (id: string, capability: string, data: Record<string, unknown>, args: Record<string, unknown> = {}): Observation =>
   ({ id, capability, args, observedAt: NOW, status: "ok", data });

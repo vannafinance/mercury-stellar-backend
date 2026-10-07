@@ -8,7 +8,7 @@ import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison
  *
  * The model proposes nothing here: given rate evidence and the authoritative position,
  * the shapes are enumerable and every amount comes from the sizer. What these tests pin
- * are the two judgements the plan requires and that prose alone would not enforce —
+ * are the two judgements the plan requires and that prose alone would not enforce -
  * the generator volunteers nothing that moves the user's wallet (that is a plan the model
  * composes for what they asked), and a negative carry is REJECTED with its reason unless the
  * user required that borrow.
@@ -52,7 +52,7 @@ describe("candidate generation", () => {
       /**
        * A derived max is sized one basis point INSIDE the floor
        * (`FLOOR_MARGIN_BPS` in sizing.ts), so this lands just above 1.3 rather
-       * than exactly on it — the fix for a plan built to the floor being
+       * than exactly on it - the fix for a plan built to the floor being
        * refused by that same floor the moment anything moved before the write.
        * Captured from the actual sizer output, not hand-computed.
        */
@@ -270,7 +270,7 @@ describe("an amount the user named outright", () => {
     expect(feasible).toHaveLength(1);
     expect(feasible[0].amountUsd).toBe("500");
     expect(feasible[0].label).toMatch(/Borrow 500 USD of BLUSDC/);
-    // Health factor lands wherever $500 puts it — not on the floor.
+    // Health factor lands wherever $500 puts it - not on the floor.
     expect(Number(feasible[0].finalHealthFactor)).toBeGreaterThan(1.3);
   });
 
@@ -281,7 +281,7 @@ describe("an amount the user named outright", () => {
     expect(feasible).toEqual([]);
     expect(rejected[0].reason).toMatch(/would take the health factor below your 1.30 floor/);
     // The figure that WOULD fit is offered as information, never substituted silently.
-    // Same margined max as the sizing test above — both paths go through `sizeLegs`.
+    // Same margined max as the sizing test above - both paths go through `sizeLegs`.
     expect(rejected[0].reason).toMatch(/At most 6537\.458085829473894645 USD fits/);
   });
 

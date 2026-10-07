@@ -1,5 +1,5 @@
 /**
- * Copilot brain settings — resolved from process env (.env.local in Next.js).
+ * Copilot brain settings - resolved from process env (.env.local in Next.js).
  * Server-only. Never import from client components.
  *
  * Production defaults for this app: Vertex (model ids live in model-registry.ts) + live MCP.
@@ -32,7 +32,7 @@ export const copilotConfig = {
    * Only consumer today is the wallet-bind register compatibility fallback: the
    * Connect Gateway rejects a missing `Origin` header if it has an allowlist
    * configured, and a server-to-server fetch has no Origin unless we set one. Empty
-   * is fine — the gateway allows absent Origin when its allowlist is empty (its dev
+   * is fine - the gateway allows absent Origin when its allowlist is empty (its dev
    * posture).
    */
   get publicOrigin(): string {
@@ -87,17 +87,17 @@ export const copilotConfig = {
     return env("WORKOS_CLIENT_ID");
   },
   /**
-   * WorkOS **environment** client id — Developer → API Keys. Staging is
+   * WorkOS **environment** client id - Developer → API Keys. Staging is
    * `client_01KX5H81JH2HWD2DHKYFYFXNS2`.
    *
    * This is what actually lands in `aud` on a hand-created Connect OAuth token:
-   * not the Connect app's own client id, but the environment's. Observed live —
+   * not the Connect app's own client id, but the environment's. Observed live -
    * the token came back with `aud = client_01KX5H81…` while the Connect app is
    * `client_01KZ6ZZQK…`.
    *
    * ⚠️ It is also the audience the **M2M** token carries (see
    * AUTOSIGN_AUDIENCE_BLOCKER.md §1). Both credentials in this environment are
-   * minted for the same audience, so `aud` cannot tell them apart — only `sub`
+   * minted for the same audience, so `aud` cannot tell them apart - only `sub`
    * can (`user_…` vs `client_…`). That is exactly what the Sign Service's
    * subject guard checks, and with this audience accepted, that guard is the
    * ONLY thing separating an end user from the machine credential. Do not
@@ -114,7 +114,7 @@ export const copilotConfig = {
    * RFC 8707 resource indicator. Defaults to mcpBaseUrl so the token's `aud` and
    * the server being called can never drift apart by forgetting one of two vars.
    *
-   * Only sent when mcpSendResource is on — see that getter for why it is not.
+   * Only sent when mcpSendResource is on - see that getter for why it is not.
    */
   get mcpResource(): string {
     return env("MCP_RESOURCE") || this.mcpBaseUrl;
@@ -122,8 +122,8 @@ export const copilotConfig = {
   /**
    * Send `resource` on authorize / token / refresh? **Default off.**
    *
-   * A hand-created Connect OAuth application — one made in the WorkOS Dashboard,
-   * "Managed by you", confidential — rejects an explicit `resource` on the token
+   * A hand-created Connect OAuth application - one made in the WorkOS Dashboard,
+   * "Managed by you", confidential - rejects an explicit `resource` on the token
    * endpoint with RFC 8707 `invalid_target`, **even when that exact URI is
    * registered as the Default Resource Indicator**. Per WorkOS, the default
    * applies only to DCR/CIMD clients; hand-created OAuth and M2M Connect apps
@@ -135,12 +135,12 @@ export const copilotConfig = {
    * What a hand-created Connect OAuth client mints instead:
    *
    *     aud = <this app's client_id>     (NOT the MCP resource URI)
-   *     sub = user_…                     (a real per-user subject — the part that matters)
+   *     sub = user_…                     (a real per-user subject - the part that matters)
    *
    * That is still a correct end-user token. The `sub` is what closes the F3 hole
    * and what bindings key on; the `aud` is just which client it was minted for.
    * So the fix is to accept that audience on the verifying side rather than to
-   * force a parameter this client type refuses — see .env.example for the
+   * force a parameter this client type refuses - see .env.example for the
    * WORKOS_AUDIENCE value the Sign Service needs.
    *
    * Turn this ON if the Copilot is ever re-registered as a DCR/CIMD client, which
@@ -172,7 +172,7 @@ export const copilotConfig = {
   // The user signs in with Privy to get a wallet; that same session is what
   // proves who they are on the money path. Its access token carries
   // iss=privy.io / sub=did:privy:… / aud=<app id>, which is everything the Sign
-  // Service's assertion verifier needs — so there is no second login.
+  // Service's assertion verifier needs - so there is no second login.
   //
   // The WorkOS block above still works and is still accepted as an assertion;
   // it is simply no longer the only way to be a user. Reads and the MCP
@@ -180,7 +180,7 @@ export const copilotConfig = {
   // machine identity, Privy is the human one.
 
   /**
-   * Privy app id. Public by design — it is the token audience, not a secret.
+   * Privy app id. Public by design - it is the token audience, not a secret.
    *
    * Must be a literal `process.env.NEXT_PUBLIC_*` read. Next 16 only inlines that
    * shape at `next build`. `env("NEXT_PUBLIC_PRIVY_APP_ID")` is `process.env[key]`,
@@ -250,9 +250,9 @@ export const copilotConfig = {
 
   /**
    * Routing mechanism.
-   *   "fc"   — native function calling: tool names and argument values are constrained
+   *   "fc"   - native function calling: tool names and argument values are constrained
    *            by schema, so an invalid tool or a non-existent pool cannot be returned.
-   *   "json" — the older path that pastes the tool catalogue into the prompt as prose.
+   *   "json" - the older path that pastes the tool catalogue into the prompt as prose.
    * "fc" degrades to "json" by itself if the endpoint rejects the schema, so this only
    * needs setting to pin the old behaviour deliberately.
    */

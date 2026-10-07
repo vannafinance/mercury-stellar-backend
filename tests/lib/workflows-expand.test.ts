@@ -1,5 +1,5 @@
 /**
- * Phase 3 differential harness — workflow expand vs legacy expand.
+ * Phase 3 differential harness - workflow expand vs legacy expand.
  *
  * Gate from COPILOT_CONSOLIDATION_PLAN: an op moves only when the two expanders
  * produce an identical step list over the corpus. Empty diff = safe.
@@ -48,7 +48,7 @@ function assertSameExpand(steps: PlanStep[], label: string) {
   expect(via, label).toEqual(legacy);
 }
 
-describe("Phase 3 — workflows registry", () => {
+describe("Phase 3 - workflows registry", () => {
   it("declares every op group the plan named", () => {
     const ids = Object.keys(WORKFLOWS);
     for (const need of [
@@ -84,7 +84,7 @@ describe("Phase 3 — workflows registry", () => {
   });
 });
 
-describe("Phase 3 — differential expand (empty diff gate)", () => {
+describe("Phase 3 - differential expand (empty diff gate)", () => {
   // ── Account lifecycle ───────────────────────────────────────────────────
   it("create_account", () => {
     assertSameExpand([writeStep("create_account")], "create_account");

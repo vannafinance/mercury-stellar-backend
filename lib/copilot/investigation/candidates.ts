@@ -80,12 +80,12 @@ export interface Candidate {
   kind: CandidateKind;
   label: string;
   borrows: boolean;
-  /** The asset the shape is about — the first leg's, for a composed plan. */
+  /** The asset the shape is about - the first leg's, for a composed plan. */
   asset: string;
   venue: "blend" | "earn" | "margin";
   /** Supply APR minus borrow APR, both simple APR. Null when nothing is borrowed. */
   netAprPct: string | null;
-  /** Null when a supply leg's rate was not read — the option is still sized; the label says so. */
+  /** Null when a supply leg's rate was not read - the option is still sized; the label says so. */
   supplyAprPct: string | null;
   /**
    * The same two figures as each venue's page shows them (`apy.ts`): what the card and the
@@ -118,7 +118,7 @@ export interface Candidate {
    * order. The compiler passes them through; the fixed shapes derive theirs from `legs`.
    */
   steps?: ProposalStep[];
-  /** The model's reasoning for a composed plan. Copy only — every number beside it is code's. */
+  /** The model's reasoning for a composed plan. Copy only - every number beside it is code's. */
   rationale?: string;
   /** A composed repay plan: true when every debt row read is covered, false when some remains. */
   repaysAllDebt?: boolean;
@@ -203,7 +203,7 @@ function variantDecision(winner: Candidate, runnerUp: Candidate | undefined): Ca
     return {
       factor: "already_held",
       runnerUpId: null,
-      reason: `Using ${winner.asset} — you hold ${formatHeld(held)} of it, so no swap is needed.`,
+      reason: `Using ${winner.asset} - you hold ${formatHeld(held)} of it, so no swap is needed.`,
     };
   }
   let aprDelta = aprOf(runnerUp) - aprOf(winner);
@@ -234,13 +234,13 @@ function variantDecision(winner: Candidate, runnerUp: Candidate | undefined): Ca
     return {
       factor: "already_held",
       runnerUpId: runnerUp.id,
-      reason: `Using ${winner.asset} — you hold ${formatHeld(winner.heldAmount ?? winner.amountUsd)} of it, so no swap is needed. ${net} ${runnerUp.asset} pays ${formatApr(extra)} more ${tradeOff}`,
+      reason: `Using ${winner.asset} - you hold ${formatHeld(winner.heldAmount ?? winner.amountUsd)} of it, so no swap is needed. ${net} ${runnerUp.asset} pays ${formatApr(extra)} more ${tradeOff}`,
     };
   }
   return {
     factor: "net_return",
     runnerUpId: runnerUp.id,
-    reason: `Using ${winner.asset} — net return at your size is higher than ${runnerUp.asset}.`,
+    reason: `Using ${winner.asset} - net return at your size is higher than ${runnerUp.asset}.`,
   };
 }
 
@@ -343,7 +343,7 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
 
     /**
      * An amount the user named is used as given. Sizing it to the floor instead would
-     * answer a different question — and if it does not fit, the honest reply is that it
+     * answer a different question - and if it does not fit, the honest reply is that it
      * does not fit, with the figure that does. Quietly shrinking a stated amount to make
      * the transaction go through is the specific behaviour the plan forbids.
      */
@@ -490,7 +490,7 @@ export function mergeCandidateSets(
  *
  * Sizing to the floor when someone asked for a specific amount answers a different
  * question, so the amount has to survive the trip into USD. It is valued ONLY from an
- * oracle price read during this same investigation — the same rule as `spendableWalletUsdFrom`,
+ * oracle price read during this same investigation - the same rule as `spendableWalletUsdFrom`,
  * and for the same reason: treating a stable's ticker as exactly $1 is an assumption, and
  * here it would flow straight into a health-factor check the user is relying on.
  *
@@ -499,7 +499,7 @@ export function mergeCandidateSets(
  * on the strength of it.
  */
 /**
- * The borrow size the user stated, read from what the model reported — never from the wording.
+ * The borrow size the user stated, read from what the model reported - never from the wording.
  *
  * The model returns each stated write as a structured leg whose literal sizing carries the exact
  * amount and the substring of the user's message that states it; code has verified that substring
@@ -550,7 +550,7 @@ export function requestedBorrowFrom(
  *
  * The wallet read returns `symbol` and `balance` and NO usd figure, so a dollar value only
  * exists for a symbol whose oracle price was also read during this same investigation.
- * Anything unpriced is left out rather than valued at a guess — a plausible-looking total
+ * Anything unpriced is left out rather than valued at a guess - a plausible-looking total
  * built on an assumed $1 peg is exactly the kind of number that makes a strategy look
  * fundable when it is not. Returns null when nothing could be priced at all, which the
  * caller renders as "no non-borrowing option shown" rather than "you have nothing idle".
@@ -632,7 +632,7 @@ export function spendableWalletHoldingsFrom(
 
 /**
  * Wallet lines worth less than one transaction: held, but not worth moving. 13 Sep, live:
- * "lend 0.0003729 AQUSDC to Earn — about 20.18 % APR on $0.00" was offered, approved and
+ * "lend 0.0003729 AQUSDC to Earn - about 20.18 % APR on $0.00" was offered, approved and
  * paid 0.096 XLM in fees to deposit $0.00007. A plan leg names these with the reason
  * instead of sizing them.
  */
@@ -645,7 +645,7 @@ export function dustWalletHoldingsFrom(
 
 /**
  * What one transaction needs, in USD: the wallet read's own fee reserve (`fee_reserve_xlm`)
- * at the XLM price read this investigation. Null when either was not read — then nothing
+ * at the XLM price read this investigation. Null when either was not read - then nothing
  * is called dust, because the floor would be a guess.
  */
 export function transactionFloorUsdWad(observations: readonly Observation[], now: number): bigint | null {
@@ -733,7 +733,7 @@ export function freshPrices(observations: readonly Observation[], now: number): 
  */
 function spendableWad(row: Record<string, unknown>, wallet: Record<string, unknown> | undefined): bigint {
   // The MCP derives `spendable` from Horizon's reserve fields (13 Sep: a deposit sized as
-  // balance minus the fee hint failed with HostError #10 — the chain minimum balance).
+  // balance minus the fee hint failed with HostError #10 - the chain minimum balance).
   // An older server without it falls back to balance minus the fee hint on the native line.
   if (typeof row.spendable === "string") {
     try { return decimalWad(row.spendable); } catch { /* fall through to the derivation */ }
@@ -751,7 +751,7 @@ function spendableWad(row: Record<string, unknown>, wallet: Record<string, unkno
 }
 
 /**
- * A wallet line the read shows as held but not spendable — the chain minimum balance and
+ * A wallet line the read shows as held but not spendable - the chain minimum balance and
  * the fee reserve eat all of it. Null when the line is absent, empty, or spendable. 14 Sep:
  * "lend 1 xlm" was offered from 3.94 XLM of which 3.5 was the minimum balance and 0.5 the
  * fee reserve; the contract answered "resulting balance is not within the allowed range".

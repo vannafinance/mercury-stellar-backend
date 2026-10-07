@@ -160,7 +160,7 @@ export function PlanReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
       )}
       {shortfall && (
         <p role="alert" className="mt-2 text-[12.5px] text-imperial-600">
-          A pocket no longer covers this plan. Refresh, or ask for a new plan — clicking Approve would fail the live check.
+          A pocket no longer covers this plan. Refresh, or ask for a new plan - clicking Approve would fail the live check.
         </p>
       )}
       <p className="mt-3 text-[12px] text-vgray-500">

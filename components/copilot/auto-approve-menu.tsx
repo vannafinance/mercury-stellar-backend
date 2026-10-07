@@ -22,7 +22,7 @@ export interface AutoApproveMenuProps {
    * Where this control is mounted, which is the only thing that differs between the two
    * call sites: `pill` is the header chip, `rail` is a full-width row in the left panel
    * whose panel flies out to the right instead of dropping down. The toggle, the caps
-   * mode and the two limit fields are the same control in both — duplicating this
+   * mode and the two limit fields are the same control in both - duplicating this
    * component to move it would have duplicated all of that with it.
    */
   variant?: "pill" | "rail" | "mini";
@@ -236,8 +236,8 @@ export function AutoApproveMenu({
           {!walletSigningRequired && <p className="mt-2 text-xs text-vgray-500">Testnet amount limits, not dollar values. Different assets count by quantity.</p>}
           {!walletSigningRequired && capsMode === "defaults" && (
             <div className="mt-2.5 grid grid-cols-2 gap-2">
-              <CapField label="per tx" aria="Default per transaction cap in token units" value={defaultTx == null ? "—" : String(defaultTx)} />
-              <CapField label="per day" aria="Default per day cap in token units" value={defaultDay == null ? "—" : String(defaultDay)} />
+              <CapField label="per tx" aria="Default per transaction cap in token units" value={defaultTx == null ? "-" : String(defaultTx)} />
+              <CapField label="per day" aria="Default per day cap in token units" value={defaultDay == null ? "-" : String(defaultDay)} />
             </div>
           )}
 

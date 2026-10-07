@@ -229,7 +229,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
       { message: "what is the USDC rate?", wallet: SCOPE.trader, continuation: null, promptName: "bare-usdc-rate" },
       deps(mcp, async () => ({
         kind: "clarify",
-        question: "Which USDC do you mean — Blend (BLUSDC), Aquarius (AQUSDC), or Soroswap (SOUSDC)?",
+        question: "Which USDC do you mean - Blend (BLUSDC), Aquarius (AQUSDC), or Soroswap (SOUSDC)?",
       })),
     );
     expect(result.status).toBe("needs_input");
@@ -357,7 +357,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
   it("refuses to size when the app snapshot understates debt vs the contract", async () => {
     // Fixture from BUGS-FOR-APP-TEAM.md: dropped USDC leg → app $1,684.99, contract $2,705.60.
     const prompt =
-      "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 — you can use spot and farm markets yourself, and you can even take new loans.";
+      "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 - you can use spot and farm markets yourself, and you can even take new loans.";
     const mcp = {
       call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
         if (tool === "vanna_get_pool_stats") {

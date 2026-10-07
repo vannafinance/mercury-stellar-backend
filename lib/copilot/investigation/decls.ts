@@ -9,7 +9,7 @@ import type { ReadCapability } from "./types";
 /**
  * The schema for ONE leg, shared by `plans[].legs[]` and `goal.actions[]`.
  *
- * These were two separate schemas, and the action one was strictly smaller — `op`, `asset`,
+ * These were two separate schemas, and the action one was strictly smaller - `op`, `asset`,
  * a bare decimal `amount`. So the model had no field in which to state "borrow 2x" or
  * "SOUSDC paired with XLM on Soroswap" as something the user had ASKED for, even though a
  * plan leg could express both. Those instructions could only survive as a free-form plan
@@ -45,7 +45,7 @@ function legSchema(extra?: { properties: Record<string, JsonSchema>; required: s
           sourceQuote: { type: "string", description: "literal/fraction/leverage only: exact substring of the user message containing the amount, the share or the multiplier." },
           amountAsset: {
             type: "string", enum: ["asset", "assetOut"],
-            description: "literal + op=swap only. Which of the leg's two assets `amount` is denominated in. Omit, or 'asset', for the ordinary case: amount is what the swap SPENDS. Set 'assetOut' when the user stated what they want to RECEIVE ('give me 15 SOUSDC', 'swap XLM to receive 961 AQUSDC', 'so it gives me 15 SOUSDC') — asset and assetOut stay exactly as they otherwise would; only this field, and the amount's meaning, change. Never on any other op.",
+            description: "literal + op=swap only. Which of the leg's two assets `amount` is denominated in. Omit, or 'asset', for the ordinary case: amount is what the swap SPENDS. Set 'assetOut' when the user stated what they want to RECEIVE ('give me 15 SOUSDC', 'swap XLM to receive 961 AQUSDC', 'so it gives me 15 SOUSDC') - asset and assetOut stay exactly as they otherwise would; only this field, and the amount's meaning, change. Never on any other op.",
           },
         },
         required: ["kind"],
@@ -117,7 +117,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         borrowing: { type: "string", enum: ["unspecified", "allowed", "required", "forbidden"] },
         slippageAccepted: {
           type: "object",
-          description: "Only when the user has said, in their own words, that they accept a loss or a poor outcome the server has put to them — \"i dont care if i lose\", \"do it anyway\", \"any price\", \"ignore the price impact\", \"i am ready to bear the loss\". accepted is true; sourceQuote is the exact substring of their message that says it. Not swap-specific: it lifts any guard that refuses a QUANTIFIED loss, including a borrow whose carry does not cover its cost. Never infer it from urgency, from naming an amount, or from them simply repeating the request — the server refuses such an outcome by default, and only the user's own words make it theirs to take.",
+          description: "Only when the user has said, in their own words, that they accept a loss or a poor outcome the server has put to them - \"i dont care if i lose\", \"do it anyway\", \"any price\", \"ignore the price impact\", \"i am ready to bear the loss\". accepted is true; sourceQuote is the exact substring of their message that says it. Not swap-specific: it lifts any guard that refuses a QUANTIFIED loss, including a borrow whose carry does not cover its cost. Never infer it from urgency, from naming an amount, or from them simply repeating the request - the server refuses such an outcome by default, and only the user's own words make it theirs to take.",
           properties: { accepted: { type: "boolean" }, sourceQuote: { type: "string" } },
           required: ["accepted", "sourceQuote"],
         },
@@ -166,7 +166,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         actions: {
           type: "array",
           description:
-            "What the user literally instructed, leg by leg, in the order they said it. Same shape as a plan leg — " +
+            "What the user literally instructed, leg by leg, in the order they said it. Same shape as a plan leg - " +
             "so state leverage as sizing.kind=leverage with the multiple ('borrow 2x' → multiple '2'), a pool pair " +
             "with assetOut, and the DEX with venue. Use this whenever the request is concrete, even when it has " +
             "several legs; it is what lets the server size exactly what was asked rather than proposing alternatives.",
@@ -193,10 +193,10 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         plans: {
           type: "array",
           description:
-            "For intent=strategy: one to three strategy SHAPES as ordered legs. Sizing is a word, never a number — " +
-            "all_wallet (the asset's spendable wallet balance), to_floor (the largest borrow — or withdrawal of posted collateral — at the user's health-factor floor), " +
+            "For intent=strategy: one to three strategy SHAPES as ordered legs. Sizing is a word, never a number - " +
+            "all_wallet (the asset's spendable wallet balance), to_floor (the largest borrow - or withdrawal of posted collateral - at the user's health-factor floor), " +
             "previous_leg (the amount the previous leg produced, e.g. supply what was just borrowed), " +
-            "literal (an amount the user typed, with sourceQuote), fraction (a share the user stated — '25%', 'half' — " +
+            "literal (an amount the user typed, with sourceQuote), fraction (a share the user stated - '25%', 'half' - " +
             "of what the leg draws on: of=wallet for the wallet balance, of=position for the Earn position, the posted collateral " +
             "or the debt; with sourceQuote), share (YOUR split of one wallet balance across the legs of this plan: percent, " +
             "of=wallet and a reason; no quote). One wallet balance can fund only one all_wallet leg, so when two or more legs draw on " +

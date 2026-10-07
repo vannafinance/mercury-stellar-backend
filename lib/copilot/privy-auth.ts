@@ -6,7 +6,7 @@
  *
  * ## Why this exists
  *
- * The Sign Service will not accept a machine credential as "who is asking" — a
+ * The Sign Service will not accept a machine credential as "who is asking" - a
  * WorkOS M2M token's `sub` is the client id, one value shared by every user, so
  * accepting it would make `isBound(sub, wallet)` true for anybody against
  * anybody's wallet. That guard is correct and stays.
@@ -20,14 +20,14 @@
  * A Privy access token, on the other hand, is already a proper assertion:
  *
  *     iss = privy.io
- *     sub = did:privy:…      unique per user — what bindings key on
+ *     sub = did:privy:…      unique per user - what bindings key on
  *     aud = <the Privy app id>
  *     alg = ES256, exp ≈ 1h
  *
  * It is minted by the same system that holds the wallet, which makes it the
  * honest identity for a wallet operation: the thing that decides who owns the
  * key also says who is asking. This module verifies it the way any resource
- * server would, and the Sign Service verifies it again independently — this side
+ * server would, and the Sign Service verifies it again independently - this side
  * is never the authorization decision.
  *
  * ## Scope
@@ -49,14 +49,14 @@ export class PrivyAuthError extends Error {
 /** The only issuer a Privy access token ever carries. */
 export const PRIVY_ISSUER = "privy.io";
 
-/** Every Privy subject starts with this — the shape the Sign Service keys on. */
+/** Every Privy subject starts with this - the shape the Sign Service keys on. */
 export const PRIVY_SUBJECT_PREFIX = "did:privy:";
 
 /**
  * Clock skew allowance, in seconds. Deliberately the same 30s the Sign Service
  * uses (USER_ASSERTION_CLOCK_TOLERANCE_SEC): if this side were stricter we would
  * reject tokens the authority accepts, and if it were looser we would forward
- * tokens it is about to refuse — either way the two hops disagree about the same
+ * tokens it is about to refuse - either way the two hops disagree about the same
  * token, which is the class of bug that took a week to find the first time.
  */
 export const PRIVY_CLOCK_TOLERANCE_SEC = 30;
@@ -65,7 +65,7 @@ export const PRIVY_CLOCK_TOLERANCE_SEC = 30;
 const JWKS_TTL_MS = 10 * 60 * 1000;
 
 export interface PrivyIdentity {
-  /** `did:privy:…` — stable per user, and what wallet bindings are keyed on. */
+  /** `did:privy:…` - stable per user, and what wallet bindings are keyed on. */
   sub: string;
   /** Privy session id (`sid`), when present. Useful for correlating logs. */
   sessionId?: string;
@@ -129,7 +129,7 @@ function keyForKid(jwks: Jwks, kid: string | undefined): crypto.KeyObject {
   const jwk = (jwks.keys ?? []).find((k) => k.kid === kid);
   if (!jwk) {
     throw new PrivyAuthError(
-      `No Privy signing key matches kid=${kid} — the key may have rotated; retry after the JWKS cache expires`,
+      `No Privy signing key matches kid=${kid} - the key may have rotated; retry after the JWKS cache expires`,
     );
   }
   if (jwk.kty !== "EC" || jwk.crv !== "P-256") {
@@ -183,7 +183,7 @@ export function peekPrivySubject(token: string): string | null {
  * signature is wrong is an attack, and validating claims first would put
  * attacker-controlled values into log lines as though they were facts.
  *
- * @throws PrivyAuthError on any failure. Callers treat that as "signed out" —
+ * @throws PrivyAuthError on any failure. Callers treat that as "signed out" -
  *         reads and wallet-sign writes keep working exactly as they do today.
  */
 export async function verifyPrivyToken(
@@ -204,7 +204,7 @@ export async function verifyPrivyToken(
 
   if (!appId) {
     throw new PrivyAuthError(
-      "NEXT_PUBLIC_PRIVY_APP_ID is not set — cannot verify a Privy token's audience",
+      "NEXT_PUBLIC_PRIVY_APP_ID is not set - cannot verify a Privy token's audience",
     );
   }
   if (!token || typeof token !== "string") {
@@ -228,7 +228,7 @@ export async function verifyPrivyToken(
   const key = keyForKid(jwks, typeof header.kid === "string" ? header.kid : undefined);
 
   const signature = Buffer.from(signatureB64, "base64url");
-  // ES256 signatures are the raw r‖s pair (64 bytes), not DER — `ieee-p1363`
+  // ES256 signatures are the raw r‖s pair (64 bytes), not DER - `ieee-p1363`
   // tells Node to read them that way. Without it every valid token fails.
   const signatureValid = crypto.verify(
     "sha256",

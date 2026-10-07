@@ -11,8 +11,8 @@ import { receiptKey, type WorkflowCompletionReply } from "@/lib/copilot/workflow
  * Conversations, on both backends.
  *
  * The file backend is development; Firestore is what runs on Cloud Run. Testing only the
- * first would leave the durable path — the one that decides whether history survives a
- * redeploy — unexercised, so every case runs against both. The Firestore double speaks the
+ * first would leave the durable path - the one that decides whether history survives a
+ * redeploy - unexercised, so every case runs against both. The Firestore double speaks the
  * REST dialect the store uses: `updateTime` as the version, `currentDocument.exists=false`
  * to create, `currentDocument.updateTime=…` to compare-and-set, 412 when that fails.
  */

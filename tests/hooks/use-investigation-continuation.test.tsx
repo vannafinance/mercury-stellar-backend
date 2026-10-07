@@ -8,7 +8,7 @@ import type { ResearchView } from "@/lib/copilot/investigation/view";
  *
  * The continuation token carries the ORIGINAL objective plus every refinement, and the
  * research prompt instructs the model never to discard that objective. Sending it on
- * every turn therefore did not merely mislabel the card — asking "price of XLM" and then
+ * every turn therefore did not merely mislabel the card - asking "price of XLM" and then
  * a full strategy goal recorded "price of XLM" as the objective and reduced the real goal
  * to a refinement of it, so the investigation kept optimising the wrong thing. Only a
  * reply to an open question may continue; anything else starts over.
@@ -58,7 +58,7 @@ function server(outcomes: Array<{ result?: ResearchView; error?: { code: string;
   return sent;
 }
 
-describe("useInvestigation — continuation chaining", () => {
+describe("useInvestigation - continuation chaining", () => {
   it("can cancel while identity headers are stalled, without sending a request later", async () => {
     const sent = server([{ result: view() }]);
     mocks.headers.mockImplementationOnce(() => new Promise(() => {}));

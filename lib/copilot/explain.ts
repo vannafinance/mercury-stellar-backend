@@ -15,7 +15,7 @@ function num(v: unknown): number | null {
 }
 
 /**
- * Locale pinned to "en-US", not the server process's OS default — an unpinned
+ * Locale pinned to "en-US", not the server process's OS default - an unpinned
  * `toLocaleString(undefined, ...)` on a non-US-locale host renders large numbers with
  * that locale's own digit grouping (e.g. Indian lakh-style "1,11,981" instead of
  * "111,981"), the same bug fixed in `handle.ts`'s `fmtPosAmount`.
@@ -52,7 +52,7 @@ export function explainRead(tool: string, data: Record<string, unknown>, questio
 }
 
 /**
- * The sentence this module can build from the read's OWN named fields — or null when it
+ * The sentence this module can build from the read's OWN named fields - or null when it
  * has no such knowledge of the tool and would only be flattening a payload.
  *
  * Split out of {@link explainRead} so callers can tell the two apart. `explainRead` was
@@ -99,10 +99,10 @@ export function groundedReadSentence(tool: string, data: Record<string, unknown>
       if (u != null) bits.push(`utilization ~${fmt(u, 2)}%`);
       if (liq != null) bits.push(`liquidity ~${liq}`);
       if (bits.length === 1) return `Pool stats for ${sym}: ${JSON.stringify(data).slice(0, 280)}`;
-      return `${bits[0]} — ${bits.slice(1).join(", ")}.`;
+      return `${bits[0]} - ${bits.slice(1).join(", ")}.`;
     }
     case "vanna_get_account_health": {
-      // Live MCP returns collateral_usd / debt_usd / ltv_ratio / is_healthy —
+      // Live MCP returns collateral_usd / debt_usd / ltv_ratio / is_healthy -
       // not always a bare `health_factor`. Derive HF when missing.
       const col = num(pick(data, ["collateral_usd", "total_collateral_usd", "collateral", "gross_collateral_usd"]));
       const debt = num(pick(data, ["debt_usd", "total_debt_usd", "debt"]));
@@ -120,14 +120,14 @@ export function groundedReadSentence(tool: string, data: Record<string, unknown>
       const parts: string[] = [];
       if (hf != null) {
         // Very high HF usually means almost no debt (e.g. $2 coll / $0.05 debt ≈ 36×).
-        // That is healthy, not a bug — call it out so 39.6 doesn't look "wrong".
+        // That is healthy, not a bug - call it out so 39.6 doesn't look "wrong".
         if (hf >= 50) {
           parts.push(
-            `health factor ${fmt(hf, 1)} (extreme only because debt is dust vs collateral — fully healthy, not a bug)`,
+            `health factor ${fmt(hf, 1)} (extreme only because debt is dust vs collateral - fully healthy, not a bug)`,
           );
         } else if (hf >= 10) {
           parts.push(
-            `health factor ${fmt(hf, 2)} (very high because debt is tiny vs collateral — still healthy)`,
+            `health factor ${fmt(hf, 2)} (very high because debt is tiny vs collateral - still healthy)`,
           );
         } else {
           parts.push(`health factor ${fmt(hf, 2)}`);
@@ -233,7 +233,7 @@ export function groundedReadSentence(tool: string, data: Record<string, unknown>
 }
 
 /**
- * Standalone figures in a sentence — a number that is not glued to letters.
+ * Standalone figures in a sentence - a number that is not glued to letters.
  *
  * So `59.40`, `$1,836.02` and `2.85%` count; the `6E` inside `CAZLR6E…` does not, which
  * is what keeps an address-listing answer from being treated as a numeric one.
@@ -258,7 +258,7 @@ function figuresIn(text: string): number[] {
  *
  * The check is general rather than per-tool. {@link groundedReadSentence} already knows,
  * for every read it can summarise, which of the payload's fields IS the answer, and each
- * of its cases is written answer-first — so the first standalone figure in its sentence is
+ * of its cases is written answer-first - so the first standalone figure in its sentence is
  * the figure the question was about. If the composer's answer does not contain that
  * figure, the composer answered a different question and its headline is replaced with the
  * grounded one. A read this module has no knowledge of, or a grounded sentence with no
@@ -273,7 +273,7 @@ export function enforceGroundedFigure<T extends { headline: string; facts: Array
   /**
    * A verdict read answers true or false. `vanna_can_borrow` / `vanna_can_withdraw`
    * return `allowed` plus the headroom that produced it, so the first figure in their
-   * grounded sentence is context, not the answer — checking the composer against it would
+   * grounded sentence is context, not the answer - checking the composer against it would
    * overwrite a correct "yes, you can borrow 20" with the limit. Keyed on the payload
    * carrying a boolean verdict, which is those reads' own contract.
    */
@@ -329,8 +329,8 @@ function summarizeList(label: string, data: Record<string, unknown>, keys: strin
  * never swallowed by a loose pattern.
  *
  * `code` / `contract_diagnostic` / `host_error` are here for the same reason. A failed
- * Aquarius LP add already explains itself in prose — what is missing, and a numbered
- * recipe to fix it — and then repeated "CODE 10", "CONTRACT DIAGNOSTIC zero balance is
+ * Aquarius LP add already explains itself in prose - what is missing, and a numbered
+ * recipe to fix it - and then repeated "CODE 10", "CONTRACT DIAGNOSTIC zero balance is
  * not sufficient to spend" underneath. The humanised message carries that detail
  * already; the raw rows only make a handled failure look unhandled.
  */
@@ -338,8 +338,8 @@ function summarizeList(label: string, data: Record<string, unknown>, keys: strin
  * Is this value a machine status code rather than something written for a person?
  *
  * Scoped to `reason` on purpose. That is the one key observed carrying both kinds of
- * content — `no_active_session` on a staged write, and a real sentence on a read
- * ("Borrowing 20 USDC is permitted: it passes the gross-asset check…") — so the key alone
+ * content - `no_active_session` on a staged write, and a real sentence on a read
+ * ("Borrowing 20 USDC is permitted: it passes the gross-asset check…") - so the key alone
  * cannot decide and the value has to. Whitespace is the signal: a reason meant for a person
  * has spaces in it, a status code never does. Deliberately not applied to `status` or
  * `error`, where a single bare word ("enabled", "wallet_not_bound") is the actual answer.
@@ -352,7 +352,7 @@ function isStatusCode(key: string, value: string): boolean {
 
 /**
  * Reported live: a facts card showed `SOURCE margin_page_snapshot` under a plain
- * "what's my collateral" answer — an internal provenance tag (which internal function
+ * "what's my collateral" answer - an internal provenance tag (which internal function
  * computed this, not a fact about the user's money) naming an implementation detail
  * (`computeMarginSnapshot`, `mcp_farm_overview`, `mcp_vtoken_balance`, ...) the user has
  * no way to act on. Every `data.source` in this codebase is this same kind of tag, so it
@@ -362,9 +362,9 @@ function isStatusCode(key: string, value: string): boolean {
 /**
  * "summary"/"note" added after a live report: the farm-overview read showed
  * "AQUARIUS LP SUMMARY" / "AQUARIUS LP NOTE" / "SUMMARY" / "NOTE" cards reading "Farm
- * overview for CATLUT04… — Blend positions + Aquarius XLM/USDC LP + live Blend rates.
- * Earn (vTokens) is separate — not included here." and "History/time-series not
- * available via MCP. Zero balances mean no tracked farm position, not an RPC invent." —
+ * overview for CATLUT04… - Blend positions + Aquarius XLM/USDC LP + live Blend rates.
+ * Earn (vTokens) is separate - not included here." and "History/time-series not
+ * available via MCP. Zero balances mean no tracked farm position, not an RPC invent." -
  * MCP's own developer caveats about what the payload does and doesn't cover, not facts
  * about the user's money. Same class of noise as the rest of this list.
  */
@@ -391,7 +391,7 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
   /**
    * Drop a raw field when MCP also sent the formatted one.
    *
-   * MCP returns pairs — `total_liquidity` (a bare 18-decimal wad integer) beside
+   * MCP returns pairs - `total_liquidity` (a bare 18-decimal wad integer) beside
    * `total_liquidity_human` ("22,219.1975"). The `_wad`/`_raw` suffix filter below never
    * matched the first of those, so the facts panel rendered both:
    *
@@ -408,7 +408,7 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
       .map((k) => k.replace(/_human$/i, "")),
   );
 
-  /** A 15+ digit integer is a wad however it was spelled — last-resort guard. */
+  /** A 15+ digit integer is a wad however it was spelled - last-resort guard. */
   const isRawWad = (v: unknown): boolean =>
     (typeof v === "string" && /^\d{15,}$/.test(v)) ||
     (typeof v === "number" && Number.isInteger(v) && Math.abs(v) >= 1e15);
@@ -420,9 +420,9 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
     /**
      * Signing plumbing is not a fact about the user's money.
      *
-     * A staged deposit was rendering nine rows the user cannot act on — FUNCTION
+     * A staged deposit was rendering nine rows the user cannot act on - FUNCTION
      * `deposit_collateral_tokens`, CONTRACT `CAZLR6EH…`, SIMULATION SUCCESS, SIGNING
-     * STATUS, AUTO SIGN, AUTO SIGN ERROR, a raw stroop FEE ESTIMATE — around the two that
+     * STATUS, AUTO SIGN, AUTO SIGN ERROR, a raw stroop FEE ESTIMATE - around the two that
      * matter: how much, and of what. The card is what the user reads before approving a
      * transaction, so every row that is not a reason to approve or refuse is noise.
      *
@@ -433,7 +433,7 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
      * MCP's own receipt paragraph is not a fact.
      *
      * `sanitizeExecutionProse` already strips it from the message body, but the facts
-     * panel echoed the same string verbatim under `summary` — which is how "New smart
+     * panel echoed the same string verbatim under `summary` - which is how "New smart
      * account: CDNGNL…" reached the screen for an account that had existed for days, next
      * to a duplicate of the tx hash and explorer link the card renders as its own fields.
      * The dump is redundant here by construction, so it is dropped rather than trimmed.
@@ -443,7 +443,7 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
      * A status CODE is not a reason, even under a key called `reason`.
      *
      * Observed live on a staged deposit: the approval gate showed `REASON no_active_session`
-     * beside the amount, which tells the user nothing — it is the Sign Service saying there
+     * beside the amount, which tells the user nothing - it is the Sign Service saying there
      * is no session key yet, and the card already says "wallet sign required" in words. The
      * key cannot go in `PLUMBING_FACT_KEY`, because the same field carries genuinely useful
      * prose on a read ("Borrowing 20 USDC is permitted: it passes the gross-asset check…").
@@ -460,16 +460,16 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
        * 1. `slice(0, 6)` silently dropped the two lowest-value rows entirely (a real
        *    Soroswap LP position vanished with no trace it was ever cut). A caller like
        *    `snapshotPositionAnswer` passes the user's own complete, already-bounded
-       *    position list — every row is something they asked to see, so nothing here is
+       *    position list - every row is something they asked to see, so nothing here is
        *    the "arbitrarily huge MCP array" this cap was written to guard against.
        * 2. `collateral_positions` and `borrowed_positions` are both real fields on the
        *    same `data` object and can legitimately share a symbol (held XLM and
-       *    borrowed XLM are different facts about the same token) — with no guard, the
+       *    borrowed XLM are different facts about the same token) - with no guard, the
        *    array processed second silently overwrote the first's `"XLM amount"` key, so
        *    the card labelled "XLM AMOUNT" under a COLLATERAL question showed the
        *    BORROWED figure instead.
        *
-       * Fixed by raising the per-array cap (still bounded — a real account's own
+       * Fixed by raising the per-array cap (still bounded - a real account's own
        * position list is a handful of assets, never unbounded) and refusing to
        * overwrite an already-claimed key, falling back to a source-qualified one
        * instead of guessing which array's fact the user actually wanted.
@@ -494,7 +494,7 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
         if (sv == null || typeof sv === "object") continue;
         if (/_wad$|_raw$/i.test(sk)) continue;
         // A nested "summary"/"note" (e.g. `aquarius_lp.summary`) is the same MCP
-        // developer-caveat noise as a top-level one — PLUMBING_FACT_KEY only ever
+        // developer-caveat noise as a top-level one - PLUMBING_FACT_KEY only ever
         // checked the outer key before, so this composite field slipped through.
         if (PLUMBING_FACT_KEY.test(sk)) continue;
         if (out[`${k}.${sk}`] == null && out[prettyFactKey(sk)] == null) {

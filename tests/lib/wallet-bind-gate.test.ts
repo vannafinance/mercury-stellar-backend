@@ -8,8 +8,8 @@
  *
  *   { error: "wallet_not_bound", http_status: 403 }
  *
- * The operator did the only thing the UI suggested — disconnected and reconnected
- * the wallet through the Privy modal, while signed in — and got the same 403. That
+ * The operator did the only thing the UI suggested - disconnected and reconnected
+ * the wallet through the Privy modal, while signed in - and got the same 403. That
  * is not a flaky reconnect: the two facts are stored in different systems.
  *
  *   Privy "Connect Wallet"  → a browser wallet session.
@@ -20,13 +20,13 @@
  *                             signer on their own wallet.
  *
  * Nothing a wallet-connect modal does writes that row. And nothing in this app ever
- * called connect_start — grepping it found no caller at all — so the binding could
+ * called connect_start - grepping it found no caller at all - so the binding could
  * never come into existence, and the 403 was permanent by construction.
  *
  * These tests drive the REAL POST /api/copilot handler (network + Privy verifier
  * faked) because the thing that must hold is end-to-end: the 403 has to turn into a
  * connect_start call that CARRIES THE ASSERTION. A connect_start without it still
- * returns a working link, still connects the wallet, and still writes no binding —
+ * returns a working link, still connects the wallet, and still writes no binding -
  * a flow that looks like it worked and fixes nothing.
  */
 
@@ -319,7 +319,7 @@ function setEnv() {
 // real /api/copilot route, which pulls in the whole copilot brain; that load is over five
 // seconds while the full suite keeps every worker busy, and charged to a 5s test timeout it
 // made the first test in this file fail with "Test timed out in 5000ms" on about every
-// other full-suite run while passing alone every time (measured: 5277ms — marginally over,
+// other full-suite run while passing alone every time (measured: 5277ms - marginally over,
 // not hanging). Env first, because the graph reads MCP_MODE and the WorkOS settings as it
 // loads. See the longer note in assertion-end-to-end.test.ts.
 beforeAll(async () => {
@@ -358,7 +358,7 @@ describe("wallet_not_bound starts the additional-signer consent", () => {
     expect(data.wallet_bind?.status).toBe("needs_consent");
   });
 
-  it("connect_start carries the user assertion — without it no binding is written", async () => {
+  it("connect_start carries the user assertion - without it no binding is written", async () => {
     await postCopilot({ action: "use_defaults" });
 
     const [connect] = callsTo("vanna_wallet", "connect_start");
@@ -424,10 +424,10 @@ describe("wallet_not_bound starts the additional-signer consent", () => {
     }
   });
 
-  it("never instructs the user to reconnect — it says why that cannot work", async () => {
+  it("never instructs the user to reconnect - it says why that cannot work", async () => {
     const data = await postCopilot({ action: "use_defaults" });
-    // The dead end the operator actually walked into. The copy is allowed — required,
-    // even — to mention reconnecting, but only to rule it out; never as the next step.
+    // The dead end the operator actually walked into. The copy is allowed - required,
+    // even - to mention reconnecting, but only to rule it out; never as the next step.
     expect(data.message).not.toMatch(
       /(please |try |now )?(re-?connect|connect) your wallet( again)?[.,]/i,
     );
@@ -480,7 +480,7 @@ describe("after the consent completes, the original request finishes", () => {
   });
 
   it("a still-unbound wallet after a completed consent is reported as a server fault", async () => {
-    // connect_status says connected, but the bind never landed — the one case that is
+    // connect_status says connected, but the bind never landed - the one case that is
     // a real bug rather than a missing user action. It must not loop on another link.
     const prev = globalThis.fetch;
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -514,7 +514,7 @@ describe("after the consent completes, the original request finishes", () => {
  *
  * Sending the user to an external page to click "authorize", then back to click "I've
  * approved it", is a second quest for a decision they already made by flipping the
- * switch — and it reads as broken. Everything needed is in the page already: Privy's
+ * switch - and it reads as broken. Everything needed is in the page already: Privy's
  * SDK holds their session and is the only thing that CAN grant the consent, so the one
  * step the browser cannot make is the cross-origin register callback. The server makes
  * that, which is what these tests pin.
@@ -556,7 +556,7 @@ describe("the in-app silent bind is the primary path", () => {
     expect(callsTo("vanna_sign", "enable_auto_sign").length).toBeGreaterThan(0);
   });
 
-  it("register failing keeps the wallet unbound — addSigners is not taken on trust", async () => {
+  it("register failing keeps the wallet unbound - addSigners is not taken on trust", async () => {
     registerStatus = 403; // main service: quorum is not actually a signer
     const started = await postCopilot({ action: "use_defaults" });
     const out = await postCopilot({
@@ -609,7 +609,7 @@ describe("the in-app silent bind is the primary path", () => {
 
   it("bind_register never forwards to a target the browser chose", async () => {
     // The request body carries no origin/url field at all, and an unknown request_id
-    // resolves to no origin rather than being guessed — so there is nothing an
+    // resolves to no origin rather than being guessed - so there is nothing an
     // attacker could point the server's fetch at.
     const out = await postCopilot({
       action: "bind_register",
@@ -648,7 +648,7 @@ describe("the in-app silent bind is the primary path", () => {
 });
 
 describe("the identity-scoped binding read must carry the identity", () => {
-  it("list_bindings sends the assertion — on M2M alone it would answer 'no bindings'", async () => {
+  it("list_bindings sends the assertion - on M2M alone it would answer 'no bindings'", async () => {
     const { callNeedsUserToken } = await import("@/lib/copilot/user-context");
     // It reads no chain state; it answers "which wallets has THIS PERSON bound", and
     // the Sign Service keys that solely on the verified assertion sub. Treated as a

@@ -6,7 +6,7 @@
  * `getMcpClient()` is called from ~15 places across handle.ts, and every write
  * path bottoms out in `mcp.call(tool, args, userId)` where `userId` is the wallet
  * G-address, not a WorkOS subject. Threading a token through all of them would
- * touch every call site and — the part that actually matters — a NEW write tool
+ * touch every call site and - the part that actually matters - a NEW write tool
  * added later would silently default to the M2M credential and fail auto-sign in
  * exactly the way that took a week to diagnose the first time.
  *
@@ -27,8 +27,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 /**
  * The store is pinned to `globalThis` rather than held in a module-level `const`.
  *
- * A bundler may instantiate the same module more than once — different route
- * bundles, a server chunk plus a shared chunk — and two AsyncLocalStorage objects
+ * A bundler may instantiate the same module more than once - different route
+ * bundles, a server chunk plus a shared chunk - and two AsyncLocalStorage objects
  * mean the route binds the identity into one store while the transport reads an
  * empty one. Every write then silently falls back to no assertion, which is
  * indistinguishable from "signed out" and impossible to reproduce in dev, where a
@@ -52,7 +52,7 @@ export interface BoundUser {
   email?: string;
   /**
    * The end-user's own token. Forwarded to the MCP as `X-Vanna-User-Assertion`,
-   * NEVER as the bearer — the bearer stays the app's M2M credential, because the
+   * NEVER as the bearer - the bearer stays the app's M2M credential, because the
    * two answer different questions ("which app is calling" vs "who is asking").
    *
    * Empty on `kind: "stellar"`: there is no Sign Service assertion to forward.
@@ -125,8 +125,8 @@ const READ_ONLY_TOOLS = new Set<string>([
   "vanna_list_aquarius_pools",
   "vanna_get_aquarius_pool_stats",
   // Its Soroswap counterpart, added with the read itself and missed here: the catalogue
-  // offered `soroswap_pool_reserves` while this list — what may be called without a
-  // write's scrutiny — did not know the tool, so the two disagreed about a read that
+  // offered `soroswap_pool_reserves` while this list - what may be called without a
+  // write's scrutiny - did not know the tool, so the two disagreed about a read that
   // changes nothing on chain.
   "vanna_get_soroswap_pool_stats",
   "vanna_get_farm_lp_position",
@@ -143,13 +143,13 @@ const READ_ONLY_TOOLS = new Set<string>([
  *
  * It reads nothing from the chain: it answers "which wallets has THIS PERSON bound
  * as signable", and the Sign Service keys that answer solely on the verified
- * `X-Vanna-User-Assertion` sub — a body wallet or userId is ignored by design. On
+ * `X-Vanna-User-Assertion` sub - a body wallet or userId is ignored by design. On
  * the shared M2M credential there is no sub, so the call does not fail loudly; it
  * returns `hasAssertion: false` and an empty list, which reads as "this user has no
  * bindings" when the truth is "we never said who was asking".
  *
  * That is the worst possible failure for the one tool whose job is to diagnose a
- * `wallet_not_bound` 403 — it would confirm the false diagnosis. A read that is
+ * `wallet_not_bound` 403 - it would confirm the false diagnosis. A read that is
  * scoped to an identity needs the identity.
  */
 

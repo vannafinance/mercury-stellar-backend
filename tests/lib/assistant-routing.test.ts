@@ -4,7 +4,7 @@ import { isDiagnosisMessage } from "@/lib/assistant/packet";
 
 /**
  * Only the page agent receives the captured page, so a question about the page has to
- * route there. "What am I looking at on this page?" did not — it matched no definitional
+ * route there. "What am I looking at on this page?" did not - it matched no definitional
  * stem, fell through to the MCP router, and came back as a clarification about a page
  * that was sitting in the request.
  */
@@ -39,7 +39,7 @@ describe("assistant routing", () => {
     for (const q of [
       "How is that different from what I'd earn on Vanna?",
       "How does Blend differ from Earn?",
-      "Farm versus Earn — which is riskier?",
+      "Farm versus Earn - which is riskier?",
     ]) {
       expect(isAssistantChat(q), q).toBe(true);
     }

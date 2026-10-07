@@ -1,8 +1,8 @@
 // Copilot write executor (Phase 2).
 //
 // The orchestrator "brain" classifies a write and returns a structured `action`
-// (see ChatResponse.preview.action). We DON'T use the MCP's native write path —
-// it's blocked contract-side — so execution runs through the app's own AUDITED
+// (see ChatResponse.preview.action). We DON'T use the MCP's native write path -
+// it's blocked contract-side - so execution runs through the app's own AUDITED
 // on-chain services (the exact same ones the Earn / Margin pages and the Privy
 // margin-account flow use). Each service builds → signs (via wallet-adapter:
 // Freighter or Privy) → submits → polls, and returns { success, hash?, error? }.
@@ -14,7 +14,7 @@ import { ContractService, ASSET_TYPES, type AssetType } from "@/lib/stellar-util
 import { MarginAccountService } from "@/lib/margin-utils";
 
 /**
- * The action shape is the one the brain produces — not a second copy of it.
+ * The action shape is the one the brain produces - not a second copy of it.
  *
  * This file used to declare its own `CopilotAction` with eight of the canonical type's
  * twenty-odd fields, and `copilot-workspace.tsx` imports the type from HERE. So the
@@ -22,7 +22,7 @@ import { MarginAccountService } from "@/lib/margin-utils";
  * fallen behind: `leverage`, `borrow_asset`, `borrow_amount`, `min_hf`, `fraction`,
  * `token_a`/`token_b`, `venue` and `explain` were all invisible to it, even though the
  * server sends them and the runtime object carries them. Reading `action.leverage` in the
- * bad-sequence rebuild path was a type error for that reason alone — the value is there.
+ * bad-sequence rebuild path was a type error for that reason alone - the value is there.
  *
  * Re-exported rather than re-declared so this can never drift again. `Preview.action` is
  * already typed as this, which is what makes the two agree by construction.

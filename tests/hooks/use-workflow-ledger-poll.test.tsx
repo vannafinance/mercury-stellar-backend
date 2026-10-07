@@ -9,7 +9,7 @@ import type { WorkflowView } from "@/lib/copilot/workflow/types";
  * ## The live failure this pins
  *
  * 13 Sep, signed in, "use my AqUSDC sitting in Earn as collateral": the redeem was on
- * chain at 10:15:57 (ledger 4654194) and the deposit at 10:19:37 — and the card said
+ * chain at 10:15:57 (ledger 4654194) and the deposit at 10:19:37 - and the card said
  * "Broadcasting…" through both, because after `submit` the hook asked the server exactly
  * once, immediately, before the ledger had closed, then waited for "Check progress".
  * Acceptance: with no click at all, a ledger close moves a submitted step on and the run
@@ -57,7 +57,7 @@ const flush = () => act(async () => { await Promise.resolve(); await Promise.res
 beforeEach(() => { localStorage.setItem(`vanna-workflow:${WALLET}`, ID); });
 afterEach(() => { vi.unstubAllGlobals(); mocks.tick.value = 0; localStorage.clear(); });
 
-describe("useWorkflow — a submitted step is re-asked about at every ledger close", () => {
+describe("useWorkflow - a submitted step is re-asked about at every ledger close", () => {
   it("settles step 1 and runs step 2 with no click, one ask per ledger close", async () => {
     const calls = server([
       // Restored on mount: paused on the submitted redeem, exactly where `confirm` leaves it.

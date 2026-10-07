@@ -310,7 +310,7 @@ describe("bounded execution", () => {
 
   /**
    * The zero-output failure, reproduced. MCP stalled, the run hit its deadline mid-batch,
-   * and the loop threw away the reads that HAD returned — reporting "0 reads" while holding
+   * and the loop threw away the reads that HAD returned - reporting "0 reads" while holding
    * real evidence. A stop must stop reading, not discard what came back.
    */
   it("keeps the reads that completed when the deadline fires mid-batch", async () => {
@@ -344,7 +344,7 @@ describe("bounded execution", () => {
     const price = result.observations.find((observation) => observation.capability === "asset_price");
     expect(price?.status).toBe("ok");
     expect(price?.data).toMatchObject({ price_usd: "0.19" });
-    // The read still in flight is aborted with the run and recorded as an honest error —
+    // The read still in flight is aborted with the run and recorded as an honest error -
     // the point is that the finished one is no longer thrown away alongside it.
     const slow = result.observations.find((observation) => observation.capability === "wallet_balances");
     expect(slow?.status).toBe("error");

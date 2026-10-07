@@ -1,5 +1,5 @@
 /**
- * The op-flow table — one truth for what each op does, shared by the sizer, the reads a
+ * The op-flow table - one truth for what each op does, shared by the sizer, the reads a
  * plan needs, the risk validator and the prompt. These tests pin the properties the
  * consumers rely on, so a row edit that breaks one of them fails here, by name.
  */
@@ -81,7 +81,7 @@ describe("what the protocol can actually swap", () => {
     /**
      * Confirmed against the Trade page, 15 Sep: AqUSDC↔XLM on Aquarius, SoUSDC↔XLM on
      * Soroswap. BLUSDC is Blend's USDC and has no pool at all, so `lpVenue` is null for it
-     * AND for XLM — XLM carries none because it is the other side of every pair, not a
+     * AND for XLM - XLM carries none because it is the other side of every pair, not a
      * named one. Reading the venue off either asset therefore routed XLM→BLUSDC to
      * Soroswap, a pool that cannot fill it; the venue comes from the pair now.
      */
@@ -101,8 +101,8 @@ describe("what the protocol can actually swap", () => {
 describe("what the table decides downstream", () => {
   it("seals every read a leg sizes from, so Prepare can re-size what the card offered", async () => {
     /**
-     * 14 Sep, live: "withdraw all XLM from Blend" sized correctly on the card — 26,565.288
-     * XLM — and Prepare answered "no XLM Blend supply was read this investigation". The
+     * 14 Sep, live: "withdraw all XLM from Blend" sized correctly on the card - 26,565.288
+     * XLM - and Prepare answered "no XLM Blend supply was read this investigation". The
      * evidence kept a hand-written list of capabilities that `blend_position` was not on,
      * so the read the plan was sized from never reached the proposal. The list is derived
      * from the op-flow table now; this fails if a new op's read is ever dropped again.
@@ -282,6 +282,6 @@ describe("what the table decides downstream", () => {
       { op: "borrow", asset: "XLM", sizing: { kind: "previous_leg" } },
     ])], { ...ctx(rows("500", "0", "0"), ["deposit and borrow, HF above 1.3"]), capacity: { grossCollateralUsd: "144", debtUsd: "54", floor: "1.3" } });
     // The list of takers is read from the table, so a new account-drawing op joins it by itself.
-    expect(rejected[0]?.reason).toMatch(/^a deposit puts tokens in the account — .* them next, not a borrow$/);
+    expect(rejected[0]?.reason).toMatch(/^a deposit puts tokens in the account - .* them next, not a borrow$/);
   });
 });

@@ -1,6 +1,6 @@
 /**
  * Deterministic risk gate + before→after health simulation for margin writes.
- * Cannot be bypassed by prompt injection — pure code.
+ * Cannot be bypassed by prompt injection - pure code.
  */
 
 import { copilotConfig } from "./config";
@@ -15,7 +15,7 @@ import { LIQUIDATION_THRESHOLD } from "../margin-health";
  */
 const LIQ_THRESHOLD = LIQUIDATION_THRESHOLD;
 /**
- * The product's own health factor is a plain ratio — `avgHealthFactor =
+ * The product's own health factor is a plain ratio - `avgHealthFactor =
  * grossCollateralValue / effectiveDebtValue` in lib/margin-health.ts, confirmed by the
  * Margin page's own displayed number ("Collateral / Debt", no discount). A discount
  * applied to one side only made projections lie: first a 0.9 default on `hf_after` (a
@@ -100,7 +100,7 @@ async function fetchHealth(
     if (hf == null && debt > 0 && collateral > 0) hf = hfFrom(collateral, debt);
 
     /**
-     * A Soroban budget overrun arrives as a SUCCESSFUL response carrying an error field —
+     * A Soroban budget overrun arrives as a SUCCESSFUL response carrying an error field -
      * it never rejects. `runRead` documents exactly this and re-raises so its fallback can
      * run; here the catch below was simply unreachable, so the payload
      *
@@ -108,7 +108,7 @@ async function fetchHealth(
      *       message: "…get_current_total_balance: HostError: Error(Budget, ExceededLimit)" }
      *
      * parsed to collateral 0 / debt 0 / hf null and became a zeroed baseline. The card then
-     * said "reading your current position failed" — true, but only because nothing here
+     * said "reading your current position failed" - true, but only because nothing here
      * noticed. It fires on accounts holding several collateral tokens, which is why it
      * looked like intermittent RPC flakiness rather than a shape the code never handled.
      *
@@ -124,12 +124,12 @@ async function fetchHealth(
   } catch (e) {
     /**
      * `vanna_get_account_health` blows the Soroban CPU budget on accounts holding several
-     * collateral tokens — `runRead` documents this and already falls back to
+     * collateral tokens - `runRead` documents this and already falls back to
      * `computeMarginSnapshot`, the same read the margin page renders from.
      *
      * This function had no such fallback and swallowed the error SILENTLY, returning a
      * zeroed baseline. Downstream that is indistinguishable from an empty account, so the
-     * card reported "reading your current position failed" on a funded, healthy one — and
+     * card reported "reading your current position failed" on a funded, healthy one - and
      * because nothing was logged, it looked like intermittent RPC flakiness for hours.
      * It is neither intermittent nor RPC: it tracks how many collateral tokens the account
      * holds, which is why it appeared only as this test account accumulated them.
@@ -184,7 +184,7 @@ export async function evaluateWriteRisk(
 
   if (action.multi_leg) {
     reasons.push(
-      "multi-leg strategy: legs are not guaranteed atomic — confirm carefully before signing",
+      "multi-leg strategy: legs are not guaranteed atomic - confirm carefully before signing",
     );
     decision = "needs_confirmation";
   }
@@ -207,7 +207,7 @@ export async function evaluateWriteRisk(
             liquidation_threshold: LIQ_THRESHOLD,
             amount_usd: 0,
             asset,
-            // Nothing failed here — this op simply does not move margin collateral or debt.
+            // Nothing failed here - this op simply does not move margin collateral or debt.
             margin_applicable: false,
           }
         : null,
@@ -296,12 +296,12 @@ export async function evaluateWriteRisk(
     amount_usd: amountUsd,
     asset,
     /**
-     * Whether this op moves margin health at all — read off `OP_FLOW`, which already
+     * Whether this op moves margin health at all - read off `OP_FLOW`, which already
      * declares it per op and is the same table the sizer and the planner use.
      *
      * It was only ever set on the `!requires_account` branch above, so an op that spends
-     * FROM the margin account but changes neither collateral nor debt — a Blend supply, a
-     * Blend withdraw — came down this path and produced a real-looking projection of
+     * FROM the margin account but changes neither collateral nor debt - a Blend supply, a
+     * Blend withdraw - came down this path and produced a real-looking projection of
      * itself: "59.40 → 59.40", drawn as a health card over a write that cannot move
      * health. `OP_FLOW[op].health === "neutral"` is that fact, stated once, where the
      * rest of the system already reads it.
@@ -318,7 +318,7 @@ export async function evaluateWriteRisk(
   const policyFloor = copilotConfig.minHealthFactor;
   const hardFloor = LIQ_THRESHOLD;
 
-  // Already close to liquidation — warn before any debt-increasing write.
+  // Already close to liquidation - warn before any debt-increasing write.
   if (
     hfBefore != null &&
     hfBefore < 1.2 &&
@@ -332,11 +332,11 @@ export async function evaluateWriteRisk(
     );
     if (hfBefore <= hardFloor) {
       decision = "block";
-      reasons.unshift(`HF ${hfBefore.toFixed(2)} is at or below the ${hardFloor.toFixed(2)} liquidation line — liquidatable now. Repay debt or deposit collateral first.`);
+      reasons.unshift(`HF ${hfBefore.toFixed(2)} is at or below the ${hardFloor.toFixed(2)} liquidation line - liquidatable now. Repay debt or deposit collateral first.`);
     } else {
       // No `decision !== "block"` guard: nothing above this point can have set "block",
       // so TS narrows it away and the comparison fails `next build`. The escalation is
-      // one-directional anyway — a later block below still wins.
+      // one-directional anyway - a later block below still wins.
       decision = "needs_confirmation";
     }
   }
@@ -344,7 +344,7 @@ export async function evaluateWriteRisk(
   if (hfAfter != null && hfAfter <= hardFloor) {
     decision = "block";
     reasons.unshift(
-      `projected health factor ${hfAfter.toFixed(2)} is at or below the ${hardFloor.toFixed(2)} liquidation line — would be instantly liquidatable`,
+      `projected health factor ${hfAfter.toFixed(2)} is at or below the ${hardFloor.toFixed(2)} liquidation line - would be instantly liquidatable`,
     );
   } else if (userFloor != null && hfAfter != null && hfAfter < userFloor) {
     decision = "block";

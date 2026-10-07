@@ -2,7 +2,7 @@
  * A swap must never buy a different token than the one on the card.
  *
  * Found live 2026-08-10: "swap 10 XLM to BLUSDC" produced a card headed
- * "Swap 10 XLM → BLUSDC (aquarius)" over a transaction that bought AQUSDC — because the
+ * "Swap 10 XLM → BLUSDC (aquarius)" over a transaction that bought AQUSDC - because the
  * venue mapper rewrote every USDC variant to the venue's own, while the label was
  * deliberately built from the user's word. BLUSDC, AQUSDC and SOUSDC are three separate,
  * non-interchangeable tokens.
@@ -18,7 +18,7 @@ const CTX = {
 const swap = (params: Record<string, unknown>) =>
   mapOpToMcpStep("swap", { amount: 10, token_a: "XLM", ...params } as never, CTX);
 
-describe("swap — a named USDC variant is honoured, never substituted", () => {
+describe("swap - a named USDC variant is honoured, never substituted", () => {
   it("refuses BLUSDC rather than quietly filling it with AQUSDC", () => {
     const r = swap({ token_b: "BLUSDC" });
     expect(r.step).toBeUndefined();
@@ -46,7 +46,7 @@ describe("swap — a named USDC variant is honoured, never substituted", () => {
     expect(r.blocker).toMatch(/aquarius/i);
   });
 
-  /** Bare USDC is the ambiguous form and still takes the venue's own token — as the Trade page does. */
+  /** Bare USDC is the ambiguous form and still takes the venue's own token - as the Trade page does. */
   it("bare USDC still resolves to the venue's USDC", () => {
     expect(swap({ token_b: "USDC" }).step?.args.token_out).toBe("AQUSDC");
     expect(swap({ token_b: "USDC", venue: "soroswap" }).step?.args.token_out).toBe("SOUSDC");

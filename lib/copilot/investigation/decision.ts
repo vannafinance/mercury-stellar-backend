@@ -40,7 +40,7 @@ function parseTrigger(value: unknown): GoalUnderstanding["trigger"] {
 }
 
 /**
- * Why the last `parseDecision` returned null — the runtime logs it. Until 13 Sep a refused
+ * Why the last `parseDecision` returned null - the runtime logs it. Until 13 Sep a refused
  * decision surfaced only as "Research stopped: invalid decision", with nothing anywhere
  * saying which check the model failed.
  */
@@ -108,7 +108,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return refuse(`goal: keys=${isRecord(goal) ? Object.keys(goal).join(",") : typeof goal} intent=${String(isRecord(goal) ? goal.intent : "")} borrowing=${String(isRecord(goal) ? goal.borrowing : "")}`);
   }
   /**
-   * A literal action is kept only when it is exactly that — a supported op, a registry
+   * A literal action is kept only when it is exactly that - a supported op, a registry
    * asset, a decimal amount and the quote it came from. One that is not ("amount: all")
    * is dropped and counted, like a malformed plan; it must not void the research and the
    * plans beside it (13 Sep: "use my AqUSDC in Earn as collateral" died here).
@@ -117,7 +117,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
   /**
    * A stated action is a plan leg plus the sentence it came from, validated by the very
    * same `parseLeg`. It used to be validated separately against `{op, asset, amount,
-   * sourceQuote}` — a bare decimal — which silently dropped every instruction a leg could
+   * sourceQuote}` - a bare decimal - which silently dropped every instruction a leg could
    * express but that shape could not: "borrow 2x" (leverage is a sizing word, and "2x"
    * failed the decimal test) and "SOUSDC and XLM in Soroswap" (no field for the paired
    * asset or the DEX, and `exactKeys` rejects unknown keys). Those instructions then had
@@ -139,7 +139,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
   /**
    * Accepted only when the model quotes the user saying it. The quote is checked against
    * the message itself by the caller's existing anchoring, so "the user accepted a loss"
-   * cannot be something the model decided on their behalf — the one thing that must not
+   * cannot be something the model decided on their behalf - the one thing that must not
    * be inferred here is consent.
    */
   const slippage = goal.slippageAccepted === undefined || goal.slippageAccepted === null ? undefined
@@ -173,14 +173,14 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     !texts(raw.openQuestions)) return refuse(`findings/openQuestions: findings=${Array.isArray(raw.findings) ? raw.findings.length : typeof raw.findings}`);
   /**
    * Plans are optional and additive. A malformed plan must not void the research it
-   * rides on — the goal, findings and reads are still good — so the bad ones are dropped
+   * rides on - the goal, findings and reads are still good - so the bad ones are dropped
    * and counted, and the service tells the user that some proposed shapes could not be read.
    */
   const parsedPlans = raw.plans === undefined ? { plans: [], dropped: 0, reasons: [] as string[] } : parsePlans(raw.plans);
   const findings: Array<{ summary: string; evidenceIds: string[] }> = [];
   /**
    * What the evidence rule protects is figures: a balance, a rate or a health number the
-   * user reads must trace to a read. Prose does not — and the prompt asks for prose with
+   * user reads must trace to a read. Prose does not - and the prompt asks for prose with
    * nothing to cite when the goal needs an operation outside the vocabulary ("say so in
    * findings as a limitation"). So an uncited finding is kept when it states no figure,
    * and an uncited figure is dropped and counted, like a malformed plan; it voids the
@@ -191,7 +191,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
   /**
    * "Nothing else remains" has to mean plans too. This counted stated ACTIONS only, so a
    * strategy turn that composed its plans and wrote one uncited figure beside them was
-   * refused whole and the plans went with it — the same shape of loss the note above
+   * refused whole and the plans went with it - the same shape of loss the note above
    * describes, in the branch it did not cover. 15 Sep: "remove 26k XLM liquidity from
    * blend pool and swap 5k xlm to AqUSDC" sized two legs and died as "invalid decision".
    */
@@ -238,7 +238,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
 /**
  * Plans are shapes only. A leg with a number outside `literal`, an op outside the
  * vocabulary, an asset outside the registry, or a sizing word nobody defined makes the
- * whole decision invalid — the loop then stops with `invalid_decision` rather than
+ * whole decision invalid - the loop then stops with `invalid_decision` rather than
  * letting a half-understood plan reach the sizer.
  */
 /**
@@ -278,7 +278,7 @@ function parsePlan(plan: unknown): ProposedPlan | null {
 }
 
 /**
- * Validate one leg — the single definition of what a leg may contain.
+ * Validate one leg - the single definition of what a leg may contain.
  *
  * Shared with the `goal.actions` validator rather than duplicated there. The two used to
  * enforce different shapes: a plan leg could carry `sizing`, `assetOut` and `venue` while
@@ -290,7 +290,7 @@ function parsePlan(plan: unknown): ProposedPlan | null {
 function parseLeg(leg: unknown, extraKeys: readonly string[] = []): PlanLeg | null {
   if (!isRecord(leg)) return drop("not an object");
   /**
-   * `assetOut` and the DEX `venue` belong to the ops that name a SECOND asset — a swap
+   * `assetOut` and the DEX `venue` belong to the ops that name a SECOND asset - a swap
    * ends in a different one, add_liquidity spends a paired token. Any other op carrying
    * them is malformed, not tolerated: the leg is rejected, as with every unknown key.
    */
@@ -314,8 +314,8 @@ function parseLeg(leg: unknown, extraKeys: readonly string[] = []): PlanLeg | nu
     !(ASSET_IDS as readonly string[]).includes(String(leg.asset))) return drop(`${String(leg.op)} ${String(leg.asset)}: keys ${Object.keys(leg).join(",")} (allowed ${allowed.join(",")}); op or asset must be known`);
   const sizing = parseSizing(leg.sizing);
   if (!sizing) return drop(`${String(leg.op)} ${String(leg.asset)}: ${lastPlanDrop}`);
-  // `amountAsset` chooses between the leg's TWO assets, so it is meaningless — and a sign
-  // the leg was misunderstood — on an op that has only one. Derived from the same
+  // `amountAsset` chooses between the leg's TWO assets, so it is meaningless - and a sign
+  // the leg was misunderstood - on an op that has only one. Derived from the same
   // ASSET_OUT_OPS property as `assetOut` itself rather than naming the ops again.
   if (!hasAssetOut && sizing.kind === "literal" && sizing.amountAsset !== undefined) return drop(`${String(leg.op)} ${String(leg.asset)}: amountAsset on an op with one asset`);
   if (!hasAssetOut) {
@@ -361,14 +361,14 @@ function parseSizing(raw: unknown): PlanSizing | null {
   }
   if (value.kind === "leverage") {
     // Upper-bounded generously; the sizer's own floor-projection is what actually stops an
-    // unsafe multiple — this is only proof the model did not invent an absurd digit string.
+    // unsafe multiple - this is only proof the model did not invent an absurd digit string.
     if (!exactKeys(value, ["kind", "multiple", "sourceQuote"]) || typeof value.multiple !== "string" ||
       !/^\d+(\.\d{1,3})?$/.test(value.multiple) || Number(value.multiple) <= 1 || Number(value.multiple) > 100 ||
       !text(value.sourceQuote, 1600)) return drop(`leverage sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
     return { kind: "leverage", multiple: value.multiple, sourceQuote: value.sourceQuote };
   }
   if (value.kind !== "literal") return exactKeys(value, ["kind"]) ? { kind: value.kind as "all_wallet" | "all_position" | "to_floor" | "previous_leg" } : drop(`sizing ${String(value.kind)} takes no other keys, got ${Object.keys(value).join(",")}`);
-  // amountAsset is optional — every non-swap leg, and the ordinary "spend" swap, omit it.
+  // amountAsset is optional - every non-swap leg, and the ordinary "spend" swap, omit it.
   const hasAmountAsset = Object.hasOwn(value, "amountAsset");
   const literalKeys = hasAmountAsset ? ["kind", "amount", "sourceQuote", "amountAsset"] : ["kind", "amount", "sourceQuote"];
   if (!exactKeys(value, literalKeys) || typeof value.amount !== "string" ||

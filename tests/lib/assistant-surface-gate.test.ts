@@ -1,8 +1,8 @@
 /**
  * The floating "Vanna Assistant" widget (docked on every page besides /copilot) and the
  * dedicated /copilot workspace hit the exact same `/api/copilot` endpoint and the exact
- * same `handleChat`. The widget is meant to be a Gemini-Assist-style page guide — explain,
- * answer, navigate — never sign or submit a transaction; that belongs on the Copilot page.
+ * same `handleChat`. The widget is meant to be a Gemini-Assist-style page guide - explain,
+ * answer, navigate - never sign or submit a transaction; that belongs on the Copilot page.
  * Before this fix there was no way to tell them apart server-side: "deposit 5 XLM as
  * collateral" typed into the floating widget signed and submitted for real, identically to
  * typing it on /copilot. `surface: "assistant"` now gates both the structured write
@@ -11,7 +11,7 @@
  *
  * Both cases here return before `handleChat` ever touches MCP (the redirect fires ahead of
  * any `runWrite` / `runPlan` / `handleAutoSignAction` call), so no MCP mode setup or mocking
- * is needed — this is true regardless of `MCP_MODE`.
+ * is needed - this is true regardless of `MCP_MODE`.
  */
 import { describe, expect, it } from "vitest";
 import { handleChat } from "@/lib/copilot/handle";
@@ -95,7 +95,7 @@ describe("assistant surface never executes a transaction", () => {
       ...base,
       surface: "assistant",
       message:
-        "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 — you can use spot and farm markets yourself, and you can even take new loans.",
+        "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 - you can use spot and farm markets yourself, and you can even take new loans.",
     });
     expect(res.kind).toBe("blocked");
     expect(res.intent?.template_id).toBe("assistant_surface_redirect");

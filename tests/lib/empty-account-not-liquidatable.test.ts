@@ -1,6 +1,6 @@
 /**
  * Live: a brand-new margin account (collateral $0, debt $0) answered
- * "URGENT: health factor 0.00 is below 1.00 — this account is liquidatable".
+ * "URGENT: health factor 0.00 is below 1.00 - this account is liquidatable".
  *
  * deriveMarginHealth returns HF 0 for the empty case (∞ is only when there is
  * collateral and no debt). The guard treated any HF < 1 as liquidatable without

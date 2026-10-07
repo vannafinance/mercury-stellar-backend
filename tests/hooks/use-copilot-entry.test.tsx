@@ -6,7 +6,7 @@ import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 /**
  * One composer, and EVERY prompt is investigated.
  *
- * This hook used to ask the server to pick one handler — investigate XOR action — so a
+ * This hook used to ask the server to pick one handler - investigate XOR action - so a
  * concrete instruction skipped investigation entirely and a strategy request could never
  * reach the executor. Both halves were wrong: understanding the account is what makes an
  * action safe, so a write has to be the consequence of an investigation. The contract
@@ -136,7 +136,7 @@ describe("single composer entry", () => {
  * The composer's controller is what `onInvestigate` receives as its abort signal, and the
  * effect that cancels it on a wallet change also returned `cancel` as its cleanup. React
  * runs a cleanup on unmount too, so navigating to any other route aborted the in-flight
- * fetch and cancelled the server request with it — the investigation did not pause, it
+ * fetch and cancelled the server request with it - the investigation did not pause, it
  * died, and returning to the page showed nothing.
  *
  * What is pinned here is which events may stop a run: an explicit cancel, the deadline, a

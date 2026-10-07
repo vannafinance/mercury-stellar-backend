@@ -168,7 +168,7 @@ describe("proposeWorkflow evidence reuse", () => {
 
   /**
    * The world-read and the app snapshot are independent MCP round trips. Running them one
-   * after another stacked their bounds — up to 15s each — on top of scope resolution, which
+   * after another stacked their bounds - up to 15s each - on top of scope resolution, which
    * on a cold cache pushed a stale propose past the browser's 90s budget (15 Sep, D4). A
    * timing assertion is the only proof that they now overlap rather than merely that the
    * result is unchanged: both are delayed by the same amount, and the whole call must still
@@ -211,7 +211,7 @@ describe("proposeWorkflow evidence reuse", () => {
   });
 });
 
-/** A stated exact-output swap — the shape the copilot proposes for "swap XLM so i get 1 AQUSDC". */
+/** A stated exact-output swap - the shape the copilot proposes for "swap XLM so i get 1 AQUSDC". */
 const SWAP_STEP = {
   id: "requested-0",
   op: "swap" as const,
@@ -313,7 +313,7 @@ describe("proposeWorkflow requested_actions", () => {
 
   /**
    * A stated swap is proposed through THIS branch, and the acceptance the user stated in
-   * their own words has to reach the stored proposal — it is what the pre-write re-quote
+   * their own words has to reach the stored proposal - it is what the pre-write re-quote
    * and the MCP's impact gate both read at execution time. Sealed on the research and
    * dropped here, the card appears and the swap is then withheld twice over for a price
    * the user had already agreed to, with nothing left for them to say.
@@ -334,7 +334,7 @@ describe("proposeWorkflow requested_actions", () => {
     expect((await harness.store.read(""))?.value.proposal.slippageAccepted).toBe(true);
   });
 
-  it("leaves it false when the user never accepted — the refusal is the default", async () => {
+  it("leaves it false when the user never accepted - the refusal is the default", async () => {
     const codec = researchCodec(SECRET, SERVER, () => NOW);
     const evidence = compactResearchEvidence([], null, NOW);
     evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];

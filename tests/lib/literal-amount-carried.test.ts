@@ -3,7 +3,7 @@ import { literalAmountAnchored } from "@/lib/copilot/investigation/plan";
 
 /**
  * Live, 23 Sep: "deposit 100 XLM, borrow 20 BLUSDC and supply it to blend" was understood
- * correctly and then refused — "the amount 20 does not appear in your request" — because the
+ * correctly and then refused - "the amount 20 does not appear in your request" - because the
  * supply clause says "it" (no number of its own) and the request holds two amounts.
  */
 const request = "deposit 100 XLM, borrow 20 BLUSDC and supply it to blend";
@@ -34,7 +34,7 @@ describe("an amount carried from an earlier stated leg is anchored", () => {
     expect(literalAmountAnchored(supply.sizing, ctx, plan, supply)).toBe(false);
   });
 
-  it("only looks BACKWARD — a later leg cannot anchor an earlier one", () => {
+  it("only looks BACKWARD - a later leg cannot anchor an earlier one", () => {
     const supply = leg("supply_blend", "BLUSDC", "20", "supply it to blend");
     const plan = { legs: [deposit, supply, borrow] } as any;
     expect(literalAmountAnchored(supply.sizing, ctx, plan, supply)).toBe(false);
@@ -43,7 +43,7 @@ describe("an amount carried from an earlier stated leg is anchored", () => {
 
 /**
  * Live, 23 Sep: after a priced-loss refusal, the user replied "i accept the loss" and the
- * re-plan was refused — "the amount 50 does not appear in your request" — because the latest
+ * re-plan was refused - "the amount 50 does not appear in your request" - because the latest
  * turn carries no number. The deterministic extractor, reading the earlier turn on its own,
  * finds swap / XLM / 50; that independent reading is what anchors the amount.
  */

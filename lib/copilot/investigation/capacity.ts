@@ -3,8 +3,8 @@
  *
  * Display and sizing are different jobs:
  *
- * 1. **Display** ("your health factor is 3.90") uses the app snapshot —
- *    `computeAccountPosition` / `computeMarginSnapshot` — so the copilot matches
+ * 1. **Display** ("your health factor is 3.90") uses the app snapshot -
+ *    `computeAccountPosition` / `computeMarginSnapshot` - so the copilot matches
  *    the Margin page.
  *
  * 2. **Sizing** ("you can borrow $X before breaching 1.30") uses the contract
@@ -57,7 +57,7 @@ export type SizingOptions = {
   useConfiguredFloor?: boolean;
   /**
    * The app snapshot when the caller already attempted it: a snapshot, or `null` meaning
-   * "tried and unavailable — do not read again". Undefined means read it here. Mirrors
+   * "tried and unavailable - do not read again". Undefined means read it here. Mirrors
    * `contract`. Propose reads it once, bounded; reading it twice unbounded took a
    * propose past the browser's 90s (13 Sep).
    */
@@ -75,12 +75,12 @@ export const SIZING_DRIFT_REL = 0.005;
  * Observed live within one minute on the same account, while the Soroban RPC was returning
  * repeated `ECONNRESET`: collateral read $4,211.63, then $2,425.78, then **$10.43**, with
  * debt steady at $1,732.61 throughout. The third one rendered as "AT RISK · health factor
- * 0.01". Nothing had executed — `computeMarginSnapshot` runs the borrow and collateral scans
+ * 0.01". Nothing had executed - `computeMarginSnapshot` runs the borrow and collateral scans
  * as two independent calls (`account-snapshot.ts:164`), and when the collateral side
  * partially fails its total collapses while the debt total survives.
  *
- * The protocol does not let an account sit with debt and no collateral — it would already
- * have been liquidated — so that combination is a failed read, not a position. The copilot
+ * The protocol does not let an account sit with debt and no collateral - it would already
+ * have been liquidated - so that combination is a failed read, not a position. The copilot
  * must not seed it as evidence or size a plan against it: headroom computed on $10.43 of
  * collateral is not conservative, it is wrong, and "your health factor is 0.01" is a false
  * alarm that would push someone into an unnecessary repay.
@@ -122,7 +122,7 @@ function withinDrift(app: number, contract: number): boolean {
 
 /**
  * App snapshot vs contract liquidation_snapshot. Agreement means we may size from
- * the contract numbers. Disagreement is unavailable — never a silent preference.
+ * the contract numbers. Disagreement is unavailable - never a silent preference.
  */
 export function reconcileSizingBasis(
   app: { grossCollateralValue: number; totalBorrowedValue: number },
@@ -154,7 +154,7 @@ export function parseLiquidationSnapshot(data: unknown): ContractLiquidationBasi
     collateralUsd: collateral,
     debtUsd: debt,
     // New MCP names the third tuple unpriceable_plain. Old MCP sent the same
-    // bool as liquidatable — keep that key so a stale server still parses.
+    // bool as liquidatable - keep that key so a stale server still parses.
     unpriceablePlain:
       typeof data.unpriceable_plain === "boolean"
         ? data.unpriceable_plain === true
@@ -209,7 +209,7 @@ export async function computeBorrowCapacity(
   signal?: AbortSignal,
   /**
    * A snapshot already read this turn. `computeMarginSnapshot` costs 5-7s against the live
-   * RPC (measured), and the position reader and this one both need the same figures — paying
+   * RPC (measured), and the position reader and this one both need the same figures - paying
    * for it twice per turn was enough on its own to push the route past its 75s deadline,
    * which the user saw as "the connection closed before the investigation finished".
    */
@@ -270,9 +270,9 @@ export function capacityFromBasis(
  * The position a plan may be sized against, independent of any floor.
  *
  * The contract's liquidation snapshot is the number that decides liquidation, so sizing
- * uses it — but only once the app snapshot agrees with it within the drift band. When
+ * uses it - but only once the app snapshot agrees with it within the drift band. When
  * the two disagree (tokens sitting in the account unposted count for the Margin page and
- * not for the risk engine — see OWNER-collateral-definition.md) the contract figures are
+ * not for the risk engine - see OWNER-collateral-definition.md) the contract figures are
  * still returned, with the disagreement carried as data, so a caller can refuse to size
  * anything that lowers health while still projecting a deposit honestly. Null when the
  * position could not be read at all.
@@ -335,7 +335,7 @@ export async function computeSizingBasis(
  * The account's authoritative position, independent of any stated floor.
  *
  * Split out because a health question is not a sizing question. `computeBorrowCapacity`
- * returns null without a user-stated floor — correctly, since headroom needs one — but that
+ * returns null without a user-stated floor - correctly, since headroom needs one - but that
  * left "what's my health factor?" dependent on the MCP `account_health` read, and when that
  * read came back without a scalar ratio the copilot reported the value as unavailable while
  * the Margin page rendered 2.43 from this very snapshot. Refusing to invent a number was

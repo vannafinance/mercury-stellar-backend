@@ -5,14 +5,14 @@
  * untested: a 6000-line component gives a receipt builder nowhere to be exercised from.
  * It is a pure function here so the two-leg case has a test.
  *
- * The defect it fixes: the steps were built from `action` — the single write that had just
- * been signed — so on a multi-leg run every settled leg overwrote the previous one with a
+ * The defect it fixes: the steps were built from `action` - the single write that had just
+ * been signed - so on a multi-leg run every settled leg overwrote the previous one with a
  * fresh one-element array. Live, 22 Sep, "deposit 100 XLM, borrow 20 BLUSDC and supply it
  * to blend": all three legs settled on-chain and the finished card showed only the deposit.
  *
  * The receipt was also keyed by `request_id`, which is per REQUEST while a multi-leg run is
  * many requests. Each leg therefore wrote under a new key, failed to find the turn the
- * previous leg had written, and fell through to "first assistant turn with no receipt" — so
+ * previous leg had written, and fell through to "first assistant turn with no receipt" - so
  * the run's receipt could land on an earlier turn than the run it described. `runId` is the
  * caller's one id for the whole run, which is what stops that.
  */
@@ -33,7 +33,7 @@ export type RunReceiptLeg = {
 /**
  * Restate one internal status vocabulary in the other.
  *
- * Not a reading of server wording — `toRunLegStatus` already owns that, and is reused here
+ * Not a reading of server wording - `toRunLegStatus` already owns that, and is reused here
  * so a status this file has never seen is still interpreted the one way the run card
  * interprets it. Keeping a second opinion here is what would let the card and the receipt
  * disagree about the same leg.
@@ -57,13 +57,13 @@ export function receiptStepStatus(leg: RunReceiptLeg): StepStatus {
 export function buildRunReceipt(input: {
   /** Every leg of the run. Empty or not-a-run falls back to the single write. */
   legs: readonly RunReceiptLeg[];
-  /** Whether this is genuinely a multi-leg run — the caller passes the same predicate the run card is gated on. */
+  /** Whether this is genuinely a multi-leg run - the caller passes the same predicate the run card is gated on. */
   isRun: boolean;
   /** One id for the whole run. Null for a single write, which then keys on the request. */
   runId: string | null;
   requestId?: string | null;
   network: string;
-  /** The single write just signed — the fallback when this is not a run. */
+  /** The single write just signed - the fallback when this is not a run. */
   single: { op?: string | null; asset?: string | null; amount?: unknown; token_b?: string | null } | null;
   txHash: string;
 }): ExecutionReceiptSnapshot {

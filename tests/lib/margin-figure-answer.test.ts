@@ -3,12 +3,12 @@
  * extra info, and never misread a question as a command"):
  *
  *   1. "What is Collateral Left Before Liquidation of my margin account?" was refused
- *      outright as a restricted keeper/liquidate action — it contains "liquidation
+ *      outright as a restricted keeper/liquidate action - it contains "liquidation
  *      of", indistinguishable from a real command by a bare substring check.
  *   2. "What is Net Available Collateral & Net amount Borrowed of my margin account"
  *      fell through everything to the generic capabilities blurb.
  *   3. Even once routed, a named single-figure question must answer with ONLY that
- *      figure — not the full query_all_positions card.
+ *      figure - not the full query_all_positions card.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { routeMessage } from "@/lib/copilot/router";

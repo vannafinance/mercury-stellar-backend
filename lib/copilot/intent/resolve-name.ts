@@ -151,7 +151,7 @@ export function resolveName(
 
   const upper = trimmed.toUpperCase();
 
-  // Bare USDC returns none — handled exclusively by which-USDC flow
+  // Bare USDC returns none - handled exclusively by which-USDC flow
   if (upper === "USDC" || isAmbiguousUsdc(trimmed)) {
     return { kind: "none", candidates: [] };
   }

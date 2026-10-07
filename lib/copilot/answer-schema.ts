@@ -1,10 +1,10 @@
 /**
- * Structured answers — the prose equivalent of native function calling.
+ * Structured answers - the prose equivalent of native function calling.
  *
  * The read path asked Gemini for free text and then tried to police its shape from the
  * prompt: lead with the number, use "• Label: value" for three or more figures, never
  * emit markdown, never exceed 4 decimals, name the venue. Every one of those is a
- * formatting rule enforced by persuasion, and each failure showed up in the UI — literal
+ * formatting rule enforced by persuasion, and each failure showed up in the UI - literal
  * `**BLUSDC**` (we strip it with a regex), 18-decimal wad strings, bullets that
  * sometimes appeared as "-" and sometimes as "*", venue left unstated.
  *
@@ -13,7 +13,7 @@
  *   - Markdown cannot leak, because no field is ever interpreted as markup.
  *   - Figures render in one place, so tabular alignment and precision are uniform.
  *   - The venue is a field, so the UI can badge it with the same colours the plan card
- *     uses — the Earn/Blend confusion class becomes visible rather than narrated.
+ *     uses - the Earn/Blend confusion class becomes visible rather than narrated.
  *   - A missing field is detectable. Prose that quietly omits the answer looks fine.
  *
  * The model still writes the words; it no longer decides the layout.
@@ -38,12 +38,12 @@ export interface AnswerFact {
    * Renders in its own box, separate from the plain figures grid. Reported live: a margin
    * account's real collateral (XLM, BLUSDC) and its farm-venue LP/receipt positions
    * (BLEND_USDC, an Aquarius LP share) were rendered as one undifferentiated list, reading
-   * as duplicate or confusing entries. Set only by this app's own deterministic builders —
+   * as duplicate or confusing entries. Set only by this app's own deterministic builders -
    * Gemini's structured-answer schema never emits it, so an LLM-authored fact always lands
    * in the plain figures box.
    *
    * "earn" added so "what are all my positions" can fold in Earn (vToken) supply as its
-   * own section — a third, genuinely different pool from margin collateral and farm/LP,
+   * own section - a third, genuinely different pool from margin collateral and farm/LP,
    * previously left out of this answer entirely (user asked for it explicitly).
    */
   group?: "lp" | "earn";
@@ -52,7 +52,7 @@ export interface AnswerFact {
 export interface StructuredAnswer {
   /** One sentence that answers the question, leading with the figure asked for. */
   headline: string;
-  /** Supporting figures. Empty is valid — not every answer has a table in it. */
+  /** Supporting figures. Empty is valid - not every answer has a table in it. */
   facts: AnswerFact[];
   /** Line between the total and the card, e.g. "Your detailed stats are:" */
   kicker?: string;
@@ -62,7 +62,7 @@ export interface StructuredAnswer {
   venue?: AnswerVenue;
   /**
    * Optional per-pool (or per-clause) blocks. Each is a sentence plus a compact
-   * supplied/available strip — not one big facts card for the whole answer.
+   * supplied/available strip - not one big facts card for the whole answer.
    */
   sections?: Array<{ body: string; facts: AnswerFact[] }>;
   /** Farm Positions-style table. Prefer this over a facts dump for holdings. */
@@ -90,10 +90,10 @@ export const ANSWER_RESPONSE_SCHEMA = {
     facts: {
       type: "ARRAY",
       description:
-        "Supporting figures, at most 6 — UNLESS the user asked for a set that DATA contains " +
+        "Supporting figures, at most 6 - UNLESS the user asked for a set that DATA contains " +
         "in full (every protocol address, every pool, every position), in which case return " +
         "the complete set, up to 16. Omit anything not present in DATA. Values must be " +
-        "copied at the precision DATA gives — never lengthened.",
+        "copied at the precision DATA gives - never lengthened.",
       items: {
         type: "OBJECT",
         properties: {
@@ -125,7 +125,7 @@ export const ANSWER_RESPONSE_SCHEMA = {
       description:
         "Which product these numbers came from. 'earn' for Vanna lending pools, 'blend' " +
         "for Blend reserves, 'aquarius' for LP, 'margin' for the smart account, 'oracle' " +
-        "for prices. Never guess — use 'none' if DATA does not say.",
+        "for prices. Never guess - use 'none' if DATA does not say.",
     },
   },
   required: ["headline", "facts"],
@@ -134,7 +134,7 @@ export const ANSWER_RESPONSE_SCHEMA = {
 
 export const ANSWER_SYSTEM = `You turn Vanna Finance MCP read results into a structured answer for a DeFi user who may be new to lending and margin.
 
-You return DATA, not prose layout. The interface renders it, so never write markdown, bullet characters, or headings — an asterisk in your output is shown literally to the user and reads as a bug.
+You return DATA, not prose layout. The interface renders it, so never write markdown, bullet characters, or headings - an asterisk in your output is shown literally to the user and reads as a bug.
 
 headline
 - One sentence. Lead with the figure the user asked for.
@@ -145,7 +145,7 @@ facts
 - Prefer human-readable fields (*_pct, *_usd, *_human, price_usd, exchange_rate) over raw wad integers. If a value exists only as a wad integer, omit it.
 - Format: percentages 2 decimals with the sign ("6.41%"); USD with $ and thousands separators ("$1,146.03"); token amounts at most 4 decimals with trailing zeros dropped ("6,800.5721 XLM"); a health factor as a bare ratio to 2 decimals ("2.14") or "∞" when there is no debt.
 - At most 6 facts when the answer is a set of figures. Fewer is better than padded.
-- BUT when the user asked to see a SET and DATA holds all of it — every protocol contract address, every pool, every open position — return the COMPLETE set, up to 16 facts. Six of fifteen addresses is not an answer to "show me the protocol contract addresses", and the interface counts and groups a long list, so length is not a layout problem here. One fact per item, the item's name as the label.
+- BUT when the user asked to see a SET and DATA holds all of it - every protocol contract address, every pool, every open position - return the COMPLETE set, up to 16 facts. Six of fifteen addresses is not an answer to "show me the protocol contract addresses", and the interface counts and groups a long list, so length is not a layout problem here. One fact per item, the item's name as the label.
 
 note
 - Only if it adds something the headline does not. Two sentences maximum.
@@ -156,7 +156,7 @@ If DATA carries an error or an unavailable venue, say plainly in the headline wh
  * A fact label as a person would write it.
  *
  * The MCP registry names its entries `optional_lending_pool_aqusdc`, and "optional" is a
- * deployment note for whoever maintains the registry — it says the contract need not exist,
+ * deployment note for whoever maintains the registry - it says the contract need not exist,
  * not anything about the address you are looking at. Rendered into the card it read as part
  * of the contract's name ("OPTIONAL AQUARIUS ROUTER"), which is both noise and slightly
  * wrong. Dropping it also lets the card group properly: without it, four lending pools
@@ -170,7 +170,7 @@ export function cleanFactLabel(label: string): string {
     .trim();
 }
 
-/** A Stellar contract/account address, or a 64-char tx hash — the same test the card uses. */
+/** A Stellar contract/account address, or a 64-char tx hash - the same test the card uses. */
 function isIdentifierValue(v: unknown): v is string {
   if (typeof v !== "string") return false;
   const s = v.trim();
@@ -182,7 +182,7 @@ function isIdentifierValue(v: unknown): v is string {
  *
  * "Show me the protocol contract addresses" returns fifteen. The model was told at most six
  * facts and obeyed, so the card rendered six and the remaining nine fell through to the raw
- * facts grid below it — the same answer in two different presentations, one of them the
+ * facts grid below it - the same answer in two different presentations, one of them the
  * generic key/value dump. The prompt now allows a complete set, but a prompt is a request:
  * asking a model for fifteen items is not the same as getting them, and a partial list of
  * addresses is the one case where partial is indistinguishable from wrong.
@@ -219,7 +219,7 @@ export function completeIdentifierFacts(
  * A headline that repeats a raw identifier the facts card already shows duplicates the
  * one thing that card exists for. "The account manager address is CAZLR6E… and the
  * oracle address is CAYHPE4…" put both 56-character values inline in a prose sentence
- * AND in their own copyable rows two inches below — the same fact rendered twice, once
+ * AND in their own copyable rows two inches below - the same fact rendered twice, once
  * as unreadable prose. Reported live, once for a single address and again for two.
  *
  * Rewritten to name WHAT was found rather than repeat its value, since the value only
@@ -232,7 +232,7 @@ export function dedupeInlineIdentifiers(answer: StructuredAnswer): StructuredAns
   for (const fact of answer.facts) {
     if (isIdentifierValue(fact.value) && answer.headline.includes(fact.value)) {
       // The model's own fact label sometimes already ends in "address" (e.g. "xlm
-      // lending pool address") — stripped here so the noun this function appends below
+      // lending pool address") - stripped here so the noun this function appends below
       // is never duplicated into "... address address."
       named.push(fact.label.replace(/\s+address(es)?$/i, "").trim());
     }
@@ -267,15 +267,15 @@ export function normalizeAnswer(raw: unknown): StructuredAnswer | null {
         .filter((f): f is AnswerFact => f !== null)
         // 16, not 6, and this is the line that actually decided it.
         //
-        // The card was designed for sixteen facts — "15 identifiers, the case that currently
-        // breaks" is one of its stated payloads — but every answer was truncated to six here,
+        // The card was designed for sixteen facts - "15 identifiers, the case that currently
+        // breaks" is one of its stated payloads - but every answer was truncated to six here,
         // so "show me the protocol contract addresses" put six of fifteen in the card and the
         // rest fell through to the generic facts dump underneath. The model was blamed and
         // the prompt rewritten; the prompt was never the ceiling.
         //
         // "At most 6" still holds for a figure answer and still belongs in ANSWER_SYSTEM,
         // where it is a judgement about what is worth showing. A hard limit here cannot make
-        // that judgement — all it can do is cut an enumeration in half.
+        // that judgement - all it can do is cut an enumeration in half.
         .slice(0, 16)
     : [];
 
@@ -294,7 +294,7 @@ export function normalizeAnswer(raw: unknown): StructuredAnswer | null {
   return { headline, facts, ...(note ? { note } : {}), ...(venue ? { venue } : {}) };
 }
 
-/** Flatten to plain text — the message field, and any surface without the renderer. */
+/** Flatten to plain text - the message field, and any surface without the renderer. */
 export function answerToText(a: StructuredAnswer): string {
   const lines = [a.headline];
   if (a.kicker) {

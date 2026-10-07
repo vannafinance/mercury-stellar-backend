@@ -2,13 +2,13 @@
  * A leg is bound to what the one before it LEAVES BEHIND, not to what it spends.
  *
  * Live, 22 Sep (X5): "swap 100 XLM to AQUSDC and add it as liquidity" was refused with
- * *"previous_leg needs a preceding leg in the same asset"* — while leg 1 produced
+ * *"previous_leg needs a preceding leg in the same asset"* - while leg 1 produced
  * exactly that asset. The producer scan compared `leg.asset`, and a swap's `asset` is
  * the token going IN (`tokenIn: swapStep.asset`); what it hands on is `assetOut`. So a
  * swap producing AQUSDC was invisible to a scan looking for AQUSDC.
  *
- * The identity premise the scan documents — a leg produces exactly one asset, so the
- * nearest preceding leg in that asset is the producer — is right. Reading it off
+ * The identity premise the scan documents - a leg produces exactly one asset, so the
+ * nearest preceding leg in that asset is the producer - is right. Reading it off
  * `asset` was what was wrong.
  */
 
@@ -64,14 +64,14 @@ const plan = (legs: ProposedPlan["legs"]): ProposedPlan => ({
   legs,
 });
 
-describe("producedAsset — what a leg hands on", () => {
+describe("producedAsset - what a leg hands on", () => {
   it("reads a swap's output, not its input", () => {
     expect(producedAsset({ op: "swap", asset: "XLM", assetOut: "AQUSDC" })).toBe("AQUSDC");
   });
 
   /**
    * `add_liquidity` sits in `ASSET_OUT_OPS` beside swap, but that list answers a
-   * different question — may this leg name a second asset. An LP add consumes both
+   * different question - may this leg name a second asset. An LP add consumes both
    * tokens and leaves a receipt, so treating it as a producer of its paired token
    * would be the opposite of what it does.
    */
@@ -94,8 +94,8 @@ describe("THE LIVE BUG: a swap's output was invisible to the leg after it", () =
 
   /**
    * The scan now finds the swap. What it then says about it is a separate, deliberate
-   * rule — a swap fills at the pool's price, so the amount it buys is a quote, not a
-   * receipt — but the reason given must describe the real obstacle. Claiming no such
+   * rule - a swap fills at the pool's price, so the amount it buys is a quote, not a
+   * receipt - but the reason given must describe the real obstacle. Claiming no such
    * leg exists, when leg 1 produces exactly that asset, sends the user looking for a
    * leg they already wrote.
    */
@@ -108,7 +108,7 @@ describe("THE LIVE BUG: a swap's output was invisible to the leg after it", () =
 
   it("names the swap when it refuses, rather than a leg that is not missing", () => {
     const { candidates, rejected } = swapThenLp();
-    if (candidates.length > 0) return; // bound outright — nothing to explain
+    if (candidates.length > 0) return; // bound outright - nothing to explain
     expect(rejected[0]?.reason).toMatch(/swap/i);
   });
 });

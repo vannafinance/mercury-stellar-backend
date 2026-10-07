@@ -24,7 +24,7 @@ describe("plan read legs", () => {
     // One signature: the lend. A report asks nothing of the wallet.
     expect(f.signature_count).toBe(1);
     expect(f.steps[1].label).toMatch(/report account health/i);
-    // The "no amount yet" warning is about a write that will stop to ask — a read has
+    // The "no amount yet" warning is about a write that will stop to ask - a read has
     // no size to be missing, so it must not trigger it.
     expect(f.warnings.join(" ")).not.toMatch(/no amount yet/i);
   });
@@ -55,7 +55,7 @@ describe("plan read legs", () => {
   it("refuses a plan whose reporting step was dropped after approval", () => {
     const f = freezePlan(plan, 1_000_000);
     // A client that strips the read leg must fail the fingerprint, exactly as one that
-    // strips a slot does — otherwise the question can be removed after approval.
+    // strips a slot does - otherwise the question can be removed after approval.
     const tampered = {
       plan_id: f.plan_id,
       created_at: f.created_at,

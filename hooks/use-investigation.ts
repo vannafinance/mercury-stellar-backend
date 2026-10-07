@@ -127,8 +127,8 @@ export function useInvestigation(wallet: string | null) {
   activeWallet.current = wallet;
 
   /**
-   * The list is the server's once it answers. Until then — and when a turn has not been
-   * recorded yet — the live thread still has to appear in History, or the menu reads as
+   * The list is the server's once it answers. Until then - and when a turn has not been
+   * recorded yet - the live thread still has to appear in History, or the menu reads as
    * empty while a chat is on screen.
    */
   const rememberLive = useCallback((owner: string | null, turns: readonly ThreadTurn[], id: string | null) => {
@@ -187,7 +187,7 @@ export function useInvestigation(wallet: string | null) {
   }, []);
 
   /**
-   * Paint a thread — from storage, the session payload or an opened conversation.
+   * Paint a thread - from storage, the session payload or an opened conversation.
    *
    * What is painted here is a record of a turn that already happened, which is why it is
    * marked `restored`: the effects that carry a turn onward act on `live` only, so coming
@@ -210,7 +210,7 @@ export function useInvestigation(wallet: string | null) {
   /**
    * The wallet comes from a store that can report `null` for a render or two while it
    * reconnects. Treating that as "wallet changed" aborted the in-flight investigation and
-   * wiped the thread — the user saw "ran out of time" eleven seconds into a healthy run
+   * wiped the thread - the user saw "ran out of time" eleven seconds into a healthy run
    * (13 Sep). A change TO a wallet is acted on at once; a change to nothing waits briefly
    * for the same wallet to come back, and only then resets.
    */
@@ -664,8 +664,8 @@ export function useInvestigation(wallet: string | null) {
      * or the wallet changed under it). The second is not a failure to retry blindly.
      */
     const abortedCopy = () => timedOut
-      ? "The investigation ran out of time before it could finish. Nothing was executed — please try again."
-      : "This investigation was cancelled or replaced before it finished. Nothing was executed — run it again.";
+      ? "The investigation ran out of time before it could finish. Nothing was executed - please try again."
+      : "This investigation was cancelled or replaced before it finished. Nothing was executed - run it again.";
     const followUp = answers ? continuation.current
       : shouldContinueInvestigation(prompt, lastResult.current) ? continuation.current : null;
     const session = continuation.current;

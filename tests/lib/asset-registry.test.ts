@@ -11,7 +11,7 @@
  * So the registry is only allowed to exist if something checks it. `chain-facts.json`
  * is a recording of live MCP reads; these tests assert the registry never claims more
  * than that recording supports. Refresh it with `node scripts/refresh-chain-facts.mjs`
- * — the diff on that file IS the notification that the protocol moved.
+ * - the diff on that file IS the notification that the protocol moved.
  *
  * ## What this cannot catch
  *
@@ -135,7 +135,7 @@ describe("the registry is internally consistent", () => {
   });
 
   it("keeps the two order-sensitive lists in step with the asset set", () => {
-    // These stay hand-ordered because order changes behaviour — the scan order decides
+    // These stay hand-ordered because order changes behaviour - the scan order decides
     // which asset a sentence resolves to, and the enum order shapes the model prompt.
     // Their MEMBERSHIP is what used to drift, so that is what is pinned.
     const expected = [...ASSET_IDS, "USDC"].sort();
@@ -169,7 +169,7 @@ describe("the registry is internally consistent", () => {
   });
 });
 
-describe("resolveAsset — one answer for what the user said", () => {
+describe("resolveAsset - one answer for what the user said", () => {
   const concrete: Array<[string, string]> = [
     ["XLM", "XLM"],
     ["xlm", "XLM"],

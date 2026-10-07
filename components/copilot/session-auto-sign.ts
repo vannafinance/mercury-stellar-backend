@@ -31,10 +31,10 @@ export function hopAutoSubmitKey(opts: {
 /**
  * Whether the client may silent-sign this response under app auto-approve.
  *
- * - needs_wallet_sign: always (XDR may still be missing — sign path errors cleanly)
+ * - needs_wallet_sign: always (XDR may still be missing - sign path errors cleanly)
  * - needs_auto_sign + signable XDR: yes (older servers / edge paths)
  * - risk **block** only: never auto-submit
- * - risk **needs_confirmation** / allow: still auto-submit — that chip is policy
+ * - risk **needs_confirmation** / allow: still auto-submit - that chip is policy
  *   copy on every staged XDR, not a request for a manual click
  * - after a failed auto-attempt for this hop key: never until a new hop key
  */
@@ -51,7 +51,7 @@ export function shouldSessionAutoSubmit(opts: {
   if (!opts.sessionSigning) return false;
   if (opts.walletSigningRequired ? opts.allowWalletDispatch !== true : opts.allowSessionSign === false) return false;
   if (opts.autoSubmitBlocked) return false;
-  // "needs_confirmation" is the normal staged risk label — do NOT treat as click gate.
+  // "needs_confirmation" is the normal staged risk label - do NOT treat as click gate.
   if (opts.riskDecision === "block") return false;
   if (opts.kind === "needs_wallet_sign") return true;
   if (opts.kind === "needs_auto_sign" && opts.hasSignableXdr) return true;
@@ -62,18 +62,18 @@ export function shouldSessionAutoSubmit(opts: {
  * Auto sign skips the SIGNING prompt, not the plan.
  *
  * Both were skipped before, so with the switch on, "deposit my idle XLM and supply it
- * to Blend" sized itself and settled with nothing to click — the user saw the result,
+ * to Blend" sized itself and settled with nothing to click - the user saw the result,
  * never the plan (17 Sep: `vanna_deposit_collateral` and `vanna_blend_supply` executed
  * that way, on a turn where nothing had been agreed to). Arming a capped signer is
  * consent to skip the wallet popup on a plan you approved; it is not consent to the
- * plan. The rail says as much — "cleared writes run without a prompt" is about the
+ * plan. The rail says as much - "cleared writes run without a prompt" is about the
  * prompt, and clearing the Sign Service policy is a cap on size, never agreement to
  * the trade.
  *
  * One case still needs no click: a swap whose proposal carries `slippageAccepted`.
  * That flag is set only from the user's own words, matched verbatim against a message
  * they sent, and only for a fill they were shown. They have already stated a decision
- * about this exact price, so a click would ask them to agree twice — the dead end that
+ * about this exact price, so a click would ask them to agree twice - the dead end that
  * left an accepted swap unexecutable. Every other plan, swap or not, waits.
  */
 export function shouldAutoApproveProposedWorkflow(opts: {

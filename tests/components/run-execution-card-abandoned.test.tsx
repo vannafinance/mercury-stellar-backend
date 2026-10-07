@@ -8,9 +8,9 @@ import { RunExecutionCard, type RunLeg } from "@/components/copilot/run-executio
  *
  * Live, 21 Sep, on "park 20 XLM then farm 10 BLUSDC at 2×": all four legs came back
  * `skipped`, nothing settled, and the card announced **"Ready on leg 4 of 4"** with
- * "Supply 9.999 BLUSDC to Blend" underneath — offering to continue into a leg three
+ * "Supply 9.999 BLUSDC to Blend" underneath - offering to continue into a leg three
  * steps past where the run actually stopped, while the prose above it correctly said
- * "Stopped at 'Lend 20 XLM on Earn' — later steps were not run."
+ * "Stopped at 'Lend 20 XLM on Earn' - later steps were not run."
  *
  * Two separate causes, both pinned here:
  *
@@ -42,7 +42,7 @@ const abandoned: RunLeg[] = [
   leg(4, "Supply 9.999 BLUSDC to Blend", "skipped"),
 ];
 
-describe("RunExecutionCard — a run nothing ran", () => {
+describe("RunExecutionCard - a run nothing ran", () => {
   it("does not claim to be ready on the last leg when every leg was skipped", () => {
     renderCard(abandoned);
     expect(screen.queryByText(/Ready on leg 4 of 4/i)).toBeNull();
@@ -71,7 +71,7 @@ describe("RunExecutionCard — a run nothing ran", () => {
     expect(screen.queryByText(/leg 4 of 4/i)).toBeNull();
   });
 
-  it("leaves a genuinely complete run alone — it is not an abandoned one", () => {
+  it("leaves a genuinely complete run alone - it is not an abandoned one", () => {
     renderCard([leg(1, "Lend 20 XLM on Earn", "ok"), leg(2, "Borrow 10 BLUSDC", "ok")]);
     expect(screen.queryByText(/Stopped at/i)).toBeNull();
   });

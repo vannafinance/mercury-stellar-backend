@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Structured Guide answer — the reading surface from the Copilot design.
+ * Structured Guide answer - the reading surface from the Copilot design.
  *
  * The Guide's value is its shape: a summary you can stop after, sections that each
  * cover one thing, a formula set apart because formulas get re-read, a glossary of the
@@ -9,7 +9,7 @@
  * paragraph (what `message` carries) all of that is lost, so this renders the fields of
  * `GuideAnswer` directly.
  *
- * Everything here comes from the model. Nothing is authored in this file — an answer
+ * Everything here comes from the model. Nothing is authored in this file - an answer
  * with no sections renders no sections rather than filling the space.
  */
 
@@ -28,7 +28,7 @@ export function GuideQuestion({ text }: { text: string }) {
   );
 }
 
-/** Skeleton while the Guide is thinking — the answer's own shape, greyed. */
+/** Skeleton while the Guide is thinking - the answer's own shape, greyed. */
 export function GuideSkeleton({ status }: { status?: string }) {
   const bar = "rounded-md bg-[var(--cp-skel)]";
   return (

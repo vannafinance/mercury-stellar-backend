@@ -38,6 +38,7 @@ import { ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef } from "..
 import { WORKFLOW_OPS } from "../workflow/types";
 import { MAX_WORKFLOW_STEPS } from "../workflow/journal";
 import { resolveName } from "../intent/resolve-name";
+import { plainDashes } from "../plain-text";
 
 /**
  * The three budgets that run OUTSIDE the investigation loop's own deadline, named so
@@ -164,7 +165,8 @@ export async function researchTurn(input: ResearchInput, dependencies: {
   const elapsedMs = Math.max(0, Date.now() - startedAt);
   span.setAttribute("vanna.investigation.status", view.status);
   span.setAttribute("vanna.investigation.elapsed_ms", elapsedMs);
-  return { ...view, elapsedMs };
+  // Everything the client reads goes through one place that keeps the model's em dashes out of it.
+  return plainDashes({ ...view, elapsedMs });
   });
 }
 
@@ -269,7 +271,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (!scope.trader && input.wallet) {
     /**
      * Navbar sent a G-address this request could not bind. Guest/public is not a
-     * fallback runner for Earn — the bound investigation is. Stop here so the
+     * fallback runner for Earn - the bound investigation is. Stop here so the
      * card cannot dump oracle rows and call that a plan.
      */
     return reconnectWalletView(input, dependencies.network, scope.unverified === "bindings" ? "bindings" : "session");
@@ -330,7 +332,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       });
     }
     /**
-     * Contract first. The app snapshot is a labelled fallback only — never the blocking
+     * Contract first. The app snapshot is a labelled fallback only - never the blocking
      * path. Waiting on `computeMarginSnapshot` is what turned a health question into the
      * client's 120s abort (11 Sep): the snapshot is a shared unbounded inflight the
      * copilot cannot cancel. MCP `liquidation_snapshot` is one cancellable call.
@@ -358,7 +360,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    *
    * Two problems this solves at once. Measured live on "what's my health factor?": MCP's
    * `account_health` returned debt positions but no scalar ratio, so the card said "account
-   * health: data was unavailable" beside a rail showing 2.43 — computed from this very
+   * health: data was unavailable" beside a rail showing 2.43 - computed from this very
    * snapshot. And the model spent five reads and several turns fetching collateral, debt and
    * health that the app already had, which is most of why one health question took half a
    * minute. Refusing to invent the number was right; not reaching for the one the product
@@ -385,7 +387,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const namedAssets = [...new Set([...input.message.matchAll(new RegExp(ASSET_SYMBOL_PATTERN.source, "gi"))]
     .map((match) => resolveAssetDef(match[0])?.id).filter((id): id is NonNullable<typeof id> => !!id))];
   const explicitOp = new RegExp(`\\b(?:${WORKFLOW_OPS.map((op) => op.replaceAll("_", " ")).join("|")})\\b`, "i").test(input.message);
-  // Whichever venue trades the named pair — a Soroswap swap needs its pool's numbers
+  // Whichever venue trades the named pair - a Soroswap swap needs its pool's numbers
   // just as much as an Aquarius one, and seeding only Aquarius left Soroswap on the
   // oracle quote (see strategy-reads.ts).
   const namedPair = lpPairs().find((pair) => pair.tokens.every((token) => namedAssets.includes(token)));
@@ -531,7 +533,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   logPhase("loop", {
     ms: Date.now() - loopStarted,
     outcome: result.outcome.kind,
-    // WHY it stopped is the whole diagnosis — "stopped" alone sent a live 15 Sep failure
+    // WHY it stopped is the whole diagnosis - "stopped" alone sent a live 15 Sep failure
     // ("deploy my XLM in farm") to the generic timeout copy while the loop had actually
     // ended after one model turn and no tool calls at all.
     ...(result.outcome.kind === "stopped" ? { reason: result.outcome.reason } : {}),
@@ -685,7 +687,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   /**
    * Headroom reuses the snapshot the position read already paid for. Both need the same
-   * figures, and `computeMarginSnapshot` is a 5-7s live RPC call — buying it twice per turn
+   * figures, and `computeMarginSnapshot` is a 5-7s live RPC call - buying it twice per turn
    * was on its own enough to push past the route deadline. With the snapshot shared this is
    * pure arithmetic; without it (position timed out) it still overlaps the loop under its
    * own bound rather than adding latency after it.
@@ -784,7 +786,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const requestedBorrow = requestedBorrowFrom(statedBorrow, result.observations, observedNow);
   /**
    * Permission to borrow is not an instruction to borrow. "Unspecified" still offers
-   * both the idle path and a levered path — the owner prompt says the copilot may take
+   * both the idle path and a levered path - the owner prompt says the copilot may take
    * new loans. Only an explicit prohibition suppresses borrow shapes. A typed borrow
    * leg already coerced `borrowing` to required above.
    */
@@ -917,7 +919,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   try {
     /**
      * Ranked options ARE the answer to an open-ended prompt, so a deadline after the rates
-     * were read still salvages them — pinned by `investigation-service-borrowing`. They are
+     * were read still salvages them - pinned by `investigation-service-borrowing`. They are
      * NOT the answer to a request that named its own operations: 16 Sep, "deposit 100 XLM,
      * borrow 2x bLUSD and SOUSDC, then provide liquidity in Blend and Soroswap" timed out
      * and was offered "Lend idle BLUSDC to Earn - no new borrowing", the opposite of the
@@ -950,7 +952,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   /**
    * The model's composed shapes, sized and checked in code, ranked beside the fixed
-   * shapes. A plan that does not fit is listed with the reason, never dropped silently —
+   * shapes. A plan that does not fit is listed with the reason, never dropped silently -
    * on 13 Sep the card showed nothing at all and the user could not tell "no good option"
    * from "option discarded".
    */
@@ -1092,7 +1094,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   /**
    * The position the plans are sized against comes from the account read, and the floor
-   * from the user's words — even when borrowing headroom could not be computed (a floor
+   * from the user's words - even when borrowing headroom could not be computed (a floor
    * at 1.1, or none stated). A deposit needs no floor; a borrow with none is rejected
    * with a sentence saying so, instead of every account leg claiming the position was
    * never read (13 Sep card).
@@ -1119,7 +1121,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   /**
    * A floor stated as a ceiling is still a stated limit, and dropping it silently is
    * the failure. "keep HF < 1.3" matches none of the floor patterns, so the turn ran
-   * with NO health-factor constraint while the user believed they had set one — a `<`
+   * with NO health-factor constraint while the user believed they had set one - a `<`
    * typed for a `>` left only the liquidation line protecting them.
    *
    * It is reported rather than guessed at: reading it as 1.3 would invent a floor the
@@ -1131,19 +1133,19 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     const ceiling = statedCeilingFrom(messages);
     if (ceiling) {
       const note =
-        `You asked for a health factor BELOW ${ceiling}, which is a ceiling, not a floor — ` +
+        `You asked for a health factor BELOW ${ceiling}, which is a ceiling, not a floor - ` +
         `a lower health factor is the riskier side. No floor was applied. If you meant ` +
         `"at least ${ceiling}", say so and I will size against it.`;
       if (!warnings.includes(note)) warnings.push(note);
     }
   }
   /**
-   * Plans size from the contract's figures always — the one number that liquidates you
+   * Plans size from the contract's figures always - the one number that liquidates you
    * (`grossCollateralUsd`/`debtUsd` here are `computeSizingBasis`'s contract basis
    * regardless of `issue`). An account holding any unposted balance or LP receipt
    * disagrees with the Margin page PERMANENTLY by design (the app counts everything held,
    * the contract counts only what is posted), so a plan no longer refuses on the
-   * disagreement itself — only when the contract read that IS the basis could not be made
+   * disagreement itself - only when the contract read that IS the basis could not be made
    * (`sizing_contract_unavailable`; see plan.ts). The gap becomes information instead: the
    * unposted amount, named plainly, rather than a reason nothing can be sized.
    */
@@ -1170,8 +1172,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (modelPlans.length) {
     /**
      * Code fetches what code needs. The loop may not have read a price, a wallet balance
-     * or a market the plans depend on — a phrase list used to decide whether the market
-     * seed ran at all — so the missing reads are made here, deterministically, before
+     * or a market the plans depend on - a phrase list used to decide whether the market
+     * seed ran at all - so the missing reads are made here, deterministically, before
      * sizing. They join the observations so the card, the sealed evidence and propose
      * all see the same reads.
      */
@@ -1182,7 +1184,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       logPhase("plan_reads", { requested: missing.map((r) => `${r.capability}${r.args.asset ? `:${r.args.asset}` : ""}`), ok: extra.filter((o) => o.status === "ok").length });
       /**
        * "Now" moves past the reads just made. Freshness is `observedAt <= now`, so a read
-       * stamped after a clock taken before it is not fresh — and the rate analysis and the
+       * stamped after a clock taken before it is not fresh - and the rate analysis and the
        * sizer both dropped the very reads fetched for the plan (14 Sep: "lend 25% of xlm"
        * fetched earn_market:XLM and was refused for "no usable Earn supply rate").
        */
@@ -1287,7 +1289,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       : { feasible: [], rejected: droppedRejections };
   }
   /**
-   * Checked against the FINAL observations for this turn, after `plan_reads` — not the
+   * Checked against the FINAL observations for this turn, after `plan_reads` - not the
    * snapshot from before it ran. `requestedBorrow` above is read early because the fixed
    * shapes need it to decide whether to generate at all; the warning does not have that
    * constraint, and checking it early meant a price `plan_reads` fetched moments later was
@@ -1322,11 +1324,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * A refusal the user could lift is a question, not a verdict.
    *
    * The price-impact guard, and now the carry guard, end their refusal by saying the
-   * acceptance that would lift it — but a sentence buried in a rejected option is not an
+   * acceptance that would lift it - but a sentence buried in a rejected option is not an
    * invitation, and it asks the user to know the words before they have been told them.
    * Raising it as the turn's question puts it where the UI already handles one ("Needs
    * your answer"), and `shouldContinueInvestigation` already treats an open question as a
-   * thread the next message continues — so "yes, go ahead" lands on this same
+   * thread the next message continues - so "yes, go ahead" lands on this same
    * investigation instead of starting a new one.
    *
    * Only when nothing was offered: an option the user can approve is the better answer,
@@ -1338,7 +1340,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   /**
    * An option the code sized is an answer. A question the model left open beside it is
-   * shown as an open point the user MAY refine — it does not take the option away. 14 Sep:
+   * shown as an open point the user MAY refine - it does not take the option away. 14 Sep:
    * "Repay XLM debt with idle wallet XLM" was sized, shown with its button, and Prepare
    * answered "This option was not proposed by the completed investigation", because the
    * model's note "No BLUSDC balance is available to repay the BLUSDC debt directly" had
@@ -1352,7 +1354,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           : outcome.kind === "research_complete" ? "researched"
             : outcome.kind === "stopped" ? "incomplete"
               : "needs_input";
-  // A stated write, once sized and simulated, is offered as the steps to approve — not as a ranked option.
+  // A stated write, once sized and simulated, is offered as the steps to approve - not as a ranked option.
   const statedId = statedPlan ? planCandidateId(statedPlan) : null;
   const statedCandidate = statedId ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
   const requestedSteps = statedCandidate?.steps ?? [];
@@ -1379,7 +1381,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (scope.unverified === "bindings") {
     warnings.push("I couldn't verify the wallet link this turn, so I did not load your margin account. Ask again in a moment.");
   } else if (scope.unverified === "claimed") {
-    // The account is loaded — from the address the browser sent, which nothing has yet
+    // The account is loaded - from the address the browser sent, which nothing has yet
     // proved belongs to this login. Say that, rather than let the card imply a link.
     warnings.push("This wallet isn't linked to your account yet, so I worked from the address your browser is connected to. Anything prepared here has to be signed by that wallet.");
   } else if (!scope.trader) {
@@ -1456,7 +1458,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     /**
      * A nomination means "there is one unambiguous thing to prepare", not "here is the
      * first row". The client auto-proposes whatever is nominated, and with session signing
-     * on it then auto-approves and broadcasts — so nominating `feasible[0]` out of several
+     * on it then auto-approves and broadcasts - so nominating `feasible[0]` out of several
      * competing strategies executed a financial choice the user never made (15 Sep, S4:
      * two options offered, the first one signed and sent before it could be read).
      * Delegated signing is consent to skip the wallet popup, not consent to pick the
@@ -1513,7 +1515,7 @@ function simplifyQuestion(
 
 /**
  * The bound investigation is the only runner for a wallet strategy. This view is the
- * miss — navbar G-address, request not signed in — not a public-market substitute.
+ * miss - navbar G-address, request not signed in - not a public-market substitute.
  */
 function reconnectWalletView(
   input: ResearchInput,

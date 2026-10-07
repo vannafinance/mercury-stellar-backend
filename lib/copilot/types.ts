@@ -105,7 +105,7 @@ export interface ChatRequest {
    * style: explain this page, answer questions). "copilot" is the dedicated `/copilot`
    * workspace, the one place meant to actually execute transactions. Both call this same
    * endpoint, so without this flag the assistant widget had no way to tell "explain what
-   * Blend is" apart from "deposit 5 XLM as collateral" other than the message's own wording —
+   * Blend is" apart from "deposit 5 XLM as collateral" other than the message's own wording -
    * and a plain action sentence typed into the widget fell through to the same MCP write
    * path the Copilot page uses, signing and submitting for real. Omitted (or any value other
    * than "assistant") keeps today's full read+write behaviour, so no other caller is affected.
@@ -113,7 +113,7 @@ export interface ChatRequest {
   surface?: "assistant" | "copilot" | null;
   /**
    * In-app auto-approve toggle. When false, multi-leg runPlan executes one write
-   * then waits for Approve & sign — Sign Service must not run the rest of the plan.
+   * then waits for Approve & sign - Sign Service must not run the rest of the plan.
    */
   session_signing?: boolean;
   /** @deprecated Prefer semantic_page_context. */
@@ -125,7 +125,7 @@ export interface ChatRequest {
   /**
    * Last client-side product events (toasts, wallet rejects, simulation failures,
    * hashes). The page Guide uses these to answer "why did that fail" without
-   * executing anything. Bounded by the API route — never a write continuation.
+   * executing anything. Bounded by the API route - never a write continuation.
    */
   session_events?: AssistantSessionEvent[] | null;
   /**
@@ -142,7 +142,7 @@ export interface ChatRequest {
   auto_sign?: {
     /**
      * `bind_start` / `bind_status` drive the additional-signer consent that
-     * `wallet_not_bound` requires — see WalletBindPrompt for why it is a separate
+     * `wallet_not_bound` requires - see WalletBindPrompt for why it is a separate
      * step from connecting the wallet.
      */
     action?:
@@ -167,12 +167,12 @@ export interface ChatRequest {
       | "bind_register";
     max_per_tx_tokens?: number | string;
     max_per_day_tokens?: number | string;
-    /** `bind_status` / `bind_register` — the connect request to complete or poll. */
+    /** `bind_status` / `bind_register` - the connect request to complete or poll. */
     request_id?: string;
-    /** `bind_register` only — the G-address the browser authorized the quorum on. */
+    /** `bind_register` only - the G-address the browser authorized the quorum on. */
     wallet_address?: string;
     /**
-     * `bind_status` only — replay this action the moment the binding lands, so
+     * `bind_status` only - replay this action the moment the binding lands, so
      * the user gets what they originally asked for rather than a "now try again".
      */
     retry_action?: "use_defaults" | "custom" | "disable";
@@ -186,9 +186,9 @@ export interface ChatRequest {
     /** The loan slot, independent of the collateral slot above. */
     borrow_asset?: string | null;
     borrow_amount?: number | null;
-    /** Which slot a variant chip answers — see the ChatResponse copy of this field. */
+    /** Which slot a variant chip answers - see the ChatResponse copy of this field. */
     clarify_slot?: "collateral" | "borrow" | "fraction" | null;
-    /** Carried through a variant clarification — see CopilotAction.explain. */
+    /** Carried through a variant clarification - see CopilotAction.explain. */
     explain?: boolean | null;
     token_a?: string | null;
     token_b?: string | null;
@@ -203,7 +203,7 @@ export interface ChatRequest {
   } | null;
   /**
    * A plan the user has explicitly approved, sent back verbatim from a plan_preview.
-   * Replayed as-is — never re-inferred — so what executes is what was shown. The
+   * Replayed as-is - never re-inferred - so what executes is what was shown. The
    * plan_id must still match the steps or the server refuses to run it.
    */
   approved_plan?: {
@@ -213,7 +213,7 @@ export interface ChatRequest {
       op: string;
       /** "read" legs report a number and are not signed. Absent means write. */
       kind?: "write" | "read";
-      /** Read legs only — the MCP tool that answers the question. */
+      /** Read legs only - the MCP tool that answers the question. */
       tool?: string | null;
       /**
        * Every executable slot, echoed back verbatim from the plan preview.
@@ -221,7 +221,7 @@ export interface ChatRequest {
        * This is what approval runs from and what the fingerprint covers. Named fields
        * below are legacy spellings, still accepted so an older client validates.
        * Echoing a hand-picked subset is what let an approved trade differ from the
-       * executed one — `leverage`, then `borrow_asset`, then `token_out`.
+       * executed one - `leverage`, then `borrow_asset`, then `token_out`.
        */
       slots?: Record<string, string | number | boolean | null>;
       asset?: string | null;
@@ -229,7 +229,7 @@ export interface ChatRequest {
       leverage?: number | null;
       borrow_asset?: string | null;
     }>;
-    /** Echoed back from the plan_preview's own `constraints` — e.g. a stated HF floor. */
+    /** Echoed back from the plan_preview's own `constraints` - e.g. a stated HF floor. */
     constraints?: PlanConstraints | null;
   } | null;
   /**
@@ -255,9 +255,9 @@ export interface ChatRequest {
       leverage?: number | null;
       label?: string;
       /**
-       * A swap leg's destination. Carried so a resumed run replays it, or — when the
+       * A swap leg's destination. Carried so a resumed run replays it, or - when the
        * leg is paused because that destination is exactly what's wrong ("BLUSDC is
-       * Blend USDC, use SOUSDC instead") — so the client can send back a CORRECTED
+       * Blend USDC, use SOUSDC instead") - so the client can send back a CORRECTED
        * one instead of silently replaying the original (refused) token.
        */
       token_in?: string | null;
@@ -279,7 +279,7 @@ export interface ChatRequest {
       status: string;
       tx_hash?: string | null;
     }>;
-    /** Optional real HF reading from the client rail — never invented. */
+    /** Optional real HF reading from the client rail - never invented. */
     final_health_factor?: number | null;
     health_factor_floor?: number | null;
   } | null;
@@ -306,7 +306,7 @@ export interface CopilotAction {
    *
    * `asset`/`amount` are the collateral; these are the loan. Absent `borrow_asset`
    * means "same asset", which is the common case and the reason one field carried
-   * both for so long — until "deposit AQUSDC, borrow XLM" made the conflation
+   * both for so long - until "deposit AQUSDC, borrow XLM" made the conflation
    * visible as a borrow leg denominated in the wrong token.
    */
   borrow_asset?: string | null;
@@ -359,7 +359,7 @@ export interface Simulation {
   asset?: string | null;
   /**
    * False when the op does not touch the margin account at all, so there is nothing to
-   * project — an Earn supply or redeem moves wallet tokens and leaves collateral and debt
+   * project - an Earn supply or redeem moves wallet tokens and leaves collateral and debt
    * exactly where they were.
    *
    * Without this flag a deliberately empty baseline (`collateral_before: 0`,
@@ -415,7 +415,7 @@ export interface AutoSignPrompt {
  * quorum as an ADDITIONAL signer on their own wallet (`addSigners`).
  *
  * Nothing in the browser wallet session can produce that row. Disconnecting and
- * reconnecting through Privy — even while signed in — refreshes the browser's
+ * reconnecting through Privy - even while signed in - refreshes the browser's
  * wallet session and writes no binding, which is exactly why the 403 survived a
  * reconnect and read as a bug in sign-in rather than a missing consent step.
  *
@@ -427,10 +427,10 @@ export interface AutoSignPrompt {
  */
 export interface WalletBindPrompt {
   /**
-   * `needs_consent` — a fresh connect request exists, the user has not finished.
-   * `pending` — polled, still not finished. `bound` — binding written.
-   * `expired` — the link timed out; a new one must be minted.
-   * `unavailable` — connect_start itself failed (reason in the message).
+   * `needs_consent` - a fresh connect request exists, the user has not finished.
+   * `pending` - polled, still not finished. `bound` - binding written.
+   * `expired` - the link timed out; a new one must be minted.
+   * `unavailable` - connect_start itself failed (reason in the message).
    */
   status: "needs_consent" | "pending" | "bound" | "expired" | "unavailable";
   /** Single-use connect request id. Poll it with `auto_sign.action = "bind_status"`. */
@@ -452,7 +452,7 @@ export interface WalletBindPrompt {
   expires_in?: number | null;
   /** MCP's suggested poll backoff. The client walks this list, it does not invent one. */
   poll_schedule_seconds?: number[] | null;
-  /** Wallet this binding is for — shown so the user can check it is the one they expect. */
+  /** Wallet this binding is for - shown so the user can check it is the one they expect. */
   wallet_address?: string | null;
   /** Re-run this auto-sign action once the binding exists (the user's original ask). */
   retry_action?: "use_defaults" | "custom" | "disable" | null;
@@ -490,7 +490,7 @@ export interface ChatResponse {
     | "executed"
     | "needs_auto_sign"
     | "needs_wallet_sign"
-    /** Wallet connected in-browser but not bound as a signer — see WalletBindPrompt. */
+    /** Wallet connected in-browser but not bound as a signer - see WalletBindPrompt. */
     | "needs_wallet_bind"
     /** A multi-leg plan awaiting the user's approval. Nothing has executed. */
     | "plan_preview";
@@ -528,7 +528,7 @@ export interface ChatResponse {
       amount: number | null;
       leverage: number | null;
       borrow_asset?: string | null;
-      /** Every executable slot — echo this back verbatim in approved_plan. */
+      /** Every executable slot - echo this back verbatim in approved_plan. */
       slots?: Record<string, string | number | boolean | null>;
       label: string;
       venue: "earn" | "margin" | "farm" | "wallet" | "other";
@@ -540,7 +540,7 @@ export interface ChatResponse {
   request_id?: string | null;
   /**
    * Client-side tools for the page agent (navigate / scroll / highlight).
-   * Executed in the browser only — never on the server.
+   * Executed in the browser only - never on the server.
    */
   client_tools?: ClientToolCallCtx[] | null;
   /**
@@ -559,16 +559,16 @@ export interface ChatResponse {
     borrow_amount?: number | null;
     /**
      * Which slot the clarification is about, so the chip the user taps lands
-     * in that slot and leaves the other one — already answered — alone.
+     * in that slot and leaves the other one - already answered - alone.
      * `fraction` = Margin-style repay share (10% / 25% / 50% / 100%).
      */
     clarify_slot?: "collateral" | "borrow" | "fraction" | null;
-    /** Carried through a variant clarification — see CopilotAction.explain. */
+    /** Carried through a variant clarification - see CopilotAction.explain. */
     explain?: boolean | null;
     fraction?: number | null;
   } | null;
   auto_sign?: AutoSignPrompt | null;
-  /** Present on `needs_wallet_bind` — the missing additional-signer consent. */
+  /** Present on `needs_wallet_bind` - the missing additional-signer consent. */
   wallet_bind?: WalletBindPrompt | null;
   /** Proof the live MCP server was used */
   mcp?: {
@@ -610,11 +610,11 @@ export interface BrainHealth {
    * "service_account" is a key in an env var; both are machine-independent and work in a
    * deploy. "attached_service_account" is a Google-managed runtime (Cloud Run, Cloud
    * Functions, App Engine) authenticating through ADC on the service account the host
-   * attaches — also machine-independent, and invisible to an env-var check, which is why
+   * attaches - also machine-independent, and invisible to an env-var check, which is why
    * it needs its own name rather than being lumped in with a developer login.
    *
    * "developer_login" means it is leaning on whoever ran `gcloud auth login` on this
-   * machine — the state that made the same prompt answer on one laptop and return the
+   * machine - the state that made the same prompt answer on one laptop and return the
    * capability blurb on another. Reported so that difference is visible before someone
    * hits it, since the symptom only appears once the login has already expired.
    */
@@ -698,12 +698,12 @@ export type RoutedIntent =
       message: string;
       template_id?: string | null;
       /**
-       * Which USDC variants a `clarify_usdc_variant` result is actually offering — a
+       * Which USDC variants a `clarify_usdc_variant` result is actually offering - a
        * swap only ever accepts AQUSDC/SOUSDC, while lend/deposit/borrow/repay/reads
        * accept all three. `handleChat` reads this to render the SAME pickable chips
        * the write-side `usdcOps` gate already shows. The client resumes by
        * substituting the chosen variant into the ORIGINAL message text and
-       * resubmitting it fresh (not via `pending_write` — this clarify can originate
+       * resubmitting it fresh (not via `pending_write` - this clarify can originate
        * from a READ, e.g. `can_borrow`, and `pending_write` only ever resumes a
        * WRITE, so reusing it here would risk a "can I?" question executing a real
        * transaction).
@@ -721,7 +721,7 @@ export type RoutedIntent =
   | {
       /**
        * Browser-only action (no MCP). Used for G-wallet create/connect via Privy/Freighter.
-       * Keys never leave the client — MCP has no create_wallet tool.
+       * Keys never leave the client - MCP has no create_wallet tool.
        */
       kind: "client";
       tool: string;

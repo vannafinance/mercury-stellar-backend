@@ -3,8 +3,8 @@
 /**
  * A chain step goes out once per subject, not once per mount.
  *
- * The effects that carry an investigation onward — prepare the nominated plan, post the
- * pending lifecycle write, press Approve for an armed session — were guarded by `useRef`s
+ * The effects that carry an investigation onward - prepare the nominated plan, post the
+ * pending lifecycle write, press Approve for an armed session - were guarded by `useRef`s
  * inside `CopilotWorkspace`. That component unmounts on any navigation away from /copilot,
  * while the state feeding those effects does not: the investigation lives in the root
  * layout so a run survives leaving the page, and the journal id lives in `localStorage`.

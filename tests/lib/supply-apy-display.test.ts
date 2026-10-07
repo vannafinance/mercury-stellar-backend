@@ -5,7 +5,7 @@ import { blendSupplyApyFromApr } from "@/lib/rate-display";
 /**
  * Live, 23 Sep: "what is the XLM supply APY" answered "XLM Earn: 2.759984 % APR; XLM Blend:
  * 173.3838 % APR", while the Earn page showed 2.76% APY and the Farm page 450.29% APY. The
- * numbers were right and the presentation was not — the two venues use different conventions,
+ * numbers were right and the presentation was not - the two venues use different conventions,
  * and Copilot quoted neither of them.
  */
 const fact = (venue: "earn" | "blend", label: string, value: string) =>

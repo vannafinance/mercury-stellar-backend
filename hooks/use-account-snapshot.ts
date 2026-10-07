@@ -49,7 +49,7 @@ function setCachedSnapshot(userAddress: string | null, data: AccountSnapshot): v
 
 /**
  * Warm the account snapshot into the React Query cache as soon as the wallet
- * connects, BEFORE the user navigates to the margin page — so the margin/MB
+ * connects, BEFORE the user navigates to the margin page - so the margin/MB
  * views paint instantly from a warm cache instead of waiting on the first cold
  * RPC read. One-shot (not a subscription), and a no-op if the data is already
  * fresh in cache. Safe to call on every connect.
@@ -80,7 +80,7 @@ export async function prefetchAccountSnapshot(
  * Per-user account snapshot from the cached `/api/account/[addr]` edge route.
  *
  * React Query keeps the snapshot warm across navigation, while a reload always
- * performs an authoritative chain-backed request — this is on-chain/Mercury
+ * performs an authoritative chain-backed request - this is on-chain/Mercury
  * data only, never persisted client-side, so a reload can't paint a stale
  * balance from a previous session or a different wallet. A warm edge cache
  * keeps that round-trip near-instant. The ledger tick revalidates; the route's
@@ -98,7 +98,7 @@ export function useAccountSnapshot(userAddress: string | null) {
    * The event that makes the current snapshot wrong, when there is one.
    *
    * `/api/account/[addr]` is cached for 15s, and that cache is keyed on time, not on what
-   * happened to the account — so refetching immediately after a transaction settled was
+   * happened to the account - so refetching immediately after a transaction settled was
    * served the pre-transaction body and the rail sat on the old health factor until the
    * user reloaded. A settled hash is a different URL, which no cache in the path can
    * answer from a response taken before it existed. Held in a ref rather than the query
@@ -129,7 +129,7 @@ export function useAccountSnapshot(userAddress: string | null) {
   //
   // invalidateQueries() deliberately ignores staleTime, so an unthrottled tick meant a
   // full refetch every ledger (~5s on Stellar). The comment above claimed the route's
-  // s-maxage absorbed that, but s-maxage is a CDN directive and `next dev` has no CDN —
+  // s-maxage absorbed that, but s-maxage is a CDN directive and `next dev` has no CDN -
   // so every tick ran a real on-chain read. Those reads take ~5s, i.e. longer than the
   // tick interval, so the refetches never drained and the log filled with overlapping
   // 5s requests. Throttling here makes the intended "~1 read per 15s" hold in dev and
@@ -150,7 +150,7 @@ export function useAccountSnapshot(userAddress: string | null) {
     isRefreshing: query.isFetching && !query.isLoading,
     error: query.error instanceof Error ? query.error.message : null,
     /**
-     * `after` is the on-chain event this refresh must see — a settled transaction hash.
+     * `after` is the on-chain event this refresh must see - a settled transaction hash.
      * Passing it guarantees the read goes past every cache; omitting it keeps the
      * ordinary cached refresh used for polling and navigation.
      */

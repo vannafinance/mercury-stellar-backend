@@ -81,11 +81,11 @@ function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: strin
      * This used to push EVERY non-USD number into `amounts` and then print `amounts[0]`,
      * so which figure the user saw was decided by the order of keys in the payload rather
      * than by what the figure meant. A Blend position row carries `b_rate` beside the
-     * balance, and on 20 Sep that rate was printed as the user's holding — "Blend: XLM
+     * balance, and on 20 Sep that rate was printed as the user's holding - "Blend: XLM
      * 2.0749225" for an account whose actual supply was something else entirely. The read
      * was correct, the routing was correct, MCP returned the balance: the renderer picked
      * the wrong field. `quantity` is set where the unit is derived, so a rate, ratio,
-     * health factor or percentage can never be mistaken for a balance again — including
+     * health factor or percentage can never be mistaken for a balance again - including
      * ones nobody has enumerated, because it is decided by how the unit was built.
      */
     if (fact.unit === "USD") entry.usdValues.push(Number(fact.value));
@@ -188,8 +188,8 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string, 
     }
   }
   /**
-   * Every read that came back as ROWS — a debt per asset, a collateral line, an Earn or
-   * Blend position — is printed row by row, from the facts themselves. 14 Sep: "what are
+   * Every read that came back as ROWS - a debt per asset, a collateral line, an Earn or
+   * Blend position - is printed row by row, from the facts themselves. 14 Sep: "what are
    * the debt tokens I am holding" was answered with the USD total alone, because only the
    * total had a sentence here while the two debt rows the read returned had none.
    */
@@ -240,7 +240,7 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string, 
   /**
    * Quote each venue the way its own page does, as APY.
    *
-   * The facts stay APR — carry maths compares a supply rate with a borrow rate and must compare
+   * The facts stay APR - carry maths compares a supply rate with a borrow rate and must compare
    * like with like. Only what the user READS changes, and it has to match the product, which
    * uses two conventions: the Earn page shows its supply rate as-is (`pool-stats.ts`, verified
    * 23 Sep: 2.759984% here, 2.76% on /earn), while Blend compounds weekly (`rate-display.ts`,
@@ -266,7 +266,7 @@ export function factualReplyBlocks(facts: readonly ResearchFact[], request?: str
   return blocks;
 }
 
-/** What the wallet holds that a plan could use, from the wallet read's own rows — spendable where the read states it. */
+/** What the wallet holds that a plan could use, from the wallet read's own rows - spendable where the read states it. */
 function spendableSummary(facts: readonly ResearchFact[]): string | null {
   const bySymbol = new Map<string, { balance?: string; spendable?: string }>();
   for (const fact of facts) {
@@ -329,7 +329,7 @@ export function strategyReply(input: {
   findings?: ReadonlyArray<{ summary: string }>;
   originalRequest?: string;
   statedSteps?: ReadonlyArray<{ label: string }>;
-  /** Why the loop stopped, when it did — an `incomplete` turn reads differently for each. */
+  /** Why the loop stopped, when it did - an `incomplete` turn reads differently for each. */
   stopReason?: string | null;
 }): string {
   const top = input.candidates?.feasible[0];
@@ -339,7 +339,7 @@ export function strategyReply(input: {
    * workable plan would have vanished. Same form as the all-refused sentence below.
    */
   const ruledOut = top && input.candidates?.rejected.length
-    ? ` Ruled out: ${input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} — ${entry.reason.replace(/\.$/, "")}`).join("; ")}.`
+    ? ` Ruled out: ${input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} - ${entry.reason.replace(/\.$/, "")}`).join("; ")}.`
     : "";
   if (top) {
     if (top.decision?.runnerUpId && top.decision.reason) {
@@ -356,7 +356,7 @@ export function strategyReply(input: {
     }
     /**
      * A composed plan's headline is its own title and rationale, with the numbers the
-     * sizer produced — one source for the options and the prose, so they cannot disagree.
+     * sizer produced - one source for the options and the prose, so they cannot disagree.
      */
     if (top.steps?.length) {
       const legs = top.steps.map((step) => step.label.charAt(0).toLowerCase() + step.label.slice(1)).join(", then ");
@@ -411,21 +411,21 @@ export function strategyReply(input: {
     const list = input.statedSteps.map((step) => step.label).join(", then ");
     const body = list.charAt(0).toUpperCase() + list.slice(1);
     const ruledOut = input.candidates?.rejected.length
-      ? ` Ruled out: ${input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} — ${entry.reason.replace(/\.$/, "")}`).join("; ")}.`
+      ? ` Ruled out: ${input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} - ${entry.reason.replace(/\.$/, "")}`).join("; ")}.`
       : "";
     return input.statedSteps.length === 1
       ? `${body}. Approve to run this step.${ruledOut}`
       : `${body}. Approve to run these steps.${ruledOut}`;
   }
   if (input.candidates?.rejected.length) {
-    // Say why each shape was ruled out — the reasons are the analysis; there is no stock verdict.
-    const reasons = input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} — ${entry.reason.replace(/\.$/, "")}`).join("; ");
+    // Say why each shape was ruled out - the reasons are the analysis; there is no stock verdict.
+    const reasons = input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} - ${entry.reason.replace(/\.$/, "")}`).join("; ");
     return `I checked ${input.candidates.rejected.length === 1 ? "the shape" : `${input.candidates.rejected.length} shapes`} against your position and the live rates, and none could be prepared: ${reasons}. Nothing was executed.`;
   }
   if (input.status === "needs_input") {
     /**
      * An open question is a choice the user must make OR a gap the reads left ("no pool
-     * is available") — the model uses the same field for both, and only the first is
+     * is available") - the model uses the same field for both, and only the first is
      * something to answer. Say "unresolved" and let the text speak; "one choice" was a
      * lie half the time (13 Sep: a false "no Aquarius pool" read was shown as a choice).
      */
@@ -439,25 +439,25 @@ export function strategyReply(input: {
   if (input.status === "incomplete") {
     /**
      * Why it stopped changes what the user should do, so it changes the sentence. A
-     * cancelled run is not a failure and must not invite a blind retry — it is what a page
+     * cancelled run is not a failure and must not invite a blind retry - it is what a page
      * reload or a second prompt does to the first one, and telling the user it "ran out of
      * time, please try again" sent them to retry something that was never slow (15 Sep).
      */
     if (input.stopReason === "cancelled") {
-      return "This run was cancelled before it finished — a reload or a new prompt replaces the one in flight. Nothing was executed.";
+      return "This run was cancelled before it finished - a reload or a new prompt replaces the one in flight. Nothing was executed.";
     }
     if (input.stopReason === "deadline") {
       return "The investigation ran out of time before it could finish. The completed reads are shown below; no strategy was executed.";
     }
     if (input.stopReason === "invalid_evidence" || input.stopReason === "invalid_decision") {
-      return "The investigation could not be completed from the reads it made. Nothing was executed — please try again.";
+      return "The investigation could not be completed from the reads it made. Nothing was executed - please try again.";
     }
     return "The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed.";
   }
   if (input.intent === "strategy") {
     /**
      * A strategy turn with nothing to offer and nothing ruled out is usually a wallet with
-     * nothing idle — and the card must say so, from the wallet read, or the user is left
+     * nothing idle - and the card must say so, from the wallet read, or the user is left
      * with a rate list and no reason (13 Sep: 3.97 XLM, all of it minimum balance).
      */
     const inWallet = !input.candidates?.feasible.length && !input.candidates?.rejected.length ? spendableSummary(input.facts) : null;

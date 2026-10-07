@@ -26,7 +26,7 @@ const CEILINGS: Readonly<InvestigationLimits> = Object.freeze({
   /**
    * 45s, down from 55s. The loop is not the only thing inside the route's 75s promise:
    * scope resolution (20s) and the authoritative position read (8s) both block it, and
-   * 20 + 8 + 55 came to 83s — past the deadline, which the user saw as "the connection
+   * 20 + 8 + 55 came to 83s - past the deadline, which the user saw as "the connection
    * closed before the investigation finished". The loop needs less than it did anyway: the
    * position is now seeded as evidence, so three reads and a turn or two came out of every
    * account question, and each remaining read is capped at 15s of its own.
@@ -425,8 +425,8 @@ export async function runInvestigation(
       }
 
       /**
-       * Run the batch CONCURRENTLY. These reads are independent by construction — that is
-       * the precondition for batching them — and MCP latency, not model latency, is what
+       * Run the batch CONCURRENTLY. These reads are independent by construction - that is
+       * the precondition for batching them - and MCP latency, not model latency, is what
        * pushed a four-read turn past the client's timeout. Ids are assigned before dispatch
        * and results appended in request order, so evidence numbering stays deterministic
        * regardless of which read returns first.
@@ -529,7 +529,7 @@ export async function runInvestigation(
       /**
        * On a DEADLINE, record the batch before stopping. Returning early discarded every
        * read that had already completed in the same batch, so the run reported "0 reads"
-       * while holding real evidence it had paid for — the user waited a minute and got
+       * while holding real evidence it had paid for - the user waited a minute and got
        * nothing back. Running out of time is a reason to stop reading, not to throw away
        * what came back.
        *

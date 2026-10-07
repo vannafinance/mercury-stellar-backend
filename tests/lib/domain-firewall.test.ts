@@ -15,7 +15,7 @@ function cataloguePrompts(): string[] {
 describe("the firewall reads plurals and inflections, not just dictionary singulars", () => {
   /**
    * The allowlist matched product nouns with `\b` on both ends, and a trailing `\b` after
-   * a singular stem does not match its plural — `position\b` fails on "positions" because
+   * a singular stem does not match its plural - `position\b` fails on "positions" because
    * `s` is a word character. So "…my current open position" was answered and "…my current
    * open positions" was refused with "I only help with Vanna Finance on Stellar", about a
    * Vanna position, on the Vanna copilot page.
@@ -61,7 +61,7 @@ describe("the firewall reads plurals and inflections, not just dictionary singul
     }
   });
 
-  it("keeps general chat out — widening the vocabulary must not open the door", () => {
+  it("keeps general chat out - widening the vocabulary must not open the door", () => {
     for (const ask of [
       "what is the capital of france",
       "who won the world cup",

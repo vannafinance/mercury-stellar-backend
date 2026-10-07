@@ -57,7 +57,7 @@ describe("Flash research adapter", () => {
     const concluding = [
       // Budget exhausted: this turn has to produce a conclusion.
       turn({ remaining: { turns: 8, toolCalls: 0 } }),
-      // Last turn available — no further read can inform it.
+      // Last turn available - no further read can inform it.
       turn({ remaining: { turns: 1, toolCalls: 8 } }),
       // Enough evidence in hand that a handoff is plausible.
       turn({ observations: ["e1", "e2", "e3", "e4"].map(observation) }),
@@ -77,7 +77,7 @@ describe("Flash research adapter", () => {
     for (const { venue, assets } of venueTable()) expect(RESEARCH_SYSTEM).toContain(`${venue} takes ${assets.join(", ")}`);
     for (const { venue, usdc } of venueUsdc()) expect(RESEARCH_SYSTEM).toContain(`${venue} → ${usdc}`);
     for (const { venue, tokens } of lpPairs()) expect(RESEARCH_SYSTEM).toContain(`${venue}: ${tokens.join(" + ")}`);
-    // A venue the user leaves open is their choice when several executable venues fit — not a rate pick.
+    // A venue the user leaves open is their choice when several executable venues fit - not a rate pick.
     expect(RESEARCH_SYSTEM).not.toMatch(/Venue selection is yours/);
     expect(RESEARCH_SYSTEM).toMatch(/names NO venue and more than one\s+executable venue fits/);
     expect(RESEARCH_SYSTEM).not.toMatch(/AQUSDC for Aquarius, SOUSDC for Soroswap/);

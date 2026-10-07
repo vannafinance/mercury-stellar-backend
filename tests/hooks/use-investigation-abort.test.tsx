@@ -9,7 +9,7 @@ import { act, renderHook } from "@testing-library/react";
  *
  * 13 Sep, signed in: a healthy investigation was eleven seconds in when the wallet store
  * reported `null` for a render, the hook's wallet effect treated that as "wallet changed",
- * aborted the request and wiped the thread — and the user read "The investigation ran out
+ * aborted the request and wiped the thread - and the user read "The investigation ran out
  * of time before it could finish". Handoff §5: an aborted request reported as a timeout.
  * Acceptance, verbatim: trigger both paths deliberately; they produce different messages.
  */
@@ -37,7 +37,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("useInvestigation — deadline vs cancel", () => {
+describe("useInvestigation - deadline vs cancel", () => {
   it("says 'ran out of time' only when the 120s backstop fired", async () => {
     vi.useFakeTimers();
     silentServer();
@@ -54,9 +54,9 @@ describe("useInvestigation — deadline vs cancel", () => {
     const outer = new AbortController();
     await act(async () => { void result.current.run("deploy my XLM", outer.signal); });
     await act(async () => { await vi.advanceTimersByTimeAsync(11_000); });
-    // Eleven seconds in, the request is torn down by its owner — not by the clock.
+    // Eleven seconds in, the request is torn down by its owner - not by the clock.
     await act(async () => { outer.abort(); await vi.advanceTimersByTimeAsync(10); });
-    expect(result.current.error).toBe("This investigation was cancelled or replaced before it finished. Nothing was executed — run it again.");
+    expect(result.current.error).toBe("This investigation was cancelled or replaced before it finished. Nothing was executed - run it again.");
     expect(result.current.loading).toBe(false);
   });
 

@@ -1,5 +1,5 @@
 /**
- * Attach the Vanna signer and bind the wallet — as its own thing, not as a side effect.
+ * Attach the Vanna signer and bind the wallet - as its own thing, not as a side effect.
  *
  * ## Why this route exists
  *
@@ -12,8 +12,8 @@
  *     by the protocol at all, and belongs to connecting;
  *   - auto-approve, which is a per-session signing policy the user flips whenever.
  *
- * Coupling them meant a user with auto-approve OFF could never be bound, so every turn —
- * reads included — came back "I couldn't verify the wallet link this turn", with no action
+ * Coupling them meant a user with auto-approve OFF could never be bound, so every turn -
+ * reads included - came back "I couldn't verify the wallet link this turn", with no action
  * available anywhere in the product that would fix it. Enabling auto-sign was the only
  * cure, which is precisely the permission that user had declined.
  *
@@ -138,7 +138,7 @@ export async function POST(req: NextRequest) {
       ? safeReasonCode(result.bindingError, "binding_incomplete")
       : null;
     // `bound` reports what the Sign Service actually wrote, not merely that the call
-    // succeeded — the distinction this whole flow exists to stop losing.
+    // succeeded - the distinction this whole flow exists to stop losing.
     return NextResponse.json({
       ok: true,
       status: "ok",

@@ -367,7 +367,7 @@ describe("researchTurn fast path", () => {
     const result = await researchTurn({ message: "lend 1 xlm to earn", wallet: SCOPE.trader, continuation: null }, deps({ model, mcp }));
     expect(result.proposalCandidateId).not.toBe("requested_actions");
     expect(result.candidates?.feasible).toEqual([]);
-    expect(result.candidates?.rejected[0]?.reason).toBe("lend XLM: 3.94 XLM is held, but 3.5 XLM is the chain's minimum balance and 0.5 XLM is the fee reserve — nothing is spendable.");
+    expect(result.candidates?.rejected[0]?.reason).toBe("lend XLM: 3.94 XLM is held, but 3.5 XLM is the chain's minimum balance and 0.5 XLM is the fee reserve - nothing is spendable.");
     expect(result.message).toMatch(/3\.94 XLM is held/);
     expect(result.executionAllowed).toBe(false);
   });

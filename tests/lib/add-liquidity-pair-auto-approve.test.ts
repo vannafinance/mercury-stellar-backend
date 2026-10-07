@@ -3,14 +3,14 @@
  *
  * Live, 22 Sep, auto-approve on: "provide 20 XLM and AQUSDC liquidity on aquarius"
  * came back as a card reading `add liquidity PAUSED · NEEDS INPUT / waiting on you`,
- * with BOTH boxes already filled — 20 XLM and the 0.2273 AQUSDC derived from the live
- * pool ratio — and an Enter button. The multi-leg form stopped the same way: "borrow
+ * with BOTH boxes already filled - 20 XLM and the 0.2273 AQUSDC derived from the live
+ * pool ratio - and an Enter button. The multi-leg form stopped the same way: "borrow
  * 20 SOUSDC and provide it with XLM as liquidity on soroswap" settled the borrow, then
  * parked on `Add 109.9761 XLM + 20 SOUSDC` waiting for a click.
  *
  * `handle.ts` returned `kind: "clarification"` for that leg unconditionally. The pause
- * is worth having when the switch is off — the two boxes are how a user edits either
- * side — but it never asked whether the user had already armed autonomous signing, so
+ * is worth having when the switch is off - the two boxes are how a user edits either
+ * side - but it never asked whether the user had already armed autonomous signing, so
  * the one op whose second amount is DERIVED was also the one op the switch could not
  * get past. A swap sails through because its amount arrives stated; here derivation
  * was being read as absence.
@@ -73,7 +73,7 @@ describe("THE LIVE BUG: a sized LP pair stops on 'needs input' with auto-approve
   it("does not ask for input when the switch is on and both sides are sized", async () => {
     const res = await addLiquidity(true);
     expect(res.kind).not.toBe("clarification");
-    // The verbatim copy from the card in the screenshot — if this comes back, the
+    // The verbatim copy from the card in the screenshot - if this comes back, the
     // armed session is being asked to agree to arithmetic it already authorised.
     expect(res.message ?? "").not.toMatch(/edit either box or sign as-is/i);
   }, 30_000);

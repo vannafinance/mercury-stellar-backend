@@ -1,7 +1,7 @@
 /**
  * Owner, 29 Sep: the health factor is the Margin page's (2.32 on the test account), not the
  * contract-basis ratio (1.83). Plan cards showed "1.83 → …". Sizing still runs on the contract
- * basis — the stricter figure — and only the displayed before/after follow the page, moved by
+ * basis - the stricter figure - and only the displayed before/after follow the page, moved by
  * exactly the collateral and debt the sized legs move. Figures are the live 29 Sep reads.
  */
 import { describe, expect, it } from "vitest";

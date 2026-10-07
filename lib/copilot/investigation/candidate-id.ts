@@ -1,5 +1,5 @@
 /**
- * Candidate ids — minted, parsed and validated here, and nowhere else.
+ * Candidate ids - minted, parsed and validated here, and nowhere else.
  *
  * Three parties handle the same string: the generator mints it, the card posts it back,
  * and the propose route decides whether to accept it. When each side spelled the shape
@@ -11,14 +11,14 @@
  *
  * Shape: `<kind>:<asset>`. The kind is a strategy family this module registers; the asset
  * is the symbol the rate comparison carried, passed through unchanged. A symbol nobody
- * enumerated — digits, hyphens, mixed case, even a `CODE:ISSUER` pair — round-trips
+ * enumerated - digits, hyphens, mixed case, even a `CODE:ISSUER` pair - round-trips
  * without any list here agreeing to it, because the colon splits on the first occurrence
  * only and the asset side is never interpreted. `requested_actions` is the one id with no
  * asset: it names the user's own literal steps rather than a generated strategy.
  *
  * Authority over WHICH ids may be proposed stays with the sealed investigation evidence
- * (`allowedCandidateIds`, exact match). `isCandidateId` is hygiene on untrusted input —
- * a length bound and a printable-ASCII check — not an allowlist, so registering a new kind
+ * (`allowedCandidateIds`, exact match). `isCandidateId` is hygiene on untrusted input -
+ * a length bound and a printable-ASCII check - not an allowlist, so registering a new kind
  * here never requires touching the route.
  */
 
@@ -37,7 +37,7 @@ export interface CandidateKindTraits {
 
 /**
  * The strategy families the deterministic generator can produce and the compiler can turn
- * into steps. Closed by design — "only arithmetic and authority are closed" — because each
+ * into steps. Closed by design - "only arithmetic and authority are closed" - because each
  * row has sizing and compile code behind it. Adding a row is the whole registration.
  */
 export const CANDIDATE_KINDS = {

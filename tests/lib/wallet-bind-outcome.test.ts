@@ -10,7 +10,7 @@ import { MCPCallError } from "@/lib/copilot/mcp-client";
  * on the MCP path, and only use the gateway when the MCP action is absent.
  *
  * What is pinned here is that the OUTCOME is read from the response rather than inferred
- * from the status, including the case of a Sign Service too old to report it — which must
+ * from the status, including the case of a Sign Service too old to report it - which must
  * stay distinguishable from a reported failure, or a caller retrying on `false` would spin
  * forever against a deployment that simply cannot answer.
  */
@@ -90,7 +90,7 @@ describe("registerWalletBind uses MCP and preserves the binding outcome", () => 
       origin: ORIGIN,
     }, "user-1");
 
-    // The call succeeded — the binding did not. Collapsing these is the original defect.
+    // The call succeeded - the binding did not. Collapsing these is the original defect.
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.bindingWritten).toBe(false);

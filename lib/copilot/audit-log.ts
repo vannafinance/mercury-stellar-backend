@@ -1,7 +1,7 @@
 /**
  * Append-only audit of agent actions against a verified identity.
  *
- * Answers "your agent can move money — show me what it did": proposed, approved,
+ * Answers "your agent can move money - show me what it did": proposed, approved,
  * executed, under which mandate and cap, with the evidence IDs behind the numbers.
  * Never logs tokens, XDR, or secrets.
  */

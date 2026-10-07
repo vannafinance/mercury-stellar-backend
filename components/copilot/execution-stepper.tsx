@@ -41,8 +41,8 @@ const IN_FLIGHT: ReadonlySet<StepperStep["status"]> = new Set(["claiming", "sign
  * The execution card (mockup boards 1–4: running, completed, signature needed, stopped).
  *
  * One card that advances in place. The header says where the run is, the bar has one
- * segment per step, and each row carries its own receipt — the tx link and the ledger it
- * settled in — so nothing about a finished step has to be looked up elsewhere. Colours are
+ * segment per step, and each row carries its own receipt - the tx link and the ledger it
+ * settled in - so nothing about a finished step has to be looked up elsewhere. Colours are
  * the copilot's tokens, so light and dark follow `.cp-root` with no per-theme markup.
  */
 export function ExecutionStepper({

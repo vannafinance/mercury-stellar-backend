@@ -211,7 +211,7 @@ export function composable(view: ResearchView): boolean {
   return view.status === "researched"
     && view.understanding?.intent === "answer"
     && view.facts.length > 0
-    // Live, 29 Sep: given the contract-basis read, the model told the user "1.83" — the figure
+    // Live, 29 Sep: given the contract-basis read, the model told the user "1.83" - the figure
     // the owner ruled out. Those facts are never handed to the composer.
     && !healthOnContractBasis(view.facts)
     && !view.warnings.length

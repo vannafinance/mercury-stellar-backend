@@ -24,25 +24,25 @@ const ACTION_INTENT =
   /\b(swap|lend|borrow|deposit|repay|redeem|withdraw|farm|supply|deploy|add\s+liquidity|remove\s+liquidity|enable\s+auto|disable\s+auto|create\s+(?:margin\s+)?account|transfer|bridge)\b/i;
 
 /**
- * "Tell me about MY account" — always the copilot, never the page guide.
+ * "Tell me about MY account" - always the copilot, never the page guide.
  *
  * Every inflection is spelled out because a trailing `\b` after a singular stem does not
  * match its plural: `position\b` fails on "positions", since `s` is a word character.
- * That single detail sent "what are my positions" — the most common question this
- * surface gets — to the page assistant, which has no MCP access and answered "I do not
+ * That single detail sent "what are my positions" - the most common question this
+ * surface gets - to the page assistant, which has no MCP access and answered "I do not
  * have access to your live wallet balances or active positions" while the copilot was
  * sitting behind it with the numbers. The singular "what is my position" worked, which
  * is how it survived: it reads as a phrasing quirk rather than a whole class of failure.
  *
- * "what are" is in the possessive alternation for the same reason — it was absent, so
+ * "what are" is in the possessive alternation for the same reason - it was absent, so
  * only "what is my …" and "what's my …" were recognised.
  */
 /**
  * "whats my helth factr" (G-06, typos and all) has to reach this second branch, which
  * asks for the question FRAME only ("what's my …") and never checks the noun that
- * follows — so a typo in "health factor" never matters here, unlike the first branch.
+ * follows - so a typo in "health factor" never matters here, unlike the first branch.
  * "whats" (no apostrophe) was missing from the frame alternatives even though
- * `DEFINITIONAL` below already treats it as equivalent to "what's" — that mismatch is
+ * `DEFINITIONAL` below already treats it as equivalent to "what's" - that mismatch is
  * what let the message fall all the way through to the generic concept explainer,
  * which then wrongly claimed "I cannot view your personal account balances".
  */
@@ -65,7 +65,7 @@ const DEFINITIONAL =
   /\b(what(?:'s| is| are| does)|whats|explain|define|definition|meaning|how\s+(?:does|do|can|to)|why|tell me about|differ|differs|different|difference|compared\s+to|versus|vs\.?|what happens|is it safe|should i)\b/i;
 
 /**
- * "Tell me about what I'm looking at" — the page agent's home question.
+ * "Tell me about what I'm looking at" - the page agent's home question.
  *
  * Kept separate from DEFINITIONAL because the phrasings share no stem: people ask
  * "what am I looking at?", "walk me through this screen", "what does this mean?", none
@@ -77,7 +77,7 @@ const PAGE_REFERENTIAL =
   /\b(what|where)\s+am\s+i\b|\b(looking\s+at|on\s+(?:my\s+)?screen|this\s+page|this\s+screen|shown\s+here)\b|\b(what|how)\s+does\s+(this|that|it)\b|\b(what|who)\s+(is|are)\s+(this|that|these|those)\b|\b(explain|walk\s+me\s+through|describe)\s+(this|the\s+page|the\s+screen)\b/i;
 
 /**
- * "What can you do?" — a question about the assistant, answered by the assistant.
+ * "What can you do?" - a question about the assistant, answered by the assistant.
  *
  * Mirrors SELF_REFERENTIAL in domain-firewall.ts. Kept in both places deliberately: the
  * firewall decides whether to spend a token at all, this decides which surface answers.
@@ -92,14 +92,14 @@ const MARKET_NOUN =
  * …attached to a real asset means "look it up", not "explain it".
  *
  * "What is Current Rate of bXLM?" fell through to the concept explainer instead of the
- * live Blend reserve rate — "rate" satisfies `MARKET_NOUN`, but `\bXLM\b` can never match
+ * live Blend reserve rate - "rate" satisfies `MARKET_NOUN`, but `\bXLM\b` can never match
  * inside "bXLM" (no word-boundary between "b" and "X"), so this override never fired. Same
- * composite-bToken gap already fixed in the domain firewall and the asset registry —
+ * composite-bToken gap already fixed in the domain firewall and the asset registry -
  * fixed HERE for good by reading the same registry those two now read, instead of a
  * third hand-copied list that would silently fall behind again the next time an asset or
  * spelling is added. Bare "USDC" is added on top: the registry deliberately excludes it
  * (BLUSDC/AQUSDC/SOUSDC are three separate tokens, and naming none of them is a question,
- * not an asset — see registry/assets.ts's file header) but "what is the price of USDC" is
+ * not an asset - see registry/assets.ts's file header) but "what is the price of USDC" is
  * still a live-data lookup, not a concept question.
  */
 const ASSET_SYMBOL = new RegExp(ASSET_SYMBOL_PATTERN.source + "|\\busdc\\b", "i");
@@ -107,7 +107,7 @@ const ASSET_SYMBOL = new RegExp(ASSET_SYMBOL_PATTERN.source + "|\\busdc\\b", "i"
 /**
  * True only for genuine concept questions ("what is Blend?").
  *
- * This deliberately defaults to FALSE. It used to default to true — anything that did
+ * This deliberately defaults to FALSE. It used to default to true - anything that did
  * not match an allow-list of "live" phrasings fell through to the page assistant, which
  * has no MCP access and so answered market questions with "I do not have access to
  * real-time prices". That swallowed the most basic reads there are: "price of XLM",
@@ -128,7 +128,7 @@ export function isAssistantChat(message: string): boolean {
   if (PAGE_REFERENTIAL.test(m)) return true;
 
   // Questions about the assistant's own capabilities. These belong to the Guide, not the
-  // MCP router — there is no tool that answers "what can you do", so routing them to the
+  // MCP router - there is no tool that answers "what can you do", so routing them to the
   // copilot produced a clarification asking the user to rephrase.
   if (SELF_REFERENTIAL.test(m)) return true;
 
@@ -180,7 +180,7 @@ function lightGlossaryHints(message: string, path?: string | null): string {
 
 function renderSnapshot(snap: PageSnapshotCtx | null): string {
   if (!snap?.visible_text?.trim() && !snap?.region_text?.trim() && !snap?.selection) {
-    return "LIVE PAGE: (no snapshot received — say you cannot see the page content yet.)";
+    return "LIVE PAGE: (no snapshot received - say you cannot see the page content yet.)";
   }
 
   const metrics =
@@ -193,7 +193,7 @@ function renderSnapshot(snap: PageSnapshotCtx | null): string {
       : "";
 
   return [
-    "LIVE PAGE (browser DOM — source of truth for on-screen numbers):",
+    "LIVE PAGE (browser DOM - source of truth for on-screen numbers):",
     `url: ${snap.url || snap.path || "?"}`,
     `document title: ${snap.title || "?"}`,
     `path: ${snap.path || "?"}`,
@@ -221,19 +221,19 @@ You help the user understand THIS webpage while they keep working.
 Ground every answer in LIVE PAGE text / region / highlight. You are not a generic chatbot.
 
 VOICE & POLISH:
-- Calm, expert, concise. Product guide — not sales, not a ticket bot.
+- Calm, expert, concise. Product guide - not sales, not a ticket bot.
 - Hinglish is fine if the user uses it.
 - Lead with a one-sentence direct answer, then structured options when useful.
 
-OUTPUT FORMAT (strict — the UI renders this as designed type, not raw markdown):
+OUTPUT FORMAT (strict - the UI renders this as designed type, not raw markdown):
 - NEVER use asterisks for bold/italic. No **text**, no *text*, no __text__.
 - NEVER use markdown headings (#) or code fences (\`\`\`).
 - NEVER use raw hyphen bullets with ** labels.
 - Use plain section titles on their own line (Title Case, no trailing junk), for example:
   What you can do
 - Numbered options as:
-  1. Short title — one or two sentences of detail.
-  2. Next option — detail.
+  1. Short title - one or two sentences of detail.
+  2. Next option - detail.
 - Simple lists as lines starting with "• " (bullet character), not "-" or "*".
 - Keep total length reasonable: usually 120–220 words unless the user asks for deep detail.
 - Optional single closing question, one sentence, no pressure.
@@ -245,10 +245,10 @@ CONTENT RULES:
 4. Never claim you executed a trade or signature.
 5. No financial advice ("you should 5x"). Describe options neutrally.
 6. Health factor liquidation context on Vanna is ~1.1 when needed; prefer page text.
-7. BLUSDC, AQUSDC, SOUSDC are different tokens — do not conflate.
-8. When asked "what can I do with …", list 3–5 realistic in-app paths tied to what is on the page (Swap, Earn, Farm, Margin, Portfolio) — not generic crypto tips.
+7. BLUSDC, AQUSDC, SOUSDC are different tokens - do not conflate.
+8. When asked "what can I do with …", list 3–5 realistic in-app paths tied to what is on the page (Swap, Earn, Farm, Margin, Portfolio) - not generic crypto tips.
 
-PRODUCT REFERENCE notes below are background only — never override LIVE PAGE numbers.`;
+PRODUCT REFERENCE notes below are background only - never override LIVE PAGE numbers.`;
 
 export type AssistantChatOpts = {
   history?: Array<{ role: "user" | "assistant"; text: string }>;
@@ -278,7 +278,7 @@ export async function answerAssistant(
   const user = [
     pageBlock,
     "",
-    "PRODUCT REFERENCE (optional — paraphrase, never recite as a script):",
+    "PRODUCT REFERENCE (optional - paraphrase, never recite as a script):",
     ref,
     "",
     historyBlock,

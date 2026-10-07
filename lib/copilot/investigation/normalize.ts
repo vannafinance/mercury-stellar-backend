@@ -7,14 +7,14 @@ import type { ResearchFact } from "./view";
  * Turn observations into display facts.
  *
  * Two passes per observation. First, a small set of branches for capabilities where a
- * real JUDGEMENT is needed that the response shape cannot express — each says why in
+ * real JUDGEMENT is needed that the response shape cannot express - each says why in
  * its comment and declares which top-level keys it consumed. Second, the shape-driven
  * extractor (`facts-by-shape.ts`) reads every remaining unit-bearing field from the
  * MCP's own naming conventions. A capability with no branch here is the normal case,
  * not a gap: it renders from its shape.
  *
- * Until 13 Sep this was a 14-case switch, and the 12 capabilities without a case —
- * `max_borrow`, `farm_overview`, `collateral_config`, `earn_position`, … — were read,
+ * Until 13 Sep this was a 14-case switch, and the 12 capabilities without a case -
+ * `max_borrow`, `farm_overview`, `collateral_config`, `earn_position`, … - were read,
  * discarded, and reported to the user as "no supported display fields".
  */
 export function normalizeResearchFacts(observations: Observation[]): { facts: ResearchFact[]; warnings: string[] } {
@@ -47,7 +47,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
     /**
      * `quantity` says this number is an amount of the row's own token, and it is declared
      * here because only the caller knows. It defaults to false so a figure is never
-     * mistaken for a balance by accident — but a real token amount left unmarked would be
+     * mistaken for a balance by accident - but a real token amount left unmarked would be
      * dropped from any row rendering, so the balance/spendable callers below set it.
      */
     const add = (path: string, label: string, raw: unknown, unit: string, venue: ResearchFact["venue"], quantity = false) => {
@@ -66,7 +66,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
     /**
      * Rows a branch iterates. A row is unavailable only when it says so (`error`, or
      * `available: false`); a non-ok `status` is information the MCP attached on purpose
-     * (`USDC: not_resolvable` — there is no plain USDC on this network) and is skipped
+     * (`USDC: not_resolvable` - there is no plain USDC on this network) and is skipped
      * without a warning. Until 13 Sep that line alone produced "wallet balances: some
      * entries were unavailable" on every signed-in run.
      */
@@ -77,7 +77,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         if (row.error || row.available === false) {
           const who = typeof row.symbol === "string" ? row.symbol : `${key}[${index}]`;
           const why = typeof row.message === "string" ? row.message : typeof row.error === "string" ? row.error : null;
-          warnings.add(`${noun}: ${who} was unavailable${why ? ` — ${why}` : "."}`);
+          warnings.add(`${noun}: ${who} was unavailable${why ? ` - ${why}` : "."}`);
           return [];
         }
         if (typeof row.status === "string" && row.status !== "ok") return [];
@@ -90,7 +90,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
 
     switch (observation.capability) {
       /**
-       * Judgement: the wallet read reports the same Stellar asset twice — under its
+       * Judgement: the wallet read reports the same Stellar asset twice - under its
        * symbol and as `<SYMBOL>_SAC` (the Soroban wrapper for the identical holding).
        * Shape alone would list "XLM 2781.947" and "XLM_SAC 2781.947" as two balances,
        * which reads as twice the spendable capital. Keep the canonical line only.
@@ -114,7 +114,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       }
       /**
        * Judgement: `is_healthy` is worded as a state ("healthy" / "at risk"), and a
-       * `page_debt_mismatch` flag means the app panel disagrees with the contract — the
+       * `page_debt_mismatch` flag means the app panel disagrees with the contract - the
        * panel figure is then reported as a disagreement, never as the health factor.
        * The health factor itself is never derived from collateral/debt here.
        */
@@ -209,9 +209,9 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       /**
        * Judgement: `enabled: true` is a configuration flag, not a working session.
        *
-       * The Sign Service reports live failures alongside it — `session_expired`,
+       * The Sign Service reports live failures alongside it - `session_expired`,
        * `session_not_active`, `no_active_session`, `over_daily_cap`, `unauthorized`
-       * (see `mcp-write.ts`) — so reading only `enabled` labels a dead delegation
+       * (see `mcp-write.ts`) - so reading only `enabled` labels a dead delegation
        * "Active". That is the one claim here that could talk someone into approving a
        * plan believing the server can carry it out unattended. When the status
        * contradicts the flag, the status wins and the authority is NOT called active.
@@ -239,7 +239,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       facts.push({ id: `${observation.id}:${fact.path}`, label: fact.label, value: fact.value, unit: fact.unit, venue: fact.venue, evidenceId: observation.id, sourcePath: fact.path, readAt: observation.observedAt, quantity: fact.quantity });
     }
     for (const row of shaped.unavailable) {
-      warnings.add(`${noun}: ${row.identity ?? row.path} was unavailable${row.message ? ` — ${row.message}` : "."}`);
+      warnings.add(`${noun}: ${row.identity ?? row.path} was unavailable${row.message ? ` - ${row.message}` : "."}`);
     }
     if (Array.isArray(data.errors) && data.errors.length) {
       warnings.add(`${noun}: ${data.errors.length} ${data.errors.length === 1 ? "entry" : "entries"} could not be read; this is not a complete picture.`);
@@ -252,7 +252,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
   return { facts, warnings: [...warnings] };
 }
 
-/** Keys only — payloads are large and may still carry secrets the sanitizer missed. */
+/** Keys only - payloads are large and may still carry secrets the sanitizer missed. */
 function logDropped(observation: Observation, kind: "unavailable" | "no_fields") {
   const data = observation.data;
   console.warn("[copilot] investigation fact extract", {

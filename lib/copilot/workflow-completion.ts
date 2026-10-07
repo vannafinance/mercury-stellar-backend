@@ -29,11 +29,11 @@ export function immediateCompletion(receipt: ExecutionReceiptSnapshot, now: numb
   const transactions = settledTransactions(receipt);
   if (!transactions) return null;
   const what = transactions.map((transaction) => transactionPurpose(transaction.steps)).join("; ").replace(/[.s]+$/, "");
-  const message = `${what} — settled on-chain.`;
+  const message = `${what} - settled on-chain.`;
   return {
     message,
     // What was done reads as a bold figure, the way the model-worded reply sets it; the status follows plainly.
-    replyBlocks: [{ type: "paragraph", segments: [{ text: what, figure: true }, { text: " — settled on-chain." }] }],
+    replyBlocks: [{ type: "paragraph", segments: [{ text: what, figure: true }, { text: " - settled on-chain." }] }],
     receipt,
     completion: { workflowId: receipt.workflowId, receiptKey: receiptKey(receipt), generatedAt: now, source: "fallback" },
   };

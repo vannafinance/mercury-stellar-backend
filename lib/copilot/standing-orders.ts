@@ -7,7 +7,7 @@ import { verifyApprovedPlan, type ApprovedPlan } from "./plan-approval";
 
 /**
  * Standing orders the copilot can persist. Execution still requires a previously
- * approved frozen plan — this module never infers amounts or signs.
+ * approved frozen plan - this module never infers amounts or signs.
  */
 
 export type StandingTrigger =

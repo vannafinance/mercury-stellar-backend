@@ -9,7 +9,7 @@ import { PLAN_TTL_MS } from "../plan-ttl";
  *
  * `resize` exists because blocking between legs is NOT neutral: if leg one borrowed and
  * leg two supplies the proceeds, stopping leaves the user holding borrowed money that pays
- * interest and earns nothing — worse than completing at a smaller size. It is accepted only
+ * interest and earns nothing - worse than completing at a smaller size. It is accepted only
  * for a step whose amount was DERIVED from a constraint, only downward, and only within the
  * bound recorded in the proposal the user approved.
  */
@@ -49,7 +49,7 @@ export class WorkflowJournal {
     /**
      * A proposal shown for approval must already be sized. `sizing.ts` resolves "max"
      * against the floor BEFORE anything reaches here, so a sentinel or a zero arriving at
-     * this point means the resolution was skipped — and asking someone to approve a step
+     * this point means the resolution was skipped - and asking someone to approve a step
      * whose real amount is decided later is not informed consent.
      *
      * Bounded downstream sizing (leg two spending leg one's actual output) is carried as a
@@ -110,7 +110,7 @@ export class WorkflowJournal {
     /**
      * A timeout or RPC miss is not a consumed approval. Returning to `proposed`
      * keeps Approve enabled so a flaky testnet read is not a dead card. Policy
-     * refusals (funds, floor) still block — those will not pass on a retry of
+     * refusals (funds, floor) still block - those will not pass on a retry of
      * the same amounts.
      */
     const retry = Boolean(reason && isRetryableRiskReason(reason));
@@ -125,7 +125,7 @@ export class WorkflowJournal {
    * Approval is not a standing licence: between approving a two-step plan and broadcasting
    * its second step, a price can move the health factor through the floor the user set. So
    * `ready` is consulted per step, not once at approval, and any reason it returns BLOCKS
-   * the run instead of adjusting the amount to make it fit — silently re-sizing to squeeze
+   * the run instead of adjusting the amount to make it fit - silently re-sizing to squeeze
    * a transaction through is the failure mode this exists to prevent.
    *
    * Order matters. The step is claimed BEFORE the external read, so a crash mid-check
@@ -296,7 +296,7 @@ export class WorkflowJournal {
     const base = !success ? "The transaction failed on chain. Remaining steps were stopped."
       : record.value.status === "completed" ? "All approved transactions were confirmed on chain." : "Step confirmed. Remaining steps still require fresh validation.";
     // The note travels with the step that earned it (e.g. a swap's floor moved and was
-    // adjusted before broadcast), so it survives past this settlement's own generic message —
+    // adjusted before broadcast), so it survives past this settlement's own generic message -
     // otherwise the one thing recording what price it actually swapped at is overwritten the
     // instant the ledger confirms, moments after it was written.
     record.value.message = success && note ? `${base} ${note}` : base;
@@ -323,7 +323,7 @@ export class WorkflowJournal {
    * out is to ask the ledger about the reference that was being submitted.
    *
    * Requires a recorded reference. With no hash there is nothing to look up, and inventing
-   * a search over recent account activity would guess which transaction was ours —
+   * a search over recent account activity would guess which transaction was ours -
    * `unreconcilable_without_reference` says so instead of guessing.
    *
    * `found: false` means the ledger has no such transaction, so nothing was spent and the

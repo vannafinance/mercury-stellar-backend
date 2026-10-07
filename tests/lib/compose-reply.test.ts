@@ -1,6 +1,6 @@
 /**
  * The model words the answer; code writes every figure. A composed reply may only say what
- * the reads said — any unread fact, typed digit, markup, or empty citation keeps the
+ * the reads said - any unread fact, typed digit, markup, or empty citation keeps the
  * deterministic reply, and so does a model that fails or runs late.
  */
 import { describe, expect, it, vi } from "vitest";

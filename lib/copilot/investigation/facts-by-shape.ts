@@ -5,7 +5,7 @@
  * capabilities the loop can read had no branch, so a successful `max_borrow` or
  * `farm_overview` read was discarded and the user told the data was unavailable
  * (first signed-in battery, 11 Sep). The MCP already says what its fields mean in the
- * key names and units — `*_pct`, `*_usd`, `*_human`, `*_wad`, `*_address` — so the
+ * key names and units - `*_pct`, `*_usd`, `*_human`, `*_wad`, `*_address` - so the
  * extractor reads those conventions instead. A capability nobody has written a branch
  * for renders the same day the MCP ships it.
  *
@@ -23,7 +23,7 @@ import type { ResearchFact } from "./view";
 /**
  * The asset a read was made for, when its `args.asset` is a registry id. A venue spells
  * that asset its own way (`pool_symbol: "USDC"` for BLUSDC, AQUSDC and SOUSDC alike), and
- * a fact labelled by the venue's spelling cannot be told apart on the card — 13 Sep: three
+ * a fact labelled by the venue's spelling cannot be told apart on the card - 13 Sep: three
  * "USDC Earn" rates with no way to say which pool was which. The registry records each
  * asset's venue spellings (`earnSymbol`, `marginSymbol`), so a row symbol that equals one
  * of them names the requested asset, not the wire word.
@@ -37,7 +37,7 @@ function requestedAsset(observation: Observation): AssetDef | null {
  * Translate a read's rows into registry ids ONCE, where the observation is born, so the
  * model, the facts, the sealed evidence and the sizer all see the same `asset` beside the
  * venue's `symbol`. The model reads observations raw (`JSON.stringify(turn)`), so a label
- * fixed only in the facts never reaches it — 13 Sep: shown `{ symbol: "USDC" }` on a debt
+ * fixed only in the facts never reaches it - 13 Sep: shown `{ symbol: "USDC" }` on a debt
  * row, it named AQUSDC, then SOUSDC, for a BLUSDC debt. Rows that already carry `asset`
  * are left alone; a symbol no venue spelling resolves stays as it is.
  */
@@ -81,7 +81,7 @@ export interface ShapeFact {
   unit: string;
   venue: Venue;
   /**
-   * True only when this number is an AMOUNT OF THE ROW'S TOKEN — a balance, a receipt
+   * True only when this number is an AMOUNT OF THE ROW'S TOKEN - a balance, a receipt
    * balance, an underlying value. False for everything else `unitFor` produces: a rate,
    * a ratio, a health factor, a percentage, a bare integer.
    *
@@ -89,7 +89,7 @@ export interface ShapeFact {
    * two apart afterwards: "rate" and "XLM" are both non-empty unit strings, and the
    * symbol test that builds token units matches "rate" and "HF" just as happily. On
    * 20 Sep a Blend answer printed `b_rate` as the user's XLM balance for exactly that
-   * reason — the renderer took the row's first non-USD number and called it a quantity.
+   * reason - the renderer took the row's first non-USD number and called it a quantity.
    */
   quantity: boolean;
 }
@@ -236,7 +236,7 @@ function rowUnavailable(row: Record<string, unknown>): boolean {
 }
 
 /**
- * A row that reports a non-ok status is information, not failure — the wallet read
+ * A row that reports a non-ok status is information, not failure - the wallet read
  * lists `USDC: not_resolvable` on purpose ("never silently omitted"). Its numbers are
  * not shown, and it is not a warning.
  */

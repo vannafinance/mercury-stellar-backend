@@ -18,7 +18,7 @@ import type { ResearchCapacity } from "./view";
  * What the sealed continuation carries forward, so Prepare can re-size the plan the user
  * clicked. The position reads are DERIVED from the op-flow table rather than listed here:
  * a hand-kept list is one a new op falls off silently, and on 14 Sep exactly that happened
- * — `blend_withdraw` sized correctly on the card, the seal dropped `blend_position`, and
+ * - `blend_withdraw` sized correctly on the card, the seal dropped `blend_position`, and
  * Prepare answered "no XLM Blend supply was read this investigation".
  */
 const KEEP = new Set<string>([
@@ -45,7 +45,7 @@ export interface ResearchEvidence {
   requestedSteps?: import("../workflow/types").ProposalStep[];
   /**
    * The model's composed shapes, sealed so propose can re-size the one the user picked
-   * from the same evidence without a second model turn — a model turn is not
+   * from the same evidence without a second model turn - a model turn is not
    * deterministic, and the option the user clicked must be the option that compiles.
    */
   plans?: import("./types").ProposedPlan[];
@@ -278,7 +278,7 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
    * A pool read carries the numbers a swap is quoted from, not a display summary.
    *
    * `compactData` is an allowlist whose fallback is `{}`, and neither pool capability had
-   * a branch — so a pool read sealed on one turn came back as an empty object on the next,
+   * a branch - so a pool read sealed on one turn came back as an empty object on the next,
    * and `poolReservesFrom` saw nothing. Live, 16 Sep: "the soroswap pool's live on-chain
    * reserves were unavailable" on a pair whose reserves had just been read successfully,
    * and the same hole made Aquarius reads warn "no supported display fields were

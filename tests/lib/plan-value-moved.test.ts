@@ -4,7 +4,7 @@ import { formatWad } from "@/lib/copilot/investigation/fixed";
 
 /**
  * Live, 23 Sep: "withdraw all funds" offered four independent Earn redeems (≈ $45 + $102 +
- * $15 + $52) and labelled the option "Amount $52.07" — the last redeem alone.
+ * $15 + $52) and labelled the option "Amount $52.07" - the last redeem alone.
  */
 const total = (legs: Parameters<typeof valueMovedWad>[0]) => Number(formatWad(valueMovedWad(legs)));
 

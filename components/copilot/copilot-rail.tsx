@@ -13,20 +13,20 @@ import Image from "next/image";
 /**
  * The left rail's contents: New chat, Auto-approve, health factor, positions, recents.
  *
- * Every figure here is the same value the page already computed — the rail is a second
+ * Every figure here is the same value the page already computed - the rail is a second
  * view of one state, never its own copy. The health zone comes from `zoneOf`/`zoneLabel`
  * in health-dial, so the rail cannot disagree with the dial about what "healthy" means.
  *
  * Sizes are the deployed mock's: 14/21 semibold for a section label, 13/20 semibold
  * monospace for a figure, 12/18 for its caption. `min-width: 0` is on every row that
- * holds text, because a flex item defaults to `min-width: auto` — its content's width —
+ * holds text, because a flex item defaults to `min-width: auto` - its content's width -
  * and one long conversation title was enough to push the rail past 292px.
  */
 
 const VANNA_FONT = "var(--font-plus-jakarta-sans), system-ui, sans-serif";
 
 function healthFactorLabel(value: number | null): string {
-  if (value == null || Number.isNaN(value)) return "—";
+  if (value == null || Number.isNaN(value)) return "-";
   return value >= HEALTH_FACTOR_INFINITY_SENTINEL ? "∞" : value.toFixed(2);
 }
 
@@ -109,7 +109,7 @@ export interface RailPosition {
    * which is how the mock shows an LP position as one row rather than two.
    */
   pairedSymbol?: string;
-  /** "Margin · Collateral", "Margin · Borrowed" — the venue and what the holding is. */
+  /** "Margin · Collateral", "Margin · Borrowed" - the venue and what the holding is. */
   role: string;
   amount: string;
   usd: string;
@@ -156,7 +156,7 @@ export function CopilotRailTop({
   );
 }
 
-/** Health factor, positions, recents — same column as New chat. */
+/** Health factor, positions, recents - same column as New chat. */
 export function CopilotRailBody({
   hasWallet,
   healthFactor,
@@ -190,7 +190,7 @@ export function CopilotRailBody({
 
   return (
     <div className="cp-rail-body">
-      {/* Health factor — the number and the zone, nothing else. The dial, the scale and
+      {/* Health factor - the number and the zone, nothing else. The dial, the scale and
           the collateral/borrowed strip stay off the rail by design. */}
       <RailFlyout order={2} label="Health factor" icon={<HealthIcon />} summary={<span className="text-[11px] font-semibold text-vgray-900"><HealthValue value={healthFactor} /></span>} heading={
       <div className="cp-rail-row cp-health-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -222,7 +222,7 @@ export function CopilotRailBody({
         >
           <PositionIcon />
           <span className="flex-1 text-left text-[14px] leading-[21px] font-semibold">Positions</span>
-          <span aria-hidden className="text-[12px] font-normal text-vgray-500">{accountLoading || (accountError && positions.length === 0) ? "—" : positions.length}</span>
+          <span aria-hidden className="text-[12px] font-normal text-vgray-500">{accountLoading || (accountError && positions.length === 0) ? "-" : positions.length}</span>
           <Caret open={positionsOpen} />
         </button>
         }>
@@ -233,7 +233,7 @@ export function CopilotRailBody({
             ) : (
               positions.map((p) => (
                 <div key={`${p.role}:${p.symbol}`} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  {/* The app's own icon map, not the mock's assets — a token must not be
+                  {/* The app's own icon map, not the mock's assets - a token must not be
                       drawn from two sources that can disagree about what it looks like. */}
                   <div style={{ position: "relative", width: p.pairedSymbol ? 26 : 20, height: 20, flex: "none" }}>
                     <img
@@ -486,7 +486,7 @@ function RecentRow({
 /**
  * The collapsed rail: the few controls that still need to be reachable at 60px.
  *
- * Deliberately not every rail control — a 60px column cannot hold a health factor and a
+ * Deliberately not every rail control - a 60px column cannot hold a health factor and a
  * positions list without lying about them. Expanding is one click away, and the icons
  * here are the ones that start work rather than report it.
  */

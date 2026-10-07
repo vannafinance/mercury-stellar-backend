@@ -44,12 +44,12 @@ export function freezeLeveragedPlanPreview(
     { kind: "plan", template_id: opts.templateId, summary: opts.summary, steps: steps.map((s) => ({ kind: "write" as const, ...s })) },
     Date.now(),
   );
-  console.warn(`[copilot] plan_preview ${frozen.plan_id} (${frozen.steps.length} steps) awaiting approval — leveraged position`);
+  console.warn(`[copilot] plan_preview ${frozen.plan_id} (${frozen.steps.length} steps) awaiting approval - leveraged position`);
   const lines = frozen.steps.map((s) => `${s.n}. ${s.label}`);
   return {
     kind: "plan_preview",
     message: [
-      `Here's the plan — nothing has run yet.`,
+      `Here's the plan - nothing has run yet.`,
       "",
       ...lines,
       "",
@@ -118,7 +118,7 @@ export async function previewRoutedPlan(input: {
         };
       }
     } catch {
-      /* best-effort — an unreachable oracle must never block the preview */
+      /* best-effort - an unreachable oracle must never block the preview */
     }
   }
   for (const s of routed.steps) {
@@ -154,7 +154,7 @@ export async function previewRoutedPlan(input: {
   return {
     kind: "plan_preview",
     message: [
-      `Here's the plan — nothing has run yet.`,
+      `Here's the plan - nothing has run yet.`,
       "",
       ...lines,
       "",

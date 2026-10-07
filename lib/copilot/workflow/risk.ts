@@ -19,7 +19,7 @@ const TOKENS: Record<string, string> = {
 const VERIFIED_RISK_WASM = "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960";
 const READ_MS = 15_000;
 
-/** RPC/timeout copy must not consume the proposal — the user can Approve again. */
+/** RPC/timeout copy must not consume the proposal - the user can Approve again. */
 const RETRYABLE = /abort|timeout|ECONNRESET|EPIPE|fetch failed|network|unavailable|could not be verified|could not be re-read|timed out/i;
 
 export function isRetryableRiskReason(reason: string): boolean {
@@ -57,16 +57,16 @@ function fail(code: string): never {
 
 function explain(error: unknown): string {
   if (error instanceof Error && error.name === "AbortError") {
-    return "Live balances could not be re-read in time. Nothing was submitted — approve again.";
+    return "Live balances could not be re-read in time. Nothing was submitted - approve again.";
   }
   const text = error instanceof Error ? `${error.name} ${error.message}` : String(error);
   if (/abort|timeout/i.test(text)) {
-    return "Live balances could not be re-read in time. Nothing was submitted — approve again.";
+    return "Live balances could not be re-read in time. Nothing was submitted - approve again.";
   }
-  if (/price_unavailable/.test(text)) return "A live oracle price could not be read. Nothing was submitted — approve again.";
-  if (/balance_unavailable/.test(text)) return "A live token balance could not be read. Nothing was submitted — approve again.";
+  if (/price_unavailable/.test(text)) return "A live oracle price could not be read. Nothing was submitted - approve again.";
+  if (/balance_unavailable/.test(text)) return "A live token balance could not be read. Nothing was submitted - approve again.";
   const precision = /amount_precision:([A-Za-z0-9_/-]+):(\d+)/.exec(text);
-  if (precision) return `A step's ${precision[1]} amount has more decimal places than the token carries on chain (${precision[2]}). No transaction was requested — prepare the plan again.`;
+  if (precision) return `A step's ${precision[1]} amount has more decimal places than the token carries on chain (${precision[2]}). No transaction was requested - prepare the plan again.`;
   if (/asset_not_validated|amount_precision|invalid_decimal/.test(text)) {
     return "Fresh balances, prices, token precision or projected health could not be verified. No transaction was requested.";
   }
@@ -174,7 +174,7 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
     if (!proposal.scope.smartAccount) return "This proposal requires a verified margin account.";
     /**
      * Deposit and repay raise health. They do not need a floor, an app snapshot, or a
-     * contract health read — free-token funds above are enough. The app snapshot
+     * contract health read - free-token funds above are enough. The app snapshot
      * (`computeAccountPosition` / `computeMarginSnapshot`) is unbounded, process-wide,
      * and uncancellable; interruptible only bounds the wait. It does not belong here.
      * Liquidation is a contract fact, so a floor on a worsening op is checked against

@@ -2,7 +2,7 @@
  * Instant closing receipt for a finished (or HF-paused) multi-leg run.
  *
  * The Response card used to wait on `vertexSummarizeExecution` after the last
- * hop already settled — often several seconds of "STRATEGY" + "Approved plan"
+ * hop already settled - often several seconds of "STRATEGY" + "Approved plan"
  * with the money already on chain. Facts here are counted from the legs, so the
  * card can paint the moment the ledger answers; Vertex may later replace the
  * headline, never the counts.
@@ -40,7 +40,7 @@ export function localExecutionAnswer(opts: {
 
   const farmLine = farmReceiptLine(opts.intent, labels.join(" | "));
   const headline = opts.pausedHf
-    ? `Paused — health factor below your floor${opts.floor != null ? ` of ${Number(opts.floor).toFixed(2)}` : ""}.`
+    ? `Paused - health factor below your floor${opts.floor != null ? ` of ${Number(opts.floor).toFixed(2)}` : ""}.`
     : farmLine ||
       (settled === n && n > 0
         ? `All ${n} step${n === 1 ? "" : "s"} completed on-chain.`
@@ -79,7 +79,7 @@ export function localExecutionAnswer(opts: {
 }
 
 /**
- * The closing receipt for ONE signed write — what was signed, its hash, that it settled.
+ * The closing receipt for ONE signed write - what was signed, its hash, that it settled.
  *
  * The turn text after a single-leg write was picked from `response.message`, the sentence
  * written BEFORE the signature, unless that sentence happened to contain one of two
@@ -114,7 +114,7 @@ export function singleWriteReceiptAnswer(opts: {
       tone: hf < 1.1 ? "bad" : "good",
     });
   }
-  return { headline: `${what.replace(/[.\s]+$/, "")} — settled on-chain.`, facts, venue: "none" };
+  return { headline: `${what.replace(/[.\s]+$/, "")} - settled on-chain.`, facts, venue: "none" };
 }
 
 /** A durable, machine-readable workflow receipt; never reconstructed from prose. */

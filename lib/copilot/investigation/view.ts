@@ -19,7 +19,7 @@ export interface ResearchFact {
 }
 
 /**
- * The model's restatement of the request — objective, the user's own constraints, and
+ * The model's restatement of the request - objective, the user's own constraints, and
  * whether borrowing was permitted. Safe to show because it repeats the user's intent
  * back rather than asserting a financial fact, and it is the only way the user can see
  * whether their prompt was understood before any sizing exists.
@@ -32,7 +32,7 @@ export interface ResearchUnderstanding {
 }
 
 /**
- * Borrowing headroom at the user's own stated floor — computed, never modelled.
+ * Borrowing headroom at the user's own stated floor - computed, never modelled.
  *
  * Sized against RiskEngine `liquidation_snapshot` once it agrees with the app
  * snapshot. Present only when the user actually stated a floor; a floor is never
@@ -132,7 +132,7 @@ export interface ResearchView {
     failedReads?: { capability: string; args: Record<string, unknown>; error: string }[];
   };
   /**
-   * `replied` is a turn answered without investigating — a greeting, or an off-domain
+   * `replied` is a turn answered without investigating - a greeting, or an off-domain
    * refusal. Distinct from `researched` so the record never claims reads that never ran.
    */
   status: "needs_input" | "researched" | "blocked" | "incomplete" | "replied";

@@ -1,5 +1,5 @@
 /**
- * "Remove everything" — a full account unwind — must not ask for a number by
+ * "Remove everything" - a full account unwind - must not ask for a number by
  * leaving the box blank when the user's own words already gave the answer.
  *
  * Live, 21 Sep: "remove everything: remove my liquidity, exit blend, redeem from
@@ -15,7 +15,7 @@
  *
  * What was broken: "remove my liquidity" named no number, so the pause's input box
  * had nothing to prefill and fell back to a generic "10 BLUSDC"/"20 XLM" placeholder
- * — the user had to type their own exact LP balance from memory. The message
+ * - the user had to type their own exact LP balance from memory. The message
  * "meant all of it" and the pause never read that. See
  * remove-liquidity-all-position.test.ts for the isolated router unit; this is the
  * same fix exercised through the real message-handling pipeline this message
@@ -62,7 +62,7 @@ describe("THE LIVE BUG: 'remove my liquidity' prefills the pause with the live b
       // generic placeholder rather than the account's own balance.
       expect(res.message).not.toMatch(/Include a size like/i);
       expect(res.message).toMatch(/42\.5/);
-      // The number is not just mentioned in prose — it sizes the write that is signed.
+      // The number is not just mentioned in prose - it sizes the write that is signed.
       expect(res.kind).toBe("needs_wallet_sign");
       expect(res.preview?.action?.op).toBe("remove_liquidity");
       expect(res.preview?.slots?.lp_held).toBe(42.5);

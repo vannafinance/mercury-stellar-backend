@@ -1,5 +1,5 @@
 /**
- * Connect OAuth end-user login — the pieces that can be tested without a browser
+ * Connect OAuth end-user login - the pieces that can be tested without a browser
  * or a live WorkOS tenant.
  *
  * The two that matter most:
@@ -64,7 +64,7 @@ describe("PKCE", () => {
 });
 
 describe("authorization URL", () => {
-  it("carries the resource indicator — the whole reason for this flow", async () => {
+  it("carries the resource indicator - the whole reason for this flow", async () => {
     const { buildAuthorizationUrl } = await mod();
     const url = new URL(
       buildAuthorizationUrl({ redirectUri: REDIRECT, state: "st", codeChallenge: "cc" }),
@@ -126,7 +126,7 @@ describe("token exchange", () => {
     expect(session.expiresAt).toBeGreaterThan(Date.now());
   });
 
-  it("REFUSES an M2M subject — the misconfiguration fails here, not mid-transaction", async () => {
+  it("REFUSES an M2M subject - the misconfiguration fails here, not mid-transaction", async () => {
     const { exchangeCodeForSession, UserAuthError } = await mod();
     await expect(
       exchangeCodeForSession(
@@ -161,7 +161,7 @@ describe("token exchange", () => {
 
   it("REFRESH also sends resource, so the audience survives", async () => {
     // Without this the token comes back with no `aud` and every auto-sign after
-    // the first 30 minutes fails — the original bug, re-introduced on a timer.
+    // the first 30 minutes fails - the original bug, re-introduced on a timer.
     const { refreshSession } = await mod();
     const captured: { form?: URLSearchParams } = {};
     const refreshed = await refreshSession(
@@ -189,7 +189,7 @@ describe("token exchange", () => {
 });
 
 /**
- * MCP_SEND_RESOURCE off — the default, and what a hand-created Connect OAuth app
+ * MCP_SEND_RESOURCE off - the default, and what a hand-created Connect OAuth app
  * requires.
  *
  * Sending `resource` to such a client returns `400 invalid_target` even though
@@ -198,7 +198,7 @@ describe("token exchange", () => {
  *
  * All three legs must agree. Sending it on the exchange alone 400s; sending it on
  * the refresh alone silently changes the audience half an hour after login, which
- * is worse — the session works, then stops.
+ * is worse - the session works, then stops.
  */
 describe("resource indicator OFF (hand-created Connect OAuth client)", () => {
   beforeEach(() => {
@@ -227,11 +227,11 @@ describe("resource indicator OFF (hand-created Connect OAuth client)", () => {
       buildAuthorizationUrl({ redirectUri: REDIRECT, state: "s", codeChallenge: "c" }),
     );
     expect(url.searchParams.has("resource")).toBe(false);
-    // Everything else is unchanged — PKCE still applies.
+    // Everything else is unchanged - PKCE still applies.
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
-  it("omits resource from the code exchange — the call that was 400ing", async () => {
+  it("omits resource from the code exchange - the call that was 400ing", async () => {
     const { exchangeCodeForSession } = await mod();
     const captured: { form?: URLSearchParams } = {};
     await exchangeCodeForSession(
@@ -276,7 +276,7 @@ describe("resource indicator OFF (hand-created Connect OAuth client)", () => {
     expect(session.sub).toBe("user_01KX5T71JJ7PY4RVV06K9SW04E");
   });
 
-  it("still refuses an M2M subject — the guard does not depend on the audience", async () => {
+  it("still refuses an M2M subject - the guard does not depend on the audience", async () => {
     const { exchangeCodeForSession, UserAuthError } = await mod();
     await expect(
       exchangeCodeForSession(
@@ -295,13 +295,13 @@ describe("resource indicator OFF (hand-created Connect OAuth client)", () => {
  * Which audiences count as a legitimate end-user token.
  *
  * The live surprise: a hand-created Connect OAuth token carries the WorkOS
- * ENVIRONMENT client id, not the Connect app's own id — so /api/auth/session
+ * ENVIRONMENT client id, not the Connect app's own id - so /api/auth/session
  * reported audienceMatchesMcp:false on a perfectly good token.
  *
  * The uncomfortable part, recorded here so it is not rediscovered: that
  * environment id is ALSO the M2M token's audience (AUTOSIGN_AUDIENCE_BLOCKER.md
  * §1). Accepting it means `aud` no longer separates a user from the machine
- * credential — `sub` does, and only `sub` does.
+ * credential - `sub` does, and only `sub` does.
  */
 describe("accepted audiences", () => {
   const ENV_CLIENT_ID = "client_01KX5H81JH2HWD2DHKYFYFXNS2";
@@ -310,7 +310,7 @@ describe("accepted audiences", () => {
     process.env.WORKOS_ENV_CLIENT_ID = ENV_CLIENT_ID;
   });
 
-  it("accepts the environment client id — what this client type actually mints", async () => {
+  it("accepts the environment client id - what this client type actually mints", async () => {
     const { acceptedUserAudiences } = await mod();
     expect(acceptedUserAudiences()).toContain(ENV_CLIENT_ID);
   });
@@ -323,7 +323,7 @@ describe("accepted audiences", () => {
   });
 
   it("drops unset entries instead of accepting an empty audience", async () => {
-    // An empty string in the list would match a token with aud:"" — fail closed.
+    // An empty string in the list would match a token with aud:"" - fail closed.
     delete process.env.WORKOS_ENV_CLIENT_ID;
     delete process.env.MCP_RESOURCE;
     process.env.MCP_BASE_URL = RESOURCE;
@@ -339,7 +339,7 @@ describe("accepted audiences", () => {
     expect(aud.some((a) => acceptedUserAudiences().includes(a))).toBe(true);
   });
 
-  it("the audience check does NOT distinguish M2M — only the subject does", async () => {
+  it("the audience check does NOT distinguish M2M - only the subject does", async () => {
     // Same audience, different subject. If this ever stops being true, the
     // ^user_ guard has been weakened and the M2M credential can act as a user.
     const { acceptedUserAudiences } = await mod();

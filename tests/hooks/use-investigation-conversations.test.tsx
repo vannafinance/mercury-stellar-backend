@@ -82,7 +82,7 @@ beforeEach(() => {
   mocks.consume.mockReset();
 });
 
-describe("useInvestigation — conversations", () => {
+describe("useInvestigation - conversations", () => {
   it("keeps the last selected chat when an older open request resolves late", async () => {
     server([]);
     const original = globalThis.fetch;

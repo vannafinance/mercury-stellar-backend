@@ -1,7 +1,7 @@
 /**
  * The model's plan contract at the parse boundary: shapes and sizing words only.
  * A number anywhere but inside `literal`, an op or asset outside the vocabulary, or an
- * unknown sizing word drops THAT plan (counted, so the card can say so) — never the
+ * unknown sizing word drops THAT plan (counted, so the card can say so) - never the
  * research it rides on, and never a number into the sizer.
  */
 
@@ -36,8 +36,8 @@ describe("research_complete plans", () => {
 
   /**
    * 15 Sep, live: "deposit 100 xlm and add it with AQUSDC to the aquarius pool" came back
-   * "1 proposed strategy shape could not be read and was not sized" — the whole plan
-   * dropped — because this parser's `assetOut`/`venue` allowlist only recognized a leg
+   * "1 proposed strategy shape could not be read and was not sized" - the whole plan
+   * dropped - because this parser's `assetOut`/`venue` allowlist only recognized a leg
    * named "swap", and an add_liquidity leg (which must carry `assetOut` too, or `plan.ts`
    * refuses it for not naming a paired token) had one key more than that allowed.
    */
@@ -134,7 +134,7 @@ describe("a fraction sizing", () => {
   });
 });
 
-describe("a share sizing — the model's own split of one idle balance", () => {
+describe("a share sizing - the model's own split of one idle balance", () => {
   it("needs no user quote: it arrives as a fraction of idle that carries the model's reason", () => {
     const ok = parseDecision({ ...base, plans: [plan([leg("lend", "AQUSDC", { kind: "share", percent: "60", of: "wallet", reason: "keep the rest for collateral" })])] });
     expect(ok?.kind === "research_complete" && ok.plans?.[0]?.legs[0]?.sizing).toEqual({
@@ -199,10 +199,10 @@ describe("a malformed literal action", () => {
 describe("a finding with nothing to cite", () => {
   /**
    * 13 Sep, "put my XLM and USDC into the Aquarius XLM/USDC LP": the model wrote the
-   * limitation the prompt asks for — prose, no observation behind it — and the parser
+   * limitation the prompt asks for - prose, no observation behind it - and the parser
    * refused the whole decision for the missing evidence id. The card said "invalid decision".
    */
-  it("is kept when it states no figure — a limitation is prose, not a claim about the position", () => {
+  it("is kept when it states no figure - a limitation is prose, not a claim about the position", () => {
     const decision = parseDecision({ ...base, findings: [
       { summary: "Adding liquidity to the Aquarius XLM/USDC pool is not an operation this copilot can execute; LP receipts are not valued by the risk engine.", evidenceIds: [] },
       ...base.findings,
@@ -213,7 +213,7 @@ describe("a finding with nothing to cite", () => {
     expect(decision.droppedFindings).toBeUndefined();
   });
 
-  it("is dropped and counted when it states a figure — a number needs a read behind it", () => {
+  it("is dropped and counted when it states a figure - a number needs a read behind it", () => {
     const decision = parseDecision({ ...base, findings: [
       { summary: "The pool holds 136024 XLM and 1546 AQUSDC.", evidenceIds: [] },
       ...base.findings,

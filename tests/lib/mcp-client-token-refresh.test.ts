@@ -70,7 +70,7 @@ function installFakeMcp() {
       body,
     });
 
-    // WorkOS client_credentials — still the app's transport credential.
+    // WorkOS client_credentials - still the app's transport credential.
     if (url === TOKEN_URL) {
       return jsonResponse({ access_token: "m2m_token", expires_in: 300 });
     }
@@ -184,7 +184,7 @@ describe("bearer and assertion are separate credentials", () => {
     expect(call.rateLimitSubject).toBe("user:did:privy:alice");
   });
 
-  it("a WorkOS session is forwarded the same way — one mechanism, two anchors", async () => {
+  it("a WorkOS session is forwarded the same way - one mechanism, two anchors", async () => {
     const { getMcpClient, withBoundUser } = await libs();
 
     await withBoundUser({ sub: "user_01KX5T", accessToken: "workos_tok", kind: "workos" }, () =>
@@ -220,7 +220,7 @@ describe("bearer and assertion are separate credentials", () => {
     expect(toolCalls()[0].authorization).not.toContain("privy_tok_alice");
   });
 
-  it("the handshake stays assertion-free — the session belongs to the app", async () => {
+  it("the handshake stays assertion-free - the session belongs to the app", async () => {
     const { getMcpClient, withBoundUser } = await libs();
     await withBoundUser(privy("did:privy:alice", "privy_tok_alice"), () =>
       getMcpClient().call("vanna_lend", {}),
@@ -257,7 +257,7 @@ describe("the assertion always comes from the current request", () => {
     expect(toolCalls().map((c) => c.assertion)).toEqual(["tok_a", "tok_b"]);
   });
 
-  it("one shared session serves every user — no per-user handshake", async () => {
+  it("one shared session serves every user - no per-user handshake", async () => {
     const { getMcpClient, withBoundUser } = await libs();
     const client = getMcpClient();
 
@@ -305,7 +305,7 @@ describe("reads and signed-out writes", () => {
     expect(toolCalls()[0].rateLimitSubject).toBeNull();
   });
 
-  it("signed out, a write still goes out — it just cannot auto-sign", async () => {
+  it("signed out, a write still goes out - it just cannot auto-sign", async () => {
     const { getMcpClient } = await libs();
     await getMcpClient().call("vanna_lend", {});
     expect(toolCalls()[0].authorization).toBe("Bearer m2m_token");

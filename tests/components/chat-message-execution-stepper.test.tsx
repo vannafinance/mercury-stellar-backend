@@ -8,14 +8,14 @@ import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 /**
  * Live, 21 Sep, Freighter, auto-approve on: a turn's execution card read
  * "Nothing is sent without your signature." while a leg directly below it had already settled by
- * auto-dispatch, and a toast on the same screen read "Auto-dispatch on — transactions
+ * auto-dispatch, and a toast on the same screen read "Auto-dispatch on - transactions
  * will open directly in Freighter". Three signals about the same run, disagreeing.
  *
- * The label was not wrong about the run — it was wrong unconditionally. No caller of
+ * The label was not wrong about the run - it was wrong unconditionally. No caller of
  * `ExecutionStepper` ever passed `autoApprove`, so it defaulted to `false` and read
  * "Nothing is sent without your signature." for every session, Privy or Freighter, armed or not. This
- * pins `ChatTurns` — the component that actually rendered the card in the screenshot,
- * via a stored turn's `executionReceipt` — threading `sessionSigning` all the way down
+ * pins `ChatTurns` - the component that actually rendered the card in the screenshot,
+ * via a stored turn's `executionReceipt` - threading `sessionSigning` all the way down
  * to the label that names it.
  */
 
@@ -30,10 +30,10 @@ const receipt: ThreadTurn["executionReceipt"] = {
 
 const turns: ThreadTurn[] = [
   { role: "user", text: "deposit 100 XLM, borrow 20 BLUSDC and supply it to blend" },
-  { role: "assistant", text: "Paused for signature — finish signing to continue.", executionReceipt: receipt },
+  { role: "assistant", text: "Paused for signature - finish signing to continue.", executionReceipt: receipt },
 ];
 
-describe("ChatTurns — the execution card makes no signing claim of its own", () => {
+describe("ChatTurns - the execution card makes no signing claim of its own", () => {
   // The footer line that used to name the signing state ("Nothing is sent without your signature."
   // / "Signed within your auto-approve limits.") was removed by design: the header, the wallet mark
   // and the Sign button already say who acts next. What must never come back is the 21 Sep bug,

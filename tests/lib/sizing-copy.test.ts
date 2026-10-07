@@ -5,7 +5,7 @@ import { unpostedCollateralNote } from "@/lib/copilot/investigation/sizing-copy"
  * 7 Oct 2026, test account: the Margin page counted $4,744.90 and the contract $3,695.77. The $1,049.13
  * between them was $906 of a token held in the account but absent from the collateral ledger plus $194 of
  * liquidity-pool receipts (less ~$51 of Blend valuation). The note used to call all of it "not posted as
- * collateral" and to say it "can be withdrawn without touching your health factor" — wrong for the
+ * collateral" and to say it "can be withdrawn without touching your health factor" - wrong for the
  * pool receipts, and wrong for the figure the user is shown, which counts it.
  */
 describe("unpostedCollateralNote", () => {

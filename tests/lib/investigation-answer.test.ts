@@ -39,7 +39,7 @@ describe("strategyReply", () => {
      * Derived from the candidate's own sized amount rather than a hardcoded figure.
      * A derived max is sized one basis point inside the floor (`FLOOR_MARGIN_BPS` in
      * sizing.ts), so the exact dollar figure moves if that margin ever changes; the
-     * point of this test — the reply cites the ranked size, not an invented one — does
+     * point of this test - the reply cites the ranked size, not an invented one - does
      * not depend on what the figure currently is.
      */
     const expectedMoney = Number(top.amountUsd).toLocaleString("en-US", {

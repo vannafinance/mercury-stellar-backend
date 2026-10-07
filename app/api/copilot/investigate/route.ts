@@ -79,7 +79,7 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
 function deadlineBody() {
   return {
     code: "research_deadline",
-    message: "The investigation ran out of time before it could finish. Nothing was executed — please try again.",
+    message: "The investigation ran out of time before it could finish. Nothing was executed - please try again.",
   };
 }
 
@@ -174,7 +174,7 @@ export async function POST(req: NextRequest) {
             const result = await composeReply(researched, signal);
             // The turn is recorded before the result goes out, so the client learns which
             // conversation it landed in and carries that id on the next turn.
-            // A store that cannot record the turn must not cost the user their answer — but a
+            // A store that cannot record the turn must not cost the user their answer - but a
             // silent failure would mean history quietly stops working in prod, so it is logged.
             const recorded = bound
               ? await appendSessionTurn({ subject, conversationId: input.conversationId, user: input.message, result })

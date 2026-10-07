@@ -46,7 +46,7 @@ export function useWorkflow(wallet: string | null = null) {
   /**
    * `restored` marks a journal this page read back rather than one it just produced.
    * Auto-approve and auto-sign issue transactions, and a card rehydrated on mount is not
-   * the user pressing anything — so they wait for a real action on a restored plan while
+   * the user pressing anything - so they wait for a real action on a restored plan while
    * the ledger loop, which only looks submitted hashes up, carries on.
    */
   const [state, setState] = useState<{
@@ -115,8 +115,8 @@ export function useWorkflow(wallet: string | null = null) {
 
   /**
    * A submitted step settles when a ledger closes, not when a person clicks. The run pauses
-   * on it above; here every ledger close asks the server once more — `advance` on such a step
-   * only looks its hash up, it never issues anything — and once the ledger has answered the
+   * on it above; here every ledger close asks the server once more - `advance` on such a step
+   * only looks its hash up, it never issues anything - and once the ledger has answered the
    * run carries on to the next step by itself. 13 Sep: both steps of the first redeem →
    * deposit had succeeded on chain while the card still said "Broadcasting…", because the
    * only thing that ever asked again was the "Check progress" button.
@@ -141,7 +141,7 @@ export function useWorkflow(wallet: string | null = null) {
   /** Answers whether a plan was prepared, so a caller holding a one-shot claim can release it. */
   /**
    * A plan sized at one moment waits for a person, and the world moves while it waits.
-   * Approve re-reads funds, prices and projected health — but only at the click, which is
+   * Approve re-reads funds, prices and projected health - but only at the click, which is
    * too late to be information. So the same check runs against the card while it waits,
    * at most once per `RECHECK_MIN_MS` of ledger closes and never for a hidden tab, and a
    * plan that no longer holds is withdrawn with the server's reason rather than left

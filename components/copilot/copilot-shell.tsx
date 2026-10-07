@@ -10,7 +10,7 @@ import Image from "next/image";
  *
  * Structure only. It owns the two column widths, the rail's single scroll region (the
  * whole panel, not Recents alone) and the grid that centres the composer on an empty
- * page and docks it to the bottom once a thread exists. It owns none of the content —
+ * page and docks it to the bottom once a thread exists. It owns none of the content -
  * the rail's controls, the thread's cards and the composer are passed in, so this file
  * can never change an answer's wording or a card's styling.
  *
@@ -284,8 +284,8 @@ export function CopilotShell({
   const measure = useCallback(() => {
     const node = shell.current;
     if (!node) return;
-    // `getBoundingClientRect` reports visual pixels — already multiplied by the wrapper's
-    // zoom — while the style we set is interpreted in layout pixels. Divide to convert.
+    // `getBoundingClientRect` reports visual pixels - already multiplied by the wrapper's
+    // zoom - while the style we set is interpreted in layout pixels. Divide to convert.
     // The page scrolls now, so the shell's top is taken at scroll 0 (its document offset);
     // the sticky navbar ends exactly there.
     const top = node.getBoundingClientRect().top + window.scrollY;
@@ -302,7 +302,7 @@ export function CopilotShell({
    *
    * A single `requestAnimationFrame` was not enough: it fired before the navbar above had
    * settled, the height state was never set, and the shell silently kept its fallback
-   * `calc(100dvh - 96px)` — 23px short of the viewport at 1440x900, which shows as a dead
+   * `calc(100dvh - 96px)` - 23px short of the viewport at 1440x900, which shows as a dead
    * strip under the rail. The navbar's height is not a constant this file may assume, so
    * the only reliable answer is to observe it: `useLayoutEffect` catches the first
    * correct layout, and a ResizeObserver on the document element and on the shell's own

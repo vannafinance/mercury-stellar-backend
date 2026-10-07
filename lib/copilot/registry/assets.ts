@@ -1,5 +1,5 @@
 /**
- * What an asset is — one answer, for every module that asks.
+ * What an asset is - one answer, for every module that asks.
  *
  * ## The problem this replaces
  *
@@ -9,7 +9,7 @@
  * each other, and nothing kept any of them in agreement with the chain.
  *
  * That is not a tidiness complaint. Every bug in the class looks the same from outside
- * — the copilot asks about a token the user never named, or acts on the wrong one —
+ * - the copilot asks about a token the user never named, or acts on the wrong one -
  * and it is never one wrong line. It is two modules that disagree about what "USDC"
  * means, neither obviously wrong when read alone.
  *
@@ -23,7 +23,7 @@
  *      `USDC` to the earn pool. Three names, one token.
  *   3. Three tokens, one price. All the dollar stables read off a single oracle feed,
  *      so pricing identity and token identity are different things and must not be
- *      collapsed — that is what makes a cross-stable leverage conversion correct.
+ *      collapsed - that is what makes a cross-stable leverage conversion correct.
  *
  * ## Everything venue-related here is checked against the chain
  *
@@ -50,7 +50,7 @@ export type LpVenue = Extract<Venue, "aquarius" | "soroswap">;
 export interface AssetDef {
   id: AssetId;
   /**
-   * How a person might write it. Hand-authored — this is language, not protocol.
+   * How a person might write it. Hand-authored - this is language, not protocol.
    * MUST NOT contain bare "USDC": that string is the ambiguity, not a name.
    */
   aliases: string[];
@@ -62,7 +62,7 @@ export interface AssetDef {
   earnSymbol: string | null;
   /** Whether the registered Blend pool holds a reserve for it. */
   blendReserve: boolean;
-  /** The LP venue whose XLM pool pairs with this token, if any — checked against `chain-facts.json`. */
+  /** The LP venue whose XLM pool pairs with this token, if any - checked against `chain-facts.json`. */
   lpVenue: LpVenue | null;
   /** What the user is shown. Keeps BLUSDC visible even though the wire says USDC. */
   displayLabel: string;
@@ -71,7 +71,7 @@ export interface AssetDef {
 const DEFS: Record<AssetId, AssetDef> = {
   XLM: {
     id: "XLM",
-    // "BXLM" is Blend's own bToken symbol for a supplied XLM position — not a separate
+    // "BXLM" is Blend's own bToken symbol for a supplied XLM position - not a separate
     // spendable asset, but a real in-domain concept a rate/stats question can be about.
     aliases: ["XLM", "LUMEN", "LUMENS", "STELLAR", "XLM_SAC", "BXLM"],
     oracleSymbol: "XLM",
@@ -83,7 +83,7 @@ const DEFS: Record<AssetId, AssetDef> = {
   },
   BLUSDC: {
     id: "BLUSDC",
-    // No bare "USDC" here — see the file header. "Blend USDC" is safe because it
+    // No bare "USDC" here - see the file header. "Blend USDC" is safe because it
     // names the variant.
     // "BUSDC" is Blend's own bToken symbol for the USDC reserve, same reasoning as BXLM.
     aliases: ["BLUSDC", "BLEND_USDC", "BLENDUSDC", "BLEND USDC", "BUSDC"],
@@ -130,7 +130,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     id: "EURC",
     aliases: ["EURC"],
     oracleSymbol: "EURC",
-    // Nameable and priceable, but NOT valid collateral and no earn pool — both
+    // Nameable and priceable, but NOT valid collateral and no earn pool - both
     // confirmed against the chain. A single flat asset list cannot express this,
     // which is why five of them disagreed.
     marginSymbol: null,
@@ -142,11 +142,11 @@ const DEFS: Record<AssetId, AssetDef> = {
   /**
    * The one asset this registry's own header warned about and then still missed:
    * `AQUARIUS_POOLS`/`vertex-tools.ts` farm an XLM/USDT pair (`handle.ts`'s own comment:
-   * "Vanna farms XLM/USDC and XLM/USDT only"), but USDT was never added here — so
+   * "Vanna farms XLM/USDC and XLM/USDT only"), but USDT was never added here - so
    * `router.ts`'s dual-amount parser, `vertex-tools.ts`'s pair symbol list, and
    * `concept.ts`'s live-data override each hardcoded it independently instead of reading
    * it from here, the exact "six tables" disease this file exists to cure. Nameable and
-   * priceable like EURC; not valid margin collateral or an Earn pool — an LP-pairing
+   * priceable like EURC; not valid margin collateral or an Earn pool - an LP-pairing
    * token only.
    */
   USDT: {
@@ -163,7 +163,7 @@ const DEFS: Record<AssetId, AssetDef> = {
 
 /**
  * Two ordered lists whose ORDER is load-bearing, so they stay written out rather than
- * derived — but their MEMBERSHIP is guarded by a test against `ASSET_IDS`, which is
+ * derived - but their MEMBERSHIP is guarded by a test against `ASSET_IDS`, which is
  * what stops them drifting the way six separate tables did.
  *
  * Both contain bare "USDC" on purpose. The scanner has to be able to SEE the ambiguous
@@ -171,7 +171,7 @@ const DEFS: Record<AssetId, AssetDef> = {
  * pick a variant" rather than guess one.
  */
 
-/** Free-text scan order — longest first, so the USDC inside BLUSDC never matches alone. */
+/** Free-text scan order - longest first, so the USDC inside BLUSDC never matches alone. */
 export const ASSET_SCAN_ORDER = [
   "BLUSDC",
   "AQUSDC",
@@ -212,7 +212,7 @@ export function allAssets(): AssetDef[] {
  * exactly how the same bug happened four times in one week: "bXLM" was added to this
  * registry's XLM aliases, and had to be separately, manually added to the domain
  * firewall's vocabulary AND the page-guide classifier's asset pattern before either one
- * actually recognised it — three lists that were each individually plausible and each
+ * actually recognised it - three lists that were each individually plausible and each
  * quietly wrong. A multi-word alias ("BLEND USDC") is skipped: firewall/classifier word
  * lists match single `\b`-bounded tokens, and the single-word spellings ("BLUSDC",
  * "BLEND_USDC") already cover the same ground.
@@ -223,7 +223,7 @@ export const ASSET_DOMAIN_WORDS: readonly string[] = allAssets()
   .map((a) => a.toLowerCase());
 
 /**
- * One regex matching any known asset alias as a whole word — the same underlying list as
+ * One regex matching any known asset alias as a whole word - the same underlying list as
  * `ASSET_DOMAIN_WORDS`, shaped for a single `.test()`/`.exec()` call. See that export's
  * doc comment for why this must be derived, not hand-maintained.
  */
@@ -236,7 +236,7 @@ export const ASSET_SYMBOL_PATTERN = new RegExp(
 
 export type AssetMatch =
   | { kind: "asset"; def: AssetDef }
-  /** The user said "USDC". They have not chosen a token yet — ask. */
+  /** The user said "USDC". They have not chosen a token yet - ask. */
   | { kind: "ambiguous"; options: AssetDef[] }
   | { kind: "unknown" };
 
@@ -248,7 +248,7 @@ const ALIAS_INDEX: Array<{ alias: string; def: AssetDef }> = allAssets()
 const BARE_USDC = /(^|[^A-Z0-9])USDC([^A-Z0-9]|$)/;
 
 /**
- * What asset — if any — this text names.
+ * What asset - if any - this text names.
  *
  * The single entry point. `needsUsdcVariant`, `marginCollateralSymbol`,
  * `earnPoolSymbol` and the router's asset scan were four different answers to this
@@ -331,7 +331,7 @@ export function lpPairs(): Array<{ venue: LpVenue; tokens: [AssetId, AssetId] }>
 }
 
 /**
- * The DEX venues the protocol routes through, from the assets that name one — never a
+ * The DEX venues the protocol routes through, from the assets that name one - never a
  * hand-kept list. A `vanna_swap` or an LP write takes one of these as its `venue`.
  */
 export function lpVenues(): LpVenue[] {
@@ -339,7 +339,7 @@ export function lpVenues(): LpVenue[] {
 }
 
 /**
- * The DEX pool that trades a pair, from the pairs the registry already declares — each LP
+ * The DEX pool that trades a pair, from the pairs the registry already declares - each LP
  * venue pairs XLM with its own USDC. Null when no pool holds both, which is the honest
  * answer for BLUSDC (Blend's USDC has no DEX pool) and for AQUSDC against SOUSDC (two
  * different venues, no shared pool).
@@ -363,7 +363,7 @@ export function swappableWith(asset: string): AssetId[] {
  */
 export const DEFAULT_SWAP_VENUE: LpVenue = "soroswap";
 
-/** Every venue this asset can sit in, from its own fields — nothing is listed twice. */
+/** Every venue this asset can sit in, from its own fields - nothing is listed twice. */
 export function venuesOf(def: AssetDef): Venue[] {
   const venues: Venue[] = [];
   if (def.marginSymbol) venues.push("margin");
@@ -381,7 +381,7 @@ export function venueTable(): Array<{ venue: Venue; assets: AssetId[] }> {
 
 /**
  * The venues that settle "which USDC" by themselves: those that take exactly one variant.
- * Naming such a venue is naming the token — there is nothing left to ask.
+ * Naming such a venue is naming the token - there is nothing left to ask.
  */
 export function venueUsdc(): Array<{ venue: Venue; usdc: AssetId }> {
   return venueTable().flatMap(({ venue, assets }) => {
@@ -393,7 +393,7 @@ export function venueUsdc(): Array<{ venue: Venue; usdc: AssetId }> {
 /**
  * The asset a venue means by a symbol: the margin account and the Earn pools spell BLUSDC
  * as "USDC" (`marginSymbol` / `earnSymbol`). A row from those venues carrying that word is
- * BLUSDC, and only BLUSDC — the mapping is unique or it is not used. 13 Sep: a debt row
+ * BLUSDC, and only BLUSDC - the mapping is unique or it is not used. 13 Sep: a debt row
  * `{ symbol: "USDC" }` was read as AQUSDC by the model, and a repay was sized against a
  * debt that did not exist.
  */
@@ -418,7 +418,7 @@ export function venueSpellings(): Array<{ asset: AssetId; spelling: string; venu
   return out;
 }
 
-/** Oracle feeds worth requesting — three stables collapse to one. */
+/** Oracle feeds worth requesting - three stables collapse to one. */
 export function oracleSymbols(): string[] {
   return [...new Set(allAssets().map((d) => d.oracleSymbol))];
 }
