@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bringsItsOwnPlan, runIsOnEarlierTurn } from "@/lib/copilot/investigation/thread";
+import { bringsItsOwnPlan, isStaleFinishedRun, runIsOnEarlierTurn } from "@/lib/copilot/investigation/thread";
 import { inheritsThread, shownPlans } from "@/lib/copilot/investigation/thread-context";
 
 /** Whether a message continues the plan on screen is the model's reading; these are the rules code applies to its answer. */
@@ -59,5 +59,24 @@ describe("a finished run on an earlier reply", () => {
       { role: "user" as const }, { role: "assistant" as const },
     ];
     expect(runIsOnEarlierTurn(turns, { id: "wf-1", finished: false })).toBe(false);
+  });
+});
+
+/**
+ * 7 Oct, live (auto-approve on): the run this reply's own plan started was cleared the moment it completed, because "a finished run
+ * is in the way" could not tell an earlier reply's run from this one's, and no summary was ever written for it.
+ */
+describe("a finished run that stands in the way of the next plan", () => {
+  it("is one prepared for an earlier reply, never the run this reply's own plan started", () => {
+    const done = { status: "completed" };
+    expect(isStaleFinishedRun(done, "r1.earlier", "r1.now")).toBe(true);
+    expect(isStaleFinishedRun(done, null, "r1.now")).toBe(true);
+    expect(isStaleFinishedRun(done, "r1.now", "r1.now")).toBe(false);
+  });
+
+  it("is only ever a run that has finished", () => {
+    for (const status of ["proposed", "approved", "running", "validating"]) expect(isStaleFinishedRun({ status }, "r1.earlier", "r1.now")).toBe(false);
+    for (const status of ["completed", "cancelled", "blocked"]) expect(isStaleFinishedRun({ status }, "r1.earlier", "r1.now")).toBe(true);
+    expect(isStaleFinishedRun(null, null, "r1.now")).toBe(false);
   });
 });

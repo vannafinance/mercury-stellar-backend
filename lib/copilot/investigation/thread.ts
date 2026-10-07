@@ -44,6 +44,17 @@ export type LastInvestigation = {
  * decide is what to draw: a reply that carries its own plans, a staged write or a form takes the place of the old plan, and
  * an answer or a question leaves it where it is.
  */
+/**
+ * A finished run that belongs to an EARLIER reply and so stands in the way of preparing this reply's plan.
+ *
+ * The run this reply's own plan started is finished too once it settles, and clearing it then would throw away the run whose summary is
+ * about to be written (7 Oct, live: the run was cleared the moment it completed and no summary was ever composed). What tells the two
+ * apart is which reply the run was prepared for, so that is what is compared.
+ */
+export function isStaleFinishedRun(run: { status: string } | null | undefined, preparedFor: string | null, continuation: string | null): boolean {
+  return !!run && (run.status === "completed" || run.status === "cancelled" || run.status === "blocked") && preparedFor !== continuation;
+}
+
 export function bringsItsOwnPlan(result: Pick<ResearchView, "candidates" | "pendingWrite" | "questionnaire" | "directAction" | "proposalCandidateId"> | null | undefined): boolean {
   // A stated action ("deposit 5 XLM and supply 5 XLM to Blend") carries no candidate list: its plan is named by `proposalCandidateId`.
   return Boolean(result?.candidates?.feasible.length || result?.proposalCandidateId || result?.pendingWrite || result?.questionnaire || result?.directAction);

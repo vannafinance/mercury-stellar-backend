@@ -104,7 +104,7 @@ import { InvestigationCard } from "./investigation-card";
 import { ClarifyQuestionnaire } from "./clarify-questionnaire";
 import { ConversationMenu } from "./conversation-menu";
 import { AutoApproveMenu } from "./auto-approve-menu";
-import { bringsItsOwnPlan, runIsOnEarlierTurn } from "@/lib/copilot/investigation/thread";
+import { bringsItsOwnPlan, isStaleFinishedRun, runIsOnEarlierTurn } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
   status: string;
@@ -2949,6 +2949,8 @@ export function CopilotWorkspace() {
   const approveWhenProposedRef = useRef(false);
   /** Which candidate the running plan came from, so the finished reply can quote its rate and health. */
   const approvedCandidateRef = useRef<string | null>(null);
+  /** The reply (its continuation) whose plan the current workflow was prepared for. */
+  const preparedForRef = useRef<string | null>(null);
   const updateExecutionReceipt = investigation.updateExecutionReceipt;
   useEffect(() => {
     const view = workflow.view;
@@ -2997,7 +2999,7 @@ export function CopilotWorkspace() {
      * once it is gone. Waiting for something else to have cleared it left a second action sitting unprepared (7 Oct, live).
      */
     if (workflow.view) {
-      if (finishedWorkflow(workflow.view)) { setSigningJournal(false); resetWorkflow(); resetStrategyAccumulator(); }
+      if (isStaleFinishedRun(workflow.view, preparedForRef.current, view.continuation)) { setSigningJournal(false); resetWorkflow(); resetStrategyAccumulator(); }
       return;
     }
     /**
@@ -3030,6 +3032,7 @@ export function CopilotWorkspace() {
     const direct = candidateId === REQUESTED_ACTIONS_ID;
     approveWhenProposedRef.current = direct;
     approvedCandidateRef.current = candidateId;
+    preparedForRef.current = view.continuation;
     void proposePlan(view.continuation, candidateId).then((prepared) => {
       if (!prepared) {
         approveWhenProposedRef.current = false;
