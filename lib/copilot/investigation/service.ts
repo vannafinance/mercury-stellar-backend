@@ -18,7 +18,7 @@ import { anchoredVenueOps, anchoredVenueRows, opWords, unusedVenueOps } from "./
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, spendableWalletAfterReserves, onlyNamedAssets, spendableWalletUsdFrom, spendableWalletByAssetUsdFrom, spendableWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
-import { askForUnstatedAmounts } from "./unstated-amount";
+import { askForUnstatedAmounts, askForUnstatedPlanAmounts } from "./unstated-amount";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, usdcChoicesFor, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, type RejectedPlan, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { touchesMarginAccount } from "../workflow/types";
@@ -636,7 +636,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         openQuestions: [] as string[],
       }
     : result.outcome;
-  const outcome = askForUnstatedAmounts(decided);
+  const outcome = askForUnstatedPlanAmounts(askForUnstatedAmounts(decided), messages);
   /**
    * A conditional or future action is refused as soon as the outcome is known, before any
    * plan read or sizing. Decided from the model's structured `goal.trigger` alone (Grok round

@@ -101,6 +101,11 @@ export interface GoalUnderstanding {
    */
   reading?: string;
   /**
+   * Operations the user themselves named as something to do ("deposit XLM", "lend USDC"), each with the sentence that says so.
+   * An extraction, not a classification: code uses it to tell an amount the user gave from one the copilot would be choosing.
+   */
+  namedOps?: { op: WorkflowOp; sourceQuote: string }[];
+  /**
    * The user accepting a bad price, in their own words - "i dont care if i lose",
    * "swap anyway". Structural, because the model already understood it: on 16 Sep it
    * wrote "User explicitly accepts potential loss/slippage" into `constraints`, a

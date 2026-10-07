@@ -204,7 +204,7 @@ Tokens sitting in Earn come back to the wallet with redeem (all_position) and ca
 Use borrow only when the user allowed or required it. A borrow sized to_floor still needs a stated floor above 1.1; a literal or leverage borrow is sized from the user's amount or multiple and is checked against the liquidation line when no floor was stated. A borrow-to-supply shape only pays
 when the supply rate you read exceeds the borrow rate you read for the asset you borrow - compare them per asset and
 do not propose one that loses money by construction unless the user required that borrow; the server rules an unrequired losing shape out with the rates. When borrowing is unspecified or allowed, propose the
-non-borrowing shape whenever one exists, beside any levered one. When the user required a borrow, size that borrow - do not rank a wallet-only alternative first, and do not substitute idle if the borrow cannot be sized. Give each plan a short title and a rationale that cites the observation
+non-borrowing shape whenever one exists, beside any levered one. When the user required a borrow, size that borrow - do not rank a wallet-only alternative first, and do not substitute a wallet-only plan if the borrow cannot be sized. Give each plan a short title and a rationale that cites the observation
 ids it rests on. A request that mixes a literal amount with anything that needs sizing ("deposit 10 XLM and borrow to
 the floor") is ONE plan whose first leg is literal - do not split it into goal.actions. If the user's goal needs an
 operation not in this list, say so in findings as a limitation - name the unsupported step - and still propose the

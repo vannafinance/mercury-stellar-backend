@@ -1,5 +1,5 @@
 import type { QuestionnaireMissing } from "./questionnaire";
-import type { CarriedGoal, GoalUnderstanding, ResearchDecision, StatedAction } from "./types";
+import type { CarriedGoal, GoalUnderstanding, PlanLeg, ResearchDecision, StatedAction } from "./types";
 import { verbOf } from "./plan";
 
 type Decided = ResearchDecision & { kind: "clarify" | "blocked" | "research_complete" };
@@ -22,6 +22,39 @@ function carriedOf(goal: GoalUnderstanding): CarriedGoal | null {
     ...(goal.slippageAccepted ? { slippageAccepted: goal.slippageAccepted } : {}),
   };
   return Object.keys(carried).length ? carried : null;
+}
+
+/**
+ * The same rule for a request the model answered with composed plans instead of stated actions.
+ *
+ * "deposit XLM" was answered with a plan that deposits the whole balance, because the model called a plain instruction a strategy
+ * and the guard above only looks at stated actions (7 Oct, live, Gemini 3.8: the questionnaire stopped appearing). What the
+ * model is asked for instead is an extraction - which operations did the user name - and the quote it gives is checked against
+ * their messages. A named operation whose amount the copilot would choose (the whole balance, or a split it made) is a missing
+ * amount, whatever label the request was given. Plans for a goal with no named operation are untouched.
+ */
+export function askForUnstatedPlanAmounts<T extends { kind: string }>(input: T, messages: readonly string[]): T {
+  if (input.kind !== "research_complete") return input;
+  const outcome = input as unknown as Extract<ResearchDecision, { kind: "research_complete" }>;
+  const named = (outcome.goal.namedOps ?? []).filter((row) => messages.some((message) => message.includes(row.sourceQuote)));
+  if (!named.length || !outcome.plans?.length) return input;
+  const chosenByCopilot = (leg: PlanLeg) => named.some((row) => row.op === leg.op)
+    && (leg.sizing.kind === "all_wallet" || (leg.sizing.kind === "fraction" && Boolean(leg.sizing.allocation)));
+  // Alternatives: it takes every plan to be affected before the request counts as having no amount.
+  if (!outcome.plans.every((plan) => plan.legs.some(chosenByCopilot))) return input;
+  const missing: QuestionnaireMissing[] = [];
+  for (const leg of outcome.plans[0].legs.filter(chosenByCopilot)) {
+    if (missing.some((entry) => entry.op === leg.op && entry.asset === leg.asset)) continue;
+    missing.push({ op: leg.op, asset: leg.asset, slots: ["amount"], sourceQuote: named.find((row) => row.op === leg.op)!.sourceQuote });
+  }
+  return {
+    kind: "clarify",
+    question: `How much for ${missing.map((entry) => `${verbOf(entry.op!).toLowerCase()} ${entry.asset}`).join(" and ")}?`,
+    actions: [],
+    missing,
+    ...(outcome.goal.trigger ? { trigger: outcome.goal.trigger } : {}),
+    ...(carriedOf(outcome.goal) ? { carried: carriedOf(outcome.goal) } : {}),
+  } as unknown as T;
 }
 
 export function askForUnstatedAmounts<T extends { kind: string }>(input: T): T {

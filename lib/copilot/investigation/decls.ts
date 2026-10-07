@@ -142,6 +142,11 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           },
           required: ["kind"],
         },
+        namedOps: {
+          type: "array",
+          description: "Operations the user themselves named as something to do (\"deposit XLM\", \"lend 20 USDC\", \"add liquidity with my XLM\"). One row per operation: op is the operation, sourceQuote is the exact substring of their message that names it. List only what they named; an operation you chose yourself, or one they merely allowed, is not named.",
+          items: { type: "object", properties: { op: { type: "string", enum: [...WORKFLOW_OPS] }, sourceQuote: { type: "string" } }, required: ["op", "sourceQuote"] },
+        },
         reading: { type: "string", description: "Only when the latest message was misspelled, abbreviated, in mixed languages or could mean more than one thing: how you read it, in a few plain words, written in English (for example: adding a swap between tokens to the plan). Omit it when the message was plain." },
         venuesAllowed: {
           type: "array",
@@ -320,6 +325,7 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.walletReserves !== undefined) goal.walletReserves = source.walletReserves;
   if (source.venuesAllowed !== undefined) goal.venuesAllowed = source.venuesAllowed;
   if (source.reading !== undefined) goal.reading = source.reading;
+  if (source.namedOps !== undefined) goal.namedOps = source.namedOps;
   if (source.planRelation !== undefined) goal.planRelation = source.planRelation;
   if (source.trigger !== undefined) goal.trigger = source.trigger;
   // Copied by name, like every field above it. A field the model answers and this does not
