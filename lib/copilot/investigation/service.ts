@@ -464,58 +464,66 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const haveCarriedMarkets = carriedObs.some((observation) =>
     (observation.capability === "earn_market" || observation.capability === "blend_markets"
       || observation.capability === "wallet_balances") && observation.status === "ok");
-  if (!statedWrite && seedMarkets && !(haveCarriedPosition && haveCarriedMarkets)) {
-    const marketSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(12_000)]);
-    const [pos, markets] = await withInvestigationPhase("position", () => Promise.all([
-      positionTask,
-      collectStrategyReads(scope, scopedMcp, marketSignal, Date.now()).catch((error) => {
-        console.warn("[copilot] investigation market seed failed", {
-          error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
-        });
-        return [];
-      }),
-    ]));
-    if (pos.error) {
-      console.warn("[copilot] investigation position seed failed", {
-        error: pos.error instanceof Error
-          ? { name: pos.error.name, message: pos.error.message }
-          : String(pos.error),
-      });
-    }
-    position = pos.value;
-    positionAwaited = true;
-    const positionMs = Date.now() - positionStarted;
-    setSpanAttr("vanna.position.ms", positionMs);
-    setSpanAttr("vanna.position.seeded", !!position || haveCarriedPosition);
-    logPhase("position", { ms: positionMs, seeded: !!position || haveCarriedPosition, markets: markets.length });
-    seed = [
-      ...carriedObs,
-      ...(position ? healthObservations(position) : []),
-      ...markets,
-    ];
-  } else if (haveCarriedPosition) {
-    logPhase("position", { ms: 0, seeded: true, source: "carried_evidence" });
-  }
-  const evidenceSeed = await evidenceSeedTask;
-  if (evidenceSeed.length) {
-    seed.push(...evidenceSeed);
-    logPhase("evidence_seed", { requested: evidenceSeedRequests.map((request) => `${request.capability}:${request.args.asset ?? ""}`), ok: evidenceSeed.filter((observation) => observation.status === "ok").length });
-  }
   /**
-   * The sizing basis is read ONCE per turn, now, so it runs while the loop does and not after it. Headroom
-   * and plan sizing both await this same promise instead of reading the snapshot and the contract again
-   * (7 Oct, live: that was two more reads, ~9s each, on the critical path after the loop).
+   * What needs the network (the position snapshot, the market reads, the evidence seed) is gathered WHILE the first
+   * model turn runs, not before it: that turn only decides which reads to make, so waiting 5-7s for the snapshot
+   * first just stacked the two (7 Oct, live). The loop takes it the moment the first turn answers (`seedLater`).
    */
   let basisTask: Promise<SizingBasis | null> | undefined;
-  if (scope.smartAccount && !input.answers) {
-    try {
-      basisTask = computeSizingBasis(scope.smartAccount, position?.snapshot ?? null, { mcp: scopedMcp, trader: scope.trader }, dependencies.signal)
-        .catch((error) => {
-          console.warn("[copilot] sizing basis failed", { error: error instanceof Error ? { name: error.name, message: error.message } : String(error) });
-          return null;
+  const lateSeed: Promise<Observation[]> = (async () => {
+    const late: Observation[] = [];
+    if (!statedWrite && seedMarkets && !(haveCarriedPosition && haveCarriedMarkets)) {
+      const marketSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(12_000)]);
+      const [pos, markets] = await withInvestigationPhase("position", () => Promise.all([
+        positionTask,
+        collectStrategyReads(scope, scopedMcp, marketSignal, Date.now()).catch((error) => {
+          console.warn("[copilot] investigation market seed failed", {
+            error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+          });
+          return [];
+        }),
+      ]));
+      if (pos.error) {
+        console.warn("[copilot] investigation position seed failed", {
+          error: pos.error instanceof Error
+            ? { name: pos.error.name, message: pos.error.message }
+            : String(pos.error),
         });
-    } catch { basisTask = undefined; }
-  }
+      }
+      position = pos.value;
+      positionAwaited = true;
+      const positionMs = Date.now() - positionStarted;
+      setSpanAttr("vanna.position.ms", positionMs);
+      setSpanAttr("vanna.position.seeded", !!position || haveCarriedPosition);
+      logPhase("position", { ms: positionMs, seeded: !!position || haveCarriedPosition, markets: markets.length });
+      late.push(...(position ? healthObservations(position) : []), ...markets);
+    } else if (haveCarriedPosition) {
+      logPhase("position", { ms: 0, seeded: true, source: "carried_evidence" });
+    }
+    const evidenceSeed = await evidenceSeedTask;
+    if (evidenceSeed.length) {
+      late.push(...evidenceSeed);
+      logPhase("evidence_seed", { requested: evidenceSeedRequests.map((request) => `${request.capability}:${request.args.asset ?? ""}`), ok: evidenceSeed.filter((observation) => observation.status === "ok").length });
+    }
+    /**
+     * The sizing basis is read ONCE per turn, now, so it runs while the loop does and not after it. Headroom
+     * and plan sizing both await this same promise instead of reading the snapshot and the contract again
+     * (7 Oct, live: that was two more reads, ~9s each, on the critical path after the loop).
+     */
+    if (scope.smartAccount && !input.answers) {
+      try {
+        basisTask = computeSizingBasis(scope.smartAccount, position?.snapshot ?? null, { mcp: scopedMcp, trader: scope.trader }, dependencies.signal)
+          .catch((error) => {
+            console.warn("[copilot] sizing basis failed", { error: error instanceof Error ? { name: error.name, message: error.message } : String(error) });
+            return null;
+          });
+      } catch { basisTask = undefined; }
+    }
+    return late;
+  })().catch((error) => {
+    console.warn("[copilot] investigation seed failed", { error: error instanceof Error ? { name: error.name, message: error.message } : String(error) });
+    return [] as Observation[];
+  });
   const loopStarted = Date.now();
   const answered = input.answers && answeredQuestionnaire
     ? actionsFromAnswers(answeredQuestionnaire, input.answers) : null;
@@ -523,6 +531,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     ? await (async () => {
         const draft = planFromStatedActions(answered, input.answers!.summary);
         const now = Date.now();
+        seed.push(...await lateSeed);
         const needed = readsForPlans(draft ? [draft] : [], seed, now);
         const fresh = needed.length
           ? await collectStrategyReads(scope, scopedMcp, dependencies.signal, now, needed, "qa") : [];
@@ -547,11 +556,13 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         } as Awaited<ReturnType<typeof runInvestigation>>;
       })()
     : await withInvestigationPhase("loop", () => runInvestigation({
-      message: input.message, scope, seed,
+      message: input.message, scope, seed, seedLater: lateSeed,
       history: (input.history ?? []).slice(-8),
       task: { messages, lastQuestion: prior?.lastQuestion ?? null },
       promptName: input.promptName,
     }, { model: dependencies.model, mcp: scopedMcp, signal: dependencies.signal, onProgress: dependencies.onProgress, limits: dependencies.limits }));
+  // The late seed has been taken by the loop (or never needed); either way `position` and the basis are set from here on.
+  await lateSeed;
   logPhase("loop", {
     ms: Date.now() - loopStarted,
     outcome: result.outcome.kind,
@@ -693,12 +704,13 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     setSpanAttr("vanna.position.seeded", !!position);
     logPhase("position", { ms: positionMs, seeded: !!position });
   }
-  if (position) {
+  const knownPosition = position;
+  if (knownPosition) {
     try {
       evaluateStandingOrders({
         liveFor: (order) => ({
-          healthFactor: order.trigger.kind === "health_factor" && position.healthFactor
-            ? Number(position.healthFactor) : null,
+          healthFactor: order.trigger.kind === "health_factor" && knownPosition.healthFactor
+            ? Number(knownPosition.healthFactor) : null,
           priceUsd: null,
         }),
       });

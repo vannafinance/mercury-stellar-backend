@@ -527,6 +527,40 @@ describe("batched reads", () => {
     expect(turns[2].decisionFeedback).toMatch(/account_debt.*already hold/);
   });
 
+  /**
+   * The position snapshot takes 5-7s and the first model turn only decides which reads to make, so the loop used to
+   * wait for the snapshot and THEN start the model (7 Oct, live: the two stacked). The first turn now starts without
+   * it; the loop takes the evidence the moment that turn answers, so every later turn sees it.
+   */
+  it("starts the first model turn without waiting for late evidence, and shows that evidence to every turn after", async () => {
+    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const late = { id: "e0", capability: "account_position", args: {}, observedAt: Date.now(), status: "ok" as const, data: { collateral_usd: "100", debt_usd: "50" } };
+    let seedResolvedAt = 0;
+    let firstTurnStartedAt = 0;
+    const seen: string[][] = [];
+    const model: ResearchModel = vi.fn(async (turn: ResearchTurn) => {
+      if (!seen.length) firstTurnStartedAt = Date.now();
+      seen.push(turn.observations.map((observation) => observation.id));
+      await delay(30);
+      return seen.length === 1 ? inspect("account_debt") : complete(["e0"]);
+    });
+    const result = await runInvestigation(
+      { ...request, seedLater: delay(60).then(() => { seedResolvedAt = Date.now(); return [late]; }) },
+      { model, mcp: read() },
+    );
+    expect(firstTurnStartedAt).toBeLessThan(seedResolvedAt);
+    expect(seen[0]).toEqual([]);
+    expect(seen[1]).toContain("e0");
+    expect(result.outcome.kind).toBe("research_complete");
+    expect(result.observations.map((observation: { id: string }) => observation.id)).toContain("e0");
+  });
+
+  it("carries on without the late evidence when it never arrives", async () => {
+    const model: ResearchModel = vi.fn(async () => complete([]));
+    const result = await runInvestigation({ ...request, seedLater: Promise.reject(new Error("snapshot failed")).catch(() => []) }, { model, mcp: read() });
+    expect(result.outcome.kind).toBe("research_complete");
+  });
+
   it("still stops when the model keeps re-asking after it was told", async () => {
     const mcp = { call: vi.fn(async () => ({ debt_usd: "217.59" })) };
     const model = sequence(batch(["account_debt"]), batch(["account_debt"]), batch(["account_debt"]));

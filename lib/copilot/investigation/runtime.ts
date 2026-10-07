@@ -225,6 +225,8 @@ export async function runInvestigation(
     const copy = structuredClone(seed);
     return { ...copy, data: annotateVenueAssets(copy) };
   });
+  // Gathered while the first model turn runs; taken the moment that turn answers (see `seedLater`).
+  let pendingSeed: Promise<readonly Observation[]> | null = request.seedLater ?? null;
   let modelTurns = 0;
   let toolCalls = 0;
   const controller = new AbortController();
@@ -321,6 +323,14 @@ export async function runInvestigation(
           });
         }
         return halted ? finishStop(halted) : finish({ kind: "stopped", reason: "model_unavailable" });
+      }
+      if (pendingSeed) {
+        const late = await interruptible(() => pendingSeed!, signal).catch(() => [] as readonly Observation[]);
+        pendingSeed = null;
+        for (const entry of late) {
+          const copy = structuredClone(entry);
+          observations.push({ ...copy, data: annotateVenueAssets(copy) });
+        }
       }
       const afterModel = stopReason();
       if (afterModel) return finishStop(afterModel);

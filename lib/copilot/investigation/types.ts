@@ -32,6 +32,13 @@ export interface InvestigationRequest {
    * factor as unavailable next to a rail showing it.
    */
   seed?: readonly Observation[];
+  /**
+   * Evidence the server is still gathering when the loop starts (the position snapshot, the market reads).
+   * The first model turn does not wait for it; the loop takes it as soon as that turn answers, before it runs
+   * a read or accepts a conclusion, so every later turn sees it and a read the snapshot can answer is answered
+   * from it. Resolves to nothing, never rejects.
+   */
+  seedLater?: Promise<readonly Observation[]>;
   /** Named eval fixture for traces. Never the user message. */
   promptName?: string;
 }
