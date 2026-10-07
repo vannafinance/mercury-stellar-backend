@@ -29,6 +29,8 @@ export interface ResearchUnderstanding {
   objective: string;
   constraints: string[];
   borrowing: "unspecified" | "allowed" | "required" | "forbidden";
+  /** Operations the user said may be used, with their own sentence; what the reply accounts for. */
+  venuesAllowed?: { op: import("../workflow/types").WorkflowOp; sourceQuote: string }[];
 }
 
 /**

@@ -55,6 +55,8 @@ export function consideredAlongside(
   };
   const out: ConsideredToken[] = [];
   const seen = new Set<string>();
+  // A token the plan itself uses on that rate is not an alternative to it (7 Oct: "BLUSDC 19.25% against 19.25% for BLUSDC").
+  const used = new Set(steps.map((step) => `${step.asset}:${OP_FLOW[step.op].rate}`));
   for (const step of steps) {
     const kind = OP_FLOW[step.op].rate as RateKind | null;
     const venue = kind ? KIND_VENUE[kind] : undefined;
@@ -65,7 +67,7 @@ export function consideredAlongside(
     for (const id of ASSET_IDS) {
       const other = resolveAssetDef(id);
       if (!other || id === step.asset || other.oracleSymbol !== lead.oracleSymbol || !other.earnSymbol) continue;
-      if ((spendable.get(id) ?? 0) <= 0 || seen.has(`${id}:${kind}`)) continue;
+      if ((spendable.get(id) ?? 0) <= 0 || seen.has(`${id}:${kind}`) || used.has(`${id}:${kind}`)) continue;
       const apy = rateOf(id, kind);
       if (apy === null) continue;
       seen.add(`${id}:${kind}`);

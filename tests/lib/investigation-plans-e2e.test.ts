@@ -743,6 +743,50 @@ describe("a borrowing plan comes with the plan that does not borrow", () => {
 });
 
 /**
+ * 7 Oct, owner: "the prompt says you can use spots and farm markets - means its an option, i dont know whether it is
+ * checking that". An operation the user allowed that no sized plan uses is asked for once, and when none results the
+ * reply says so. The permission is the model's structured field, quoted from the user's own sentence.
+ */
+describe("an operation the user said may be used", () => {
+  const quote = PROMPT.slice(0, 12);
+  const allowing = (op: string, sourceQuote = quote) => ({ ...modelComplete, goal: { ...modelComplete.goal, venuesAllowed: [{ op, sourceQuote }] } });
+  const reads = { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "blend_markets", args: {} }] };
+  const run = async (answers: unknown[]) => {
+    const turns: Array<{ decisionFeedback?: string }> = [];
+    let n = 0;
+    const view = await researchTurn(
+      { message: PROMPT, wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+        model: async (turn) => { turns.push(turn); return answers[Math.min(n++, answers.length - 1)]; },
+      },
+    );
+    return { view, turns };
+  };
+
+  it("is asked for once when no plan uses it, and the reply says none does", async () => {
+    const { view, turns } = await run([reads, allowing("swap")]);
+    expect(turns).toHaveLength(3);
+    expect(turns[2].decisionFeedback).toMatch(/you may use swap/);
+    expect(view.message).toMatch(/You said I could use swap; no plan that sizes on the current reads uses it/);
+    expect(view.understanding?.venuesAllowed).toEqual([{ op: "swap", sourceQuote: quote }]);
+  });
+
+  it("is not asked for, and not mentioned, when a plan already uses it", async () => {
+    const { view, turns } = await run([reads, allowing("deposit_collateral")]);
+    expect(turns).toHaveLength(2);
+    expect(view.message).not.toMatch(/You said I could use/);
+  });
+
+  it("is ignored when the quote is not in the user's own message", async () => {
+    const { view, turns } = await run([reads, allowing("swap", "feel free to swap anything")]);
+    expect(turns).toHaveLength(2);
+    expect(view.message).not.toMatch(/You said I could use/);
+    expect(view.understanding?.venuesAllowed).toEqual([]);
+  });
+});
+
+/**
  * 7 Oct, live: the plan was shown (a bare "USDC" in a strategy covers every held variant), and Approve on it answered
  * "That option no longer sizes on the current reads - deposit collateral BLUSDC: you said USDC without saying which one".
  * The approval sized the sealed plan as an instruction, not under the goal reading it was shown under.

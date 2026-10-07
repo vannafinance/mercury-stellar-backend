@@ -76,6 +76,11 @@ export interface GoalUnderstanding {
    */
   walletReserves?: { asset: string; amount: string; sourceQuote: string }[];
   /**
+   * Operations the user said the copilot may use (swap, add_liquidity, lend...), each with the sentence that says so.
+   * A permission, never an order: it decides what the reply must account for, not what a plan must contain.
+   */
+  venuesAllowed?: { op: WorkflowOp; sourceQuote: string }[];
+  /**
    * The user accepting a bad price, in their own words - "i dont care if i lose",
    * "swap anyway". Structural, because the model already understood it: on 16 Sep it
    * wrote "User explicitly accepts potential loss/slippage" into `constraints`, a

@@ -42,3 +42,20 @@ describe("what else was compared for the same job", () => {
     expect(walletSpendable([wallet("XLM", "balance", "10"), wallet("XLM", "spendable", "9.5")]).get("XLM")).toBe(9.5);
   });
 });
+
+describe("a token the plan itself uses is not compared against itself", () => {
+  it("leaves out every token the plan puts on the same rate", () => {
+    const comparisons = [
+      { asset: "BLUSDC", earnSupplyApr: "19.25" },
+      { asset: "AQUSDC", earnSupplyApr: "18.11" },
+      { asset: "SOUSDC", earnSupplyApr: "0.28" },
+    ] as never;
+    const facts = [
+      { id: "w1", label: "BLUSDC wallet spendable", value: "675", unit: "", venue: "wallet", evidenceId: "e", sourcePath: "p", readAt: 0 },
+      { id: "w2", label: "AQUSDC wallet spendable", value: "885", unit: "", venue: "wallet", evidenceId: "e", sourcePath: "p", readAt: 0 },
+      { id: "w3", label: "SOUSDC wallet spendable", value: "24948", unit: "", venue: "wallet", evidenceId: "e", sourcePath: "p", readAt: 0 },
+    ] as never;
+    const out = consideredAlongside([{ op: "lend", asset: "BLUSDC" }, { op: "lend", asset: "AQUSDC" }], comparisons, facts);
+    expect(out.map((token) => token.asset)).toEqual(["SOUSDC"]);
+  });
+});

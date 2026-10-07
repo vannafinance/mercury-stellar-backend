@@ -137,6 +137,13 @@ describe("composing the words above plan cards", () => {
     ...over,
   } as Partial<ResearchView>);
 
+  it("names the operations the user allowed that no plan uses, and none that a plan does", () => {
+    const used = strategy()?.candidates?.feasible?.[0]?.steps?.[0]?.op;
+    const view = strategy({ understanding: { objective: "o", constraints: [], borrowing: "allowed", intent: "strategy", venuesAllowed: [{ op: "swap", sourceQuote: "q" }, ...(used ? [{ op: used, sourceQuote: "q" }] : [])] } } as Partial<ResearchView>);
+    expect(planFacts(view).notUsed).toEqual(used === "swap" ? [] : ["swap"]);
+    expect(planFacts(strategy()).notUsed).toEqual([]);
+  });
+
   it("offers the model only the plans' own figures, lettered as the cards are", () => {
     const { facts, plans, lead } = planFacts(strategy());
     expect(plans.map((p) => p.plan)).toEqual(["A", "B"]);

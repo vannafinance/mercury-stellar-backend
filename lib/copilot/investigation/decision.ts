@@ -100,7 +100,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return refuse(`unknown kind or keys: kind=${String(raw.kind)} keys=${Object.keys(raw).join(",")}`);
   }
   const goal = raw.goal;
-  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
+  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "venuesAllowed") ? ["venuesAllowed"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
     (goal.relation !== undefined && !["new", "refine"].includes(String(goal.relation))) ||
     (goal.intent !== undefined && !["answer", "strategy"].includes(String(goal.intent))) ||
     !text(goal.objective) || !texts(goal.constraints) ||
@@ -169,6 +169,10 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       typeof row.amount === "string" && /^\d+(\.\d{1,18})?$/.test(row.amount) &&
       text(row.sourceQuote, 400) && row.sourceQuote.includes(row.amount)
       ? [{ asset: String(row.asset), amount: row.amount, sourceQuote: row.sourceQuote }] : []) : [];
+  // Permission rows, kept one by one: an op the registry does not have, or a row with no quote, is dropped alone.
+  const venues = Array.isArray(goal.venuesAllowed) ? goal.venuesAllowed.slice(0, 8).flatMap((row) =>
+    isRecord(row) && exactKeys(row, ["op", "sourceQuote"]) && (WORKFLOW_OPS as readonly string[]).includes(String(row.op)) && text(row.sourceQuote, 400)
+      ? [{ op: row.op as WorkflowOp, sourceQuote: row.sourceQuote }] : []) : [];
   if (!Array.isArray(raw.findings) || raw.findings.length === 0 || raw.findings.length > 12 ||
     !texts(raw.openQuestions)) return refuse(`findings/openQuestions: findings=${Array.isArray(raw.findings) ? raw.findings.length : typeof raw.findings}`);
   /**
@@ -220,6 +224,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       ...(floor ? { healthFactorFloor: floor } : {}),
       ...(slippage ? { slippageAccepted: slippage } : {}),
       ...(reserves.length ? { walletReserves: reserves } : {}),
+      ...(venues.length ? { venuesAllowed: venues } : {}),
       ...(relation ? { planRelation: relation } : {}),
       ...(trigger ? { trigger } : {}),
       objective: goal.objective,

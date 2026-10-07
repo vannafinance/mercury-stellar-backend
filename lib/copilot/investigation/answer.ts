@@ -7,6 +7,7 @@ import { ASSET_IDS, resolveAssetDef } from "../registry/assets";
 import { blendSupplyApyFromApr } from "../../rate-display";
 import { deploysIntoPosition } from "../workflow/types";
 import { consideredAlongside, consideredSentence } from "./considered";
+import { unusedVenueOps, venueSentence } from "./venues";
 import type { RateComparison } from "./rate-comparison";
 
 const NAMED_ASSET = new RegExp(`\\b(${ASSET_IDS.join("|")})\\b`, "g");
@@ -340,6 +341,8 @@ export function strategyReply(input: {
   statedSteps?: ReadonlyArray<{ label: string }>;
   /** The rates the plans were judged by, so the reply can say what else was compared for the same job. */
   comparisons?: readonly RateComparison[];
+  /** Operations the user said may be used; the reply says which of them no plan uses. */
+  venuesAllowed?: readonly import("../workflow/types").WorkflowOp[];
   /** Why the loop stopped, when it did - an `incomplete` turn reads differently for each. */
   stopReason?: string | null;
 }): string {
@@ -403,7 +406,8 @@ export function strategyReply(input: {
         ? ` ${input.candidates.feasible.length - 1} other option${input.candidates.feasible.length > 2 ? "s" : ""} below.`
         : "";
       const considered = consideredSentence(consideredAlongside(top.steps, input.comparisons ?? [], input.facts));
-      return `${top.label}: ${legs}.${rate}${considered}${hf}${others} Approve to run those steps.${ruledOut}`;
+      const venues = venueSentence(unusedVenueOps(input.venuesAllowed ?? [], input.candidates?.feasible ?? []));
+      return `${top.label}: ${legs}.${rate}${considered}${venues}${hf}${others} Approve to run those steps.${ruledOut}`;
     }
     const rates = top.venue === "earn" ? "Earn and Blend supply rates" : "live farm rates";
     const carry = top.netAprPct

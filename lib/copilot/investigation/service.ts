@@ -13,6 +13,7 @@ import { normalizeResearchFacts } from "./normalize";
 import { accountDisplayObservations } from "./account-display";
 import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis, type SizingBasis } from "./capacity";
+import { anchoredVenueOps, anchoredVenueRows, opWords, unusedVenueOps } from "./venues";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, spendableWalletAfterReserves, onlyNamedAssets, spendableWalletUsdFrom, spendableWalletByAssetUsdFrom, spendableWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
@@ -1270,7 +1271,16 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     const onlyBorrowing = outcome.kind === "research_complete" && outcome.goal.intent === "strategy"
       && (borrowing === "allowed" || borrowing === "unspecified") && resolved.candidates.length > 0
       && resolved.candidates.every((candidate) => candidate.steps?.some((step) => OP_FLOW[step.op].from === "debt"));
-    if (!partsBeforeJoin && (repairable.length || onlyBorrowing) && Date.now() - turnStartedAt <= REPAIR_START_BY_MS) {
+    /**
+     * Operations the user said may be used that no sized plan uses. Asked for once, with the same bounded retry: the
+     * model composes one where the reads show it is worth it, or leaves it out and the reply says so.
+     */
+    const unusedOps = outcome.kind === "research_complete" && outcome.goal.intent === "strategy"
+      ? unusedVenueOps(anchoredVenueOps(outcome.goal, messages), resolved.candidates)
+      : [];
+    if (outcome.kind === "research_complete" && outcome.goal.intent === "strategy") logPhase("venues_allowed", { stated: outcome.goal.venuesAllowed?.map((row) => row.op) ?? [], unused: unusedOps });
+    const repairReason = [repairable.length ? "faults" : null, onlyBorrowing ? "no_debt_alternative" : null, unusedOps.length ? "allowed_unused" : null].filter(Boolean).join("+");
+    if (!partsBeforeJoin && (repairable.length || onlyBorrowing || unusedOps.length) && Date.now() - turnStartedAt <= REPAIR_START_BY_MS) {
       const repairStarted = Date.now();
       try {
         const repairSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(REPAIR_BUDGET_MS)]);
@@ -1281,6 +1291,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             repairable.length ? planRepairFeedback(repairable) : null,
             onlyBorrowing
               ? "Every plan that was sized borrows. The user allowed borrowing but did not require it, so also include the plan that does not borrow (using only what the wallet and the account already hold), beside the one that does."
+              : null,
+            unusedOps.length
+              ? `The user said you may use ${unusedOps.map(opWords).join(", ")}, and no plan uses ${unusedOps.length > 1 ? "them" : "it"}. Where the reads show it pays better or fits better than the plans so far, include a plan that does, beside them; where they do not, leave it out.`
               : null,
           ].filter(Boolean).join(" "),
           signal: repairSignal,
@@ -1300,12 +1313,12 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             };
             modelPlans = [...modelPlans.filter((plan) => !repairable.some((entry) => entry.title === plan.title)), ...repairedPlans];
           }
-          logPhase("plan_repair", { reason: [repairable.length ? "faults" : null, onlyBorrowing ? "no_debt_alternative" : null].filter(Boolean).join("+"), refused: repairable.length, offered: repairedPlans.length, gained: gained.length, ms: Date.now() - repairStarted });
+          logPhase("plan_repair", { reason: repairReason, refused: repairable.length, offered: repairedPlans.length, gained: gained.length, ms: Date.now() - repairStarted });
         } else {
-          logPhase("plan_repair", { reason: [repairable.length ? "faults" : null, onlyBorrowing ? "no_debt_alternative" : null].filter(Boolean).join("+"), refused: repairable.length, offered: 0, gained: 0, ms: Date.now() - repairStarted });
+          logPhase("plan_repair", { reason: repairReason, refused: repairable.length, offered: 0, gained: 0, ms: Date.now() - repairStarted });
         }
       } catch (error) {
-        logPhase("plan_repair", { reason: [repairable.length ? "faults" : null, onlyBorrowing ? "no_debt_alternative" : null].filter(Boolean).join("+"), refused: repairable.length, failed: error instanceof Error ? error.name : "unknown", ms: Date.now() - repairStarted });
+        logPhase("plan_repair", { reason: repairReason, refused: repairable.length, failed: error instanceof Error ? error.name : "unknown", ms: Date.now() - repairStarted });
       }
     }
     // What the model built wrongly and could not put right is ours to log, not the user's to read as "ruled out".
@@ -1451,6 +1464,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         statedSteps: requestedSteps,
         stopReason: outcome.kind === "stopped" ? outcome.reason : null,
         comparisons: planComparisons,
+        venuesAllowed: outcome.kind === "research_complete" ? anchoredVenueOps(outcome.goal, messages) : undefined,
       });
   /**
    * The part that runs is the stated steps; the part a missing margin account blocked must be
@@ -1553,7 +1567,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       : (candidates?.feasible.length === 1 && !nameFindings.length) ? candidates.feasible[0].id : null,
     // The goal restatement is the user's own request echoed back, not a financial claim,
     // so it is publishable while findings prose is not.
-    understanding: outcome.kind === "research_complete" ? outcome.goal
+    // Permissions are shown only when the user really wrote the sentence the model quoted.
+    understanding: outcome.kind === "research_complete"
+      ? { ...outcome.goal, ...(outcome.goal.venuesAllowed ? { venuesAllowed: anchoredVenueRows(outcome.goal, messages) } : {}) }
       : candidates?.feasible.length
         ? {
             objective: messages[0],
