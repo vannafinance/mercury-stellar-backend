@@ -1,6 +1,7 @@
 import { MCPError, type MCPClient } from "../mcp-client";
 import { withInvestigationTurn } from "../telemetry";
 import { readCapabilities, resolveRead } from "./capabilities";
+import { catalogEntry } from "./catalog";
 import { isRecord, lastDecisionRefusal, parseDecision } from "./decision";
 import { annotateVenueAssets } from "./facts-by-shape";
 import { boundOnChainStrings } from "./onchain-strings";
@@ -43,6 +44,18 @@ const CEILINGS: Readonly<InvestigationLimits> = Object.freeze({
   maxEvidenceAgeMs: 60_000,
   maxObservationBytes: 16_384,
 });
+
+/**
+ * How long one read may take: the base limit times the catalogue's own cost class for it. A "moderate" read
+ * (max_borrow, can_borrow) searches the chain with a round of concurrent probes, about 5 s alone and 19 s when
+ * four assets are searched at once against the public RPC (8 Oct, "borrow the maximum I can safely": the fourth
+ * read hit the flat 15 s limit and the whole answer lost its figures). The run's own deadline still bounds the
+ * whole loop, so a longer read allowance cannot extend a run.
+ */
+const READ_COST_FACTOR: Record<string, number> = { cheap: 1, moderate: 2, expensive: 3 };
+export function readDeadlineMs(baseMs: number, cost: string | undefined): number {
+  return baseMs * (READ_COST_FACTOR[cost ?? "cheap"] ?? 1);
+}
 
 /**
  * A failed read, described by facts that cannot carry a secret: whether it ran out of time,
@@ -481,7 +494,7 @@ export async function runInvestigation(
          * meant one stalled call held the entire concurrent batch until the run expired,
          * which is how a real turn produced no evidence at all.
          */
-        const readSignal = AbortSignal.any([signal, AbortSignal.timeout(limits.maxReadDurationMs)]);
+        const readSignal = AbortSignal.any([signal, AbortSignal.timeout(readDeadlineMs(limits.maxReadDurationMs, catalogEntry(request.capability)?.cost))]);
         const settled = interruptible(
           () => dependencies.mcp.call(read.tool, read.args, scope.trader ?? undefined), readSignal,
         ).then((response) => {
