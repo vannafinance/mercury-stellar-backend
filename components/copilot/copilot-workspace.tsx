@@ -55,6 +55,8 @@ import {
   shouldSessionAutoSubmit,
   signServiceFromSessionRead,
   preserveLastConclusiveSignState,
+  disableVerdict,
+  autoApproveToggleBlock,
 } from "./session-auto-sign";
 import {
   claimFirstAwaitingLeg,
@@ -3071,6 +3073,9 @@ export function CopilotWorkspace() {
       const freshStep = refreshed?.steps.find(entry => entry.id === step.id && entry.status === "awaiting_signature");
       if (!freshStep?.unsignedXdr) {
         if (auto) releaseDispatch(address, signKey);
+        // A click that ends in nothing reads as a dead button. No view back means the refresh
+        // itself failed (a token that did not arrive, a request that did not answer).
+        else if (!refreshed) toast.error("The transaction could not be refreshed for signing. Press Sign in wallet again.");
         return;
       }
       const result = await signWorkflowTransaction(freshStep.unsignedXdr, { networkPassphrase: "Test SDF Network ; September 2015", address: address ?? undefined });
@@ -3263,13 +3268,15 @@ export function CopilotWorkspace() {
 
       if (action === "disable") {
         signReadSeq.current += 1;
+        // The switch reads Off only once the signer answered. An unanswered or failed
+        // revoke leaves the session possibly live, so the switch stays On and says so.
+        if (disableVerdict(data) === "unconfirmed") {
+          toast.error("The signer did not confirm turning auto-approve off. It may still be active; try again.");
+          return;
+        }
         setAutoApprove(address, false);
         setSignServiceState({ address, status: "unknown", reason: null });
-        if (data.kind === "error" || data.data?.error) {
-          toast.error("The signer did not confirm revocation. Its session may still be active; retry turning it off.");
-        } else {
-          toast.success("Auto-approve off");
-        }
+        toast.success("Auto-approve off");
         return;
       }
       if (data.kind === "needs_auto_sign") return;
@@ -3481,16 +3488,14 @@ export function CopilotWorkspace() {
      * and that request had no deadline - one that hung left the toggle dead until a server
      * restart (24 Sep, live: turned off, could not turn back on). Say why nothing happened.
      */
-    if (autoApprovePending) {
-      toast("Still switching auto-approve. One moment.");
-      return;
-    }
-    if (loading) {
-      toast("Wait for the current reply to finish, then switch auto-approve.");
-      return;
-    }
-    if (!address) {
-      toast.error("Connect a wallet first.");
+    const blocked = autoApproveToggleBlock({
+      switching: autoApprovePending,
+      replyRunning: loading,
+      hasWallet: Boolean(address),
+    });
+    if (blocked || !address) {
+      if (blocked?.tone === "error") toast.error(blocked.message);
+      else toast(blocked?.message ?? "Connect a wallet first.");
       return;
     }
     if (walletKind === "freighter") {
@@ -3504,8 +3509,8 @@ export function CopilotWorkspace() {
       return;
     }
     if (autoApproveUiOn) {
-      setAutoApprove(address, false);
-      setSignServiceState((prev) => ({ ...prev, status: "unknown" }));
+      // Not switched Off here: the confirmation (applyAutoSignOutcome) decides what the
+      // switch says, and the button shows busy until it arrives.
       setAutoApprovePending(true);
       void enableAutoSign("disable", { quiet: true }).finally(() => {
         setAutoApprovePending(false);

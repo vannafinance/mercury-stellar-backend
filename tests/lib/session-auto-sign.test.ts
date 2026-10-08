@@ -14,6 +14,8 @@ import {
   signServiceFromSessionRead,
   preserveLastConclusiveSignState,
   hasAuthenticatedPrivyHeader,
+  disableVerdict,
+  autoApproveToggleBlock,
 } from "@/components/copilot/session-auto-sign";
 
 describe("hopAutoSubmitKey", () => {
@@ -362,5 +364,37 @@ describe("mayAutoSignJournalStep", () => {
   it("lets a step that was simply never auto-signed follow the session signing mode", () => {
     expect(mayAutoSignJournalStep({})).toBe(true);
     expect(mayAutoSignJournalStep({ signRefusal: undefined })).toBe(true);
+  });
+});
+
+describe('disableVerdict', () => {
+  it('confirms only when the signer answered without an error', () => {
+    expect(disableVerdict({ kind: 'answer', data: { revoked: 1 } })).toBe('confirmed');
+  });
+  it('treats no answer as unconfirmed, because the session may still be live', () => {
+    expect(disableVerdict(null)).toBe('unconfirmed');
+  });
+  it('treats an error kind or an error in the data as unconfirmed', () => {
+    expect(disableVerdict({ kind: 'error', data: {} })).toBe('unconfirmed');
+    expect(disableVerdict({ kind: 'answer', data: { error: 'revoke failed' } })).toBe('unconfirmed');
+  });
+  it('treats an unbound wallet as off, since no session can exist for it', () => {
+    expect(disableVerdict({ kind: 'needs_wallet_bind' })).toBe('unbound');
+  });
+});
+
+describe('autoApproveToggleBlock', () => {
+  const free = { switching: false, replyRunning: false, hasWallet: true };
+  it('lets the switch proceed when nothing is running', () => {
+    expect(autoApproveToggleBlock(free)).toBeNull();
+  });
+  it('refuses a click while a reply is running, and says why', () => {
+    expect(autoApproveToggleBlock({ ...free, replyRunning: true })?.message).toMatch(/current reply to finish/);
+  });
+  it('refuses a click while the previous switch is in flight', () => {
+    expect(autoApproveToggleBlock({ ...free, switching: true })?.message).toMatch(/Still switching/);
+  });
+  it('asks for a wallet when none is connected', () => {
+    expect(autoApproveToggleBlock({ ...free, hasWallet: false })?.tone).toBe('error');
   });
 });

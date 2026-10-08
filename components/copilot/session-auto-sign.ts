@@ -133,6 +133,42 @@ export function shouldArmAutoApprove(opts: {
   return { arm: true };
 }
 
+/**
+ * What a "turn auto-approve off" round trip proved. The server session is the authority,
+ * so the switch may read Off only once the signer has actually answered.
+ *
+ * - `confirmed`: the signer revoked (or had nothing to revoke).
+ * - `unbound`: Vanna holds no signing authority for this wallet, so no session can exist.
+ * - `unconfirmed`: no answer or an error. A session may still be live, so the switch must
+ *   not claim Off: the next write would sign itself while the page said otherwise.
+ */
+export function disableVerdict(
+  data: { kind?: string; data?: { error?: unknown; [fact: string]: unknown } | null } | null,
+): "confirmed" | "unbound" | "unconfirmed" {
+  if (!data) return "unconfirmed";
+  if (data.kind === "needs_wallet_bind") return "unbound";
+  if (data.kind === "error" || data.data?.error) return "unconfirmed";
+  return "confirmed";
+}
+
+/**
+ * Why a click on the auto-approve switch must do nothing right now, or null when it may
+ * proceed. A switch flipped under a running reply would change how that reply's writes
+ * are signed halfway through it.
+ */
+export function autoApproveToggleBlock(opts: {
+  switching: boolean;
+  replyRunning: boolean;
+  hasWallet: boolean;
+}): { tone: "info" | "error"; message: string } | null {
+  if (opts.switching) return { tone: "info", message: "Still switching auto-approve. One moment." };
+  if (opts.replyRunning) {
+    return { tone: "info", message: "Wait for the current reply to finish, then switch auto-approve." };
+  }
+  if (!opts.hasWallet) return { tone: "error", message: "Connect a wallet first." };
+  return null;
+}
+
 export type SignServiceRailStatus = "unknown" | "ok" | "unavailable" | "unbound";
 
 export type SignServiceRailState = {
