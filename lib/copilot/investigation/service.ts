@@ -20,6 +20,7 @@ import { unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, spendableWalletAfterReserves, onlyNamedAssets, spendableWalletUsdFrom, spendableWalletByAssetUsdFrom, spendableWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
 import { askForUnstatedAmounts, askForUnstatedPlanAmounts } from "./unstated-amount";
 import { namedOpAssets } from "./named-op-assets";
+import { unsupportedAssetFacts } from "./unsupported-asset";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, usdcChoicesFor, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, type RejectedPlan, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { touchesMarginAccount } from "../workflow/types";
@@ -782,7 +783,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     // The snapshot API does not expose its original observation time (including cache reuse).
     // Unknown freshness must not become a fabricated live-read timestamp.
     ? accountDisplayObservations(result.observations, displaySnapshot, 0) : result.observations;
-  const { facts, warnings } = normalizeResearchFacts(displayObservations);
+  const normalized = normalizeResearchFacts(displayObservations);
+  const { warnings } = normalized;
+  // An unsupported asset the user named beside supported ones is stated as a fact, not left to a failed read.
+  const facts = [...normalized.facts, ...unsupportedAssetFacts(messages[messages.length - 1] ?? input.message)];
   /**
    * Deterministic headroom, from the contract liquidation_snapshot once it agrees
    * with the app snapshot. Display still uses the snapshot; a material drift

@@ -1,4 +1,4 @@
-import { allAssets, resolveAssetDef } from "../registry/assets";
+import { allAssets, isSupportedAsset, resolveAssetDef } from "../registry/assets";
 import type { InvestigationScope, ReadCapability, ReadCost } from "./types";
 
 /**
@@ -25,7 +25,8 @@ export interface CatalogEntry {
 
 const assets = allAssets();
 const earnAssets = assets.filter((asset) => asset.earnSymbol).map((asset) => asset.id);
-const priceAssets = assets.map((asset) => asset.id);
+// Only assets Vanna supports can be priced: offering the rest invited reads that fail and a menu that called them supported.
+const priceAssets = assets.filter(isSupportedAsset).map((asset) => asset.id);
 const marginAssets = assets.filter((asset) => asset.marginSymbol).map((asset) => asset.id);
 const blendAssets = assets.filter((asset) => asset.blendReserve).map((asset) => asset.id);
 const lpAssets = assets.filter((asset) => asset.lpVenue).map((asset) => asset.id);

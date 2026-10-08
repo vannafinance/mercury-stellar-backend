@@ -1,3 +1,4 @@
+import type { ResearchFact } from "./view";
 import { allAssets, assetsNamedIn, isSupportedAsset, mentionsBareUsdc } from "../registry/assets";
 
 /**
@@ -17,4 +18,15 @@ export function unsupportedOnlyReply(message: string): string | null {
   const supported = allAssets().filter(isSupportedAsset).map((def) => def.displayLabel);
   const list = (items: string[]) => items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}` : items[0];
   return `${list(labels)} ${labels.length > 1 ? "are" : "is"} not supported on Vanna, so I can't help with ${labels.length > 1 ? "those" : "that"}. I can work with ${list(supported)}.`;
+}
+
+/**
+ * Unsupported assets a message names beside supported ones, as facts the card and the composed reply can state
+ * ("AQUA: not supported on Vanna"). A request that names only unsupported assets never gets this far.
+ */
+export function unsupportedAssetFacts(message: string): ResearchFact[] {
+  return assetsNamedIn(message).filter((def) => !isSupportedAsset(def)).map((def) => ({
+    id: `unsupported:${def.id}`, label: def.displayLabel, value: "not supported on Vanna", unit: "",
+    venue: "margin" as const, evidenceId: "registry", sourcePath: "supported", readAt: 0,
+  }));
 }

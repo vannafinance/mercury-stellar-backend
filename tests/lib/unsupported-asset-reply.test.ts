@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { allAssets, isSupportedAsset } from "@/lib/copilot/registry/assets";
-import { unsupportedOnlyReply } from "@/lib/copilot/investigation/unsupported-asset";
+import { unsupportedAssetFacts, unsupportedOnlyReply } from "@/lib/copilot/investigation/unsupported-asset";
 import { immediateReply } from "@/lib/copilot/investigation/immediate";
 
 /**
@@ -51,5 +51,16 @@ describe("immediateReply", () => {
   it("answers a request naming only unsupported assets without a model or a read", async () => {
     const reply = await immediateReply("lend 5 AQUA");
     expect(reply?.message).toMatch(/AQUA is not supported on Vanna/);
+  });
+});
+
+describe('unsupportedAssetFacts', () => {
+  it('states each unsupported asset a message names beside supported ones', () => {
+    const facts = unsupportedAssetFacts('prices of XLM, AQUA and EURC');
+    expect(facts.map((fact) => [fact.label, fact.value])).toEqual([['AQUA', 'not supported on Vanna'], ['EURC', 'not supported on Vanna']]);
+  });
+  it('says nothing when every named asset is supported or none is named', () => {
+    expect(unsupportedAssetFacts('price of XLM and AQUSDC')).toEqual([]);
+    expect(unsupportedAssetFacts('what is my health factor')).toEqual([]);
   });
 });
