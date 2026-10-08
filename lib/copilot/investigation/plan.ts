@@ -19,6 +19,7 @@ import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, lpPairs, mentionsBareUsdc,
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_DONE, OP_FLOW, POSITION_POCKETS, producedAsset, SIZED_OPS, touchesMarginAccount, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
+import { venueRefusal, type NamedOpAsset } from "./named-op-assets";
 import { candidateId, isCandidateId } from "./candidate-id";
 import { dustWalletHoldingsFrom, freshPrices, holdingsAfterReserves, spendableWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
 import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
@@ -63,6 +64,12 @@ export interface PlanContext {
    * figure. Sealed onto the evidence so a re-propose keeps it.
    */
   walletReserves?: readonly { asset: string; amount: string }[];
+  /**
+   * The asset the user attached to an operation in their own quoted words (`namedOpAssets`). A leg of
+   * that op in another asset is held to it: when the venue cannot take the asset the user named, the
+   * plan is refused with that reason rather than offered in a token they never asked for.
+   */
+  namedOpAssets?: readonly NamedOpAsset[];
   /**
    * The candidate id of the plan built from what the user stated outright, when this turn
    * has one (`planCandidateId` of `planFromStatedActions`'s plan).
@@ -877,6 +884,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const name = `${leg.op.replaceAll("_", " ")} ${leg.asset}`;
     const def = resolveAssetDef(leg.asset);
     if (!def) throw new Reject(name, `${leg.asset} is not a supported asset`);
+    // The user named another asset for this op, and the venue cannot take it: say that, not a plan in a token they did not name.
+    const heldTo = ctx.namedOpAssets?.find((row) => row.op === leg.op && row.asset.id !== def.id);
+    const heldToRefusal = heldTo ? venueRefusal(leg.op, heldTo.asset) : null;
+    if (heldToRefusal) throw new Reject(name, heldToRefusal);
     /**
      * A USDC the user never chose. Bare "USDC" is three tokens (the registry header), so a
      * leg in one variant stands only if the user named that variant somewhere, by any of its

@@ -19,6 +19,7 @@ import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchore
 import { unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, spendableWalletAfterReserves, onlyNamedAssets, spendableWalletUsdFrom, spendableWalletByAssetUsdFrom, spendableWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
 import { askForUnstatedAmounts, askForUnstatedPlanAmounts } from "./unstated-amount";
+import { namedOpAssets } from "./named-op-assets";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, usdcChoicesFor, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, type RejectedPlan, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { touchesMarginAccount } from "../workflow/types";
@@ -1255,6 +1256,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       statedPlanId: statedPlanIndex >= 0 && modelPlans[statedPlanIndex]
         ? planCandidateId(modelPlans[statedPlanIndex]) : null,
       strategyGoal,
+      namedOpAssets: outcome.kind === "research_complete" ? namedOpAssets(outcome.goal.namedOps, messages) : [],
       // Only an acceptance anchored in the user's own message counts.
       goal: outcome.kind === "research_complete" && anchoredSlippageAccepted(outcome.goal, messages)
         ? outcome.goal : undefined,
