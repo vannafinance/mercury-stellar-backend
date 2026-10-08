@@ -84,9 +84,11 @@ function deadlineBody() {
 }
 
 export async function POST(req: NextRequest) {
-  const request_id = crypto.randomUUID();
+  const clientTrace = req.headers.get("x-copilot-trace-id");
+  const request_id = clientTrace && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(clientTrace)
+    ? clientTrace : crypto.randomUUID();
   const startedAt = Date.now();
-  console.info("[copilot] investigate start", { request_id });
+  console.info("[copilot] investigate start", { request_id, at: startedAt });
   const abort = new AbortController();
   const signal = AbortSignal.any([req.signal, abort.signal]);
   // Covers body parse and auth, not only the stream. When this sat inside start(),

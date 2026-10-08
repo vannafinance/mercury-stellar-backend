@@ -693,6 +693,11 @@ export function useInvestigation(wallet: string | null) {
     let received = false;
     let streamError = false;
     let settled = false;
+    const traceId = crypto.randomUUID();
+    const traceStartedAt = Date.now();
+    const trace = (phase: string) => console.info("[copilot:client] investigation", JSON.stringify({
+      request_id: traceId, phase, at: Date.now(), ms: Date.now() - traceStartedAt,
+    }));
     const settle = (patch: { error?: string | null } = {}) => {
       if (sequence.current !== id || activeWallet.current !== owner) return;
       settled = true;
@@ -709,17 +714,20 @@ export function useInvestigation(wallet: string | null) {
       // nothing reaching the server. The label must say which half stalled: the sign-in token
       // (above) or the request itself (below).
       setState((previous) => (sequence.current === id ? { ...previous, progress: { kind: "scope", label: "Sending your request" } } : previous));
+      trace("dispatch");
       const response = await fetch("/api/copilot/investigate", {
-        method: "POST", headers, signal: combined,
+        method: "POST", headers: { ...headers, "x-copilot-trace-id": traceId }, signal: combined,
         body: JSON.stringify({
           message: prompt, wallet: owner, continuation: followUp, session, history,
           ...(startedIn ? { conversationId: startedIn } : {}),
           ...(answers ? { answers } : {}),
         }),
       });
+      trace("response_headers");
       await consumeResearchStream(response, (event) => {
         if (!current()) return;
         if (event.type === "result") {
+          trace("result");
           received = true;
           continuation.current = event.result.continuation;
           lastResult.current = event.result;
