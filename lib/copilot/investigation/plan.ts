@@ -28,7 +28,7 @@ import { pct, planApy, type RateKind } from "./apy";
 import type { RateComparison } from "./rate-comparison";
 import { displayHealthFactors, LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
-import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
+import { constantProductOut, exactOutputIn, liquidityFloor, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
 import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan, StatedAction } from "./types";
 import type { OpFlow } from "../workflow/types";
 import { clauseToStep, splitStrategyClauses } from "../step-extractor";
@@ -1759,7 +1759,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const derivedTokens = precise(formatWad(mulDown(statedWad, reserveDerivedWad, reserveStatedWad)), paired.id, d.name);
       const totalShareWad = decimalWad(reserves.totalShare);
       const expectedSharesWad = mulDown(statedWad, totalShareWad, reserveStatedWad);
-      return { amountB: derivedTokens, minLiquidityOut: truncateToDecimals(formatWad(slippageFloor(expectedSharesWad)), 7) };
+      return { amountB: derivedTokens, minLiquidityOut: truncateToDecimals(formatWad(liquidityFloor(expectedSharesWad, statedWad, decimalWad(derivedTokens))), 7) };
     })() : null;
     const label = d.leg.op === "redeem"
       ? (d.vtokenSymbol

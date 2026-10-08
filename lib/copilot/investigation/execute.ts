@@ -10,7 +10,7 @@ import { allowedInvocation } from "../workflow/allowlist";
 import { isRecord } from "./decision";
 import { interruptible } from "./runtime";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
-import { constantProductOut, isDangerousFill, poolReservesFrom, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
+import { constantProductOut, isDangerousFill, liquidityFloor, poolReservesFrom, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
 import { WorkflowConflict, type StepReadiness } from "../workflow/journal";
 import { workflowView, type WorkflowProposal, type WorkflowView, type ProposalStep } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
@@ -514,7 +514,7 @@ export async function staleLiquidityAmounts(
     const sharesFromA = (amountAWad * decimalWad(reserves.totalShare)) / reserveA;
     const sharesFromB = (amountBWad * decimalWad(reserves.totalShare)) / reserveB;
     const expectedShares = sharesFromA < sharesFromB ? sharesFromA : sharesFromB;
-    const minLiquidityOut = tokenAmount(slippageFloor(expectedShares));
+    const minLiquidityOut = tokenAmount(liquidityFloor(expectedShares, amountAWad, amountBWad));
     if (decimalWad(minLiquidityOut) <= ZERO) {
       return { kind: "refuse", message: "The refreshed LP share floor rounds to zero. Nothing was submitted." };
     }

@@ -132,6 +132,25 @@ export function slippageFloor(quotedOutWad: bigint): bigint {
 }
 
 /**
+ * The floor an add-liquidity write carries in `min_liquidity_out`.
+ *
+ * The share count a deposit mints is the natural floor, and it was what this sent: 2.13 for a 20 XLM
+ * Aquarius add, 6.46 for a 15 XLM Soroswap add. The MCP's AccountManager does not read that field as
+ * shares. It halves it and hands each half to the router as the per-token minimum for BOTH legs, so a
+ * share count above twice the smaller leg is a minimum the deposit cannot meet and the router refuses the
+ * whole call (8 Oct, live: Aquarius HostError #2006 and Soroswap #506 on every add, while the same add
+ * simulates cleanly with the floor at 0 to 0.5 and fails at 2). The floor is therefore the
+ * slippage-protected share count, capped at twice the slippage-protected smaller leg, which is the largest
+ * per-token minimum both legs can honour.
+ */
+export function liquidityFloor(expectedSharesWad: bigint, amountAWad: bigint, amountBWad: bigint): bigint {
+  const smaller = amountAWad < amountBWad ? amountAWad : amountBWad;
+  const cap = slippageFloor(smaller) * BigInt(2);
+  const shares = slippageFloor(expectedSharesWad);
+  return shares < cap ? shares : cap;
+}
+
+/**
  * The input a constant-product pool needs for an EXACT output - the same curve as
  * `constantProductOut`, solved backwards:
  *
