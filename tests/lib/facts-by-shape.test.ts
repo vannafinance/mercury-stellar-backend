@@ -24,6 +24,19 @@ import type { Observation } from "@/lib/copilot/investigation/types";
 const read = (capability: string, data: Observation["data"], args: Record<string, unknown> = {}): Observation => ({
   id: `obs-${capability}`, capability, args, observedAt: 1000, status: "ok", data,
 });
+
+it("uses declared human amounts instead of their raw siblings on any read shape", () => {
+  const result = extractFactsByShape(read("unfamiliar_market", {
+    symbol: "XLM", total_liquidity: "14064405576100000000000",
+    total_liquidity_human: "14064.4055761", total_assets: "80222700000000000000000",
+    total_assets_human: "80222.7", supply_apr_pct: "23.87",
+  }));
+  expect(result.facts.map(f => f.path)).not.toContain("total_liquidity");
+  expect(result.facts.map(f => f.path)).not.toContain("total_assets");
+  expect(result.facts.find(f => f.path === "total_liquidity_human")?.value).toBe("14064.4055761");
+  expect(result.facts.find(f => f.path === "total_assets_human")?.value).toBe("80222.7");
+  expect(result.facts.find(f => f.path === "supply_apr_pct")?.unit).toBe("% APR");
+});
 const noFields = /no supported display fields/;
 const fact = (result: ReturnType<typeof normalizeResearchFacts>, sourcePath: string) =>
   result.facts.find((f) => f.sourcePath === sourcePath);

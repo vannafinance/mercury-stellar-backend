@@ -274,6 +274,9 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
       if (facts.length >= MAX_FACTS) return;
       if (depth === 0 && consumed.has(key)) continue;
       if (SKIP_KEYS.has(key) || SKIP_SUFFIXES.some((s) => key.endsWith(s))) continue;
+      // A declared human sibling is the display amount; the bare value can be
+      // contract-scaled. Never guess a scale or show both representations.
+      if (Object.hasOwn(node, `${key}_human`)) continue;
       if (node[`${key}_untrusted`] === true) continue;
       const childPath = path ? `${path}.${key}` : key;
       if (Array.isArray(raw)) {
