@@ -23,6 +23,7 @@ import { abuseTripwire, evaluateDomainFirewall, guardUserPrompt } from "../domai
 import { lpPairs } from "../registry/assets";
 import { WORKFLOW_OPS } from "../workflow/types";
 import { classifySocialLane, isGreetingOrIdentityLeftover, isProductInvestigationTurn } from "./social-lane";
+import { unsupportedOnlyReply } from "./unsupported-asset";
 
 export interface ImmediateReply {
   kind: "greeting" | "capability" | "off_domain";
@@ -48,6 +49,9 @@ export async function immediateReply(
 
   const abuse = abuseTripwire(text);
   if (abuse && !abuse.allow) return { kind: "off_domain", message: abuse.message };
+
+  const unsupported = unsupportedOnlyReply(text);
+  if (unsupported) return { kind: "capability", message: unsupported };
 
   if (SWAP_CAPABILITY_QUESTION.test(text) && !/\d/.test(text) && WORKFLOW_OPS.includes("swap")) {
     const pairs = lpPairs().map((pair) => `${pair.venue}: ${pair.tokens.join("/ ")}`).join("; ");

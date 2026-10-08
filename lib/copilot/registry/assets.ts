@@ -374,6 +374,21 @@ export function venuesOf(def: AssetDef): Venue[] {
   return [...new Set(venues)];
 }
 
+/**
+ * Whether Vanna takes this asset anywhere: as collateral, in Earn, in Blend or in a pool. An asset no
+ * venue takes can be named (so it can be recognised and refused) but not used, and the owner's ruling
+ * (8 Oct) is that Vanna does not support it, whatever an oracle feed or a pool listing elsewhere says.
+ * Derived from the venue fields, never listed by name, so a new asset gets the right answer by being added.
+ */
+export function isSupportedAsset(def: AssetDef): boolean {
+  return venuesOf(def).length > 0;
+}
+
+/** The assets a text names by their own registry aliases. A bare "USDC" names none: it is a question. */
+export function assetsNamedIn(text: string | null | undefined): AssetDef[] {
+  return allAssets().filter((def) => namesAsset(text, def.id));
+}
+
 /** venue → the assets it takes. The prompt prints this instead of a hand-written list. */
 export function venueTable(): Array<{ venue: Venue; assets: AssetId[] }> {
   return VENUES.map((venue) => ({ venue, assets: allAssets().filter((d) => venuesOf(d).includes(venue)).map((d) => d.id) }));
