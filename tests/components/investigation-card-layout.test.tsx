@@ -40,6 +40,20 @@ const cardFor = (result: ResearchView, extra: Partial<Parameters<typeof Investig
 afterEach(() => vi.useRealTimers());
 
 describe("plan cards", () => {
+  it("does not expose raw unavailable-read diagnostics or an empty Notes list", () => {
+    const result = view({ warnings: ["asset price: data was unavailable. No value was assumed."] });
+    cardFor(result);
+    expect(screen.queryByRole("list", { name: "Notes" })).toBeNull();
+    expect(result.warnings).toHaveLength(1);
+  });
+
+  it("keeps actionable safety notes beside a filtered read diagnostic", () => {
+    cardFor(view({ warnings: ["asset price: data was unavailable. No value was assumed.", "Sizing is unavailable; do not approve a borrow."] }));
+    const notes = screen.getByRole("list", { name: "Notes" });
+    expect(notes.textContent).toContain("do not approve a borrow");
+    expect(notes.textContent).not.toContain("No value was assumed");
+  });
+
   it("does not redisplay legacy diagnostic notes beneath a failed read response", () => {
     cardFor(view({ status: "incomplete", message: "Account data could not be loaded.", understanding: { intent: "answer", objective: "Read health", constraints: [], borrowing: "unspecified" }, warnings: ["Legacy unavailable-read diagnostic", "Legacy research pipeline diagnostic"] }), { turns: [{ role: "assistant", text: "Account data could not be loaded." }] });
     expect(screen.getByText("Account data could not be loaded.")).toBeTruthy();

@@ -451,6 +451,10 @@ export function InvestigationCard({
    * and the options tests - keep the sized answer without a matching transcript row.
    */
   const resultIsLatest = !!result && lastTurn?.role !== "user";
+  // Normalization diagnostics stay in the research record, not the chat UI.
+  // Actionable safety notes retain their existing presentation.
+  const visibleWarnings = (result?.warnings ?? []).filter((warning) =>
+    !warning.endsWith(": data was unavailable. No value was assumed."));
   const hasCardContent = Boolean(
     result?.understanding ||
     result?.capacity ||
@@ -722,9 +726,9 @@ export function InvestigationCard({
               {(!result.question || result.questionnaire) && <ChoiceButtons choices={result.choices} onReply={onReply} onWrite={onWrite} />}
 
               {/* Notes explain a partial answer. With a plan or a run on screen they are noise (UI-FIX-LIST 3). */}
-              {!(result.status === "incomplete" && result.understanding?.intent === "answer") && result.warnings.length > 0 && !result.candidates?.feasible.length && !workflow && (
+              {!(result.status === "incomplete" && result.understanding?.intent === "answer") && visibleWarnings.length > 0 && !result.candidates?.feasible.length && !workflow && (
                 <ul className="space-y-1.5 text-[12.5px] leading-5 text-vgray-500" aria-label="Notes">
-                  {result.warnings.map((warning, index) => (
+                  {visibleWarnings.map((warning, index) => (
                     <li key={index} className="flex gap-2">
                       <CircleAlert size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
                       <span className="max-w-[68ch]">{warning}</span>
