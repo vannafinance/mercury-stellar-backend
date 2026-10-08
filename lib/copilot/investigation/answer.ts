@@ -8,6 +8,7 @@ import { blendSupplyApyFromApr } from "../../rate-display";
 import { deploysIntoPosition } from "../workflow/types";
 import { consideredAlongside, consideredSentence } from "./considered";
 import { unusedVenueOps, venueReasons, venueSentence } from "./venues";
+import { describeRejections, soleRejection } from "./rejections";
 import type { RateComparison } from "./rate-comparison";
 
 const NAMED_ASSET = new RegExp(`\\b(${ASSET_IDS.join("|")})\\b`, "g");
@@ -353,7 +354,7 @@ export function strategyReply(input: {
    * workable plan would have vanished. Same form as the all-refused sentence below.
    */
   const ruledOut = top && input.candidates?.rejected.length
-    ? ` Ruled out: ${input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} - ${entry.reason.replace(/\.$/, "")}`).join("; ")}.`
+    ? ` Ruled out: ${describeRejections(input.candidates.rejected)}.`
     : "";
   if (top) {
     if (top.decision?.runnerUpId && top.decision.reason) {
@@ -428,7 +429,7 @@ export function strategyReply(input: {
     const list = input.statedSteps.map((step) => step.label).join(", then ");
     const body = list.charAt(0).toUpperCase() + list.slice(1);
     const ruledOut = input.candidates?.rejected.length
-      ? ` Ruled out: ${input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} - ${entry.reason.replace(/\.$/, "")}`).join("; ")}.`
+      ? ` Ruled out: ${describeRejections(input.candidates.rejected)}.`
       : "";
     return input.statedSteps.length === 1
       ? `${body}. Approve to run this step.${ruledOut}`
@@ -436,7 +437,10 @@ export function strategyReply(input: {
   }
   if (input.candidates?.rejected.length) {
     // Say why each shape was ruled out - the reasons are the analysis; there is no stock verdict.
-    const reasons = input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} - ${entry.reason.replace(/\.$/, "")}`).join("; ");
+    // One cause for everything refused is said once, to the person, with no count of shapes in front of it.
+    const sole = soleRejection(input.candidates.rejected);
+    if (sole) return `${sole}. Nothing was executed.`;
+    const reasons = describeRejections(input.candidates.rejected);
     return `I checked ${input.candidates.rejected.length === 1 ? "the shape" : `${input.candidates.rejected.length} shapes`} against your position and the live rates, and none could be prepared: ${reasons}. Nothing was executed.`;
   }
   if (input.status === "needs_input") {

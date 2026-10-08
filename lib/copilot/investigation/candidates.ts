@@ -140,7 +140,7 @@ export interface CandidateSet {
    * `acceptable` marks a refusal the user's own acceptance would lift, so the caller can
    * put it to them as a question instead of a verdict they cannot answer.
    */
-  rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] };
+  rejected: Array<{ label: string; reason: string; /** The reason without the leg it is prefixed with, so refusals with one cause can be said once. */ cause?: string; asset: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] };
     /** The protocol refused a borrow of this asset on a pool limit (its structured `limiting_factor`, not the sentence), so a smaller amount may pass. */
     poolLimited?: { asset: string } }>;
 }
@@ -478,6 +478,7 @@ export function mergeCandidateSets(
       ...composed.rejected.map((entry) => ({
         label: entry.title,
         reason: entry.leg ? `${entry.leg}: ${entry.reason}.` : `${entry.reason}.`,
+        cause: `${entry.reason}.`,
         asset: entry.leg?.split(" ").pop() ?? "",
         ...(entry.acceptable ? { acceptable: true as const } : {}),
         ...(entry.accountRequired ? { accountRequired: entry.accountRequired } : {}),

@@ -829,7 +829,7 @@ describe("mergeCandidateSets - composed plans beside the fixed shapes", () => {
   it("lists a rejected plan with its leg and reason so 'no option' is never silent", () => {
     const merged = mergeCandidateSets(null, resolvePlans([plan("Lever", [{ op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } }])], ctx({ borrowing: "forbidden" })));
     expect(merged.feasible).toEqual([]);
-    expect(merged.rejected).toEqual([{ label: "Lever", reason: "borrow XLM: you said no new borrowing.", asset: "XLM" }]);
+    expect(merged.rejected).toEqual([{ label: "Lever", reason: "borrow XLM: you said no new borrowing.", cause: "you said no new borrowing.", asset: "XLM" }]);
   });
 });
 
