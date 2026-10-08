@@ -37,6 +37,9 @@ function running(view: WorkflowView): boolean {
 /** Ledgers close about every five seconds; a waiting plan is re-checked far less often than that. */
 const RECHECK_MIN_MS = 30_000;
 
+/** How long a submitted step may go without being asked about when no ledger close arrives. */
+export const LEDGER_FALLBACK_MS = 8_000;
+
 /** A step whose transaction is on its way to a ledger: waiting on the chain, not on a person. */
 export function inFlight(view: WorkflowView): boolean {
   return view.steps.some(s => ["submitted", "invoking", "submitting"].includes(s.status));
@@ -121,9 +124,22 @@ export function useWorkflow(wallet: string | null = null) {
    * deposit had succeeded on chain while the card still said "Broadcasting…", because the
    * only thing that ever asked again was the "Check progress" button.
    */
+  /**
+   * The ledger stream is a public Horizon connection that drops often on testnet, and it was
+   * the only thing that ever re-asked about a submitted step. When it went quiet the card
+   * stayed on "Waiting for the ledger to close" with the step already settled server-side
+   * (7 Oct, live). While a step is on its way to a ledger, this clock asks anyway.
+   */
+  const [beat, setBeat] = useState(0);
+  const waitingOnChain = !!state.view && running(state.view) && inFlight(state.view);
+  useEffect(() => {
+    if (!waitingOnChain) return;
+    const id = setInterval(() => setBeat((previous) => previous + 1), LEDGER_FALLBACK_MS);
+    return () => clearInterval(id);
+  }, [waitingOnChain]);
   useEffect(() => {
     const view = viewRef.current;
-    if (tick === 0 || !view || loadingRef.current || !running(view) || !inFlight(view)) return;
+    if ((tick === 0 && beat === 0) || !view || loadingRef.current || !running(view) || !inFlight(view)) return;
     active.current?.abort();
     const controller = new AbortController(); active.current = controller;
     setState(previous => ({ ...previous, loading: true, error: null }));
@@ -136,7 +152,7 @@ export function useWorkflow(wallet: string | null = null) {
         if (active.current === controller) setState(previous => ({ ...previous, loading: false }));
       }
     })();
-  }, [tick, runUntilPaused]);
+  }, [tick, beat, runUntilPaused]);
 
   /** Answers whether a plan was prepared, so a caller holding a one-shot claim can release it. */
   /**

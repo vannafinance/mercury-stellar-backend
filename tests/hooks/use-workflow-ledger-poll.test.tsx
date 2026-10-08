@@ -24,7 +24,7 @@ vi.mock("@/lib/copilot/copilot-request", () => ({ copilotRequestHeaders: mocks.h
 vi.mock("@/lib/copilot/client-deadline", () => ({ withClientDeadline: async (h: Promise<Record<string, string>>) => h }));
 vi.mock("@/contexts/ledger-subscriber", () => ({ useLedgerTick: () => ({ tick: mocks.tick.value, latestLedger: 0 }) }));
 
-import { useWorkflow } from "@/hooks/use-workflow";
+import { LEDGER_FALLBACK_MS, useWorkflow } from "@/hooks/use-workflow";
 
 const WALLET = "GDW3B2BVO3MUBPIYWZQA6ZGIOHD73CNZITY5YKVD5KOOHMZ72REVVJ52";
 const ID = "f1581834-94be-4517-b3d9-1dae3730e8d1";
@@ -55,7 +55,7 @@ function server(script: WorkflowView[]) {
 const flush = () => act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
 
 beforeEach(() => { localStorage.setItem(`vanna-workflow:${WALLET}`, ID); });
-afterEach(() => { vi.unstubAllGlobals(); mocks.tick.value = 0; localStorage.clear(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); mocks.tick.value = 0; localStorage.clear(); });
 
 describe("useWorkflow - a submitted step is re-asked about at every ledger close", () => {
   it("settles step 1 and runs step 2 with no click, one ask per ledger close", async () => {
@@ -113,5 +113,30 @@ describe("useWorkflow - a submitted step is re-asked about at every ledger close
     mocks.tick.value = 2; rerender(); await flush();
     mocks.tick.value = 3; rerender(); await flush();
     expect(calls.filter((c) => c.endsWith("/advance"))).toHaveLength(1);
+  });
+});
+
+describe('useWorkflow - a silent ledger stream does not strand a submitted step', () => {
+  it('re-asks on its own clock when no ledger close ever arrives, then stops once nothing is in flight', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const calls = server([
+      // 7 Oct, live, auto-approve OFF: the page showed 'Waiting for the ledger to close' while the
+      // server already had the step settled, because the only trigger was the Horizon stream.
+      view('running', [{ status: 'submitted', txHash: 'e5e75d39' }, { status: 'pending' }]),
+      view('completed', [{ status: 'settled', txHash: 'e5e75d39' }, { status: 'settled', txHash: '86f5bc5c' }]),
+    ]);
+    const { result } = renderHook(() => useWorkflow(WALLET));
+    await flush();
+    expect(result.current.view?.steps[0].status).toBe('submitted');
+    expect(mocks.tick.value).toBe(0);
+
+    await act(async () => { vi.advanceTimersByTime(LEDGER_FALLBACK_MS + 10); });
+    await flush();
+    expect(calls.filter((c) => c.endsWith('/advance'))).toHaveLength(1);
+    expect(result.current.view?.status).toBe('completed');
+
+    await act(async () => { vi.advanceTimersByTime(LEDGER_FALLBACK_MS * 3); });
+    await flush();
+    expect(calls.filter((c) => c.endsWith('/advance'))).toHaveLength(1);
   });
 });
