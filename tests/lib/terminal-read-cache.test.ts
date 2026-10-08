@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { reuseTerminalReadFailures } from "@/lib/copilot/investigation/terminal-read-cache";
 
 describe("request-local terminal read failures", () => {
-  const noFeed = { error: "contract_error", reason: "no_price_feed", symbol: "XLM" };
+  const noFeed = { error: "contract_error", reason: "no_price_feed", retryable: false, symbol: "XLM" };
 
   it("reuses the same confirmed missing feed across research and preparation", async () => {
     const call = vi.fn().mockResolvedValue(noFeed);
@@ -23,6 +23,7 @@ describe("request-local terminal read failures", () => {
   });
 
   it.each([
+    { error: "contract_error", reason: "no_price_feed" },
     { error: "contract_error" },
     { error: "stale_price" },
     { error: "server_not_ready" },

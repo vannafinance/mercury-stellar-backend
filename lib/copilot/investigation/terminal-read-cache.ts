@@ -12,9 +12,10 @@ export function reuseTerminalReadFailures(client: Pick<MCPClient, "call">): Pick
     const prior = failures.get(key);
     if (prior) return structuredClone(prior);
     const response = await client.call(tool, args, userId);
-    // MCP explicitly identifies a missing configured feed as non-transient. Do not
-    // cache prices, stale data, generic contract failures or transport exceptions.
-    if (response.error === "contract_error" && response.reason === "no_price_feed") {
+    // Legacy MCP mislabeled all oracle panics as missing feeds. Require an
+    // explicit non-retryable declaration, not just that ambiguous reason label.
+    // Prices, stale data, generic failures and exceptions are never cached.
+    if (response.error === "contract_error" && response.reason === "no_price_feed" && response.retryable === false) {
       failures.set(key, structuredClone(response));
     }
     return response;
