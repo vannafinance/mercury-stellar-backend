@@ -20,6 +20,14 @@ function renderWithTheme(ui: React.ReactElement) {
   return render(<ThemeProvider>{ui}</ThemeProvider>);
 }
 
+it("submits a sealed maximum loan after choosing only its asset", () => {
+  const onSubmit = vi.fn();
+  renderWithTheme(<ClarifyQuestionnaire questionnaire={{ id: "max-credit", title: "Borrow", subtitle: "Choose asset", op: "borrow", fixedSizing: "to_floor", steps: [{ slot: "asset", prompt: "Which asset?", options: [{ id: "XLM", label: "XLM" }, { id: "AQUSDC", label: "AQUSDC" }] }] }} onSubmit={onSubmit} onCancel={vi.fn()} />);
+  fireEvent.click(screen.getByRole("radio", { name: "AQUSDC" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ asset: "AQUSDC", amount: { kind: "to_floor" }, summary: "Borrow the maximum AQUSDC" }));
+});
+
 const mockQuestionnaire: Questionnaire = {
   id: "q-test-1",
   title: "Supply USDC",

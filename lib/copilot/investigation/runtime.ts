@@ -120,7 +120,6 @@ function clientSafeReadError(error: unknown): string {
     : "The read was requested with invalid arguments.";
 }
 
-const RATE_READS = new Set(["earn_market", "blend_markets", "blend_reserve", "aquarius_markets"]);
 
 const SNAPSHOT_BACKED = new Set(["account_health", "account_debt", "account_collateral"]);
 
@@ -272,43 +271,12 @@ export async function runInvestigation(
     // UI delivery failures must not alter the research decision or create retries.
     try { dependencies.onProgress?.(event); } catch { /* client may have disconnected */ }
   };
-  /**
-   * A deadline with usable evidence is still a research handoff. Labelling it `stopped`
-   * dropped candidate generation (`service.ts` requires `research_complete`) and turned
-   * a timed-out investigation into an empty result.
-   */
-  const finishStop = (reason: Extract<InvestigationOutcome, { kind: "stopped" }>["reason"]): InvestigationResult => {
-    if (reason !== "deadline") return finish({ kind: "stopped", reason });
-    const usable = observations.filter((observation) => observation.status === "ok");
-    if (!usable.length) return finish({ kind: "stopped", reason: "deadline" });
-    const missed = [...new Set(observations.filter((observation) => observation.status === "error")
-      .map((observation) => observation.capability.replaceAll("_", " ")))];
-    const established = [...new Set(usable.map((observation) => observation.capability.replaceAll("_", " ")))];
-    const establishedText = established.length === 1
-      ? `Recorded ${established[0]}.`
-      : established.length === 2
-        ? `Recorded ${established[0]} and ${established[1]}.`
-        : `Recorded ${established.slice(0, -1).join(", ")}, and ${established[established.length - 1]}.`;
-    const missingText = missed.length ? ` Still missing: ${missed.join(", ")}.` : "";
-    return finish({
-      kind: "research_complete",
-      partial: true,
-      goal: {
-        intent: usable.some((observation) => RATE_READS.has(observation.capability)) ? "strategy" : "answer",
-        relation: "new",
-        objective: request.message,
-        constraints: missed.length
-          ? [`Partial research: the time budget ran out before ${missed.join(", ")}`]
-          : ["Partial research: the time budget ran out"],
-        borrowing: "unspecified",
-      },
-      findings: [{
-        summary: `${establishedText}${missingText}`.trim(),
-        evidenceIds: usable.map((observation) => observation.id),
-      }],
-      openQuestions: [],
-    });
-  };
+  // Reads stop before the run deadline so the model can interpret the evidence
+  // against the user's request. Observed capabilities never determine intent.
+  const conclusionReserveMs = Math.min(limits.maxReadDurationMs, Math.floor(limits.maxDurationMs / 3));
+  const readBudgetLeft = () => Math.max(0, limits.maxDurationMs - conclusionReserveMs - (now() - startedAt));
+  const finishStop = (reason: Extract<InvestigationOutcome, { kind: "stopped" }>["reason"]): InvestigationResult =>
+    finish({ kind: "stopped", reason });
 
   try {
     while (modelTurns < limits.maxTurns) {
@@ -324,7 +292,7 @@ export async function runInvestigation(
           message: request.message, history: structuredClone(history), context: { ...context },
           ...(decisionFeedback ? { decisionFeedback } : {}),
           capabilities: readCapabilities(scope), observations: structuredClone(observations),
-          remaining: { turns: limits.maxTurns - modelTurns, toolCalls: limits.maxToolCalls - toolCalls },
+          remaining: { turns: limits.maxTurns - modelTurns, toolCalls: readBudgetLeft() > 0 ? limits.maxToolCalls - toolCalls : 0 },
           ...(request.task ? { task: structuredClone(request.task) } : {}),
         }, signal), signal);
         logPhase("model", { turn: modelTurns, ms: now() - modelStarted });
@@ -390,7 +358,7 @@ export async function runInvestigation(
         return finish({ kind: "stopped", reason: "invalid_evidence" }, rejects.slice(0, 8).join("; "));
       }
       if (decision.kind !== "inspect") return finish(decision);
-      if (toolCalls >= limits.maxToolCalls) return finish({ kind: "stopped", reason: "tool_budget" });
+      if (toolCalls >= limits.maxToolCalls || readBudgetLeft() <= 0) return finish({ kind: "stopped", reason: "tool_budget" });
 
       // Resolve each read independently. A single bad argument used to abort the whole
       // investigation as `invalid_decision`; it is now one failed observation so the loop
@@ -494,7 +462,7 @@ export async function runInvestigation(
          * meant one stalled call held the entire concurrent batch until the run expired,
          * which is how a real turn produced no evidence at all.
          */
-        const readSignal = AbortSignal.any([signal, AbortSignal.timeout(readDeadlineMs(limits.maxReadDurationMs, catalogEntry(request.capability)?.cost))]);
+        const readSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min(readBudgetLeft(), readDeadlineMs(limits.maxReadDurationMs, catalogEntry(request.capability)?.cost))))]);
         const settled = interruptible(
           () => dependencies.mcp.call(read.tool, read.args, scope.trader ?? undefined), readSignal,
         ).then((response) => {

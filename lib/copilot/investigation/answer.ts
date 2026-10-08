@@ -34,6 +34,7 @@ function relevantFacts(facts: readonly ResearchFact[], request?: string): readon
   const wantsPrice = askedIn(request, /\b(price|oracle|worth|trading at|value of)\b/i);
   const wantsRates = askedIn(request, /\b(apy|apr|rate|yield|earn|blend)\b/i);
   return facts.filter((fact) => {
+    if (fact.requiredInReply) return true;
     if (fact.sourcePath === "allowed") return true;
     if (fact.venue === "oracle") return wantsPrice || named.some((asset) => fact.label.toUpperCase().includes(asset));
     if (fact.venue === "wallet" && fact.sourcePath.endsWith(".balance")) {
@@ -431,9 +432,7 @@ export function strategyReply(input: {
     const ruledOut = input.candidates?.rejected.length
       ? ` Ruled out: ${describeRejections(input.candidates.rejected)}.`
       : "";
-    return input.statedSteps.length === 1
-      ? `${body}. Approve to run this step.${ruledOut}`
-      : `${body}. Approve to run these steps.${ruledOut}`;
+    return `${body}.${ruledOut}`;
   }
   if (input.candidates?.rejected.length) {
     // Say why each shape was ruled out - the reasons are the analysis; there is no stock verdict.

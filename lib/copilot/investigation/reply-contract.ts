@@ -46,6 +46,7 @@ export function replyFactContext(fact: ResearchFact) {
   return {
     id: fact.id, label: fact.label, shown: formatFactValue(fact), unit: fact.unit,
     venue: fact.venue, quantity: fact.quantity ?? null, requested: fact.requested ?? false,
+    requiredInReply: fact.requiredInReply ?? false,
     evidence: { id: fact.evidenceId, path: fact.sourcePath, readAt: fact.readAt || null },
   };
 }
@@ -62,6 +63,7 @@ export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[]): B
   if (byId.size !== facts.length) return { ok: false, reason: "ambiguous fact identity" };
   const blocks: ReplyBlock[] = [];
   let citations = 0;
+  const citedIds = new Set<string>();
   let reason = "invalid segments";
   const bind = (rawSegments: unknown): ReplySegment[] | null => {
     // Migration support for callers producing the previous wire grammar; the new schema
@@ -71,6 +73,7 @@ export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[]): B
       const result = bindSegments(rawSegments, facts);
       if (!result.ok) { reason = result.reason; return null; }
       citations += result.cited.length;
+      result.segments.forEach(segment => { if (segment.factId) citedIds.add(segment.factId); });
       return result.segments;
     }
     if (!Array.isArray(rawSegments)) { reason = `a block's words are neither a list of segments nor text (${rawSegments === undefined ? "missing" : typeof rawSegments})`; return null; }
@@ -85,6 +88,7 @@ export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[]): B
         if (!fact) { reason = "reply cites a fact that was not read"; return null; }
         out.push({ text: formatFactValue(fact), figure: true, factId: fact.id });
         citations++;
+        citedIds.add(fact.id);
       } else if (segment.type === "text" && only(segment, ["type", "text"]) && typeof segment.text === "string" && segment.text.length) {
         const text = segment.text;
         textLength += text.length;
@@ -131,6 +135,7 @@ export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[]): B
       blocks.push({ type: "table", columns, rows });
     } else return { ok: false, reason: "unknown block" };
   }
+  if (facts.some(fact => fact.requiredInReply && !citedIds.has(fact.id))) return { ok: false, reason: "reply omits a required answer figure" };
   return citations ? { ok: true, blocks } : { ok: false, reason: "reply cites no fact" };
 }
 

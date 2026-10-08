@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { bindBlocks, completionFacts, composable, composablePlans, composeBudgetMs, composeCompletion, composeReply, planFacts, plainReply } from "@/lib/copilot/investigation/compose";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import type { ResearchFact, ResearchView } from "@/lib/copilot/investigation/view";
+import { factualAnswer } from "@/lib/copilot/investigation/answer";
 
 const fact = (id: string, label: string, value: string, unit: string, venue: ResearchFact["venue"] = "margin"): ResearchFact =>
   ({ id, label, value, unit, venue, evidenceId: "e0", sourcePath: id.split(":")[1] ?? id, readAt: 1 });
@@ -27,6 +28,13 @@ function view(over: Partial<ResearchView> = {}): ResearchView {
 }
 
 describe("binding the model's blocks", () => {
+  it("keeps required figures in the verified fallback for unseen wording", () => {
+    expect(factualAnswer([{ ...FACTS[0], requiredInReply: true }], "Report my present account safety measure")).toContain("2.32");
+  });
+  it("refuses a reply that drops a required figure while quoting another fact", () => {
+    const bound = bindBlocks({ blocks: [{ type: "paragraph", text: "Debt: {{e0:debt_usd}}" }] }, [{ ...FACTS[0], requiredInReply: true }, FACTS[1]]);
+    expect(bound.ok).toBe(false);
+  });
   it("substitutes audited values and marks them as figures", () => {
     const bound = bindBlocks({ blocks: [
       { type: "paragraph", text: "Your health factor is {{e0:health_factor}}, comfortably above the liquidation line." },

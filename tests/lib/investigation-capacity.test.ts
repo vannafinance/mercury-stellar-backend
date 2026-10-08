@@ -171,6 +171,18 @@ describe("borrow capacity", () => {
     });
   });
 
+  it("sizes an explicit maximum borrow above the protocol line without a user floor", async () => {
+    snapshot(4219.36, 1736.19);
+    const capacity = await computeBorrowCapacity(ACCOUNT, ["Take the largest BLUSDC loan"], undefined, undefined,
+      { ...contract(4219.36, 1736.19), useProtocolFloor: true });
+    expect(Number(capacity?.floor)).toBeCloseTo(1.1);
+    expect(BigInt(capacity!.floor.replace(".", ""))).toBeGreaterThan(BigInt("1100000000000000000"));
+    expect(capacity?.floorSource).toBe("protocol_minimum");
+    const higher = await computeBorrowCapacity(ACCOUNT, ["Keep HF above 1.7"], undefined, undefined,
+      { ...contract(4219.36, 1736.19), useProtocolFloor: true });
+    expect(higher?.floor).toBe("1.7");
+  });
+
   it("takes the latest floor the user gave, not the first", async () => {
     snapshot(4219.36, 1736.19);
     const capacity = await computeBorrowCapacity(ACCOUNT, [

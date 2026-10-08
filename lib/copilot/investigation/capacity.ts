@@ -32,6 +32,9 @@ import { LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad } from "./sizing";
 import type { ResearchCapacity } from "./view";
 import { copilotConfig } from "../config";
 
+/** The smallest representable floor above the exclusive protocol liquidation line. */
+export const PROTOCOL_MAX_BORROW_FLOOR = formatWad(LIQUIDATION_THRESHOLD_WAD + BigInt(1));
+
 /** Two decimals is the precision the rest of the surface shows USD at. */
 function usd(value: number): string {
   if (!Number.isFinite(value) || value < 0) throw new Error("invalid_usd");
@@ -55,6 +58,8 @@ export type SizingOptions = {
   floor?: string | null;
   /** Use the configured safety floor when no user floor was stated. */
   useConfiguredFloor?: boolean;
+  /** Explicit maximum credit uses the protocol line; the sizer adds its rounding margin. */
+  useProtocolFloor?: boolean;
   /**
    * The app snapshot when the caller already attempted it: a snapshot, or `null` meaning
    * "tried and unavailable - do not read again". Undefined means read it here. Mirrors
@@ -226,10 +231,12 @@ export async function computeBorrowCapacity(
   if (!smartAccount) return null;
 
   const stated = options?.floor ?? statedFloorFrom(messages);
-  const configured = stated === null && options?.useConfiguredFloor === true
+  const protocol = stated === null && options?.useProtocolFloor === true
+    ? PROTOCOL_MAX_BORROW_FLOOR : null;
+  const configured = stated === null && protocol === null && options?.useConfiguredFloor === true
     ? configuredSafetyFloor()
     : null;
-  const floor = stated ?? configured;
+  const floor = stated ?? protocol ?? configured;
   if (floor === null) return null;
   const floorWad = decimalWad(floor);
   // A floor at or below the liquidation threshold is not headroom, it is a breach.
@@ -238,7 +245,7 @@ export async function computeBorrowCapacity(
   const basis = await computeSizingBasis(smartAccount, shared ?? null, options, signal);
   if (!basis) throw new Error("position_read_inconsistent");
   if (basis.issue) throw new Error(basis.issue);
-  return capacityFromBasis(basis, formatWad(floorWad), configured !== null ? "configured_safety_buffer" : undefined);
+  return capacityFromBasis(basis, formatWad(floorWad), protocol !== null ? "protocol_minimum" : configured !== null ? "configured_safety_buffer" : undefined);
 }
 
 /** The configured fallback is policy, not a user constraint, and must stay above liquidation. */

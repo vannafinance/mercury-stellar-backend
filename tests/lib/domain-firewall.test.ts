@@ -1,16 +1,8 @@
-import { readFileSync } from "node:fs";
+import prompts from "../fixtures/copilot-prompts.json";
 import { describe, it, expect } from "vitest";
 import { evaluateDomainFirewall, isStructurallyLarge, PASTE_SHAPE } from "@/lib/copilot/domain-firewall";
 
-function cataloguePrompts(): string[] {
-  const markdown = readFileSync("docs/copilot/PROMPT-LIBRARY.md", "utf8");
-  const found = new Set<string>();
-  for (const line of markdown.split(/\r?\n/)) {
-    if (!line.startsWith("### ")) continue;
-    for (const match of line.matchAll(/`([^`]+)`/g)) found.add(match[1]);
-  }
-  return [...found];
-}
+function cataloguePrompts(): string[] { return prompts; }
 
 describe("the firewall reads plurals and inflections, not just dictionary singulars", () => {
   /**

@@ -214,7 +214,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           type: "array",
           description:
             "For intent=strategy: one to three strategy SHAPES as ordered legs. Sizing is a word, never a number - " +
-            "all_wallet (the asset's spendable wallet balance), to_floor (the largest borrow - or withdrawal of posted collateral - at the user's health-factor floor), " +
+            "all_wallet (the asset's spendable wallet balance), to_floor (the largest borrow at the user's stated floor, or the protocol minimum if no higher floor was stated; withdrawal of posted collateral requires the user's floor), " +
             "previous_leg (the amount the previous leg produced, e.g. supply what was just borrowed), " +
             "literal (an amount the user typed, with sourceQuote), fraction (a share the user stated - '25%', 'half' - " +
             "of what the leg draws on: of=wallet for the wallet balance, of=position for the Earn position, the posted collateral " +
@@ -246,12 +246,13 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         question: { type: "string" },
         missing: {
           type: "array",
-          description: "What is still missing, in the user's order: one entry per action. op is the operation when they named one. asset is the token, or a bare family such as USDC. slots lists which of asset, venue and amount they did not give. sourceQuote is the exact substring of their message for that action. Do not list an action they already stated in full, and do not list options.",
+          description: "What is still missing, in the user's order: one entry per action. op is the operation when they named one. asset is the token, or a bare family such as USDC. slots lists which of asset, venue and amount they did not give. For an explicit maximum loan, include sizing to_floor and ask only for asset; the server maintains the protocol safety floor. sourceQuote is the exact substring of their message for that action. Do not list an action they already stated in full, and do not list options.",
           items: {
             type: "object",
             properties: {
               op: { type: "string", enum: [...WORKFLOW_OPS] },
               asset: { type: "string", description: "A registry asset id, or a bare family the user said, such as USDC." },
+              sizing: { type: "string", enum: ["to_floor"], description: "The user explicitly requested the maximum loan; amount is already specified by this sizing." },
               slots: { type: "array", items: { type: "string", enum: ["asset", "venue", "amount"] } },
               sourceQuote: { type: "string" },
             },

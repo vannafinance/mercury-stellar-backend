@@ -18,7 +18,8 @@ vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
   return { ...actual, resolveInvestigationScope: mocks.resolveInvestigationScope };
 });
 
-vi.mock("@/lib/copilot/investigation/capacity", () => ({
+vi.mock("@/lib/copilot/investigation/capacity", async (importOriginal) => ({
+  PROTOCOL_MAX_BORROW_FLOOR: (await importOriginal<typeof import("@/lib/copilot/investigation/capacity")>()).PROTOCOL_MAX_BORROW_FLOOR,
   computeAccountPosition: mocks.computeAccountPosition,
   computeBorrowCapacity: mocks.computeBorrowCapacity,
   computeSizingBasis: mocks.computeSizingBasis,
@@ -396,7 +397,7 @@ describe("researchTurn fast path", () => {
     const result = await researchTurn({ message: "lend 1 xlm to earn", wallet: SCOPE.trader, continuation: null }, deps({ model, mcp }));
     expect(result.status).toBe("researched");
     expect(result.proposalCandidateId).toBe("requested_actions");
-    expect(result.message).toMatch(/^Lend 1 XLM to Earn\. Approve to run this step\./);
+    expect(result.message).toBe("Lend 1 XLM to Earn.");
     expect(result.candidates?.feasible ?? []).toEqual([]);
     expect(result.executionAllowed).toBe(false);
   });
@@ -479,10 +480,10 @@ describe("researchTurn fast path", () => {
     });
     const fromAccount = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("800", "0"), model }));
     expect(fromAccount.proposalCandidateId).toBe("requested_actions");
-    expect(fromAccount.message).toMatch(/^Repay 1 XLM\. Approve to run this step\./);
+    expect(fromAccount.message).toBe("Repay 1 XLM.");
     const fromWallet = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("0", "100"), model }));
     expect(fromWallet.proposalCandidateId).toBe("requested_actions");
-    expect(fromWallet.message).toMatch(/^Deposit 1 XLM as collateral, then Repay 1 XLM\. Approve to run these steps\./);
+    expect(fromWallet.message).toBe("Deposit 1 XLM as collateral, then Repay 1 XLM.");
     const nothing = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("0", "0"), model }));
     expect(nothing.proposalCandidateId).not.toBe("requested_actions");
     expect(nothing.candidates?.rejected[0]?.reason).toBe("deposit collateral XLM: XLM is not in the connected wallet.");

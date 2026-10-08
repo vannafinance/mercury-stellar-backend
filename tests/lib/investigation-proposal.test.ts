@@ -228,6 +228,24 @@ const SWAP_STEP = {
 };
 
 describe("proposeWorkflow requested_actions", () => {
+  it.each(["1.100000000000000001", "1.7"])("preserves sealed HF floor %s when display capacity is withheld", async (floor) => {
+    const codec = researchCodec(SECRET, SERVER, () => NOW);
+    const evidence = compactResearchEvidence([], null, NOW);
+    evidence.floor = floor;
+    evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
+    evidence.requestedSteps = [{
+      id: "requested-0", op: "borrow", asset: "XLM", amount: "50",
+      label: "borrow 50 XLM", tool: "vanna_borrow", sizing: { basis: "stated" },
+      args: { symbol: "XLM", amount: "50", trader: SCOPE.trader, smart_account: SCOPE.smartAccount },
+    }];
+    await proposeWorkflow({
+      continuation: codec.seal(SCOPE, ["borrow the maximum XLM"], null, evidence),
+      candidateId: REQUESTED_ACTIONS_ID,
+      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp: { call: vi.fn() }, signal: new AbortController().signal, now: NOW,
+    });
+    expect((await harness.store.read(""))?.value.proposal.floor).toBe(floor);
+  });
   it("asks when the investigation and routeMessage disagree about creating new debt", async () => {
     const codec = researchCodec(SECRET, SERVER, () => NOW);
     const evidence = compactResearchEvidence([], null, NOW);

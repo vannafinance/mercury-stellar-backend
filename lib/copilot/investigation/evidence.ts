@@ -149,7 +149,7 @@ function isCapacity(value: unknown): value is ResearchCapacity {
   return typeof value.floor === "string" && typeof value.grossCollateralUsd === "string"
     && typeof value.debtUsd === "string" && typeof value.maxBorrowUsd === "string"
     && (health === null || typeof health === "string")
-    && (floorSource === undefined || floorSource === "user" || floorSource === "configured_safety_buffer");
+    && (floorSource === undefined || floorSource === "user" || floorSource === "configured_safety_buffer" || floorSource === "protocol_minimum");
 }
 
 function isCompactObservation(value: unknown): value is Observation {

@@ -324,7 +324,7 @@ describe("bounded execution", () => {
       limits: { maxDurationMs: 500, maxReadDurationMs: 5_000 },
       model: async () => turn++ === 0
         ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "asset_price", args: { asset: "XLM" } }] }
-        : { kind: "blocked", reason: "unreachable" },
+        : await new Promise(() => {}),
       mcp: { call: async (tool) => {
         if (tool === "vanna_get_price") return { price_usd: "0.19" };
         await new Promise((resolve) => setTimeout(resolve, 900));
@@ -332,13 +332,8 @@ describe("bounded execution", () => {
       } },
     });
 
-    expect(result.outcome.kind).toBe("research_complete");
-    if (result.outcome.kind !== "research_complete") throw new Error("expected a partial research handoff");
-    expect(result.outcome.goal.constraints.some((constraint) => /time budget ran out/i.test(constraint))).toBe(true);
-    expect(result.outcome.findings).toHaveLength(1);
-    expect(result.outcome.findings[0].summary).toMatch(/^Recorded asset price\./);
-    expect(result.outcome.findings[0].summary).toMatch(/Still missing: wallet balances/);
-    expect(result.outcome.findings[0].summary.match(/time budget ran out/g)).toBeNull();
+    expect(result.outcome).toEqual({ kind: "stopped", reason: "deadline" });
+    // A timer cannot infer the requested action from the successful capabilities.
     // Both observations survive: the price as evidence, the stalled one as an honest error.
     expect(result.observations).toHaveLength(2);
     const price = result.observations.find((observation) => observation.capability === "asset_price");
@@ -348,6 +343,23 @@ describe("bounded execution", () => {
     // the point is that the finished one is no longer thrown away alongside it.
     const slow = result.observations.find((observation) => observation.capability === "wallet_balances");
     expect(slow?.status).toBe("error");
+  });
+
+  it("reserves a conclusion turn after a slow read without inventing the user's intent", async () => {
+    const model: ResearchModel = vi.fn(async (turn) => {
+      if (!turn.observations.length) return inspect("wallet_balances");
+      expect(turn.remaining.toolCalls).toBe(0);
+      expect(turn.message).toBe(request.message);
+      expect(turn.observations[0].status).toBe("error");
+      return { kind: "clarify", question: "Which asset should the proposed strategy use?" };
+    });
+    const result = await runInvestigation(request, {
+      limits: { maxDurationMs: 600, maxReadDurationMs: 500 }, model,
+      mcp: { call: () => new Promise(() => {}) },
+    });
+    expect(result.outcome).toEqual({ kind: "clarify", question: "Which asset should the proposed strategy use?" });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(result.executionAllowed).toBe(false);
   });
 
   it("fails one stalled read on its own clock instead of spending the whole run on it", async () => {

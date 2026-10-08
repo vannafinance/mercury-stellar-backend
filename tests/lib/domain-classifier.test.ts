@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import prompts from "../fixtures/copilot-prompts.json";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -47,15 +47,7 @@ const LONG_REQUEST = [
   "Do not redeem what is already earning unless the replacement rate is higher.",
 ].join(" ");
 
-function cataloguePrompts(): string[] {
-  const markdown = readFileSync("docs/copilot/PROMPT-LIBRARY.md", "utf8");
-  const found = new Set<string>();
-  for (const line of markdown.split(/\r?\n/)) {
-    if (!line.startsWith("### ")) continue;
-    for (const match of line.matchAll(/`([^`]+)`/g)) found.add(match[1]);
-  }
-  return [...found];
-}
+function cataloguePrompts(): string[] { return prompts; }
 
 beforeEach(() => {
   vi.stubEnv("VERTEX_RESEARCH_MODEL", "gemini-3.7-flash");

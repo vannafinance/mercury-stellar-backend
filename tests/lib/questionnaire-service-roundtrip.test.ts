@@ -70,6 +70,57 @@ const mcp = {
 };
 
 describe("questionnaire round trip through researchTurn", () => {
+  it("includes the Margin health factor when a model-led health read has only LTV", async () => {
+    harness.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    harness.computeAccountPosition.mockResolvedValue({ grossCollateralUsd: "200", debtUsd: "50", healthFactor: "4", snapshot: { grossCollateralValue: 200, totalBorrowedValue: 50, collateralBalances: {}, borrowedBalances: {} } });
+    const healthMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => tool === "vanna_get_account_health" ? { collateral_usd: "170", debt_usd: "50", ltv_ratio: "0.294117", is_healthy: true } : mcp.call(tool, args)) };
+    let turn = 0;
+    const result = await researchTurn({ message: "Tell me my current HF", wallet: SCOPE.trader, continuation: null }, { subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: healthMcp, signal: new AbortController().signal, model: async () => ++turn === 1 ? { kind: "inspect", capability: "account_health", args: {} } : { kind: "research_complete", goal: { intent: "answer", objective: "Current account health", constraints: [], borrowing: "unspecified" }, findings: [{ summary: "The account health read completed.", evidenceIds: [] }], openQuestions: [] } });
+    expect(result.facts).toContainEqual(expect.objectContaining({ sourcePath: "health_factor", value: "4", requested: true }));
+    expect(result.message).toContain("health factor is 4");
+  });
+  it("keeps maximum sizing from an asset-only questionnaire without another model call", async () => {
+    harness.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    harness.computeAccountPosition.mockResolvedValue({ grossCollateralUsd: "200", debtUsd: "50", healthFactor: "4", snapshot: { grossCollateralValue: 200, totalBorrowedValue: 50, collateralBalances: {}, borrowedBalances: {} } });
+    harness.computeSizingBasis.mockResolvedValue(BASIS);
+    harness.computeBorrowCapacity.mockResolvedValue(null);
+    const message = "Get the largest available loan";
+    const loanMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => tool === "vanna_get_max_borrow" ? { max_borrow_human: "321", symbol: "XLM" } : mcp.call(tool, args)) };
+    const model = vi.fn(async () => ({ kind: "clarify", intent: "action", question: "Which asset?", missing: [{ op: "borrow", slots: ["asset"], sizing: "to_floor", sourceQuote: message }] }));
+    const deps = { subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: loanMcp, signal: new AbortController().signal, model };
+    const asked = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, deps);
+    const section = asked.questionnaire!.sections![0];
+    expect(section.steps.map(step => step.slot)).toEqual(["asset"]);
+    const answered = await researchTurn({ message: "Borrow the maximum XLM", wallet: SCOPE.trader, continuation: asked.continuation, answers: { questionnaireId: asked.questionnaire!.id, asset: "XLM", venue: null, amount: { kind: "to_floor" }, summary: "Borrow the maximum XLM", sections: [{ sectionId: section.id, asset: "XLM", venue: null, amount: { kind: "to_floor" } }] } }, deps);
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(answered.proposalCandidateId).toBe(REQUESTED_ACTIONS_ID);
+    expect(answered.message).toContain("Borrow 320.679 XLM.");
+    expect(harness.computeBorrowCapacity).toHaveBeenLastCalledWith(SCOPE.smartAccount, expect.anything(), expect.anything(), expect.anything(), expect.objectContaining({ useProtocolFloor: true }));
+  });
+  it("prepares an explicit maximum loan directly even when display and contract collateral disagree", async () => {
+    const message = "Take the largest XLM loan";
+    harness.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    harness.computeAccountPosition.mockResolvedValue({ grossCollateralUsd: "250", debtUsd: "50", healthFactor: "5", snapshot: { grossCollateralValue: 250, totalBorrowedValue: 50, collateralBalances: {}, borrowedBalances: {} } });
+    harness.computeSizingBasis.mockResolvedValue({ ...BASIS, issue: "sizing_sources_disagree", app: { grossCollateralUsd: "250", debtUsd: "50" } });
+    harness.computeBorrowCapacity.mockResolvedValue(null);
+    const loanMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_get_max_borrow") return { max_borrow_human: "321", symbol: "XLM" };
+      if (tool === "vanna_can_borrow") return { allowed: true };
+      return mcp.call(tool, args);
+    }) };
+    const result = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {
+      subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: loanMcp,
+      signal: new AbortController().signal,
+      model: async () => ({ kind: "research_complete", goal: {
+        intent: "strategy", objective: message, constraints: [], borrowing: "required", namedOps: [{ op: "borrow", sourceQuote: message }],
+      }, plans: [{ title: "Maximum XLM loan", rationale: message, evidenceIds: [], legs: [{ op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } }] }], findings: [{ summary: "The requested loan is sized by the server.", evidenceIds: [] }], openQuestions: [] }),
+    });
+    expect(result.questionnaire).toBeUndefined();
+    expect(result.proposalCandidateId).toBe(REQUESTED_ACTIONS_ID);
+    expect(result.message).toContain("Borrow 320.679 XLM.");
+    expect(harness.computeBorrowCapacity).toHaveBeenCalledWith(SCOPE.smartAccount, [message], expect.anything(), expect.anything(), expect.objectContaining({ useProtocolFloor: true }));
+  });
+
   it("asks where and how much for 'supply xlm', then runs that instruction with the answers, no second model turn", async () => {
     harness.resolveInvestigationScope.mockResolvedValue(SCOPE);
     harness.computeAccountPosition.mockResolvedValue({ grossCollateralUsd: "200", debtUsd: "50", healthFactor: "4", snapshot: { grossCollateralValue: 200, totalBorrowedValue: 50, collateralBalances: {}, borrowedBalances: {} } });

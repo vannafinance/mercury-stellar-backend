@@ -22,6 +22,7 @@ import type { StrategyRead } from "./strategy-reads";
 
 export interface QuestionnaireMissing {
   op?: WorkflowOp;
+  sizing?: "to_floor";
   /** A registry id, or a bare family the user said ("USDC"). */
   asset?: string;
   slots: Array<"asset" | "venue" | "amount">;
@@ -57,8 +58,9 @@ export function parseQuestionnaireMissing(value: unknown): QuestionnaireMissing 
     if (typeof value.asset !== "string" || !value.asset.trim()) return null;
     asset = value.asset.trim();
   }
+  if (value.sizing !== undefined && value.sizing !== "to_floor") return null;
   const sourceQuote = typeof value.sourceQuote === "string" && value.sourceQuote.trim() ? value.sourceQuote : undefined;
-  return { ...(op ? { op } : {}), ...(asset ? { asset } : {}), slots, ...(sourceQuote ? { sourceQuote } : {}) };
+  return { ...(value.sizing === "to_floor" ? { sizing: "to_floor" as const } : {}), ...(op ? { op } : {}), ...(asset ? { asset } : {}), slots, ...(sourceQuote ? { sourceQuote } : {}) };
 }
 
 /** One object is a one-entry list. A list is one entry per action, in the user's order. */
@@ -329,6 +331,7 @@ export function readsForQuestionnaire(missing: QuestionnaireMissing, observation
     wanted.set(`${capability}:${asset ?? ""}`, { capability, args: asset ? { asset } : {} });
   };
   const ops = opsInPlay(missing, messages);
+  if (ops.some((op) => OP_FLOW[op].from === "debt")) return [];
   const assets = candidateAssets(missing, ops);
   for (const op of ops) {
     const flow = OP_FLOW[op];
@@ -525,6 +528,16 @@ export function buildQuestionnaire(
   if (!missing.slots.length) return null;
   const named = venuesNamed(messages);
   const ops = opsInPlay(missing, messages);
+  // This form sizes amounts from holdings. New credit needs capacity and a safety
+  // constraint, so leave its model clarification intact instead of treating debt as cash.
+  if (ops.some((op) => OP_FLOW[op].from === "debt")) {
+    if (missing.sizing !== "to_floor" || ops.length !== 1 || !missing.sourceQuote || !messages.some(message => message.includes(missing.sourceQuote!))) return null;
+    const assets = candidateAssets(missing, ops);
+    const steps: QuestionnaireStep[] = [{ slot: "asset", prompt: "Which asset would you like to borrow?", options: assets.map(asset => ({ id: asset, label: asset })) }];
+    if (!assets.length) return null;
+    const id = createHash("sha256").update(JSON.stringify({ missing, steps })).digest("hex").slice(0, 16);
+    return { id, title: titleFor(missing, ops), subtitle: "Choose the asset to borrow the maximum", steps, op: ops[0], fixedSizing: "to_floor" };
+  }
   const assets = candidateAssets(missing, ops);
   const steps: QuestionnaireStep[] = [];
   let chosen = namedAsset(missing.asset);
@@ -667,6 +680,8 @@ function checkAnswers(issued: Questionnaire | undefined, answers: QuestionnaireA
     ?? issued.steps.flatMap((step) => step.options).find((option) => option.op)?.op
     ?? issued.op;
   if (!resolvedOp) return "That answer did not identify an operation.";
+  if (issued.fixedSizing) return answers.amount.kind === issued.fixedSizing ? null : "That sizing was not what was requested.";
+  if (answers.amount.kind === "to_floor") return "Maximum credit was not requested in this questionnaire.";
   const amountStep = issued.steps.find((step) => step.slot === "amount");
   const cap = amountStep?.max?.[answers.venue ?? ""] ?? amountStep?.max?.[answers.asset];
   if (answers.amount.kind === "previous_leg") {
@@ -699,11 +714,13 @@ export function actionFromAnswers(issued: Questionnaire, answers: QuestionnaireA
   const flow = OP_FLOW[op];
   const pool = venue?.id.startsWith("add_liquidity:") ? lpPairs().find((pair) => venue.id.split(":")[1] === pair.venue && pair.tokens.includes(answers.asset as AssetId)) : undefined;
   const other = pool ? (pool.tokens[0] === answers.asset ? pool.tokens[1] : pool.tokens[0]) : undefined;
-  const sizing: PlanLeg["sizing"] = answers.amount.kind === "previous_leg"
+  const sizing: PlanLeg["sizing"] = issued.fixedSizing === "to_floor" && answers.amount.kind === "to_floor"
+    ? { kind: "to_floor" }
+    : answers.amount.kind === "previous_leg"
     ? { kind: "previous_leg" }
     : answers.amount.kind === "fraction"
       ? { kind: "fraction", percent: answers.amount.percent, of: flow.from === "wallet" ? "wallet" : "position", sourceQuote: answers.summary }
-      : { kind: "literal", amount: answers.amount.amount, sourceQuote: answers.summary };
+      : answers.amount.kind === "literal" ? { kind: "literal", amount: answers.amount.amount, sourceQuote: answers.summary } : (() => { throw new Error("Unissued maximum sizing"); })();
   return {
     op,
     asset: answers.asset,
@@ -801,7 +818,7 @@ export function buildQuestionnaireSet(
     return true;
   }))
     .sort((a, b) => quoteAt(a.sourceQuote, messages) - quoteAt(b.sourceQuote, messages));
-  if (!entries.length) return null;
+  if (!entries.length || entries.some((entry) => entry.sizing !== "to_floor" && opsInPlay(entry, messages).some((op) => OP_FLOW[op].from === "debt"))) return null;
   let view = observations;
   const moves: Array<{ op: WorkflowOp; asset: string; assetOut?: string; amount: string; sectionId: string }> = [];
   const built: BuiltSection[] = [];
@@ -828,7 +845,7 @@ export function buildQuestionnaireSet(
       missing: entry,
       section: {
         id: one.id, title: one.title, actionIndex: built.length, position: quoteAt(entry.sourceQuote, messages),
-        steps: one.steps, namedAsset: one.namedAsset ?? null, ...(entry.sourceQuote ? { sourceQuote: entry.sourceQuote } : {}),
+        steps: one.steps, ...(one.fixedSizing ? { fixedSizing: one.fixedSizing } : {}), namedAsset: one.namedAsset ?? null, ...(entry.sourceQuote ? { sourceQuote: entry.sourceQuote } : {}),
         ...(entry.op ? { op: entry.op } : {}),
         ...(entry.op === "swap" && entry.sourceQuote && namedAsset(entry.asset)
           ? { assetOut: messageWords(entry.sourceQuote).map((word) => resolveAssetDef(word)?.id).find((id) => id && id !== namedAsset(entry.asset)) }
@@ -841,7 +858,7 @@ export function buildQuestionnaireSet(
     }
     if (entry.op && entry.asset && namedAsset(entry.asset)) {
       const flow = OP_FLOW[entry.op];
-      const ceiling = amountInPocket(view, flow.from, namedAsset(entry.asset)!);
+      const ceiling = holdsTokens(flow.from) ? amountInPocket(view, flow.from, namedAsset(entry.asset)!) : null;
       if (ceiling && ceiling !== "0" && holdsTokens(flow.to)) {
         moves.push({ op: entry.op, asset: namedAsset(entry.asset)!, amount: ceiling, sectionId: one.id });
         view = projectMoves(observations, moves);
@@ -858,7 +875,7 @@ export function buildQuestionnaireSet(
   return {
     id,
     title: sections.length === 1 ? sections[0].title : "A few things to fill in",
-    subtitle: sections.length === 1 ? "Choose which, where and how much" : "One section for each action",
+    subtitle: sections.length === 1 ? sections[0].fixedSizing ? "Choose the asset to borrow the maximum" : "Choose which, where and how much" : "One section for each action",
     steps,
     sections,
     ...(sealed.length ? { stated: sealed } : {}),
@@ -912,7 +929,7 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
       const section = issued.sections?.find((item) => item.id === sectionAnswer.sectionId);
       if (!section) return "That section was not one of the ones asked.";
       // Each section is checked against its OWN sealed asset and op, not the questionnaire's.
-      const problem = checkAnswers({ ...issued, steps: section.steps, sections: undefined, namedAsset: section.namedAsset ?? null, op: section.op ?? null }, {
+      const problem = checkAnswers({ ...issued, steps: section.steps, fixedSizing: section.fixedSizing, sections: undefined, namedAsset: section.namedAsset ?? null, op: section.op ?? null }, {
         ...answers, asset: sectionAnswer.asset, venue: sectionAnswer.venue, amount: sectionAnswer.amount, sections: undefined,
       });
       if (problem) return problem;
@@ -980,7 +997,7 @@ export function actionsFromAnswers(issued: Questionnaire, answers: Questionnaire
   const answered = answers.sections.map((sectionAnswer) => {
     const section = issued.sections?.find((item) => item.id === sectionAnswer.sectionId);
     const action = actionFromAnswers(
-      { ...issued, steps: section?.steps ?? issued.steps },
+      { ...issued, steps: section?.steps ?? issued.steps, fixedSizing: section?.fixedSizing, op: section?.op ?? issued.op },
       { ...answers, asset: sectionAnswer.asset, venue: sectionAnswer.venue, amount: sectionAnswer.amount, sections: undefined },
     );
     if (action.op === "swap" && section?.assetOut) return { position: section.position ?? 0, action: { ...action, assetOut: section.assetOut } };

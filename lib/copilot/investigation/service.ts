@@ -13,7 +13,7 @@ import { strategyReply } from "./answer";
 import { normalizeResearchFacts } from "./normalize";
 import { accountDisplayObservations } from "./account-display";
 import { analyseObservedRates } from "./rate-comparison";
-import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis, type SizingBasis } from "./capacity";
+import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis, PROTOCOL_MAX_BORROW_FLOOR, type SizingBasis } from "./capacity";
 import { anchoredVenueOps, anchoredVenueRows, opWords, unusedVenueOps } from "./venues";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { unpostedCollateralNote } from "./sizing-copy";
@@ -26,13 +26,15 @@ import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts,
 import { touchesMarginAccount } from "../workflow/types";
 import { missingPositionReads } from "./position-coverage";
 import { actionsFromAnswers, answerProblem, buildQuestionnaireSet, opsInPlay, readsForQuestionnaire } from "./questionnaire";
+import { requestsMaximumCredit, directMaximumCreditPlan } from "./max-credit";
+import { drawsNewDebt } from "../leg-direction";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
 import { appendDiagnostics } from "./diagnostics-log";
 import type { ResearchConversation } from "./continuation";
 import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans, STRATEGY_READS, type StrategyRead } from "./strategy-reads";
-import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
+import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath, pageDebtAgreesWithContract, postedHealthFactorFromSnapshot } from "./fast-path";
 import { futureConditionRefusal } from "../conditional-guard";
 import { evaluateStandingOrders } from "../standing-orders";
 import { resolveLifecycleWrite } from "../workflow/lifecycle";
@@ -349,7 +351,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (fast?.kind === "health") {
     const fromCarry = carriedNow.filter((observation) =>
       (observation.capability === "account_position" || observation.capability === "account_health")
-      && observation.status === "ok");
+      && observation.status === "ok" && typeof observation.data?.health_factor === "string");
     if (fromCarry.length) {
       logPhase("health_fast_path", { ms: 0, source: "carried_evidence", status: "ok" });
       return fastPathView({
@@ -688,17 +690,19 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     outcome.kind === "research_complete" ? outcome.goal.actions : undefined,
   );
   const needsBorrowCapacity = borrowing === "required" ||
-    (outcome.kind === "research_complete" && plansBorrow(outcome.plans));
+    (outcome.kind === "research_complete" && (plansBorrow(outcome.plans) || outcome.goal.actions?.some(action => drawsNewDebt(action.op))));
   const capacityMessages = prior && outcome.kind === "research_complete" && !inheritsThread(outcome.goal.relation, prior.lastQuestion)
     ? [input.message]
     : messages;
   const goalFloor = outcome.kind === "research_complete" ? anchoredGoalFloor(outcome.goal, capacityMessages) : null;
+  const explicitMaxCredit = outcome.kind === "research_complete" &&
+    requestsMaximumCredit(outcome.goal, outcome.plans ?? [], messages);
   const capacityOptions = {
     mcp: scopedMcp,
     trader: scope.trader,
     ...(basisTask ? { basis: basisTask } : {}),
     ...(needsBorrowCapacity
-      ? { floor: goalFloor, useConfiguredFloor: true }
+      ? { floor: goalFloor, useConfiguredFloor: true, useProtocolFloor: explicitMaxCredit === true }
       : {}),
   };
   /**
@@ -765,6 +769,21 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
   }
   let displaySnapshot = position?.snapshot ?? null;
+  const healthAnswer = outcome.kind === "research_complete" && outcome.goal.intent === "answer"
+    && !outcome.plans?.length && !outcome.goal.actions?.length
+    && result.observations.some(observation => (observation.capability === "account_health" || observation.capability === "liquidation_snapshot") && observation.status === "ok");
+  if (healthAnswer) {
+    // Consume the same authoritative read that the optional strategy seed stopped waiting for.
+    const page = position ?? (await authoritativePositionTask).value;
+    const contract = [...result.observations].reverse().find(observation => (observation.capability === "liquidation_snapshot" || observation.capability === "account_health") && observation.status === "ok" && observation.data?.debt_usd !== undefined);
+    if (page && (!contract || pageDebtAgreesWithContract(Number(page.debtUsd), Number(contract.data!.debt_usd)))) {
+      const observation = healthObservations(page)[0];
+      result.observations.push({ ...observation, id: `health-display-${result.observations.length}` });
+    } else if (page && contract?.data) {
+      const posted = postedHealthFactorFromSnapshot(contract.data);
+      if (posted) contract.data = { ...contract.data, posted_health_factor: posted, page_debt_mismatch: true, page_health_factor: page.healthFactor };
+    }
+  }
   const positionAnswer = outcome.kind === "research_complete" && outcome.goal.intent === "answer"
     && !outcome.plans?.length && !outcome.goal.actions?.length
     && result.observations.some((observation) => observation.capability === "account_collateral" && observation.status === "ok");
@@ -784,6 +803,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     // Unknown freshness must not become a fabricated live-read timestamp.
     ? accountDisplayObservations(result.observations, displaySnapshot, 0) : result.observations;
   const normalized = normalizeResearchFacts(displayObservations);
+  if (healthAnswer) normalized.facts.forEach(fact => {
+    if (fact.sourcePath === "health_factor") { fact.requested = true; fact.requiredInReply = true; }
+  });
   const { warnings } = normalized;
   // An unsupported asset the user named beside supported ones is stated as a fact, not left to a failed read.
   const facts = [...normalized.facts, ...unsupportedAssetFacts(messages[messages.length - 1] ?? input.message)];
@@ -1042,7 +1064,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * instruction back into a composed proposal. The transforms map in order and never
    * reorder, so the index survives what the id does not.
    */
-  const statedPlanIndex = statedPlan ? modelPlans.length : -1;
+  const statedPlanIndex = statedPlan ? modelPlans.length : outcome.kind === "research_complete" ? directMaximumCreditPlan(outcome.goal, modelPlans, messages) : -1;
   if (statedPlan) modelPlans.push(statedPlan);
   /**
    * A swap that did not say what it buys is completed from the user's sentence here, before
@@ -1174,7 +1196,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       });
     }
   }
-  const statedFloor = goalFloor ?? capacity?.floor ?? statedFloorFrom(messages);
+  const statedFloor = goalFloor ?? capacity?.floor ?? statedFloorFrom(messages) ?? (explicitMaxCredit ? PROTOCOL_MAX_BORROW_FLOOR : null);
   /**
    * A floor stated as a ceiling is still a stated limit, and dropping it silently is
    * the failure. "keep HF < 1.3" matches none of the floor patterns, so the turn ran
@@ -1477,7 +1499,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             : outcome.kind === "stopped" ? "incomplete"
               : "needs_input";
   // A stated write, once sized and simulated, is offered as the steps to approve - not as a ranked option.
-  const statedId = statedPlan ? planCandidateId(statedPlan) : null;
+  const statedId = statedPlanIndex >= 0 ? planCandidateId(modelPlans[statedPlanIndex]) : null;
   const statedCandidate = statedId ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
   const requestedSteps = statedCandidate?.steps ?? [];
   if (statedCandidate && candidates) candidates = { ...candidates, feasible: candidates.feasible.filter((c) => c.id !== statedId) };

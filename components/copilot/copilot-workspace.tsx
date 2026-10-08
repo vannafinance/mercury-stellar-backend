@@ -93,6 +93,7 @@ import { claimDispatch, releaseDispatch } from "@/lib/copilot/dispatch-once";
 import { lpSides } from "@/lib/copilot/lp-pair";
 import { AssistantMessage, UserBubble, ChatTurns, REPLY_CARD_GAP_PX } from "./chat-message";
 import { ExecutionStepper } from "./execution-stepper";
+import { runningPlan, runningPlanText } from "./running-plan";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
 import { useLiveInvestigation } from "@/contexts/investigation-context";
@@ -2953,6 +2954,7 @@ export function CopilotWorkspace() {
   const [approvingId, setApprovingId] = useState<string | null>(null);
   /** Which candidate the running plan came from, so the finished reply can quote its rate and health. */
   const approvedCandidateRef = useRef<string | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<{ id: string; continuation: string } | null>(null);
   /** The reply (its continuation) whose plan the current workflow was prepared for. */
   const preparedForRef = useRef<string | null>(null);
   const updateExecutionReceipt = investigation.updateExecutionReceipt;
@@ -3036,6 +3038,7 @@ export function CopilotWorkspace() {
     const direct = candidateId === REQUESTED_ACTIONS_ID;
     approveWhenProposedRef.current = direct;
     approvedCandidateRef.current = candidateId;
+    setSelectedPlan({ id: candidateId, continuation: view.continuation });
     preparedForRef.current = view.continuation;
     void proposePlan(view.continuation, candidateId).then((prepared) => {
       if (!prepared) {
@@ -3140,6 +3143,7 @@ export function CopilotWorkspace() {
     if (!claimDispatch(address, proposeKey)) return;
     approveWhenProposedRef.current = true;
     approvedCandidateRef.current = candidateId;
+    setSelectedPlan({ id: candidateId, continuation });
     void proposePlan(continuation, candidateId).then((prepared) => {
       if (!prepared) {
         approveWhenProposedRef.current = false;
@@ -5861,6 +5865,15 @@ export function CopilotWorkspace() {
               liveTone={isError ? "error" : "default"}
               sessionSigning={sessionSigning}
               hideReceiptFor={cardDrawsRun ? workflow.view?.id ?? null : null}
+              runningPlanText={(() => {
+                if (!cardDrawsRun || selectedPlan?.continuation !== investigation.result?.continuation) return null;
+                const running = runningPlan({
+                  status: workflow.view?.status,
+                  candidateId: selectedPlan?.id,
+                  feasible: investigation.result?.candidates?.feasible,
+                });
+                return running ? runningPlanText(running) : null;
+              })()}
             />
             {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
               <div className="flex items-start gap-2.5 max-w-[85%]">

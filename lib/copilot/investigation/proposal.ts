@@ -106,7 +106,7 @@ export async function proposeWorkflow(input: {
     if (!steps?.length) throw new ResearchError("candidate_unavailable", "The requested actions are unavailable. Investigate again.");
     assertDebtIntentAgrees(prior.messages[prior.messages.length - 1] ?? "", steps.map((step) => step.op));
     for (const step of steps) allowedInvocation(step, scope);
-    const floor = prior.evidence?.capacity?.floor ?? null;
+    const floor = prior.evidence?.floor ?? prior.evidence?.capacity?.floor ?? null;
     /**
      * The acceptance travels with the steps. A stated swap is proposed through THIS branch,
      * not the composed one below - so leaving it off here dropped the user's own words at

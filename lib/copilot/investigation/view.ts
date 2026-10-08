@@ -10,6 +10,8 @@ export interface ResearchFact {
   readAt: number;
   /** Optional structured linkage for a fact explicitly requested by the read. */
   requested?: boolean;
+  /** A core answer figure the composer must retain, rather than optional context. */
+  requiredInReply?: boolean;
   /**
    * True only when this number is an amount of the fact's own token. A rate, ratio,
    * health factor or percentage is never a quantity of the asset, and must never be
@@ -45,7 +47,7 @@ export interface ResearchUnderstanding {
 export interface ResearchCapacity {
   floor: string;
   /** Omitted for legacy/user-stated floors; present when the configured safety buffer was applied. */
-  floorSource?: "user" | "configured_safety_buffer";
+  floorSource?: "user" | "configured_safety_buffer" | "protocol_minimum";
   grossCollateralUsd: string;
   debtUsd: string;
   healthFactor: string | null;
@@ -58,6 +60,7 @@ export interface QuestionnaireOption {
   detail?: string;
   forAsset?: string;
   op?: string;
+  fixedSizing?: "to_floor";
   /** The op's own verb ("Deposit", "Supply", "Lend"), so a summary says what the choice does. */
   verb?: string;
   sourceSectionId?: string;
@@ -81,6 +84,7 @@ export interface QuestionnaireSection {
   steps: QuestionnaireStep[];
   sourceQuote?: string;
   op?: string;
+  fixedSizing?: "to_floor";
   /** Sealed when the section was built. A later summary cannot change it. */
   assetOut?: string;
 }
@@ -99,6 +103,7 @@ export interface Questionnaire {
   stated?: SealedAction[];
   namedAsset?: string | null;
   op?: string | null;
+  fixedSizing?: "to_floor";
   /** A future-event gate from the decision, sealed so answers cannot turn it into an immediate action. */
   trigger?: import("./types").GoalUnderstanding["trigger"];
   /** The user's reserve, floor and accepted loss, sealed so the answered goal keeps them. */
@@ -108,13 +113,13 @@ export interface QuestionnaireSectionAnswer {
   sectionId: string;
   asset: string;
   venue: string | null;
-  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" };
+  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" } | { kind: "to_floor" };
 }
 export interface QuestionnaireAnswers {
   questionnaireId: string;
   asset: string;
   venue: string | null;
-  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" };
+  amount: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" } | { kind: "to_floor" };
   summary: string;
   sections?: QuestionnaireSectionAnswer[];
 }

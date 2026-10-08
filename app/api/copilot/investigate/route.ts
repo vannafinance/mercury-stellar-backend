@@ -36,7 +36,7 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
   let body: unknown;
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ResearchError("invalid_request", "Invalid research request.", 400); }
   const answers = body && isRecord(body) ? body.answers : undefined;
-  const amountOk = (amount: unknown) => isRecord(amount) && (amount.kind === "fraction" || amount.kind === "literal" || amount.kind === "previous_leg");
+  const amountOk = (amount: unknown) => isRecord(amount) && (amount.kind === "fraction" || amount.kind === "literal" || amount.kind === "previous_leg" || amount.kind === "to_floor");
   const sectionOk = (section: unknown) => isRecord(section) && typeof section.sectionId === "string" && typeof section.asset === "string"
     && (section.venue === null || typeof section.venue === "string") && amountOk(section.amount);
   const answersOk = answers == null || (isRecord(answers) && typeof answers.questionnaireId === "string"

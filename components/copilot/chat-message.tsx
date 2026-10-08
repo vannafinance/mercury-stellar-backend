@@ -512,9 +512,12 @@ export function ChatTurns({
   liveTone = "default",
   sessionSigning,
   hideReceiptFor,
+  runningPlanText,
 }: {
   /** A run the investigation card is drawing in place; the thread leaves its receipt out. */
   hideReceiptFor?: string | null;
+  /** While a chosen plan runs, the newest reply says which one instead of comparing the options. */
+  runningPlanText?: string | null;
   turns: ThreadTurn[];
   hideAssistantText?: string | null;
   pendingUser?: string | null;
@@ -525,17 +528,22 @@ export function ChatTurns({
   sessionSigning?: boolean;
 }) {
   if (!turns.length && !pendingUser && !liveAssistant && !working) return null;
+  const groups = groupChatTurns(turns);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 34 }} aria-label="Conversation">
-      {groupChatTurns(turns).map((group, index) => {
+      {groups.map((group, index) => {
         const hideStaleAssistant = !!hideAssistantText && group.assistant && group.assistant.text === hideAssistantText;
+        const sayRunning = index === groups.length - 1 && !pendingUser && !working &&
+          !!runningPlanText && !!hideReceiptFor &&
+          group.assistant?.executionReceipt?.workflowId === hideReceiptFor &&
+          !group.assistant.completion;
         return (
           <section key={`turn-${index}`} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {group.user ? <UserBubble>{group.user.text}</UserBubble> : null}
             {group.assistant && !hideStaleAssistant && !group.assistant.quiet ? (
               <AssistantTurn
-                text={group.assistant.text}
-                blocks={group.assistant.blocks}
+                text={sayRunning ? runningPlanText! : group.assistant.text}
+                blocks={sayRunning ? undefined : group.assistant.blocks}
                 completion={group.assistant.completion}
                 receipt={hideReceiptFor && group.assistant.executionReceipt?.workflowId === hideReceiptFor
                   ? undefined

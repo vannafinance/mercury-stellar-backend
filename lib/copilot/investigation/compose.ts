@@ -272,6 +272,7 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
     lane = "answer";
     system = SYSTEM;
     facts = view.facts;
+    system += " Every fact marked requiredInReply is a core answer figure and must appear as a fact reference in your reply.";
     user = JSON.stringify({
       question: request,
       facts: view.facts.map(replyFactContext),

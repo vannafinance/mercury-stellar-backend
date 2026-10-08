@@ -43,7 +43,7 @@ export function buildQuestionnaireSummary(
   questionnaire: { title?: string; namedAsset?: string | null },
   assetOption?: QuestionnaireOption,
   venueOption?: QuestionnaireOption | null,
-  amount?: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" }
+  amount?: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" } | { kind: "to_floor" }
 ): string {
   // The chosen option's own verb ("Deposit" for the margin account), else the title's.
   const verb = venueOption?.verb || (questionnaire.title ? questionnaire.title.split(" ")[0] : "Supply");
@@ -54,6 +54,8 @@ export function buildQuestionnaireSummary(
   if (amount) {
     if (amount.kind === "fraction") {
       amountStr = `${amount.percent}% of my ${assetLabel}`;
+    } else if (amount.kind === "to_floor") {
+      amountStr = `the maximum ${assetLabel}`;
     } else if (amount.kind === "previous_leg") {
       amountStr = `all of the ${assetLabel}`;
     } else {
@@ -118,6 +120,7 @@ export function ClarifyQuestionnaire({
         title: questionnaire.title,
         actionIndex: 0,
         steps: questionnaire.steps,
+        fixedSizing: questionnaire.fixedSizing,
       },
     ];
   }, [questionnaire]);
@@ -769,7 +772,9 @@ export function ClarifyQuestionnaire({
         const parsed = parseAmountValue(st.amountRaw, maxInfo);
 
         let amountAnswer: QuestionnaireSectionAnswer["amount"];
-        if (st.linkedOptionId) {
+        if (sec.fixedSizing === "to_floor") {
+          amountAnswer = { kind: "to_floor" };
+        } else if (st.linkedOptionId) {
           amountAnswer = { kind: "previous_leg" };
         } else if (parsed?.kind === "fraction") {
           amountAnswer = { kind: "fraction" as const, percent: parsed.percent };
@@ -822,7 +827,9 @@ export function ClarifyQuestionnaire({
       const venueOpt = venueStep?.options.find((o) => o.id === st.venueId) ?? null;
 
       let amountAnswer: QuestionnaireAnswers["amount"];
-      if (st.linkedOptionId) {
+      if (sec.fixedSizing === "to_floor") {
+        amountAnswer = { kind: "to_floor" };
+      } else if (st.linkedOptionId) {
         amountAnswer = { kind: "previous_leg" };
       } else if (parsed?.kind === "fraction") {
         amountAnswer = { kind: "fraction" as const, percent: parsed.percent };
