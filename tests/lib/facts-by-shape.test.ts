@@ -18,6 +18,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { normalizeResearchFacts } from "@/lib/copilot/investigation/normalize";
 import { annotateVenueAssets, extractFactsByShape } from "@/lib/copilot/investigation/facts-by-shape";
+import { factualAnswer, factualReplyBlocks } from "@/lib/copilot/investigation/answer";
 import type { Observation } from "@/lib/copilot/investigation/types";
 
 const read = (capability: string, data: Observation["data"], args: Record<string, unknown> = {}): Observation => ({
@@ -28,6 +29,19 @@ const fact = (result: ReturnType<typeof normalizeResearchFacts>, sourcePath: str
   result.facts.find((f) => f.sourcePath === sourcePath);
 
 describe("facts by shape - the reads that had no case", () => {
+  it("keeps zero limits and equal limits for different assets in the fallback reply", () => {
+    const observations = ["XLM", "AQUSDC"].map((asset, index) => ({
+      ...read("max_borrow", { symbol: asset, max_borrow_human: "0" }, { asset }),
+      id: `capacity-${index}`,
+    }));
+    const { facts } = normalizeResearchFacts(observations);
+    const reply = factualAnswer(facts, "How much could I borrow?");
+    expect(reply).toContain("XLM max borrow: 0 XLM");
+    expect(reply).toContain("AQUSDC max borrow: 0 AQUSDC");
+    expect(JSON.stringify(factualReplyBlocks(facts))).toContain("AQUSDC max borrow");
+    expect(reply).not.toMatch(/approve|execute|choose/i);
+  });
+
   it("renders max_borrow's number instead of reporting it unavailable", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = normalizeResearchFacts([read("max_borrow", {

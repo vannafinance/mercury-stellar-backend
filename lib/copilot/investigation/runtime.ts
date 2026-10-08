@@ -267,6 +267,15 @@ export async function runInvestigation(
   let decisionFeedback: string | undefined;
   // The model is told once, not stopped, when it asks again for reads it already holds.
   let repeatNudged = false;
+  // Run-local labels distinguish identical resolved reads without exposing payloads or addresses.
+  const readTraceKeys = new Map<string, number>();
+  const readTraceKey = (key: string) => {
+    const existing = readTraceKeys.get(key);
+    if (existing !== undefined) return existing;
+    const next = readTraceKeys.size + 1;
+    readTraceKeys.set(key, next);
+    return next;
+  };
   const progress = (event: InvestigationProgress) => {
     // UI delivery failures must not alter the research decision or create retries.
     try { dependencies.onProgress?.(event); } catch { /* client may have disconnected */ }
@@ -432,8 +441,16 @@ export async function runInvestigation(
           observedAt: now(), status: "error",
         };
         const startedAt = observation.observedAt;
+        const traceKey = readTraceKey(key);
+        logPhase("read_start", {
+          turn: modelTurns, read_key: traceKey, capability: request.capability,
+          tool: read?.tool ?? null,
+          asset: read?.args.symbol ?? null,
+          venue: read?.args.venue ?? null,
+        });
         const finishRead = (source: "mcp" | "snapshot" | "invalid") => {
           logPhase("read", {
+            turn: modelTurns, read_key: traceKey,
             capability: request.capability, ms: now() - startedAt,
             status: observation.status, source,
           });

@@ -213,14 +213,17 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string, 
   const inRegistryToken = (fact: ResearchFact) => resolveAssetDef(fact.unit)?.id === fact.unit;
   for (const fact of selected) {
     if (!fact.quantity || rowEvidence.has(fact.evidenceId) || /\[\d+\]/.test(fact.sourcePath)) continue;
-    if (fact.venue === "wallet" || fact.venue === "oracle" || !(Number(fact.value) > 0)) continue;
+    // Zero is a meaningful reported limit, even though empty held positions are omitted.
+    const limit = /^(?:max|min)_/.test(fact.sourcePath.split(".").at(-1) ?? "");
+    if (fact.venue === "wallet" || fact.venue === "oracle" ||
+      !(Number(fact.value) > 0 || (limit && Number(fact.value) === 0))) continue;
     const kept = flat.get(fact.evidenceId);
     if (!kept || (!inRegistryToken(kept) && inRegistryToken(fact))) flat.set(fact.evidenceId, fact);
   }
   // Two reads of one position (the model's own, then the coverage read) report the same amount:
   // shown once, with the later read's label, which names the pair the way the registry does.
   const unique = new Map<string, ResearchFact>();
-  for (const fact of flat.values()) unique.set(`${fact.venue}:${fact.value}`, fact);
+  for (const fact of flat.values()) unique.set(`${fact.venue}:${fact.label}:${fact.unit}:${fact.value}`, fact);
   const byVenue = new Map<string, ResearchFact[]>();
   for (const fact of unique.values()) byVenue.set(fact.venue, [...(byVenue.get(fact.venue) ?? []), fact]);
   for (const [venue, list] of byVenue) {
