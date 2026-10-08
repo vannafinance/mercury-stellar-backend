@@ -5912,6 +5912,7 @@ export function CopilotWorkspace() {
                   void postCopilot({ pending_write: { op }, message: request }, request);
                 }}
                 threadDefersReceipt={cardDrawsRun}
+                approvalQueued={approveWhenProposedRef.current}
               />
             )}
             <div

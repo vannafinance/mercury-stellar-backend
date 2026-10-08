@@ -11,6 +11,8 @@ import { completionMatches } from "@/lib/copilot/workflow-completion";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap-review-card";
 import { PlanReviewCard } from "@/components/copilot/plan-review-card";
+import { preparingStatedRun } from "@/components/copilot/preparing-run";
+import { REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { finished } from "@/hooks/use-workflow";
 import { formatRunClock } from "@/lib/copilot/investigation/duration";
 import { recommendationReason } from "@/lib/copilot/investigation/recommendation";
@@ -61,10 +63,19 @@ export interface InvestigationCardProps {
    * run is drawn: the plan card becomes the execution card in the same spot.
    */
   threadDefersReceipt?: boolean;
+  /** The workspace has this plan queued for approval and has not sent the request yet. */
+  approvalQueued?: boolean;
 }
 
 const money = (value: string) =>
   `$${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+/** The steps of a run being prepared: the first one reads as being checked, the rest wait. */
+function preparingSteps(workflow: WorkflowView): StepperStep[] {
+  const steps = workflow.steps.map(toStepperStep);
+  const first = steps.findIndex((step) => step.status === "pending");
+  return steps.map((step, index) => (index === first ? { ...step, status: "claiming" as const } : step));
+}
 
 function toStepperStep(step: WorkflowView["steps"][number]): StepperStep {
   const status: StepperStep["status"] =
@@ -354,7 +365,7 @@ const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] fo
 export function InvestigationCard({
   prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, continueLabel,
   onPropose, workflow, planWithdrawn, planLiveFloor, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
-  wallet = null, autoSign = false, onApproveCandidate, onReply, onWrite, threadDefersReceipt = false,
+  wallet = null, autoSign = false, onApproveCandidate, onReply, onWrite, threadDefersReceipt = false, approvalQueued = false,
 }: InvestigationCardProps) {
   /**
    * Cancel on a plan that was never prepared: nothing was sent, so it only closes the plans
@@ -402,6 +413,15 @@ export function InvestigationCard({
   const stepperDrawnInThread =
     !!workflow && !threadDefersReceipt &&
     turns.some((turn) => turn.role === "assistant" && turn.executionReceipt?.workflowId === workflow.id);
+  /** A stated action has no plan card: the execution card stands in while its approval is prepared. */
+  const preparingRun = !!workflow && !!result && preparingStatedRun({
+    stated: result.proposalCandidateId === REQUESTED_ACTIONS_ID,
+    status: workflow.status,
+    hasSwap: !!workflow.swap || workflow.steps.some((step) => step.op === "swap"),
+    withdrawn: !!planWithdrawn,
+    busy: !!workflowLoading,
+    approvalQueued,
+  });
   const completionSummaryReady = !!workflow && turns.some((turn) => turn.executionReceipt?.workflowId === workflow.id && completionMatches(turn.executionReceipt, turn.completion));
   /**
    * The run clock. Zeroing it inside the effect made every start a second render pass; a
@@ -573,7 +593,7 @@ export function InvestigationCard({
               )}
 
               {/* Between a click and its result the user must see the state, not a frozen card. */}
-              {workflowLoading && (!workflow || workflow.status === "proposed" || workflow.status === "validating") && (
+              {workflowLoading && (!workflow || workflow.status === "proposed" || workflow.status === "validating") && !preparingRun && (
                 <p role="status" aria-live="polite" className="flex items-center gap-2 text-[13px] text-violet-500" data-testid="workflow-progress">
                   <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-violet-500" aria-hidden="true" />
                   {!workflow
@@ -609,7 +629,12 @@ export function InvestigationCard({
                   {onCancelPlan && <button type="button" onClick={onCancelPlan} className="ml-2 underline">Cancel plan</button>}
                 </section>
               )}
-              {workflow?.status === "proposed" && !planWithdrawn && !workflow.steps.some((step) => step.op === "swap") && onApprove && (
+              {workflow && preparingRun && (
+                <div className="flex flex-col gap-2.5">
+                  <ExecutionStepper steps={preparingSteps(workflow)} currentStepIndex={0} network={result.scope.network} autoApprove={!!autoSign} busy />
+                </div>
+              )}
+              {workflow?.status === "proposed" && !planWithdrawn && !preparingRun && !workflow.steps.some((step) => step.op === "swap") && onApprove && (
                 <PlanReviewCard workflow={workflow} wallet={wallet ?? null} busy={!!workflowLoading}
                   autoSign={!!autoSign} onConfirm={onApprove} onCancel={onCancelPlan} />
               )}
