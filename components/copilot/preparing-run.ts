@@ -1,24 +1,20 @@
 /**
- * A stated action has no plan card (owner, 24 Sep): it is prepared and approved on its own and the
- * execution card shows it running. Between "prepared" and "approved" the journal still reads
- * `proposed` for as long as the live check takes (about 13 s, 8 Oct), and that state used to draw the
- * Plan for approval card with a disabled button, which is the plan card the owner ruled out.
+ * An action the app approves on the user's behalf has no plan card (owner, 24 Sep and 8 Oct): a stated action is
+ * prepared and approved on its own, and a strategy plan the user has just approved is already approved, so the
+ * execution card shows it running in both cases. Between "prepared" and "approved" the journal still reads "proposed"
+ * for as long as the live check takes (about 13 s, 8 Oct), and that state used to draw the Plan for
+ * approval card with a disabled button, a second approval screen for something already approved.
  *
- * So for a stated action the execution card stands in while the approval is being prepared. Everything
- * else keeps its card: a strategy the model chose is the user's to approve, a swap keeps its review,
- * a withdrawn plan says so, and a stated action whose approval failed (nothing in flight, nothing about
- * to start) shows its Approve again so the user can retry.
+ * So while the app is the one approving, the execution card stands in. A plan nobody has approved keeps its
+ * card, a swap keeps its own review, a withdrawn plan says so, and a plan whose approval failed (nothing in
+ * flight, nothing about to start) shows its Approve again so the user can retry.
  */
 export function preparingStatedRun(opts: {
-  /** The reply's own plan is the user's stated action (REQUESTED_ACTIONS_ID), not a strategy option. */
-  stated: boolean;
+  /** The app approves this plan itself: a stated action, or a plan the user pressed Approve on. */
+  approvedByApp: boolean;
   status: string;
   hasSwap: boolean;
   withdrawn: boolean;
-  /** A request about this plan is in flight. */
-  busy: boolean;
-  /** The workspace has this plan queued for approval and has not sent it yet. */
-  approvalQueued: boolean;
 }): boolean {
-  return opts.stated && opts.status === "proposed" && !opts.hasSwap && !opts.withdrawn && (opts.busy || opts.approvalQueued);
+  return opts.approvedByApp && opts.status === "proposed" && !opts.hasSwap && !opts.withdrawn;
 }

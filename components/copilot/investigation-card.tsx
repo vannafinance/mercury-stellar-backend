@@ -12,7 +12,6 @@ import { ExecutionStepper, type StepperStep } from "@/components/copilot/executi
 import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap-review-card";
 import { PlanReviewCard } from "@/components/copilot/plan-review-card";
 import { preparingStatedRun } from "@/components/copilot/preparing-run";
-import { REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { finished } from "@/hooks/use-workflow";
 import { formatRunClock } from "@/lib/copilot/investigation/duration";
 import { recommendationReason } from "@/lib/copilot/investigation/recommendation";
@@ -65,6 +64,8 @@ export interface InvestigationCardProps {
   threadDefersReceipt?: boolean;
   /** The workspace has this plan queued for approval and has not sent the request yet. */
   approvalQueued?: boolean;
+  /** The plan the workspace is approving right now on the user's behalf. */
+  approvingId?: string | null;
 }
 
 const money = (value: string) =>
@@ -365,7 +366,7 @@ const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] fo
 export function InvestigationCard({
   prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, continueLabel,
   onPropose, workflow, planWithdrawn, planLiveFloor, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
-  wallet = null, autoSign = false, onApproveCandidate, onReply, onWrite, threadDefersReceipt = false, approvalQueued = false,
+  wallet = null, autoSign = false, onApproveCandidate, onReply, onWrite, threadDefersReceipt = false, approvalQueued = false, approvingId = null,
 }: InvestigationCardProps) {
   /**
    * Cancel on a plan that was never prepared: nothing was sent, so it only closes the plans
@@ -413,14 +414,12 @@ export function InvestigationCard({
   const stepperDrawnInThread =
     !!workflow && !threadDefersReceipt &&
     turns.some((turn) => turn.role === "assistant" && turn.executionReceipt?.workflowId === workflow.id);
-  /** A stated action has no plan card: the execution card stands in while its approval is prepared. */
+  /** A plan the app is approving on the user's behalf has no plan card: the execution card stands in meanwhile. */
   const preparingRun = !!workflow && !!result && preparingStatedRun({
-    stated: result.proposalCandidateId === REQUESTED_ACTIONS_ID,
+    approvedByApp: approvalQueued || approvingId === workflow.id,
     status: workflow.status,
     hasSwap: !!workflow.swap || workflow.steps.some((step) => step.op === "swap"),
     withdrawn: !!planWithdrawn,
-    busy: !!workflowLoading,
-    approvalQueued,
   });
   const completionSummaryReady = !!workflow && turns.some((turn) => turn.executionReceipt?.workflowId === workflow.id && completionMatches(turn.executionReceipt, turn.completion));
   /**

@@ -8,32 +8,28 @@ import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
 
 /**
- * A stated action has no plan card.
+ * A plan the app approves on the user's behalf has no plan card.
  *
  * 8 Oct, live, "deposit 5 XLM" with auto-approve ON: for about 13 s the screen showed the PLAN FOR
  * APPROVAL card with a disabled "Checking..." button, then jumped to the execution card. The owner's
  * rule (24 Sep) is that an action the user stated shows the execution card, in both auto-approve states.
- * The journal reads `proposed` while the live check runs, and that state used to draw the plan card.
+ * The same 10 s showed after "Approve Plan A" on a strategy: a second approval screen for a plan the user
+ * had just approved. The journal reads `proposed` while the live check runs, and that state drew the plan card.
  */
 
-const base = { status: "proposed", hasSwap: false, withdrawn: false, busy: false, approvalQueued: false };
+const base = { status: "proposed", hasSwap: false, withdrawn: false, approvedByApp: false };
 
 describe("preparingStatedRun", () => {
-  it("stands in for the plan card while a stated action's approval is in flight or queued", () => {
-    expect(preparingStatedRun({ ...base, stated: true, busy: true })).toBe(true);
-    expect(preparingStatedRun({ ...base, stated: true, approvalQueued: true })).toBe(true);
+  it("stands in for the plan card while the app is approving the plan", () => {
+    expect(preparingStatedRun({ ...base, approvedByApp: true })).toBe(true);
   });
-  it("leaves a strategy option to its plan card", () => {
-    expect(preparingStatedRun({ ...base, stated: false, busy: true })).toBe(false);
-    expect(preparingStatedRun({ ...base, stated: false, approvalQueued: true })).toBe(false);
-  });
-  it("shows Approve again when a stated action's approval failed and nothing is in flight", () => {
-    expect(preparingStatedRun({ ...base, stated: true })).toBe(false);
+  it("leaves a plan nobody has approved to its plan card", () => {
+    expect(preparingStatedRun(base)).toBe(false);
   });
   it("keeps a swap on its own review card, a withdrawn plan on its notice, and a started run on its stepper", () => {
-    expect(preparingStatedRun({ ...base, stated: true, busy: true, hasSwap: true })).toBe(false);
-    expect(preparingStatedRun({ ...base, stated: true, busy: true, withdrawn: true })).toBe(false);
-    expect(preparingStatedRun({ ...base, stated: true, busy: true, status: "running" })).toBe(false);
+    expect(preparingStatedRun({ ...base, approvedByApp: true, hasSwap: true })).toBe(false);
+    expect(preparingStatedRun({ ...base, approvedByApp: true, withdrawn: true })).toBe(false);
+    expect(preparingStatedRun({ ...base, approvedByApp: true, status: "running" })).toBe(false);
   });
 });
 
@@ -52,7 +48,7 @@ const proposed = {
   steps: [{ id: "s1", op: "deposit_collateral", asset: "XLM", amount: "5", label: "Deposit 5 XLM as collateral", status: "pending" }],
 } as unknown as WorkflowView;
 
-function card(candidateId: string, extra: { workflowLoading?: boolean; approvalQueued?: boolean }) {
+function card(candidateId: string, extra: { workflowLoading?: boolean; approvalQueued?: boolean; approvingId?: string | null }) {
   return render(
     <InvestigationCard prompt="deposit 5 XLM" result={result(candidateId)} progress={null} loading={false} error={null}
       omitTranscript workflow={proposed} onApprove={() => {}} {...extra} />,
@@ -61,7 +57,7 @@ function card(candidateId: string, extra: { workflowLoading?: boolean; approvalQ
 
 describe("InvestigationCard while a plan is proposed", () => {
   it("draws the execution card, not the plan card, for a stated action being approved", () => {
-    card(REQUESTED_ACTIONS_ID, { workflowLoading: true });
+    card(REQUESTED_ACTIONS_ID, { workflowLoading: true, approvingId: "wf-1" });
     expect(screen.queryByRole("region", { name: /execution progress/i })).toBeTruthy();
     expect(screen.queryByRole("region", { name: /plan for approval/i })).toBeNull();
     expect(screen.getByText(/Checking it before it is sent/i)).toBeTruthy();
@@ -71,13 +67,22 @@ describe("InvestigationCard while a plan is proposed", () => {
     expect(screen.queryByRole("region", { name: /execution progress/i })).toBeTruthy();
     expect(screen.queryByRole("region", { name: /plan for approval/i })).toBeNull();
   });
-  it("keeps the plan card for a strategy option, whatever is in flight", () => {
+  it("does the same for a strategy plan the user has just approved", () => {
+    card("composed:le.XLM", { workflowLoading: true, approvingId: "wf-1" });
+    expect(screen.queryByRole("region", { name: /execution progress/i })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /plan for approval/i })).toBeNull();
+  });
+  it("keeps the plan card for a strategy plan nobody has approved, whatever is in flight", () => {
     card("composed:le.XLM", { workflowLoading: true });
     expect(screen.queryByRole("region", { name: /plan for approval/i })).toBeTruthy();
     expect(screen.queryByRole("region", { name: /execution progress/i })).toBeNull();
   });
-  it("offers Approve again for a stated action whose approval did not go through", () => {
-    card(REQUESTED_ACTIONS_ID, {});
+  it("offers Approve again when an approval failed and nothing is in flight", () => {
+    card(REQUESTED_ACTIONS_ID, { approvingId: null });
+    expect(screen.queryByRole("region", { name: /plan for approval/i })).toBeTruthy();
+  });
+  it("ignores another plan's approval", () => {
+    card(REQUESTED_ACTIONS_ID, { approvingId: "wf-other" });
     expect(screen.queryByRole("region", { name: /plan for approval/i })).toBeTruthy();
   });
 });

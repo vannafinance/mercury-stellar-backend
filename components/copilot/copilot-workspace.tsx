@@ -2949,6 +2949,8 @@ export function CopilotWorkspace() {
   const confirmWorkflow = workflow.confirm;
   /** Set when a prepared plan should be approved as soon as it arrives (see approveCandidate). */
   const approveWhenProposedRef = useRef(false);
+  /** The plan this page is approving on the user's behalf right now (a stated action, or a plan they pressed Approve on). */
+  const [approvingId, setApprovingId] = useState<string | null>(null);
   /** Which candidate the running plan came from, so the finished reply can quote its rate and health. */
   const approvedCandidateRef = useRef<string | null>(null);
   /** The reply (its continuation) whose plan the current workflow was prepared for. */
@@ -3154,8 +3156,9 @@ export function CopilotWorkspace() {
     if (view.swap || view.steps.some((step) => step.op === "swap")) return;
     const approveKey = `approve:${view.id}:${view.revision}`;
     if (!claimDispatch(address, approveKey)) return;
+    setApprovingId(view.id);
     void workflow.approve().then((approved) => {
-      if (!approved) releaseDispatch(address, approveKey);
+      if (!approved) { releaseDispatch(address, approveKey); setApprovingId(null); }
     });
   }, [workflow.view, workflow.loading, workflow.error, workflow.stale, workflow.approve, address]);
 
@@ -5913,6 +5916,7 @@ export function CopilotWorkspace() {
                 }}
                 threadDefersReceipt={cardDrawsRun}
                 approvalQueued={approveWhenProposedRef.current}
+                approvingId={approvingId}
               />
             )}
             <div
