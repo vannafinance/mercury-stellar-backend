@@ -75,7 +75,7 @@ import {
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
 import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import { completionReply } from "@/lib/copilot/investigation/completion";
-import { completionMatches, completionStep, immediateCompletion, settledTransactions, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
+import { completionMatches, completionStep, needsCompletionRecovery, immediateCompletion, settledTransactions, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import { REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { buildRunReceipt } from "./run-receipt";
 import { answerToText } from "@/lib/copilot/answer-schema";
@@ -1760,10 +1760,12 @@ export function CopilotWorkspace() {
     leavePlanCard();
     if (id === investigation.conversationId) {
       void investigation.open(id);
-      const receipt = [...investigation.turns].reverse().find(turn => turn.executionReceipt)?.executionReceipt;
+      const receiptTurn = [...investigation.turns].reverse().find(turn => turn.executionReceipt);
+      const receipt = receiptTurn?.executionReceipt;
       let savedId: string | null = null;
       try { savedId = localStorage.getItem(`vanna-workflow-chat:${address}:${id}`); } catch { /* server receipt is the fallback */ }
-      if (receipt && !["completed", "cancelled", "blocked"].includes(receipt.status)) void restoreWorkflow(receipt.workflowId);
+      if (receipt && (!["completed", "cancelled", "blocked"].includes(receipt.status)
+        || needsCompletionRecovery(receipt, receiptTurn?.completion))) void restoreWorkflow(receipt.workflowId);
       else if (!receipt && savedId) void restoreWorkflow(savedId);
     } else void investigation.open(id);
   }, [leavePlanCard, investigation, address, restoreWorkflow]);
@@ -1775,11 +1777,13 @@ export function CopilotWorkspace() {
     }
     const key = `${address}:${investigation.conversationId}`;
     if (restoredConversationRef.current === key) return;
-    const receipt = [...investigation.turns].reverse().find(turn => turn.executionReceipt)?.executionReceipt;
+    const receiptTurn = [...investigation.turns].reverse().find(turn => turn.executionReceipt);
+    const receipt = receiptTurn?.executionReceipt;
     let savedId: string | null = null;
     try { savedId = localStorage.getItem(`vanna-workflow-chat:${key}`); } catch { /* server receipt is the fallback */ }
     const id = receipt?.workflowId ?? savedId;
-    if (!id || receipt && ["completed", "cancelled", "blocked"].includes(receipt.status)) return;
+    if (!id || receipt && ["completed", "cancelled", "blocked"].includes(receipt.status)
+      && !needsCompletionRecovery(receipt, receiptTurn?.completion)) return;
     restoredConversationRef.current = key;
     void restoreWorkflow(id);
   }, [address, investigation.conversationId, investigation.resultOrigin, investigation.loading, investigation.turns, restoreWorkflow]);
@@ -5873,7 +5877,7 @@ export function CopilotWorkspace() {
                   candidateId: selectedPlan?.continuation === investigation.result?.continuation ? selectedPlan?.id : null,
                   feasible: investigation.result?.candidates?.feasible,
                 });
-                return running ? runningPlanText(running) : null;
+                return running ? runningPlanText(running, workflow.view?.status === "completed") : null;
               })()}
             />
             {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (

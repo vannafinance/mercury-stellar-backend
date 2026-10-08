@@ -5,7 +5,7 @@
  * ("Plan B deploys ..., Plan C places ...") and never said which one was running. While a chosen plan runs, the
  * thread says so in one line; once the run ends the composed summary takes the place as before.
  */
-const RUNNING = new Set(["approved", "running", "awaiting_signature"]);
+const RUNNING = new Set(["approved", "running", "awaiting_signature", "completed"]);
 
 export function runningPlan(opts: {
   status: string | null | undefined;
@@ -21,7 +21,7 @@ export function runningPlan(opts: {
   return index < 0 ? null : { letter: String.fromCharCode(65 + index), title: feasible[index].label };
 }
 
-export function runningPlanText(plan: { letter: string; title: string }): string {
+export function runningPlanText(plan: { letter: string; title: string }, completed = false): string {
   const title = plan.title.trim().replace(/\.$/, "");
-  return `Running Plan ${plan.letter}: ${title}.`;
+  return `${completed ? "Completed" : "Running"} Plan ${plan.letter}: ${title}.`;
 }

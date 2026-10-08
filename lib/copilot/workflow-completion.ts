@@ -15,6 +15,12 @@ export type WorkflowCompletionReply = {
   completion: WorkflowCompletion;
 };
 
+/** A completed journal may still need a presentation-only restore to finish its summary. */
+export function needsCompletionRecovery(receipt: ExecutionReceiptSnapshot | null | undefined,
+  completion: WorkflowCompletion | null | undefined): boolean {
+  return receipt?.status === "completed" && !completionMatches(receipt, completion);
+}
+
 /** A transaction hash for display: the ends, with the whole hash kept in the link's title and accessible name. */
 export function shortTransactionHash(hash: string): string {
   return hash.length > 12 ? `${hash.slice(0, 6)}…${hash.slice(-4)}` : hash;
@@ -51,9 +57,10 @@ export function completionStep(
   fromRun: () => ExecutionReceiptSnapshot | null,
 ): { kind: "wait" } | { kind: "attach"; receipt: ExecutionReceiptSnapshot } | { kind: "compose"; receipt: ExecutionReceiptSnapshot } {
   if (run.status !== "completed") return { kind: "wait" };
-  if (onTurn) return settledTransactions(onTurn) ? { kind: "compose", receipt: onTurn } : { kind: "wait" };
+  if (onTurn && settledTransactions(onTurn)) return { kind: "compose", receipt: onTurn };
   const built = fromRun();
-  return built && settledTransactions(built) ? { kind: "attach", receipt: built } : { kind: "wait" };
+  return built && (!onTurn || built.workflowId === onTurn.workflowId) && settledTransactions(built)
+    ? { kind: "attach", receipt: built } : { kind: "wait" };
 }
 
 /**

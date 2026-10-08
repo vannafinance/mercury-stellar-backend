@@ -26,7 +26,13 @@ describe("the chosen plan's running presentation", () => {
     expect(runningPlanText({ letter: "B", title: "Supply BLUSDC." })).toBe("Running Plan B: Supply BLUSDC.");
   });
 
-  it.each(["proposed", "completed", "blocked", "cancelled", "uncertain"])("keeps the original reply in %s", status => {
+  it("keeps the chosen plan visible while its completed summary is being prepared", () => {
+    const chosen = runningPlan({ status: "completed", candidateId: "second", feasible: options });
+    expect(chosen).toEqual({ letter: "B", title: "Supply BLUSDC" });
+    expect(runningPlanText(chosen!, true)).toBe("Completed Plan B: Supply BLUSDC.");
+  });
+
+  it.each(["proposed", "blocked", "cancelled", "uncertain"])("keeps the original reply in %s", status => {
     expect(runningPlan({ status, candidateId: "second", feasible: options })).toBeNull();
   });
 

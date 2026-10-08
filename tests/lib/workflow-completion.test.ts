@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyWorkflowCompletion, completionMatches, completionStep, immediateCompletion, receiptBeside, receiptKey, settledTransactions, shortTransactionHash, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
+import { applyWorkflowCompletion, completionMatches, completionStep, needsCompletionRecovery, immediateCompletion, receiptBeside, receiptKey, settledTransactions, shortTransactionHash, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 
 export function receipt(): ExecutionReceiptSnapshot {
@@ -14,6 +14,14 @@ export function reply(r = receipt()): WorkflowCompletionReply {
 }
 
 describe("post-settlement presentation contract", () => {
+  it("restores only completed workflows whose matching summary is missing", () => {
+    const r = receipt();
+    expect(needsCompletionRecovery(r, undefined)).toBe(true);
+    expect(needsCompletionRecovery(r, reply(r).completion)).toBe(false);
+    expect(needsCompletionRecovery(r, { ...reply(r).completion, workflowId: "other" })).toBe(true);
+    expect(needsCompletionRecovery({ ...r, status: "running" }, undefined)).toBe(false);
+    expect(needsCompletionRecovery({ ...r, status: "cancelled" }, undefined)).toBe(false);
+  });
   it("groups actual transactions without mutating their journal receipt", () => {
     const r = receipt();
     r.steps.push({ ...r.steps[0], operation: "lend", label: "Supply 10 XLM" });
@@ -106,6 +114,13 @@ describe("completionStep: a finished run always has a next step toward its summa
   it("builds the receipt from the run when the turn has none, instead of waiting for something else to put it there", () => {
     expect(completionStep({ status: "completed" }, null, () => settled)).toEqual({ kind: "attach", receipt: settled });
     expect(completionStep({ status: "completed" }, undefined, () => settled)).toEqual({ kind: "attach", receipt: settled });
+  });
+
+  it("repairs a stale in-progress receipt from the completed journal before composing", () => {
+    const stale = { ...settled, status: "awaiting_signature" as const,
+      steps: [{ ...settled.steps[0], status: "awaiting_signature" as const, txHash: undefined, settledLedger: undefined }] };
+    expect(completionStep({ status: "completed" }, stale, () => settled)).toEqual({ kind: "attach", receipt: settled });
+    expect(completionStep({ status: "completed" }, stale, () => ({ ...settled, workflowId: "another-run" }))).toEqual({ kind: "wait" });
   });
 
   it("waits only for a run that has not finished, or has nothing settled to say", () => {
