@@ -114,7 +114,7 @@ export async function proposeWorkflow(input: {
      * and the MCP's impact gate both still saw an unaccepted fill and withheld the swap the
      * user had already agreed to. The same field the composed path seals, sealed here.
      */
-    const draft = { scope, server: input.server, objective: prior.messages[0], messages: prior.messages,
+    const draft = { scope, candidateId: input.candidateId, server: input.server, objective: prior.messages[0], messages: prior.messages,
       assumptions: ["Amounts are the literal token amounts in your request. No automatic resizing is allowed."],
       constraints: floor ? [`Health factor at or above ${floor}`] : [], floor, steps,
       slippageAccepted: prior.evidence?.slippageAccepted === true };
@@ -275,8 +275,9 @@ export async function proposeWorkflow(input: {
       : "That option is no longer available at the current rates and position. Start a new investigation.");
   }
 
+  const proposalFloor = liveFloor ?? capacity?.floor ?? null;
   const compiled = compileProposal({
-    candidate, scope, observations, floor: capacity?.floor ?? null, now,
+    candidate, scope, observations, floor: proposalFloor, now,
   });
   if (!compiled.ok) {
     throw new ResearchError("compile_failed", compileMessage(compiled.reason));
@@ -311,15 +312,15 @@ export async function proposeWorkflow(input: {
    */
   try {
     const record = await journal.create({
-      scope, server: input.server, objective: candidate.label, messages: prior.messages,
-      assumptions, constraints: capacity ? [`Health factor at or above ${capacity.floor}`] : [],
-      floor: capacity?.floor ?? null, steps: compiled.steps,
+      scope, candidateId: input.candidateId, server: input.server, objective: candidate.label, messages: prior.messages,
+      assumptions, constraints: proposalFloor ? [`Health factor at or above ${proposalFloor}`] : [],
+      floor: proposalFloor, steps: compiled.steps,
       slippageAccepted: prior.evidence?.slippageAccepted === true,
     });
     void appendAudit({
       at: now, subject: input.subject, action: "proposed",
       workflowId: record.proposal.id, digest: record.proposal.digest,
-      floor: capacity?.floor ?? null,
+      floor: proposalFloor,
     });
     return workflowView(record);
   } catch (error) {

@@ -289,6 +289,8 @@ export function stepFundingPreview(step: ProposalStep): StepFundingPreview {
 
 export interface WorkflowProposal {
   id: string;
+  /** The candidate explicitly selected from the sealed investigation. Display metadata only. */
+  candidateId?: string;
   revision: number;
   digest: string;
   scope: InvestigationScope;
@@ -347,6 +349,7 @@ export interface WorkflowRecord {
 /** No tool arguments or signing authority may be supplied back by the browser. */
 export interface WorkflowView {
   id: string;
+  candidateId?: string;
   revision: number;
   digest: string;
   status: WorkflowRecord["status"];
@@ -380,7 +383,7 @@ function buildWorkflowView(record: WorkflowRecord): WorkflowView {
   const venue = swapStep?.args.venue;
   const tokenOut = swapStep?.args.token_out;
   const minOut = swapStep?.args.min_out;
-  return { id: p.id, revision: p.revision, digest: p.digest, status: record.status, objective: p.objective,
+  return { id: p.id, ...(p.candidateId ? { candidateId: p.candidateId } : {}), revision: p.revision, digest: p.digest, status: record.status, objective: p.objective,
     expiresAt: p.expiresAt, assumptions: p.assumptions, constraints: p.constraints, message: record.message,
     slippageAccepted: p.slippageAccepted === true,
     ...(swapStep && (venue === "aquarius" || venue === "soroswap") && typeof tokenOut === "string" && typeof minOut === "string"

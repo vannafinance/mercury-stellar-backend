@@ -8,6 +8,8 @@ import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { candidateId, REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { researchCodec } from "@/lib/copilot/investigation/continuation";
 import type { Observation } from "@/lib/copilot/investigation/types";
+import { planCandidateId } from "@/lib/copilot/investigation/plan";
+import type { ProposedPlan } from "@/lib/copilot/investigation/types";
 
 /**
  * Propose must compile from sealed investigation evidence when that bundle is
@@ -122,6 +124,24 @@ beforeEach(() => {
 });
 
 describe("proposeWorkflow evidence reuse", () => {
+  it("keeps a composed plan's risk floor even when public capacity is withheld", async () => {
+    const plan: ProposedPlan = { title: "Borrow and supply", rationale: "Supply at the observed Blend rate", evidenceIds: ["e2"], legs: [
+      { op: "borrow", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "borrow 1 BLUSDC" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+    ] };
+    const evidence = compactResearchEvidence(evidenceObservations(), null, NOW);
+    evidence.plans = [plan];
+    evidence.floor = "1.7";
+    evidence.position = { grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, floor: "1.7", issue: null };
+    evidence.allowedCandidateIds = [planCandidateId(plan)];
+    const view = await proposeWorkflow({
+      continuation: researchCodec(SECRET, SERVER, () => NOW).seal(SCOPE, ["borrow 1 BLUSDC and supply it to Blend, keep HF above 1.7"], null, evidence),
+      candidateId: planCandidateId(plan), subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp: { call: vi.fn() }, signal: new AbortController().signal, now: NOW,
+    });
+    expect(view.steps.map(step => [step.op, step.asset, step.amount])).toEqual([["borrow", "BLUSDC", "1"], ["supply_blend", "BLUSDC", "1"]]);
+    expect((await harness.store.read(""))?.value.proposal.floor).toBe("1.7");
+  });
   it("compiles from sealed evidence without a second market or snapshot read", async () => {
     const mcp = { call: vi.fn(async () => { throw new Error("MCP should not be called when evidence is fresh"); }) };
     const view = await proposeWorkflow({
@@ -132,6 +152,8 @@ describe("proposeWorkflow evidence reuse", () => {
     expect(mcp.call).not.toHaveBeenCalled();
     expect(harness.computeBorrowCapacity).not.toHaveBeenCalled();
     expect(validateWorkflowRisk).not.toHaveBeenCalled();
+    expect(view.candidateId).toBe(candidateId("borrow_supply", "BLUSDC"));
+    expect((await harness.store.read(""))?.value.proposal.candidateId).toBe(view.candidateId);
     expect(view.status).toBe("proposed");
     expect(view.steps.map((step) => step.op)).toEqual(["borrow", "supply_blend"]);
     expect(view.steps[0].amount).toBe(view.steps[1].amount);

@@ -10,12 +10,14 @@ const RUNNING = new Set(["approved", "running", "awaiting_signature"]);
 export function runningPlan(opts: {
   status: string | null | undefined;
   candidateId: string | null | undefined;
+  workflowCandidateId?: string | null;
   feasible: ReadonlyArray<{ id: string; label: string }> | null | undefined;
 }): { letter: string; title: string } | null {
   const feasible = opts.feasible ?? [];
   // A single option has nothing to be told apart from.
-  if (!opts.status || !RUNNING.has(opts.status) || !opts.candidateId || feasible.length < 2) return null;
-  const index = feasible.findIndex((candidate) => candidate.id === opts.candidateId);
+  const candidateId = opts.workflowCandidateId ?? opts.candidateId;
+  if (!opts.status || !RUNNING.has(opts.status) || !candidateId || feasible.length < 2) return null;
+  const index = feasible.findIndex((candidate) => candidate.id === candidateId);
   return index < 0 ? null : { letter: String.fromCharCode(65 + index), title: feasible[index].label };
 }
 

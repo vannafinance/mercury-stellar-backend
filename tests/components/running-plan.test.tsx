@@ -15,6 +15,12 @@ const turns: ThreadTurn[] = [
 ];
 
 describe("the chosen plan's running presentation", () => {
+  it("uses the journal's selection after local component selection is lost on restore", () => {
+    expect(runningPlan({ status: "awaiting_signature", candidateId: null,
+      workflowCandidateId: "second", feasible: options })).toEqual({ letter: "B", title: "Supply BLUSDC" });
+    expect(runningPlan({ status: "running", candidateId: "first",
+      workflowCandidateId: "second", feasible: options })).toEqual({ letter: "B", title: "Supply BLUSDC" });
+  });
   it("uses the selected candidate's position rather than its wording", () => {
     expect(runningPlan({ status: "running", candidateId: "second", feasible: options })).toEqual({ letter: "B", title: "Supply BLUSDC" });
     expect(runningPlanText({ letter: "B", title: "Supply BLUSDC." })).toBe("Running Plan B: Supply BLUSDC.");

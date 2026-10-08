@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import fixture from "@/docs/copilot/risk-engine-live-fixture.json";
+import fixture from "@/tests/fixtures/risk-engine-live-fixture.json";
 import { valueCollateral, type CollateralPosition } from "@/lib/copilot/investigation/valuation";
 import { decimalWad, formatWad, WAD } from "@/lib/copilot/investigation/fixed";
 

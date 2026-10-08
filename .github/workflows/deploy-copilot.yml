@@ -3,8 +3,8 @@ name: Deploy copilot
 # copilot-upgrade → Cloud Run service vanna-copilot-dev → test.copilot.vanna.finance
 #
 # Mirrors deploy-dev.yml exactly, but targets its own Cloud Run service and
-# domain. This is a fully separate deploy: it only fires on pushes to
-# copilot-upgrade, never on dev or main, and vanna-copilot-dev is a distinct
+# domain. Deployment requires an explicit manual workflow dispatch.
+# vanna-copilot-dev is a distinct
 # Cloud Run service from vanna-app-dev/vanna-app-prod — a deploy here never
 # touches, restarts, or rolls back either of those. They share only the GCP
 # project (vanna-main), the Artifact Registry repo, and the Secret Manager
@@ -16,15 +16,6 @@ name: Deploy copilot
 # copilot-upgrade's WorkOS Connect OAuth wiring.
 
 on:
-  push:
-    branches: [copilot-upgrade]
-    paths-ignore:
-      - "infra/**"
-      - "**/*.md"
-      - ".gitattributes"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/deploy-dev.yml"
-      - ".github/workflows/deploy-prod.yml"
   workflow_dispatch:
 
 permissions:

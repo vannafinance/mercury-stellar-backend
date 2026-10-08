@@ -5866,10 +5866,11 @@ export function CopilotWorkspace() {
               sessionSigning={sessionSigning}
               hideReceiptFor={cardDrawsRun ? workflow.view?.id ?? null : null}
               runningPlanText={(() => {
-                if (!cardDrawsRun || selectedPlan?.continuation !== investigation.result?.continuation) return null;
+                if (!cardDrawsRun) return null;
                 const running = runningPlan({
                   status: workflow.view?.status,
-                  candidateId: selectedPlan?.id,
+                  workflowCandidateId: workflow.view?.candidateId,
+                  candidateId: selectedPlan?.continuation === investigation.result?.continuation ? selectedPlan?.id : null,
                   feasible: investigation.result?.candidates?.feasible,
                 });
                 return running ? runningPlanText(running) : null;
