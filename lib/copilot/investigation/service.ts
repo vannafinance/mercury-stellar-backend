@@ -1,4 +1,5 @@
 import type { MCPClient } from "../mcp-client";
+import { reuseTerminalReadFailures } from "./terminal-read-cache";
 import type { ResearchModel, InvestigationProgress, InvestigationLimits, Observation, ProposedPlan, ResearchTask } from "./types";
 import { inheritsThread, shownPlans } from "./thread-context";
 import { parseDecision } from "./decision";
@@ -340,14 +341,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   codec.seal(scope, messages, prior?.lastQuestion ?? null);
   // A function, not a value: `messages` is reset when the model reads the request as new, and a retry must see the reset one.
   const researchTask = (): ResearchTask => ({ messages, lastQuestion: prior?.lastQuestion ?? null, ...(prior?.evidence?.shown?.length ? { shown: prior.evidence.shown } : {}) });
-  const scopedMcp: Pick<MCPClient, "call"> = { call: async (tool, args, userId) => {
+  const scopedMcp: Pick<MCPClient, "call"> = reuseTerminalReadFailures({ call: async (tool, args, userId) => {
     const data = await dependencies.mcp.call(tool, args, userId);
     if ((typeof data.smart_account === "string" && data.smart_account !== scope.smartAccount) ||
       [data.wallet_address, data.g_address].some((address) => typeof address === "string" && address !== scope.trader)) {
       throw new ResearchError("response_scope_mismatch", "An account read returned a different identity.");
     }
     return data;
-  } };
+  } });
   if (fast?.kind === "health") {
     const fromCarry = carriedNow.filter((observation) =>
       (observation.capability === "account_position" || observation.capability === "account_health")
