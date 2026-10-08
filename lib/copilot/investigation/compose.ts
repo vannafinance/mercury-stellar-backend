@@ -5,7 +5,7 @@ import { formatFactValue } from "./answer-prose";
 import { bindReplyBlocks, plainReply, REPLY_SCHEMA, replyFactContext } from "./reply-contract";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { OP_FLOW, type WorkflowOp, type WorkflowView } from "../workflow/types";
-import { resolveAssetDef } from "../registry/assets";
+import { resolveAssetDef, venueTable, venueSpellings, venueUsdc } from "../registry/assets";
 import { pct, shownApyPct } from "./apy";
 import type { RateComparison } from "./rate-comparison";
 import { doneClause } from "./completion";
@@ -41,8 +41,9 @@ Return JSON with a blocks array. A paragraph or heading has segments; bullets or
 const SYSTEM = `You write the reply a user reads in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar).
 You are given the user's question and FACTS read live from their account and the protocol. Write the answer the way a sharp, friendly analyst would reply in a chat app.
 
-Use the supplied scope, intent and fact metadata to answer the actual question. Quantity and measurement facts are different: never describe a rate or ratio as a token balance. Explain significance only where the supplied evidence supports it, without advice to trade.
+Use the supplied scope, intent and fact metadata to answer the actual question. Quantity and measurement facts are different: never describe a rate or ratio as a token balance. When the user requests a comparison or preferred option, lead with the conclusion supported by their criterion and the supplied evidence, then explain the reason. A list of observations alone does not answer a request to choose between options. Distinguish asset variants and eligibility; a higher quoted rate for another underlying asset does not establish a better return for the user's asset. If evidence cannot determine a preference, say which missing comparison prevents it. Keep supporting facts relevant to that conclusion; do not list unrelated assets, holdings or pool totals simply because they were read. An informational recommendation does not authorize a transaction or claim safety beyond the supplied evidence.
 Warnings identify unavailable data. Answer only from the supplied verified facts, make relevant limitations clear, and never describe partial observations as a complete account or market assessment. Unavailable prices do not invalidate successfully observed rates; a rate comparison does not authorize an allocation or transaction.
+The context's venueAssets is the registry of supported underlying assets, venueSpellings maps venue-local symbols to their actual asset identities, and venueUsdc identifies the sole USDC variant supported by single-variant venues. Use them to establish eligibility before comparing rates. An asset absent from a venue's supported list cannot be supplied there directly. Do not treat similarly named variants as interchangeable or assume a conversion; its costs and feasibility are separate evidence.
 ${PRESENTATION}`;
 
 const PLANS_SYSTEM = `You write the reply shown above a set of plan cards in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). The cards already show every step and figure; your words help the user choose, the way a thoughtful analyst would explain options in a chat app.
@@ -279,7 +280,8 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
     user = JSON.stringify({
       question: request,
       facts: view.facts.map(replyFactContext),
-      context: { category: "answer", status: view.status, scope: scopeContext(view), understanding: view.understanding, warnings: view.warnings },
+      context: { category: "answer", status: view.status, scope: scopeContext(view), understanding: view.understanding, warnings: view.warnings,
+        venueAssets: venueTable(), venueSpellings: venueSpellings(), venueUsdc: venueUsdc() },
       draft: view.message,
     });
   } else if (composablePlans(view)) {

@@ -128,6 +128,10 @@ describe("composing a reply", () => {
     expect(out.executionAllowed).toBe(false);
     const input = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
     expect(input.context.warnings).toEqual(original.warnings);
+    // Venue-local USDC must not imply that every stable variant is eligible.
+    expect(input.context.venueAssets.find((row: { venue: string }) => row.venue === "blend").assets).toContain("BLUSDC");
+    expect(input.context.venueAssets.find((row: { venue: string }) => row.venue === "blend").assets).not.toContain("SOUSDC");
+    expect(input.context.venueUsdc).toContainEqual({ venue: "blend", usdc: "BLUSDC" });
   });
 
   it("gives up at its budget even when the model call never listens to the signal", async () => {
