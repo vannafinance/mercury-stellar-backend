@@ -102,15 +102,32 @@ describe("composing a reply", () => {
     }
   });
 
-  it("leaves plans, questionnaires, warnings and refusals to their own replies", () => {
+  it("leaves plans, questionnaires and refusals to their own replies", () => {
     expect(composable(view())).toBe(true);
-    expect(composable(view({ warnings: ["note"] }))).toBe(false);
+    expect(composable(view({ warnings: ["note"] }))).toBe(true);
     expect(composable(view({ status: "blocked" }))).toBe(false);
     expect(composable(view({ understanding: { intent: "strategy", objective: "x", constraints: [], borrowing: "unspecified" } }))).toBe(false);
     expect(composable(view({ facts: [] }))).toBe(false);
     expect(composable(view({ proposalCandidateId: "requested_actions" }))).toBe(false);
     // The contract-basis health read keeps its own reply: the composer must never state 1.83.
     expect(composable(view({ facts: [...FACTS, fact("e0:posted_health_factor", "Posted-collateral health factor", "1.83", "HF")] }))).toBe(false);
+  });
+
+  it("answers from available verified rates while retaining failed-read warnings and no execution authority", async () => {
+    const original = view({
+      originalRequest: "Compare the available lending rates",
+      facts: [fact("e0:supply_apr_pct", "Earn supply APR", "17.77", "% APR", "earn")],
+      warnings: ["asset price: data was unavailable. No value was assumed."],
+    });
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "The observed Earn supply APR is {{e0:supply_apr_pct}}." }] }));
+    const out = await composeReply(original, new AbortController().signal, generate);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(out.message).toContain("17.77% APR");
+    expect(out.warnings).toEqual(original.warnings);
+    expect(out.facts).toEqual(original.facts);
+    expect(out.executionAllowed).toBe(false);
+    const input = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
+    expect(input.context.warnings).toEqual(original.warnings);
   });
 
   it("gives up at its budget even when the model call never listens to the signal", async () => {

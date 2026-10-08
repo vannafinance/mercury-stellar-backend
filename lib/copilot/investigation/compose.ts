@@ -25,7 +25,8 @@ export const bindBlocks = bindReplyBlocks;
  * output keeps the existing verified fallback; execution authority never comes from prose.
  *
  * Scope: factual answers (a question about the account, prices, positions) and the words
- * above a strategy's plan cards. Questionnaires, refusals, warnings, direct actions and
+ * above a strategy's plan cards. Partial answers retain their unavailable-data warnings.
+ * Questionnaires, refusals and direct actions keep their replies, while
  * workflow completion has a separate composer. Other execution states keep their replies.
  */
 
@@ -41,6 +42,7 @@ const SYSTEM = `You write the reply a user reads in the chat of a DeFi copilot (
 You are given the user's question and FACTS read live from their account and the protocol. Write the answer the way a sharp, friendly analyst would reply in a chat app.
 
 Use the supplied scope, intent and fact metadata to answer the actual question. Quantity and measurement facts are different: never describe a rate or ratio as a token balance. Explain significance only where the supplied evidence supports it, without advice to trade.
+Warnings identify unavailable data. Answer only from the supplied verified facts, make relevant limitations clear, and never describe partial observations as a complete account or market assessment. Unavailable prices do not invalidate successfully observed rates; a rate comparison does not authorize an allocation or transaction.
 ${PRESENTATION}`;
 
 const PLANS_SYSTEM = `You write the reply shown above a set of plan cards in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). The cards already show every step and figure; your words help the user choose, the way a thoughtful analyst would explain options in a chat app.
@@ -249,7 +251,8 @@ export function composable(view: ResearchView): boolean {
     // Live, 29 Sep: given the contract-basis read, the model told the user "1.83" - the figure
     // the owner ruled out. Those facts are never handed to the composer.
     && !healthOnContractBasis(view.facts)
-    && !view.warnings.length
+    // Failed optional reads must not discard the facts that succeeded. The
+    // warnings remain visible and are supplied to the composer as limitations.
     && !view.questionnaire
     && !view.pendingWrite
     && !view.choices?.length
@@ -276,7 +279,7 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
     user = JSON.stringify({
       question: request,
       facts: view.facts.map(replyFactContext),
-      context: { category: "answer", status: view.status, scope: scopeContext(view), understanding: view.understanding },
+      context: { category: "answer", status: view.status, scope: scopeContext(view), understanding: view.understanding, warnings: view.warnings },
       draft: view.message,
     });
   } else if (composablePlans(view)) {
@@ -291,7 +294,7 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
   } else {
     const reason = view.status !== "researched" ? "response_state"
       : healthOnContractBasis(view.facts) ? "contract_health_basis"
-      : view.warnings.length ? "warnings" : view.questionnaire ? "questionnaire"
+      : view.questionnaire ? "questionnaire"
       : view.pendingWrite ? "pending_write" : view.choices?.length ? "choices"
       : view.proposalCandidateId ? "direct_action" : !view.facts.length ? "no_facts" : "unsupported_intent";
     compositionEvent("other", "skipped", 0, [], reason);
