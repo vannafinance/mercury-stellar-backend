@@ -197,6 +197,10 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
       if (BigInt(chain.debtWad) > BigInt(0) && BigInt(chain.balanceWad) * WAD < BigInt(chain.debtWad) * floor)
         return "The contract-valued position is already below your health-factor floor.";
     }
+    // After earlier margin steps settle, only neutral steps may remain. Funding
+    // and the live contract floor are checked above; there is no health delta
+    // to project. Keep empty-plan rejection in the sizer for actual plan sizing.
+    if (!legs.length && !project) return null;
     const projected = sizeLegs(
       { grossCollateralUsd: formatWad(BigInt(chain.balanceWad)), debtUsd: formatWad(BigInt(chain.debtWad)) },
       legs,
