@@ -55,6 +55,7 @@ ${PRESENTATION}`;
 const COMPLETION_SYSTEM = `You write the reply shown once a user's transactions have finished, in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). Say what happened and what it means now, the way a helpful analyst would confirm a completed trade in a chat app.
 You are given the user's request and FACTS: each settled step (what was done, the amount), any previously observed rates, and, when it was read after the run, the account's health factor now.
 Only supplied settled steps completed. Use workflow status and step statuses to distinguish settled, pending, failed and unsubmitted work. Rates come from the supplied sealed comparisons; they are not a new post-run read. If stopped is given, distinguish what ran from what did not. Do not invent current health or next actions.
+Connect the settled outcome to the original request and approved constraints. When a health-floor fact is supplied, include it as a fact reference and explain that it was the approved safety target for the run. Distinguish this target from freshly observed health: only health_now is a post-run observation, and a target alone does not prove the resulting health or that the whole request completed. Use your own concise wording rather than a fixed sentence.
 Write one combined summary for the whole run. Keep a single action concise; group a longer run into useful paragraphs or bullets. The renderer draws each transaction's hash, explorer link and ledger itself, so never write or repeat those. When more than one transaction settled, write one bullet per transaction, in the order given, describing what that transaction did: the renderer puts its hash and ledger at the end of the bullet at the same position. With a single transaction, one sentence is enough. Do not ask for approval or narrate waiting for signatures when the workflow is completed.
 ${PRESENTATION}`;
 
@@ -165,7 +166,7 @@ export function planFacts(view: ResearchView): {
  * A finished run's facts: each settled step from the journal (never the browser's copy), the
  * rate it earns or costs from the sealed reads, and the health factor read after it ran.
  */
-export function completionFacts(view: WorkflowView, comparisons: readonly RateComparison[], healthNow: string | null, positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number }): ResearchFact[] {
+export function completionFacts(view: WorkflowView, comparisons: readonly RateComparison[], healthNow: string | null, positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number }, healthFloor?: string | null): ResearchFact[] {
   const facts: ResearchFact[] = [];
   const add = (id: string, label: string, value: string, unit: string) =>
     facts.push({ id, label, value, unit, venue: "margin", evidenceId: "run", sourcePath: id, readAt: 0 });
@@ -190,6 +191,8 @@ export function completionFacts(view: WorkflowView, comparisons: readonly RateCo
       fact.evidenceId = "post-settlement-account-read";
     }
   }
+  if (healthFloor) facts.push({ id: "account:health_floor", label: "approved minimum health factor target", value: healthFloor,
+    unit: "HF", venue: "margin", evidenceId: "approved-proposal", sourcePath: "floor", readAt: 0, quantity: true, requiredInReply: true });
   return facts;
 }
 
@@ -203,10 +206,12 @@ export async function composeCompletion(input: {
   draft: string;
   comparisons: readonly RateComparison[];
   healthNow: string | null;
+  healthFloor?: string | null;
+  constraints?: readonly string[];
   positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number };
 }, signal: AbortSignal, generate: Generate = defaultGenerate): Promise<{ message: string; blocks: ReplyBlock[] } | null> {
   if (process.env.COPILOT_COMPOSED_REPLIES === "off") { compositionEvent("completion", "off"); return null; }
-  const facts = completionFacts(input.view, input.comparisons, input.healthNow, input.positionNow);
+  const facts = completionFacts(input.view, input.comparisons, input.healthNow, input.positionNow, input.healthFloor);
   if (!facts.length) { compositionEvent("completion", "skipped", 0, [], "no_facts"); return null; }
   const stopped = input.view.status !== "completed";
   const user = JSON.stringify({
@@ -214,7 +219,7 @@ export async function composeCompletion(input: {
     facts: facts.map(replyFactContext),
     context: { category: "completion", workflowStatus: input.view.status,
       steps: input.view.steps.map((step) => ({ op: step.op, asset: step.asset, status: step.status })),
-      rateBasis: "sealed_comparison", healthProvided: Boolean(input.healthNow) },
+      rateBasis: "sealed_comparison", healthProvided: Boolean(input.healthNow), approvedConstraints: input.constraints ?? [] },
     ...(stopped ? { stopped: { status: input.view.status } } : {}),
     draft: input.draft,
   });

@@ -74,7 +74,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       new Promise<null>((resolve) => setTimeout(() => resolve(null), HEALTH_READ_MS)),
     ]);
     const composed = await composeCompletion({
-      view, request: view.objective, draft, comparisons, healthNow: position?.healthFactor ?? null,
+      view, request: stored.value.proposal.messages?.join("\n") || view.objective, draft, comparisons,
+      healthFloor: stored.value.proposal.floor, constraints: stored.value.proposal.constraints,
+      healthNow: position?.healthFactor ?? null,
       ...(position ? { positionNow: { grossCollateralUsd: position.grossCollateralUsd, debtUsd: position.debtUsd, observedAt: Date.now() } } : {}),
     }, signal);
     if (conversationId && transactions) {

@@ -30,6 +30,18 @@ beforeEach(() => {
   m.position.mockResolvedValue({ healthFactor: "2", grossCollateralUsd: "20", debtUsd: "10" });
 });
 describe("server-owned completion route", () => {
+  it("carries the original request and approved safety target instead of only the plan title", async () => {
+    const journal = stored();
+    m.lookup.mockResolvedValue({ value: { ...journal.value, proposal: { ...journal.value.proposal,
+      messages: ["Place my idle balance and borrow safely above my chosen health floor", "Borrow SOUSDC"],
+      floor: "1.73", constraints: ["Keep my chosen safety floor"],
+    } } });
+    expect((await call({ conversationId: "conversation", healthFloor: "9", request: "fake" })).status).toBe(200);
+    expect(m.compose.mock.calls[0][0]).toMatchObject({
+      request: "Place my idle balance and borrow safely above my chosen health floor\nBorrow SOUSDC",
+      healthFloor: "1.73", constraints: ["Keep my chosen safety floor"],
+    });
+  });
   it("uses only owned journal data, anchors the fresh read and persists before returning", async () => {
     const response = await call({ conversationId: "conversation", message: "fake", replyBlocks: [{ text: "fake" }], receipt: { txHash: "fake" } });
     expect(response.status).toBe(200);

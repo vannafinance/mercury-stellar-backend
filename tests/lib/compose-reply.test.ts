@@ -265,6 +265,25 @@ describe("composing the reply once a run has finished", () => {
   const settled = { id: "s1", op: "supply_blend", asset: "XLM", amount: "5", label: "Supply 5 XLM to Blend", status: "settled" };
   const comparisons = [{ asset: "XLM", blendSupplyApr: "12" }] as never;
 
+  it("binds the approved health target separately from observed health without inventing a post-read", async () => {
+    const view = run("completed", [settled]);
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", segments: [
+      { type: "text", text: "Your approved safety target was " }, { type: "fact", factId: "account:health_floor" },
+      { type: "text", text: ". " }, { type: "fact", factId: "stepA:done" }, { type: "text", text: "." },
+    ] }] }));
+    const out = await composeCompletion({ view, request: "original request", draft: "Done.", comparisons, healthNow: null, healthFloor: "1.73" }, new AbortController().signal, generate);
+    expect(out?.message).toContain("1.73");
+    const input = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
+    expect(input.facts.find((fact: { id: string }) => fact.id === "account:health_floor")).toMatchObject({ requiredInReply: true });
+    expect(input.facts.some((fact: { id: string }) => fact.id === "account:health_now")).toBe(false);
+    expect(input.context.healthProvided).toBe(false);
+  });
+
+  it("refuses a completion that silently drops the approved safety target", async () => {
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "{{stepA:done}}." }] }));
+    expect(await composeCompletion({ view: run("completed", [settled]), request: "original", draft: "Done.", comparisons, healthNow: null, healthFloor: "1.73" }, new AbortController().signal, generate)).toBeNull();
+  });
+
   it("states the settled step in the past tense, its rate, and the health factor read after the run", () => {
     const facts = completionFacts(run("completed", [settled]), comparisons, "2.41");
     const byId = Object.fromEntries(facts.map((f) => [f.id, f.value]));
