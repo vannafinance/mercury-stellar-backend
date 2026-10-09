@@ -432,16 +432,17 @@ describe("model proposes, code disposes - end to end", () => {
      * what is posted, so they disagree permanently on any account with an unposted token. A floor the user stated
      * is a number on the Margin page they read, so the borrow is sized there (7 Oct: "borrow until HF 1.5" ended
      * at 1.81 when sized on the contract's figures): the levered option is projected to the stated 1.2 floor on the
-     * page's figures. The contract is still the one that liquidates, so its own line stays a limit: after the
-     * borrow its health factor must stay strictly above 1.10, and nobody is told a figure they never saw.
+     * page's figures. The contract also enforces the user floor before signing: after the
+     * borrow its health factor must stay strictly above the same 1.2 floor.
      */
     const levered = view.candidates?.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM");
     expect(levered).toBeTruthy();
     const last = levered!.legs.at(-1)!;
-    expect(Number(last.healthFactorAfter)).toBeCloseTo(1.2, 3);
-    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.2, 3);
+    expect(Number(last.healthFactorAfter)).toBeGreaterThan(1.2);
+    expect(Number(levered!.finalHealthFactor)).toBeGreaterThan(1.2);
     const contractAfter = (6457.32 + Number(last.grossAfterUsd) - 6605.84) / (5110.67 + Number(last.debtAfterUsd) - 5102.54);
-    expect(contractAfter).toBeGreaterThan(1.1);
+    expect(contractAfter).toBeGreaterThan(1.2);
+    expect(contractAfter).toBeLessThan(1.2005);
     // The gap is stated as what it is - $6,605.84 − $6,457.32 of unposted collateral.
     // Logged server-side as `unposted_collateral`, not a note on the card: the plans above are already sized
     // from the contract, which is the part the user needs.

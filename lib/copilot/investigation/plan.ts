@@ -23,7 +23,7 @@ import { venueRefusal, type NamedOpAsset } from "./named-op-assets";
 import { candidateId, isCandidateId } from "./candidate-id";
 import { dustWalletHoldingsFrom, freshPrices, holdingsAfterReserves, spendableWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
 import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
-import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
+import { decimalWad, formatWad, mulDown, uint256, WAD, ZERO } from "./fixed";
 import { pct, planApy, type RateKind } from "./apy";
 import type { RateComparison } from "./rate-comparison";
 import { displayHealthFactors, LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
@@ -552,9 +552,13 @@ function protocolBorrowCeilingUsd(ctx: PlanContext, asset: string, price: bigint
   if (price === undefined) return null;
   const read = [...ctx.observations].reverse().find((o) =>
     o.capability === "max_borrow" && o.status === "ok" && o.data && o.args.asset === asset && ctx.now - o.observedAt <= 60_000);
-  const human = read?.data?.max_borrow_human;
-  if (!read || typeof human !== "string") return null;
-  try { return { usd: mulDown(mulDown(decimalWad(human), price, WAD), POOL_CEILING_MARGIN, WAD), tokens: human,
+  if (!read) return null;
+  try {
+    // MCP Decimal serialization can produce 0E-18. Use its exact integer WAD
+    // representation when supplied, preserving a zero ceiling through recompilation.
+    const amount = read.data?.max_borrow_wad !== undefined
+      ? uint256(read.data.max_borrow_wad) : decimalWad(read.data?.max_borrow_human);
+    return { usd: mulDown(mulDown(amount, price, WAD), POOL_CEILING_MARGIN, WAD), tokens: formatWad(amount),
     evidenceId: read.id, readAt: read.observedAt,
     ...(typeof read?.data?.limiting_factor === "string" ? { limitingFactor: read.data.limiting_factor } : {}),
   }; } catch { return null; }
@@ -1604,6 +1608,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         };
         throw refusal;
       }
+      if (ceiling && amountUsd === "max" && ceiling.usd <= ZERO) {
+        throw new Reject(d.name, `the protocol currently allows no additional borrowing of ${d.leg.asset}`);
+      }
       const cap = ceiling && amountUsd === "max"
         ? (d.capUsd === undefined || ceiling.usd < decimalWad(d.capUsd) ? formatWad(ceiling.usd) : d.capUsd)
         : d.capUsd;
@@ -1626,19 +1633,21 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * the page and not for the contract), the borrow is sized on the page's figures, so "borrow until HF 1.5"
      * ends at 1.5 where they will look, not at 1.81 (7 Oct, live). The contract is still the one that
      * liquidates, so it stays a hard limit without a word to the user: the same legs are sized at the
-     * contract's own line (strictly above 1.10, measured), and no borrow may exceed what that allows or
-     * breach it. With no floor stated there is no page figure to honour and the contract's figures stand.
+     * contract's user floor as well as its liquidation line. The workflow validates that same user floor
+     * against contract state before signing; a plan sized only to the contract's line would be born invalid.
+     * With no floor stated there is no page figure to honour and the contract's figures stand.
      */
     const disputed = capacity.issue?.reason === "sizing_sources_disagree" ? capacity.issue : null;
     const borrows = marginDrafts.some((d) => OP_FLOW[d.leg.op].from === "debt");
     const onThePage = borrows && canLowerHealth && capacity.floor !== null && disputed !== null ? disputed.app : null;
     let sizedRequests = requests;
     if (onThePage) {
-      const atTheLine = sizeLegs({ grossCollateralUsd: capacity.grossCollateralUsd, debtUsd: capacity.debtUsd }, requests, CONTRACT_LINE_FLOOR);
+      const contractFloor = decimalWad(capacity.floor!) > decimalWad(CONTRACT_LINE_FLOOR) ? capacity.floor! : CONTRACT_LINE_FLOOR;
+      const atTheLine = sizeLegs({ grossCollateralUsd: capacity.grossCollateralUsd, debtUsd: capacity.debtUsd }, requests, contractFloor);
       if (!atTheLine.ok) {
         throw new Reject(atTheLine.failingLeg, atTheLine.reason === "no_capacity_at_floor"
-          ? "the protocol allows no more borrowing on this account, whatever floor you keep"
-          : "the protocol would not accept this borrow: it would take the account to its own liquidation line");
+          ? "the contract-valued position leaves no borrowing headroom at the required health-factor floor"
+          : "the protocol would not accept this borrow: it would breach the required health-factor floor");
       }
       sizedRequests = requests.map((request, i) => {
         if (request.amountUsd !== "max") return request;

@@ -15,6 +15,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { sizeLegs } from "@/lib/copilot/investigation/sizing";
 import { resolvePlans, planCandidateId, withSharedLiteralAmount } from "@/lib/copilot/investigation/plan";
 import { mergeCandidateSets, generateCandidates } from "@/lib/copilot/investigation/candidates";
 import { compareObservedRates } from "@/lib/copilot/investigation/rate-comparison";
@@ -727,7 +728,7 @@ describe("resolvePlans - the 13 Sep prompt gets its options", () => {
  * 7 Oct, live: "how much more USDC can I borrow before my health factor drops to 1.5" came back as a borrow of
  * $1,381 ending at 1.81. The Margin page said 2.37 (it counts $1,049 the contract does not: a token balance held
  * in the account and pool receipts), and the borrow was sized on the contract's 1.84 instead. The page is what the
- * user reads, so a stated floor is sized on it; the contract's liquidation line stays a limit nobody is told about.
+ * user reads. Its projection remains displayed, but the contract must also retain the stated floor checked before signing.
  */
 describe("resolvePlans - a stated floor is sized on the Margin page when it disagrees with the contract", () => {
   const contract = { grossCollateralUsd: "3694.71", debtUsd: "2002.01" };
@@ -739,23 +740,43 @@ describe("resolvePlans - a stated floor is sized on the Margin page when it disa
   const borrow = (title: string, sizing: ProposedPlan["legs"][number]["sizing"] = { kind: "to_floor" }) =>
     [plan(title, [{ op: "borrow", asset: "XLM", sizing }])];
 
-  it("ends a borrow to the floor at the floor the user named, as the page shows it", () => {
+  it("prepares a maximum that also passes the workflow's contract-valued user floor", () => {
     const { candidates, rejected } = resolvePlans(borrow("Borrow to 1.5"), disputed("1.5"));
     expect(rejected).toEqual([]);
-    // (4743.78 - 1.5 x 2002.01) / 0.5 = 3,480.5 on the page; on the contract's own figures it was 1,383.
-    expect(Number(candidates[0].legs[0].amountUsd)).toBeGreaterThan(3_470);
-    expect(Number(candidates[0].legs[0].amountUsd)).toBeLessThan(3_481);
-    expect(Number(candidates[0].finalHealthFactor)).toBeCloseTo(1.5, 2);
+    const amountUsd = candidates[0].legs[0].amountUsd;
+    const validation = sizeLegs(contract, [{ op: "borrow", label: "Borrow", amountUsd }], "1.5");
+    expect(validation.ok).toBe(true);
+    if (validation.ok) expect(Number(validation.finalHealthFactor)).toBeGreaterThan(1.5);
+  });
+
+  it("retains a zero protocol ceiling serialized in scientific notation", () => {
+    const context = { ...disputed("1.5"), observations: [...OBSERVATIONS, obs("e20", "max_borrow", { max_borrow_human: "0E-18", max_borrow_wad: "0", limiting_factor: "pool_utilization_cap" }, { asset: "XLM" })] };
+    const maximum = resolvePlans(borrow("Borrow maximum"), context);
+    expect(maximum.candidates).toEqual([]);
+    expect(maximum.rejected[0].reason).toContain("the protocol currently allows no additional borrowing of XLM");
+    const literal = resolvePlans(borrow("Borrow a stated amount", { kind: "literal", amount: "10", sourceQuote: "borrow 10 XLM" }), { ...context, messages: ["borrow 10 XLM"] });
+    expect(literal.candidates).toEqual([]);
+    expect((literal.rejected[0] as unknown as { borrowLimit?: { maximumAmount: string } }).borrowLimit?.maximumAmount).toBe("0");
+  });
+
+  it("caps a page-sized borrow at the same floor on the contract", () => {
+    const { candidates, rejected } = resolvePlans(borrow("Borrow to 1.5"), disputed("1.5"));
+    expect(rejected).toEqual([]);
+    // The page allows $3480.5, but pre-signing enforces the user's floor on the contract too.
+    const amount = Number(candidates[0].legs[0].amountUsd);
+    expect(amount).toBeGreaterThan(1_380);
+    expect(amount).toBeLessThan(1_383);
+    expect(Number(candidates[0].finalHealthFactor)).toBeGreaterThan(1.5);
+    expect((3694.71 + amount) / (2002.01 + amount)).toBeGreaterThan(1.5);
   });
 
   it("never lets the page's figures take a borrow past what the contract itself allows", () => {
-    // On the page a floor of 1.12 would allow ~20,800; the contract's line (strictly above 1.10) stops it near 14,900.
+    // The contract's user floor is stricter than the liquidation line.
     const { candidates } = resolvePlans(borrow("Borrow to 1.12"), disputed("1.12"));
     const usd = Number(candidates[0].legs[0].amountUsd);
-    expect(usd).toBeGreaterThan(14_000);
-    expect(usd).toBeLessThan(14_950);
-    // Still above the floor on the page, and above the contract's line there: (3694.71 + x) / (2002.01 + x) > 1.10.
-    expect((3694.71 + usd) / (2002.01 + usd)).toBeGreaterThan(1.1);
+    expect(usd).toBeGreaterThan(12_080);
+    expect(usd).toBeLessThan(12_110);
+    expect((3694.71 + usd) / (2002.01 + usd)).toBeGreaterThan(1.12);
     expect(Number(candidates[0].finalHealthFactor)).toBeGreaterThan(1.12);
   });
 
@@ -773,8 +794,12 @@ describe("resolvePlans - a stated floor is sized on the Margin page when it disa
     const withCeiling = { ...disputed("1.5"), observations: [...OBSERVATIONS, obs("e20", "max_borrow", { max_borrow_human: "9000", limiting_factor: "pool_utilization_cap" }, { asset: "XLM" })] };
     const { candidates, rejected } = resolvePlans(borrow("Borrow to 1.5"), withCeiling);
     expect(rejected).toEqual([]);
-    // Sized a tenth of a percent inside the ceiling ($1,620 x 0.999): the pool's utilization moves with every ledger.
-    expect(Number(candidates[0].legs[0].amountUsd)).toBeCloseTo(1_618.38, 1);
+    // The tighter contract floor binds before this pool ceiling.
+    expect(Number(candidates[0].legs[0].amountUsd)).toBeLessThan(1_383);
+    // A smaller protocol ceiling still binds when it is the tighter constraint.
+    const smaller = resolvePlans(borrow("Borrow to 1.5"), { ...withCeiling, observations: [...OBSERVATIONS, obs("e21", "max_borrow", { max_borrow_human: "1000", limiting_factor: "pool_utilization_cap" }, { asset: "XLM" })] });
+    expect(smaller.rejected).toEqual([]);
+    expect(Number(smaller.candidates[0].legs[0].amountUsd)).toBeCloseTo(179.82, 1);
     // An amount over the ceiling is refused with the ceiling, not shown and then refused by the pool.
     const over = resolvePlans(
       [plan("Borrow a lot", [{ op: "borrow", asset: "XLM", sizing: { kind: "literal", amount: "20000", sourceQuote: "borrow 20000 XLM" } }])],
