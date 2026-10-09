@@ -203,8 +203,9 @@ export function useInvestigation(wallet: string | null) {
       progress: null, error: null, turns: thread.turns, conversationId: thread.conversationId,
       resultOrigin: "restored",
     });
-    rememberLive(owner, thread.turns, thread.conversationId);
-  }, [rememberLive]);
+    // Opening an existing transcript is navigation, not new conversation activity.
+    // Keep its list position and server-owned timestamps until a new turn is recorded.
+  }, []);
 
   /**
    * The wallet comes from a store that can report `null` for a render or two while it
@@ -231,14 +232,13 @@ export function useInvestigation(wallet: string | null) {
     sequence.current += 1;
     const listed = wallet ? readStoredConversations(wallet) : [];
     const stored = wallet ? readStoredThread(wallet) : null;
-    const liveId = stored?.conversationId && !isLocalConversationId(stored.conversationId)
-      ? stored.conversationId : LIVE_CONVERSATION_ID;
+    const liveId = stored?.conversationId ?? LIVE_CONVERSATION_ID;
     let seeded = stored?.turns.some((turn) => turn.role === "user")
       ? upsertConversation(listed, {
           id: liveId,
           title: titleFromTurns(stored.turns),
           createdAt: listed.find((item) => item.id === liveId)?.createdAt ?? Date.now(),
-          updatedAt: Date.now(),
+          updatedAt: listed.find((item) => item.id === liveId)?.updatedAt ?? Date.now(),
         })
       : listed;
     /**

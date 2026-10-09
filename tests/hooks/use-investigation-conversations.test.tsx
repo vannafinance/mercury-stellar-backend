@@ -83,6 +83,35 @@ beforeEach(() => {
 });
 
 describe("useInvestigation - conversations", () => {
+  it("opens existing chats without changing their activity order or timestamps", async () => {
+    server([]);
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await waitFor(() => expect(result.current.conversations.length).toBe(2));
+    const before = result.current.conversations;
+    await act(async () => { await result.current.open("c-older"); });
+    expect(result.current.conversationId).toBe("c-older");
+    expect(result.current.conversations).toEqual(before);
+    await act(async () => { await result.current.open("c-newer"); });
+    expect(result.current.conversations).toEqual(before);
+  });
+
+  it("preserves cached activity when archiving and reopening a chat on reload", async () => {
+    server([]);
+    const local = { id: "local:older", title: "lend 5 XLM", createdAt: 500, updatedAt: 500 };
+    sessionStorage.setItem(`vanna.copilot.conversations.${WALLET}`, JSON.stringify([...SUMMARIES, local]));
+    sessionStorage.setItem(`vanna.copilot.thread.${WALLET}`, JSON.stringify({
+      wallet: WALLET, turns: [{ role: "user", text: local.title }],
+      continuation: null, result: null, conversationId: local.id,
+    }));
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await waitFor(() => expect(result.current.conversations.length).toBe(3));
+    expect(result.current.conversations.at(-1)).toEqual(local);
+    const before = result.current.conversations;
+    await act(async () => { await result.current.open(local.id); });
+    expect(result.current.conversationId).toBe(local.id);
+    expect(result.current.conversations).toEqual(before);
+  });
+
   it("keeps the last selected chat when an older open request resolves late", async () => {
     server([]);
     const original = globalThis.fetch;
