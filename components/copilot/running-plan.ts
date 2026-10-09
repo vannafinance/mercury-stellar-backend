@@ -14,9 +14,8 @@ export function runningPlan(opts: {
   feasible: ReadonlyArray<{ id: string; label: string }> | null | undefined;
 }): { letter: string; title: string } | null {
   const feasible = opts.feasible ?? [];
-  // A single option has nothing to be told apart from.
   const candidateId = opts.workflowCandidateId ?? opts.candidateId;
-  if (!opts.status || !RUNNING.has(opts.status) || !candidateId || feasible.length < 2) return null;
+  if (!opts.status || !RUNNING.has(opts.status) || !candidateId || !feasible.length) return null;
   const index = feasible.findIndex((candidate) => candidate.id === candidateId);
   return index < 0 ? null : { letter: String.fromCharCode(65 + index), title: feasible[index].label };
 }

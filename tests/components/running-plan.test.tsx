@@ -36,9 +36,11 @@ describe("the chosen plan's running presentation", () => {
     expect(runningPlan({ status, candidateId: "second", feasible: options })).toBeNull();
   });
 
-  it("does not infer a selection or label a single option", () => {
+  it("does not infer an unknown selection", () => {
     expect(runningPlan({ status: "running", candidateId: "unknown", feasible: options })).toBeNull();
-    expect(runningPlan({ status: "running", candidateId: "first", feasible: options.slice(0, 1) })).toBeNull();
+  });
+  it("replaces ready-for-review prose when the only selected plan is running", () => {
+    expect(runningPlan({ status: "running", candidateId: "first", feasible: options.slice(0, 1) })).toEqual({ letter: "A", title: "Lend XLM" });
   });
 
   it("replaces only the current run's comparison, then restores it when the override ends", () => {
