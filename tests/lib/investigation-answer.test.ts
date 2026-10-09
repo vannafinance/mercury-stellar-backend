@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+
+it("preserves the specific investigation blocker instead of a generic capability message", () => {
+  expect(strategyReply({ status: "blocked", facts: [], candidates: null, capacity: null, question: null,
+    blockedReason: "The requested venue does not support this token." })).toBe("The requested venue does not support this token.");
+});
 import { normalizeResearchFacts } from "@/lib/copilot/investigation/normalize";
 import { strategyReply } from "@/lib/copilot/investigation/answer";
 import { generateCandidates } from "@/lib/copilot/investigation/candidates";

@@ -239,7 +239,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
   {
     name: "clarify",
     description:
-      "Ask ONE material question that no read can settle and that changes what would be executed.",
+      "Ask ONE material question about an input the user did not specify that no read can settle. A known unsupported operation/asset is a capability refusal: use blocked, not a question asking permission to substitute another asset or venue.",
     parameters: {
       type: "object",
       properties: {
@@ -293,7 +293,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
   },
   {
     name: "blocked",
-    description: "Stop because of a specific limitation or missing evidence that cannot be read.",
+    description: "Stop because of a specific limitation or missing evidence that cannot be read. For a registry-proven unsupported requested action, explain it concisely without requesting an alternative or a changed action.",
     parameters: {
       type: "object",
       properties: { reason: { type: "string" } },

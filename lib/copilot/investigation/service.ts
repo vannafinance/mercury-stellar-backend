@@ -1513,6 +1513,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         originalRequest: messages[0],
         statedSteps: requestedSteps,
         stopReason: outcome.kind === "stopped" ? outcome.reason : null,
+        blockedReason: outcome.kind === "blocked" ? outcome.reason : null,
         comparisons: planComparisons,
         venuesAllowed: outcome.kind === "research_complete" ? anchoredVenueRows(outcome.goal, messages) : undefined,
       });

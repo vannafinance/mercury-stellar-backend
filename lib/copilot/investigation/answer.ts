@@ -350,6 +350,8 @@ export function strategyReply(input: {
   venuesAllowed?: ReadonlyArray<{ op: import("../workflow/types").WorkflowOp; whyNotUsed?: string }>;
   /** Why the loop stopped, when it did - an `incomplete` turn reads differently for each. */
   stopReason?: string | null;
+  /** The model's specific capability/evidence blocker, not a missing user choice. */
+  blockedReason?: string | null;
 }): string {
   const top = input.candidates?.feasible[0];
   /**
@@ -457,7 +459,7 @@ export function strategyReply(input: {
       : "I’ve checked the available information. One point needs your input before a plan can be prepared.";
   }
   if (input.status === "blocked") {
-    return "I couldn’t complete this investigation with the available capabilities and information.";
+    return input.blockedReason || "I couldn’t complete this investigation with the available capabilities and information.";
   }
   if (input.status === "incomplete") {
     /**
