@@ -245,6 +245,12 @@ describe("composing the words above plan cards", () => {
     expect(facts.some((f) => f.value === "1.83")).toBe(false);
   });
 
+  it("leaves the single card unlettered while keeping its fact identities stable", () => {
+    const { facts, plans } = planFacts(strategy({ candidates: { feasible: [plan({})], rejected: [] } } as Partial<ResearchView>));
+    expect(plans[0].plan).toBeNull();
+    expect(facts.find(fact => fact.id === "planA:name")?.value).toBe("Lend idle SOUSDC to Earn");
+  });
+
   it("composes a strategy's plans but leaves a direct action's execution alone", async () => {
     expect(composablePlans(strategy())).toBe(true);
     expect(composablePlans(strategy({ proposalCandidateId: "requested_actions" }))).toBe(false);
