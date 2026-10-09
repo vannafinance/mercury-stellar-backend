@@ -782,6 +782,10 @@ describe("resolvePlans - a stated floor is sized on the Margin page when it disa
     );
     expect(over.candidates).toEqual([]);
     expect(over.rejected[0].reason).toMatch(/the most the protocol lets this account borrow of XLM right now is 9000 XLM/);
+    expect((over.rejected[0] as unknown as { borrowLimit: unknown }).borrowLimit).toEqual({
+      asset: "XLM", requestedAmount: "20000", maximumAmount: "9000", evidenceId: "e20", readAt: NOW,
+      limitingFactor: "pool_utilization_cap",
+    });
   });
 
   it("changes nothing when the page and the contract agree, or when no floor was stated", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateCandidates, spendableWalletUsdFrom, plansBorrow, rankFeasible, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom } from "@/lib/copilot/investigation/candidates";
+import { generateCandidates, mergeCandidateSets, spendableWalletUsdFrom, plansBorrow, rankFeasible, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom } from "@/lib/copilot/investigation/candidates";
 import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
 
@@ -31,6 +31,14 @@ function comparison(over: Partial<RateComparison> = {}): RateComparison {
 }
 
 describe("candidate generation", () => {
+  it("carries verified borrow refusal figures through the research candidate merge", () => {
+    const borrowLimit = { asset: "XLM", requestedAmount: "20000", maximumAmount: "9000", evidenceId: "e20", readAt: 1 };
+    const merged = mergeCandidateSets(null, { candidates: [], rejected: [
+      { title: "Borrow", leg: "borrow XLM", reason: "Protocol ceiling exceeded", borrowLimit },
+    ] });
+    expect(merged.feasible).toEqual([]);
+    expect(merged.rejected[0]).toMatchObject({ asset: "XLM", borrowLimit });
+  });
   it("offers nothing from the wallet, however much is held: moving the user's tokens is never volunteered", () => {
     const { feasible } = generateCandidates({ ...BASE, spendableWalletUsd: "500",
       spendableWalletByAssetUsd: { XLM: "20", BLUSDC: "480" }, spendableWalletByAssetTokens: { XLM: "100", BLUSDC: "480" },

@@ -20,6 +20,16 @@ export interface ResearchFact {
   quantity?: boolean;
 }
 
+/** Verified sizing inputs for a refused borrow, independent of its presentation. */
+export interface BorrowLimitRefusal {
+  asset: string;
+  requestedAmount: string;
+  maximumAmount: string;
+  evidenceId: string;
+  readAt: number;
+  limitingFactor?: string;
+}
+
 /**
  * The model's restatement of the request - objective, the user's own constraints, and
  * whether borrowing was permitted. Safe to show because it repeats the user's intent

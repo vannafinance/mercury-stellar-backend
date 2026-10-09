@@ -28,6 +28,53 @@ function view(over: Partial<ResearchView> = {}): ResearchView {
 }
 
 describe("binding the model's blocks", () => {
+  const refusalView = () => view({ facts: [], message: "Requested borrow exceeds the verified protocol ceiling.",
+    understanding: { intent: "strategy", objective: "Borrow", constraints: [], borrowing: "required" },
+    candidates: { feasible: [], rejected: [{ label: "Borrow", asset: "XLM", reason: "Protocol ceiling exceeded", borrowLimit: {
+      asset: "XLM", requestedAmount: "20000", maximumAmount: "9000", evidenceId: "e20", readAt: 1,
+    } }] },
+  } as unknown as Partial<ResearchView>);
+  it.each(["requested_amount", "maximum_amount"])("keeps the verified refusal when the model omits %s", async (field) => {
+    const original = refusalView();
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", segments: [
+      { type: "text", text: "The observed figure is " }, { type: "fact", factId: `refusalA:${field}` },
+    ] }] }));
+    expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
+    expect(generate).toHaveBeenCalledTimes(2);
+  });
+  it("does not replace a mixed-cause refusal with a borrow-only explanation", async () => {
+    const original = refusalView();
+    original.candidates!.rejected.push({ label: "Supply", asset: "SOUSDC", reason: "Unsupported venue" });
+    const generate = vi.fn();
+    expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
+    expect(generate).not.toHaveBeenCalled();
+  });
+  it.each(["questionnaire", "pendingWrite", "proposalCandidateId"])("does not replace an active %s with a refusal", async (field) => {
+    const original = { ...refusalView(), [field]: field === "proposalCandidateId" ? "direct" : { id: "active" } } as ResearchView;
+    const generate = vi.fn();
+    expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
+    expect(generate).not.toHaveBeenCalled();
+  });
+  it("composes a borrow refusal around both the requested amount and the observed ceiling", async () => {
+    const original = view({ originalRequest: "borrow 1000000 BLUSDC", facts: [],
+      understanding: { intent: "strategy", objective: "Borrow", constraints: [], borrowing: "required" },
+      candidates: { feasible: [], rejected: [{ label: "Borrow", asset: "BLUSDC", reason: "Protocol ceiling exceeded", borrowLimit: {
+        asset: "BLUSDC", requestedAmount: "1000000", maximumAmount: "3.44", evidenceId: "e7", readAt: 1, limitingFactor: "pool_utilization_cap",
+      } }] },
+    } as unknown as Partial<ResearchView>);
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", segments: [
+      { type: "text", text: "Your requested " }, { type: "fact", factId: "refusalA:requested_amount" },
+      { type: "text", text: " exceeds the current protocol ceiling of " }, { type: "fact", factId: "refusalA:maximum_amount" },
+      { type: "text", text: ". Nothing was submitted." },
+    ] }] }));
+    const out = await composeReply(original, new AbortController().signal, generate);
+    expect(generate).toHaveBeenCalled();
+    expect(out.message).toContain("1,000,000.00 BLUSDC");
+    expect(out.message).toContain("3.44 BLUSDC");
+    const payload = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
+    expect(payload.context.category).toBe("refusal");
+    expect(payload.facts.every((fact: { requiredInReply: boolean }) => fact.requiredInReply)).toBe(true);
+  });
   it("keeps required figures in the verified fallback for unseen wording", () => {
     expect(factualAnswer([{ ...FACTS[0], requiredInReply: true }], "Report my present account safety measure")).toContain("2.32");
   });

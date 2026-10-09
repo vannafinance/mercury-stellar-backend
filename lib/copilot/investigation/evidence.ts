@@ -184,7 +184,9 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
   // Recompilation must retain the protocol ceiling used in research, alongside the
   // user's health floor. Dropping it changes the amount on the execution card.
   if (capability === "max_borrow") {
-    return { ...(data.max_borrow_human !== undefined ? { max_borrow_human: data.max_borrow_human } : {}) };
+    return { ...(data.max_borrow_human !== undefined ? { max_borrow_human: data.max_borrow_human } : {}),
+      ...(data.limiting_factor !== undefined ? { limiting_factor: data.limiting_factor } : {}),
+    };
   }
   if (capability === "asset_price") {
     return { price_usd: data.price_usd };

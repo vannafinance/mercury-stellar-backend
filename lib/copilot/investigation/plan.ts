@@ -114,6 +114,7 @@ export interface PlanContext {
 }
 
 export interface RejectedPlan {
+  borrowLimit?: import("./view").BorrowLimitRefusal;
   title: string;
   /** Which leg failed, as "op asset", or null when the plan as a whole did. */
   leg: string | null;
@@ -503,6 +504,7 @@ function debtRows(ctx: PlanContext): Array<{ asset: string; owed: string }> {
 }
 
 class Reject extends Error {
+  borrowLimit?: import("./view").BorrowLimitRefusal;
   /**
    * `acceptable` marks a refusal the USER can lift by accepting the loss it names, as
    * opposed to one nothing they say can change (a balance that is not there, a pocket
@@ -530,7 +532,10 @@ class Reject extends Error {
 class PlanFault extends Reject {
   readonly repairable = true as const;
 }
-const repairFlag = (error: Reject) => (error instanceof PlanFault ? { repairable: true as const } : {});
+const rejectionDetails = (error: Reject) => ({
+  ...(error instanceof PlanFault ? { repairable: true as const } : {}),
+  ...(error.borrowLimit ? { borrowLimit: error.borrowLimit } : {}),
+});
 
 /**
  * Sized a tenth of a percent inside the protocol's ceiling: the pool's utilization moves with every ledger as interest
@@ -543,13 +548,16 @@ const POOL_CEILING_MARGIN = decimalWad("0.999");
  * The protocol takes the smallest of three limits (the collateral guard, the pool's free liquidity, its utilization
  * cap), so this is the one ceiling that holds whichever of them binds. Null when no fresh read was made.
  */
-function protocolBorrowCeilingUsd(ctx: PlanContext, asset: string, price: bigint | undefined): { usd: bigint; tokens: string } | null {
+function protocolBorrowCeilingUsd(ctx: PlanContext, asset: string, price: bigint | undefined): { usd: bigint; tokens: string; evidenceId: string; readAt: number; limitingFactor?: string } | null {
   if (price === undefined) return null;
   const read = [...ctx.observations].reverse().find((o) =>
     o.capability === "max_borrow" && o.status === "ok" && o.data && o.args.asset === asset && ctx.now - o.observedAt <= 60_000);
   const human = read?.data?.max_borrow_human;
-  if (typeof human !== "string") return null;
-  try { return { usd: mulDown(mulDown(decimalWad(human), price, WAD), POOL_CEILING_MARGIN, WAD), tokens: human }; } catch { return null; }
+  if (!read || typeof human !== "string") return null;
+  try { return { usd: mulDown(mulDown(decimalWad(human), price, WAD), POOL_CEILING_MARGIN, WAD), tokens: human,
+    evidenceId: read.id, readAt: read.observedAt,
+    ...(typeof read?.data?.limiting_factor === "string" ? { limitingFactor: read.data.limiting_factor } : {}),
+  }; } catch { return null; }
 }
 
 /** Just above the contract's liquidation line: it requires a health factor strictly greater than 1.10 (measured 8 Sep, 1.100000 is refused and 1.100001 is not). */
@@ -619,7 +627,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
     if (bridged) {
       try { remember(resolvePlan(bridged, ctx)); bridgedResolved = true; }
       catch (error) {
-        if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...repairFlag(error) });
+        if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...rejectionDetails(error) });
         else rejected.push({ title: bridged.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
       }
     }
@@ -630,7 +638,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
         remember(resolvePlan(candidatePlan, ctx));
         rejected.push(...accountCheck.rejected.map((entry) => ({ title: plan.title, ...entry })));
       } catch (error) {
-        if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...repairFlag(error) });
+        if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...rejectionDetails(error) });
         else rejected.push({ title: plan.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
       }
       continue;
@@ -648,7 +656,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
       // The bridged path already answers this plan's unfunded leg; its plain attempt failing
       // for want of those same funds is not a second outcome (shape matrix: 1 plan, 2 results).
       if (bridgedResolved) continue;
-      if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...repairFlag(error) });
+      if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...rejectionDetails(error) });
       else rejected.push({ title: plan.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
     }
   }
@@ -1585,7 +1593,16 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const ceiling = OP_FLOW[d.leg.op].from === "debt" ? protocolBorrowCeilingUsd(ctx, d.leg.asset, prices.get(d.leg.asset)) : null;
       const amountUsd = d.usd === "max" ? "max" : typeof d.usd === "string" ? d.usd : "0";
       if (ceiling && amountUsd !== "max" && decimalWad(amountUsd) > ceiling.usd) {
-        throw new Reject(d.name, `the most the protocol lets this account borrow of ${d.leg.asset} right now is ${ceiling.tokens} ${d.leg.asset}`);
+        const refusal = new Reject(d.name, `the most the protocol lets this account borrow of ${d.leg.asset} right now is ${ceiling.tokens} ${d.leg.asset}`);
+        const price = prices.get(d.leg.asset);
+        const places = decimals.get(d.leg.asset);
+        const converted = price !== undefined && places !== undefined ? tokensFromUsd(amountUsd, price, places) : null;
+        const requestedAmount = d.tokens ?? (converted?.ok ? converted.tokens : null);
+        if (requestedAmount !== null) refusal.borrowLimit = {
+          asset: d.leg.asset, requestedAmount, maximumAmount: ceiling.tokens, evidenceId: ceiling.evidenceId, readAt: ceiling.readAt,
+          ...(ceiling.limitingFactor ? { limitingFactor: ceiling.limitingFactor } : {}),
+        };
+        throw refusal;
       }
       const cap = ceiling && amountUsd === "max"
         ? (d.capUsd === undefined || ceiling.usd < decimalWad(d.capUsd) ? formatWad(ceiling.usd) : d.capUsd)

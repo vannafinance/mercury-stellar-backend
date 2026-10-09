@@ -59,7 +59,28 @@ Write one combined summary for the whole run. Keep a single action concise; grou
 ${PRESENTATION}`;
 
 type Generate = (system: string, user: string, signal: AbortSignal) => Promise<unknown>;
-type ReplyLane = "answer" | "plans" | "completion";
+type ReplyLane = "answer" | "plans" | "completion" | "refusal";
+
+const REFUSAL_SYSTEM = `You explain why a requested borrow could not be prepared. Lead with the requested amount versus the current protocol ceiling. Both figures must come from supplied fact references. Explain a limiting factor only when one was supplied; do not invent a collateral, liquidity or health-factor cause. The rejected plan was not submitted. Describe the ceiling as an observed protocol limit, not a promise that a smaller loan will pass all checks. Keep the explanation concise and relevant to the requested action, without listing unrelated holdings or operations. Do not invent a replacement plan or change execution authority.
+${PRESENTATION}`;
+
+function borrowRefusalContext(view: ResearchView) {
+  const rejected = view.candidates?.rejected ?? [];
+  if (view.status !== "researched" || view.candidates?.feasible.length || view.questionnaire || view.pendingWrite || view.choices?.length || view.proposalCandidateId ||
+    !rejected.length || rejected.some(row => !row.borrowLimit)) return null;
+  const facts: ResearchFact[] = [];
+  const rejections = rejected.map((row, index) => {
+    const limit = row.borrowLimit!;
+    const prefix = `refusal${String.fromCharCode(65 + index)}`;
+    for (const [field, value, label] of [
+      ["requested_amount", limit.requestedAmount, "Requested borrow"],
+      ["maximum_amount", limit.maximumAmount, "Observed protocol borrow ceiling"],
+    ]) facts.push({ id: `${prefix}:${field}`, label, value, unit: limit.asset, venue: "margin", evidenceId: limit.evidenceId,
+      sourcePath: field, readAt: limit.readAt, quantity: true, requiredInReply: true });
+    return { asset: limit.asset, limitingFactor: limit.limitingFactor ?? null, requestedFact: `${prefix}:requested_amount`, ceilingFact: `${prefix}:maximum_amount` };
+  });
+  return { facts, rejections };
+}
 
 /** Aggregatable lifecycle data only: no request text, account identifiers or fact values. */
 function compositionEvent(lane: ReplyLane | "other", outcome: "composed" | "skipped" | "off" | "refused" | "unavailable", ms = 0, blocks: readonly ReplyBlock[] = [], reason?: string) {
@@ -274,7 +295,14 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
   let user: string;
   let facts: readonly ResearchFact[];
   let lane: ReplyLane;
-  if (composable(view)) {
+  const refusal = borrowRefusalContext(view);
+  if (refusal) {
+    lane = "refusal";
+    system = REFUSAL_SYSTEM;
+    facts = refusal.facts;
+    user = JSON.stringify({ request, facts: facts.map(replyFactContext), rejections: refusal.rejections,
+      context: { category: "refusal", status: view.status, executionSubmitted: false }, draft: view.message });
+  } else if (composable(view)) {
     lane = "answer";
     system = SYSTEM;
     facts = view.facts;

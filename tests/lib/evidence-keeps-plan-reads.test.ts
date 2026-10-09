@@ -25,9 +25,9 @@ describe("sealing keeps what the plans need", () => {
   it("retains a required protocol borrow ceiling and strips unrelated payload fields", () => {
     const sealed = compactResearchEvidence([
       ...MANY,
-      obs("borrow-cap", "max_borrow", { max_borrow_human: "10", unrelated: "discard" }, { asset: "XLM" }),
+      obs("borrow-cap", "max_borrow", { max_borrow_human: "10", limiting_factor: "pool_utilization_cap", unrelated: "discard" }, { asset: "XLM" }),
     ], null, NOW, [{ capability: "max_borrow", args: { asset: "XLM" } }]);
-    expect(sealed.observations.find(o => o.capability === "max_borrow")?.data).toEqual({ max_borrow_human: "10" });
+    expect(sealed.observations.find(o => o.capability === "max_borrow")?.data).toEqual({ max_borrow_human: "10", limiting_factor: "pool_utilization_cap" });
   });
   it("keeps a required LP read past the size cap, with its share count", () => {
     const sealed = compactResearchEvidence(MANY, null, NOW, [{ capability: "farm_lp_position", args: { asset: "AQUSDC" } }]);
