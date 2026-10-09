@@ -5,14 +5,15 @@ import { verbOf } from "./plan";
 type Decided = ResearchDecision & { kind: "clarify" | "blocked" | "research_complete" };
 
 /**
- * "All idle" is never an amount the copilot may choose for you (owner, 25 Sep).
+ * A whole-wallet amount is never a size the copilot may choose for a bare instruction.
  *
  * The model sizes a stated action with no amount ("deposit xlm", "lend 20 blusdc and deposit
  * xlm") as `all_wallet`, which is the whole idle balance: live, "deposit xlm" became a deposit of
  * 7,648 XLM, and under auto-approve a direct action runs as soon as it is prepared. A stated
- * action's `all_wallet` therefore becomes a missing amount: the questionnaire asks how much, with
+ * unquoted `all_wallet` therefore becomes a missing amount: the questionnaire asks how much, with
  * the balance and Max one click away. Decided from the sizing kind alone, never from the user's
- * words, so every phrasing is covered the same way. Plans the model composes are untouched: they
+ * words. An anchored sizing quote distinguishes a user-selected whole balance from a model-selected
+ * one. Plans the model composes are untouched: they
  * always wait for Approve.
  */
 function carriedOf(goal: GoalUnderstanding): CarriedGoal | null {
@@ -22,6 +23,12 @@ function carriedOf(goal: GoalUnderstanding): CarriedGoal | null {
     ...(goal.slippageAccepted ? { slippageAccepted: goal.slippageAccepted } : {}),
   };
   return Object.keys(carried).length ? carried : null;
+}
+
+/** Preserve user-selected wallet sizing only when its provenance is anchored in the conversation. */
+function userSizedWallet(sizing: PlanLeg["sizing"], messages: readonly string[]): boolean {
+  return sizing.kind === "all_wallet" && Boolean(sizing.sourceQuote?.trim())
+    && messages.some((message) => message.includes(sizing.sourceQuote!));
 }
 
 /**
@@ -39,7 +46,7 @@ export function askForUnstatedPlanAmounts<T extends { kind: string }>(input: T, 
   const named = (outcome.goal.namedOps ?? []).filter((row) => messages.some((message) => message.includes(row.sourceQuote)));
   if (!named.length || !outcome.plans?.length) return input;
   const chosenByCopilot = (leg: PlanLeg) => named.some((row) => row.op === leg.op)
-    && (leg.sizing.kind === "all_wallet" || (leg.sizing.kind === "fraction" && Boolean(leg.sizing.allocation)));
+    && ((leg.sizing.kind === "all_wallet" && !userSizedWallet(leg.sizing, messages)) || (leg.sizing.kind === "fraction" && Boolean(leg.sizing.allocation)));
   // Alternatives: it takes every plan to be affected before the request counts as having no amount.
   if (!outcome.plans.every((plan) => plan.legs.some(chosenByCopilot))) return input;
   const missing: QuestionnaireMissing[] = [];
@@ -57,14 +64,14 @@ export function askForUnstatedPlanAmounts<T extends { kind: string }>(input: T, 
   } as unknown as T;
 }
 
-export function askForUnstatedAmounts<T extends { kind: string }>(input: T): T {
+export function askForUnstatedAmounts<T extends { kind: string }>(input: T, messages: readonly string[] = []): T {
   if (input.kind !== "clarify" && input.kind !== "research_complete") return input;
   const outcome = input as unknown as Decided;
   const split = (actions: readonly StatedAction[] | undefined) => {
     const kept: StatedAction[] = [];
     const missing: QuestionnaireMissing[] = [];
     for (const action of actions ?? []) {
-      if (action.sizing.kind === "all_wallet") {
+      if (action.sizing.kind === "all_wallet" && !userSizedWallet(action.sizing, messages)) {
         missing.push({ op: action.op, asset: action.asset, slots: ["amount"], sourceQuote: action.sourceQuote });
       } else kept.push(action);
     }

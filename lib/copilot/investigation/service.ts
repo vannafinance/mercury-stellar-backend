@@ -641,7 +641,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         openQuestions: [] as string[],
       }
     : result.outcome;
-  const outcome = askForUnstatedPlanAmounts(askForUnstatedAmounts(decided), messages);
+  const outcome = askForUnstatedPlanAmounts(askForUnstatedAmounts(decided, messages), messages);
   /**
    * A conditional or future action is refused as soon as the outcome is known, before any
    * plan read or sizing. Decided from the model's structured `goal.trigger` alone (Grok round

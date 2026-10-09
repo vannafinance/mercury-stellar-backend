@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { askForUnstatedAmounts } from "@/lib/copilot/investigation/unstated-amount";
+import { parseSizing } from "@/lib/copilot/investigation/decision";
 
 /**
  * 25 Sep, live: "lend 20 blusdc and deposit xlm" became "lend 20, then deposit 7,648 XLM", the
@@ -15,6 +16,25 @@ const lend20 = { op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount:
 const depositIdle = { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" }, sourceQuote: "deposit xlm" };
 
 describe("a stated action's all-idle amount is asked, never spent", () => {
+  it("preserves an explicitly requested wallet balance while asking for the borrow asset", () => {
+    const message = "deposit my idle XLM and borrow as much as I safely can";
+    const action = { ...depositIdle, sourceQuote: "deposit my idle XLM", sizing: { kind: "all_wallet", sourceQuote: "my idle XLM" } };
+    expect(parseSizing(action.sizing)).toEqual(action.sizing);
+    const input = { kind: "clarify", question: "Which asset?", actions: [action], missing: [{ op: "borrow", slots: ["asset"], sizing: "to_floor" }] };
+    expect(askForUnstatedAmounts(input as never, [message])).toBe(input);
+  });
+
+  it("does not trust an unanchored whole-wallet sizing quote", () => {
+    const action = { ...depositIdle, sizing: { kind: "all_wallet", sourceQuote: "my entire balance" } };
+    expect((askForUnstatedAmounts(goal([action]) as never, ["deposit xlm"]) as any).kind).toBe("clarify");
+  });
+
+  it("rejects malformed provenance and fields from other sizing modes", () => {
+    expect(parseSizing({ kind: "all_wallet", sourceQuote: "" })).toBeNull();
+    expect(parseSizing({ kind: "all_wallet", sourceQuote: "all my balance", amount: "10" })).toBeNull();
+    expect(parseSizing({ kind: "to_floor", sourceQuote: "all my balance" })).toBeNull();
+    expect(parseSizing({ kind: "all_wallet" })).toEqual({ kind: "all_wallet" });
+  });
   it("turns the idle deposit into a question and keeps the stated lend", () => {
     const out = askForUnstatedAmounts(goal([lend20, depositIdle]) as never) as unknown as {
       kind: string; actions: typeof lend20[]; missing: Array<{ op: string; asset: string; slots: string[] }>;

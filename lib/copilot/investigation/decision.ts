@@ -378,6 +378,11 @@ export function parseSizing(raw: unknown): PlanSizing | null {
       !text(value.sourceQuote, 1600)) return drop(`leverage sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
     return { kind: "leverage", multiple: value.multiple, sourceQuote: value.sourceQuote };
   }
+  if (value.kind === "all_wallet" && Object.hasOwn(value, "sourceQuote")) {
+    return exactKeys(value, ["kind", "sourceQuote"]) && text(value.sourceQuote, 1600)
+      ? { kind: "all_wallet", sourceQuote: value.sourceQuote }
+      : drop("all_wallet user sizing requires a nonempty sourceQuote and no other fields");
+  }
   if (value.kind !== "literal") return exactKeys(value, ["kind"]) ? { kind: value.kind as "all_wallet" | "all_position" | "to_floor" | "previous_leg" } : drop(`sizing ${String(value.kind)} takes no other keys, got ${Object.keys(value).join(",")}`);
   // amountAsset is optional - every non-swap leg, and the ordinary "spend" swap, omit it.
   const hasAmountAsset = Object.hasOwn(value, "amountAsset");

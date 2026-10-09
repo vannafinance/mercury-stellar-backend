@@ -146,7 +146,7 @@ export type PlanOp = WorkflowOp;
  *   literal       an amount the user typed, quoted verbatim so it can be anchored
  */
 export type PlanSizing =
-  | { kind: "all_wallet" }
+  | { kind: "all_wallet"; sourceQuote?: string }
   | { kind: "all_position" }
   | { kind: "to_floor" }
   | { kind: "previous_leg" }

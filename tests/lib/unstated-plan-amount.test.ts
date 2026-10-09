@@ -17,6 +17,13 @@ const complete = (plans: ProposedPlan[], namedOps?: Array<{ op: string; sourceQu
 const MESSAGES = ["deposit XLM"];
 
 describe("a named operation with an amount the copilot would choose", () => {
+  it("retains a named operation sized by the user's anchored whole-wallet instruction", () => {
+    const message = "supply my entire BLUSDC wallet balance";
+    const input = complete([plan("Supply", leg("lend", "BLUSDC", { kind: "all_wallet", sourceQuote: "my entire BLUSDC wallet balance" }))], [{ op: "lend", sourceQuote: message }]);
+    expect(askForUnstatedPlanAmounts(input, [message])).toBe(input);
+    const unanchored = complete([plan("Supply", leg("lend", "BLUSDC", { kind: "all_wallet", sourceQuote: "made up instruction" }))], [{ op: "lend", sourceQuote: message }]);
+    expect((askForUnstatedPlanAmounts(unanchored, [message]) as any).kind).toBe("clarify");
+  });
   it("becomes a missing amount, with the user's own sentence", () => {
     const out: any = askForUnstatedPlanAmounts(
       complete([plan("Deposit XLM", leg("deposit_collateral", "XLM", { kind: "all_wallet" }))], [{ op: "deposit_collateral", sourceQuote: "deposit XLM" }]), MESSAGES);
