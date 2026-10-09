@@ -166,6 +166,21 @@ describe("composing the words above plan cards", () => {
     ...over,
   } as Partial<ResearchView>);
 
+  it("carries operation destinations and unresolved scope into the plan reply", async () => {
+    const original = strategy({ question: "Margin debt prevents full wallet withdrawal.", candidates: {
+      feasible: [plan({ steps: [{ op: "redeem", asset: "XLM" }, { op: "blend_withdraw", asset: "XLM" }, { op: "remove_liquidity", asset: "SOUSDC" }] })], rejected: [],
+    } } as Partial<ResearchView>);
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "{{planA:name}}." }] }));
+    await composeReply(original, new AbortController().signal, generate);
+    const payload = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
+    expect(payload.plans[0].movements).toEqual([
+      { op: "redeem", from: "earn", to: "wallet" },
+      { op: "blend_withdraw", from: "blend", to: "account" },
+      { op: "remove_liquidity", from: "lp", to: "account" },
+    ]);
+    expect(payload.context.openPoint).toBe(original.question);
+  });
+
   it("names the operations the user allowed that no plan uses, and none that a plan does", () => {
     const used = strategy()?.candidates?.feasible?.[0]?.steps?.[0]?.op;
     const view = strategy({ understanding: { objective: "o", constraints: [], borrowing: "allowed", intent: "strategy", venuesAllowed: [{ op: "swap", sourceQuote: "q" }, ...(used ? [{ op: used, sourceQuote: "q" }] : [])] } } as Partial<ResearchView>);
