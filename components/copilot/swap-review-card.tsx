@@ -95,7 +95,7 @@ export function SwapIntentPreviewCard({ intent, wallet, refusal }: {
       </dl>
       {checking && <p role="status" className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-violet-500"><Loader2 size={13} className="animate-spin" /> Reading the pool…</p>}
       {!checking && wallet && !activeQuote && <p role="alert" className="mt-2 text-[12.5px] text-imperial-600">The venue did not return a quote for this amount.</p>}
-      {refusal && <p role="alert" className="mt-3 text-[12.5px] leading-5 text-imperial-600">The risk gate did not prepare this swap: {refusal} To continue at this price, state in chat that you accept the quoted loss.</p>}
+      {refusal && <p role="alert" className="mt-3 text-[12.5px] leading-5 text-imperial-600">The risk gate did not prepare this swap: {refusal}</p>}
       {!refusal && <p className="mt-3 text-[12.5px] text-vgray-500">A confirmable plan appears after account and risk checks. This estimate alone cannot execute a trade.</p>}
     </section>
   );
