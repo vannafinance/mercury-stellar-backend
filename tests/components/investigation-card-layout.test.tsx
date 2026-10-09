@@ -144,6 +144,15 @@ describe("did-you-mean choices", () => {
 });
 
 describe("one run, drawn in the plan card's place", () => {
+  it.each(["proposed", "blocked"] as const)("preserves receipt-token units in a %s plan", (status) => {
+    const workflow = { id: "units", revision: 1, digest: "d", status, objective: "Redeem Earn shares",
+      expiresAt: 0, assumptions: [], constraints: [], slippageAccepted: false, message: "Review the redemption.",
+      steps: [{ id: "redeem", op: "redeem", asset: "AQUSDC", amount: "10", label: "Redeem 10 VAQUSDC from Earn", status: "pending" }],
+    } as WorkflowView;
+    cardFor(view(), { workflow, onApprove: vi.fn() });
+    expect(screen.getByText("Redeem 10 VAQUSDC from Earn")).toBeTruthy();
+    expect(screen.queryByText("(10 AQUSDC)")).toBeNull();
+  });
   const run: WorkflowView = {
     id: "wf-1", revision: 1, digest: "d", status: "running", objective: "Supply 100 XLM to Blend",
     expiresAt: 0, assumptions: [], constraints: [], slippageAccepted: false, message: "Running step 1.",

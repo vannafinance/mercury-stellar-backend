@@ -682,7 +682,6 @@ export function InvestigationCard({
                           <span className="w-4 shrink-0 text-right tabular-nums text-vgray-400">{stepIndex + 1}</span>
                           <span className="min-w-0 break-words">
                             {step.label}
-                            <span className="tabular-nums text-vgray-500"> ({step.amount} {step.asset})</span>
                           </span>
                         </li>
                       ))}
