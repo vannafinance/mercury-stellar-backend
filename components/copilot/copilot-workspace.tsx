@@ -46,6 +46,7 @@ import {
   type SignXdrResult,
 } from "./sign-xdr";
 import { isInvestigationStale } from "./investigation-staleness";
+import { liveQuestionnaire, type QuestionnaireDismissal } from "./questionnaire-visibility";
 import {
   hopAutoSubmitKey,
   mayAutoSignJournalStep,
@@ -5657,11 +5658,19 @@ export function CopilotWorkspace() {
    * the reply that issued it and only while that reply is the latest, live one. Closing it
    * brings the chat box back for that reply; a new reply can issue a new one.
    */
-  const [closedQuestionnaire, setClosedQuestionnaire] = useState<string | null>(null);
-  const openQuestionnaire = !investigation.loading && investigation.resultOrigin === "live" &&
-    investigation.turns[investigation.turns.length - 1]?.role === "assistant" &&
-    investigation.result?.questionnaire && investigation.result.questionnaire.id !== closedQuestionnaire
-    ? investigation.result.questionnaire : null;
+  const [closedQuestionnaire, setClosedQuestionnaire] = useState<QuestionnaireDismissal | null>(null);
+  const questionnaireReply = {
+    conversationId: investigation.conversationId,
+    turnIndex: investigation.turns.length - 1,
+  };
+  const openQuestionnaire = liveQuestionnaire({
+    ...questionnaireReply,
+    loading: investigation.loading,
+    resultOrigin: investigation.resultOrigin,
+    latestRole: investigation.turns[questionnaireReply.turnIndex]?.role,
+    questionnaire: investigation.result?.questionnaire,
+    closed: closedQuestionnaire,
+  });
   /** The run finished on an earlier reply: it is history, drawn by the thread on its own turn. */
   const runIsPast = runIsOnEarlierTurn(investigation.turns, workflow.view ? { id: workflow.view.id, finished: finishedWorkflow(workflow.view) } : null);
   const completionSummaryReady = investigation.turns.some((turn) => turn.executionReceipt?.workflowId === workflow.view?.id && completionMatches(turn.executionReceipt, turn.completion));
@@ -6470,13 +6479,13 @@ export function CopilotWorkspace() {
                 questionnaire={openQuestionnaire}
                 busy={investigation.loading}
                 onSubmit={(answers) => {
-                  setClosedQuestionnaire(openQuestionnaire.id);
+                  setClosedQuestionnaire({ id: openQuestionnaire.id, ...questionnaireReply });
                   // The answer is this turn's user message; left on the earlier prompt, the thread
                   // redrew that prompt as a pending bubble under the answer.
                   setSubmitted(answers.summary);
                   void investigation.run(answers.summary, undefined, answers);
                 }}
-                onCancel={() => setClosedQuestionnaire(openQuestionnaire.id)}
+                onCancel={() => setClosedQuestionnaire({ id: openQuestionnaire.id, ...questionnaireReply })}
               />
               </div>
             )}
