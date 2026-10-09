@@ -23,7 +23,7 @@ import type { ResearchCapacity } from "./view";
  */
 const KEEP = new Set<string>([
   "wallet_balances", "asset_price", "earn_market", "blend_markets", "aquarius_pool_reserves", "soroswap_pool_reserves",
-  "account_position", "account_health",
+  "account_position", "account_health", "max_borrow",
   ...WORKFLOW_OPS.flatMap((op) => OP_FLOW[op].positionRead ? [OP_FLOW[op].positionRead as string] : []),
 ]);
 const PRIORITY: Record<string, number> = {
@@ -181,6 +181,11 @@ function compactArgs(args: Record<string, unknown>): Record<string, unknown> {
 }
 
 function compactData(capability: string, data: Record<string, unknown>): Record<string, unknown> {
+  // Recompilation must retain the protocol ceiling used in research, alongside the
+  // user's health floor. Dropping it changes the amount on the execution card.
+  if (capability === "max_borrow") {
+    return { ...(data.max_borrow_human !== undefined ? { max_borrow_human: data.max_borrow_human } : {}) };
+  }
   if (capability === "asset_price") {
     return { price_usd: data.price_usd };
   }

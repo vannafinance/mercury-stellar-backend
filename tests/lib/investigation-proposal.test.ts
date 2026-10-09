@@ -8,7 +8,9 @@ import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { candidateId, REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { researchCodec } from "@/lib/copilot/investigation/continuation";
 import type { Observation } from "@/lib/copilot/investigation/types";
-import { planCandidateId } from "@/lib/copilot/investigation/plan";
+import { planCandidateId, resolvePlans } from "@/lib/copilot/investigation/plan";
+import { readsForPlans } from "@/lib/copilot/investigation/strategy-reads";
+import { compareObservedRates } from "@/lib/copilot/investigation/rate-comparison";
 import type { ProposedPlan } from "@/lib/copilot/investigation/types";
 
 /**
@@ -124,6 +126,39 @@ beforeEach(() => {
 });
 
 describe("proposeWorkflow evidence reuse", () => {
+  it("preserves the researched protocol-limited borrow through sealing without another read", async () => {
+    const message = "build a leveraged blend strategy with my XLM, health factor no lower than 1.3";
+    const plan: ProposedPlan = { title: "Leveraged Blend", rationale: "Observed positive carry", evidenceIds: ["blend"], legs: [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
+      { op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+    ] };
+    const observations = [
+      observation({ id: "wallet", capability: "wallet_balances", data: { assets: [
+        { symbol: "XLM", balance: "10000", status: "ok" },
+        { symbol: "XLM_SAC", balance: "10000", decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" } }),
+      observation({ id: "price", capability: "asset_price", args: { asset: "XLM" }, data: { price_usd: "0.2" } }),
+      observation({ id: "earn", capability: "earn_market", args: { asset: "XLM" }, data: { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "60" } }),
+      observation({ id: "blend", capability: "blend_markets", data: { reserves: [{ symbol: "XLM", venue: "blend", supply_apr_pct: "168", borrow_apr_pct: "208", utilization_pct: "90" }] } }),
+      observation({ id: "cap", capability: "max_borrow", args: { asset: "XLM" }, data: { max_borrow_human: "10" } }),
+    ];
+    const position = { grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, floor: "1.3", issue: null };
+    const researched = resolvePlans([plan], { scope: SCOPE, observations, now: NOW, messages: [message], capacity: position,
+      borrowing: "allowed", strategyGoal: true, comparisons: compareObservedRates(observations, NOW) });
+    expect(researched.rejected).toEqual([]);
+    expect(researched.candidates[0].steps?.[1].amount).toBe("9.99");
+    const evidence = compactResearchEvidence(observations, null, NOW, readsForPlans([plan], [], NOW));
+    Object.assign(evidence, { plans: [plan], floor: "1.3", position, strategyGoal: true, allowedCandidateIds: [planCandidateId(plan)] });
+    const mcp = { call: vi.fn() };
+    const view = await proposeWorkflow({
+      continuation: researchCodec(SECRET, SERVER, () => NOW).seal(SCOPE, [message], null, evidence),
+      candidateId: planCandidateId(plan), subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp, signal: new AbortController().signal, now: NOW,
+    });
+    expect(view.steps.map(s => [s.op, s.asset, s.amount])).toEqual(researched.candidates[0].steps?.map(s => [s.op, s.asset, s.amount]));
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
   it("keeps a composed plan's risk floor even when public capacity is withheld", async () => {
     const plan: ProposedPlan = { title: "Borrow and supply", rationale: "Supply at the observed Blend rate", evidenceIds: ["e2"], legs: [
       { op: "borrow", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "borrow 1 BLUSDC" } },
