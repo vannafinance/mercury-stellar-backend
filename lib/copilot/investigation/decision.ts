@@ -351,7 +351,7 @@ function parseLeg(leg: unknown, extraKeys: readonly string[] = []): PlanLeg | nu
   };
 }
 
-function parseSizing(raw: unknown): PlanSizing | null {
+export function parseSizing(raw: unknown): PlanSizing | null {
   // The declared schema sends sizing as a flat object; a bare word is accepted too.
   const value = typeof raw === "string" ? { kind: raw } : raw;
   if (!isRecord(value) || !(PLAN_SIZINGS as readonly string[]).includes(String(value.kind))) return drop(`sizing kind ${isRecord(value) ? String(value.kind) : typeof value} is not a sizing word`);

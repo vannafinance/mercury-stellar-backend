@@ -28,6 +28,24 @@ it("submits a sealed maximum loan after choosing only its asset", () => {
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ asset: "AQUSDC", amount: { kind: "to_floor" }, summary: "Borrow the maximum AQUSDC" }));
 });
 
+it("submits the known spend amount after choosing only the swap receive asset", () => {
+  const onSubmit = vi.fn();
+  renderWithTheme(<ClarifyQuestionnaire questionnaire={{ id: "receive-choice", title: "Swap USDC", subtitle: "Choose the asset to receive",
+    op: "swap", inputAsset: "XLM", knownSizing: { kind: "literal", amount: "100", sourceQuote: "swap 100 XLM to USDC" },
+    steps: [{ slot: "asset", prompt: "Which asset would you like to receive?", options: [{ id: "AQUSDC", label: "AQUSDC" }, { id: "SOUSDC", label: "SOUSDC" }] }],
+  }} onSubmit={onSubmit} onCancel={vi.fn()} />);
+  fireEvent.click(screen.getByRole("radio", { name: "SOUSDC" }));
+  expect(screen.queryByTestId("step-counter")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ asset: "SOUSDC", amount: { kind: "literal", amount: "100" }, summary: "Swap 100 XLM to SOUSDC" }));
+});
+
+it("keeps a desired output amount labelled as receive sizing in the summary", () => {
+  expect(buildQuestionnaireSummary({ title: "Swap USDC", inputAsset: "XLM",
+    knownSizing: { kind: "literal", amount: "15", sourceQuote: "receive 15 USDC", amountAsset: "assetOut" } },
+    { id: "SOUSDC", label: "SOUSDC" }, null, { kind: "literal", amount: "15" })).toBe("Swap XLM to receive 15 SOUSDC");
+});
+
 const mockQuestionnaire: Questionnaire = {
   id: "q-test-1",
   title: "Supply USDC",
@@ -165,7 +183,7 @@ describe("ClarifyQuestionnaire Component", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("renders title, subtitle, and step counter", () => {
+  it("renders title and subtitle without a question counter", () => {
     renderWithTheme(
       <ClarifyQuestionnaire
         questionnaire={mockQuestionnaire}
@@ -176,11 +194,11 @@ describe("ClarifyQuestionnaire Component", () => {
 
     expect(screen.getByText("Supply USDC")).toBeTruthy();
     expect(screen.getByText("Choose which, where and how much")).toBeTruthy();
-    expect(screen.getByTestId("step-counter").textContent).toContain("1 of 3");
+    expect(screen.queryByTestId("step-counter")).toBeNull();
   });
 
   // 7 Oct: "Deposit XLM 2 of 2" sat over a single real question - a place with one option is answered for the user, so it is no step.
-  it("shows no step counter over one real question, and counts only steps the user answers", () => {
+  it("shows no question counter over a single question", () => {
     const oneQuestion: Questionnaire = {
       id: "q-single-place", title: "Deposit XLM", subtitle: "Choose which, where and how much",
       steps: [
@@ -208,7 +226,7 @@ describe("ClarifyQuestionnaire Component", () => {
     fireEvent.click(blusdcOption);
 
     // Now on step 2 (Venue)
-    expect(screen.getByTestId("step-counter").textContent).toContain("2 of 3");
+    expect(screen.getByRole("heading", { level: 3, name: "Where should it go?" })).toBeTruthy();
     expect(screen.getByTestId("option-earn")).toBeTruthy();
     expect(screen.getByTestId("option-blend")).toBeTruthy();
     // AQUSDC pool option must NOT be present for BLUSDC
@@ -229,7 +247,7 @@ describe("ClarifyQuestionnaire Component", () => {
     fireEvent.click(aqusdcOption);
 
     // The venue step had only 1 option, so it should be skipped and land on Amount step (3 of 3)
-    expect(screen.getByTestId("step-counter").textContent).toContain("3 of 3");
+    expect(screen.getByRole("heading", { level: 3, name: "How much?" })).toBeTruthy();
     // Collapsed summary of skipped venue step must be rendered
     expect(screen.getByText(/Aquarius XLM\/AQUSDC pool/i)).toBeTruthy();
   });
@@ -270,7 +288,7 @@ describe("ClarifyQuestionnaire Component", () => {
     );
 
     // A step with one option is answered for the user and is not counted: the venue is the first of the two real questions (7 Oct: "2 of 2" sat over one question).
-    expect(screen.getByTestId("step-counter").textContent).toContain("1 of 2");
+    expect(screen.getByRole("heading", { level: 3, name: "Where should it go?" })).toBeTruthy();
     expect(screen.getByTestId("option-blend")).toBeTruthy();
     expect(screen.getByTestId("option-earn")).toBeTruthy();
     expect(screen.getByText(/Which asset\?|Asset/i)).toBeTruthy();
@@ -290,7 +308,7 @@ describe("ClarifyQuestionnaire Component", () => {
     fireEvent.click(screen.getByTestId("option-earn"));
 
     // Check we are on Amount step
-    expect(screen.getByTestId("step-counter").textContent).toContain("3 of 3");
+    expect(screen.getByRole("heading", { level: 3, name: "How much?" })).toBeTruthy();
     expect(screen.getByText(/You have/i).textContent).toContain("680 BLUSDC available");
 
     const input = screen.getByPlaceholderText(/0.0 or 50%/i);
@@ -467,7 +485,7 @@ describe("ClarifyQuestionnaire Component", () => {
     fireEvent.keyDown(container, { key: "Enter" });
 
     // Should have selected AQUSDC and advanced (auto-skipping venue to Amount)
-    expect(screen.getByTestId("step-counter").textContent).toContain("3 of 3");
+    expect(screen.getByRole("heading", { level: 3, name: "How much?" })).toBeTruthy();
   });
 
   it("buildQuestionnaireSummary generates expected summaries for various actions", () => {
@@ -501,7 +519,7 @@ describe("ClarifyQuestionnaire Component", () => {
 
       // Select BLUSDC -> arrives at Venue
       fireEvent.click(screen.getByTestId("option-blusdc"));
-      expect(screen.getByTestId("step-counter").textContent).toContain("2 of 3");
+      expect(screen.getByRole("heading", { level: 3, name: "Where should it go?" })).toBeTruthy();
 
       // Click answered Step 0 (Asset)
       const answeredAsset = screen.getByTestId("answered-step-0");
@@ -509,7 +527,7 @@ describe("ClarifyQuestionnaire Component", () => {
       fireEvent.click(answeredAsset);
 
       // Should be back on Step 1 (Asset)
-      expect(screen.getByTestId("step-counter").textContent).toContain("1 of 3");
+      expect(screen.getByRole("heading", { level: 3, name: "Which asset?" })).toBeTruthy();
       const blusdcRadio = screen.getByTestId("option-blusdc");
       expect(blusdcRadio.getAttribute("aria-checked")).toBe("true");
     });
@@ -524,12 +542,12 @@ describe("ClarifyQuestionnaire Component", () => {
       );
 
       fireEvent.click(screen.getByTestId("option-blusdc"));
-      expect(screen.getByTestId("step-counter").textContent).toContain("2 of 3");
+      expect(screen.getByRole("heading", { level: 3, name: "Where should it go?" })).toBeTruthy();
 
       const backBtn = screen.getByTestId("btn-back");
       fireEvent.click(backBtn);
 
-      expect(screen.getByTestId("step-counter").textContent).toContain("1 of 3");
+      expect(screen.getByRole("heading", { level: 3, name: "Which asset?" })).toBeTruthy();
       expect(screen.getByTestId("option-blusdc").getAttribute("aria-checked")).toBe("true");
     });
 
@@ -555,7 +573,7 @@ describe("ClarifyQuestionnaire Component", () => {
 
       // Venue 'earn' was invalid for AQUSDC, so it was cleared.
       // AQUSDC auto-selects its only valid venue (pool_xlm_aqusdc) and amount 100 <= 200 (max) is kept!
-      expect(screen.getByTestId("step-counter").textContent).toContain("3 of 3");
+      expect(screen.getByRole("heading", { level: 3, name: "How much?" })).toBeTruthy();
       const amountInput = screen.getByPlaceholderText(/0.0 or 50%/i) as HTMLInputElement;
       expect(amountInput.value).toBe("100");
     });
@@ -580,7 +598,7 @@ describe("ClarifyQuestionnaire Component", () => {
       fireEvent.click(screen.getByTestId("option-aqusdc"));
 
       // 600 > 200 (new max for AQUSDC pool), so amount was cleared and Amount step is shown again
-      expect(screen.getByTestId("step-counter").textContent).toContain("3 of 3");
+      expect(screen.getByRole("heading", { level: 3, name: "How much?" })).toBeTruthy();
       const amountInput = screen.getByPlaceholderText(/0.0 or 50%/i) as HTMLInputElement;
       expect(amountInput.value).toBe("");
       // Send button must be disabled because amount is empty

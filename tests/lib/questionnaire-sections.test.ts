@@ -38,6 +38,38 @@ const missingA: QuestionnaireMissing[] = [
 ];
 
 describe("one questionnaire, one section per action", () => {
+  it("rejects unanchored known sizing and a spend-side identity on non-swap operations", () => {
+    expect(buildQuestionnaireSet({ op: "swap", asset: "USDC", inputAsset: "XLM", slots: ["asset"], sourceQuote: "swap 100 XLM to USDC",
+      knownSizing: { kind: "literal", amount: "200", sourceQuote: "swap 200 XLM" },
+    }, rows, NOW, ["swap 100 XLM to USDC"])).toBeNull();
+    expect(parseQuestionnaireMissingList({ op: "lend", asset: "USDC", inputAsset: "XLM", slots: ["asset"],
+      knownSizing: { kind: "all_wallet" } })).toBeNull();
+    expect(parseQuestionnaireMissingList({ op: "lend", asset: "USDC", slots: ["asset"],
+      knownSizing: { kind: "share", percent: "50", of: "wallet", reason: "Model allocation" } })).toBeNull();
+  });
+  it("asks for the receive asset without asking again for a stated swap amount", () => {
+    const message = "swap 100 XLM to USDC";
+    const issued = buildQuestionnaireSet({ op: "swap", asset: "USDC", inputAsset: "XLM", slots: ["asset"], sourceQuote: message,
+      knownSizing: { kind: "literal", amount: "100", sourceQuote: message },
+    } as QuestionnaireMissing, rows, NOW, [message]);
+    expect(issued!.steps.map(step => step.slot)).toEqual(["asset"]);
+    const sec = issued!.sections![0];
+    const answers: QuestionnaireAnswers = { questionnaireId: issued!.id, asset: "SOUSDC", venue: null,
+      amount: { kind: "literal", amount: "100" }, summary: "Swap 100 XLM to SOUSDC",
+      sections: [{ sectionId: sec.id, asset: "SOUSDC", venue: null, amount: { kind: "literal", amount: "100" } }],
+    };
+    expect(answerProblem(issued!, answers)).toBeNull();
+    expect(actionsFromAnswers(issued!, answers)[0]).toMatchObject({ op: "swap", asset: "XLM", assetOut: "SOUSDC",
+      sizing: { kind: "literal", amount: "100", sourceQuote: message } });
+    expect(answerProblem(issued!, { ...answers, sections: [{ ...answers.sections![0], amount: { kind: "literal", amount: "200" } }] })).not.toBeNull();
+  });
+  it("preserves a stated wallet share while asking only where to supply it", () => {
+    const message = "supply half my XLM";
+    const issued = buildQuestionnaireSet({ asset: "XLM", slots: ["venue"], sourceQuote: message,
+      knownSizing: { kind: "fraction", percent: "50", of: "wallet", sourceQuote: message },
+    } as QuestionnaireMissing, rows, NOW, [message]);
+    expect(issued!.steps.some(step => step.slot === "amount")).toBe(false);
+  });
   it("keeps a single object as a one-entry list", () => {
     const list = parseQuestionnaireMissingList({ asset: "XLM", slots: ["amount"] });
     expect(list).toEqual([{ asset: "XLM", slots: ["amount"] }]);

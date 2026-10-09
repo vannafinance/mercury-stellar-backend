@@ -12,6 +12,8 @@ import { pastOf, pocketAfterMoves, venueLabel, verbOf } from "./plan";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { poolReservesFrom } from "./pool-quote";
 import { decimalsFrom, truncateToDecimals } from "./precision";
+import { parseSizing } from "./decision";
+import { answerForKnownSizing } from "./questionnaire-sizing";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -21,6 +23,9 @@ import type { Questionnaire, QuestionnaireAnswers, QuestionnaireOption, Question
 import type { StrategyRead } from "./strategy-reads";
 
 export interface QuestionnaireMissing {
+  knownSizing?: PlanLeg["sizing"];
+  /** asset names the unresolved receive asset when this field is present. */
+  inputAsset?: string;
   op?: WorkflowOp;
   sizing?: "to_floor";
   /** A registry id, or a bare family the user said ("USDC"). */
@@ -59,8 +64,12 @@ export function parseQuestionnaireMissing(value: unknown): QuestionnaireMissing 
     asset = value.asset.trim();
   }
   if (value.sizing !== undefined && value.sizing !== "to_floor") return null;
+  const knownSizing = value.knownSizing !== undefined ? parseSizing(value.knownSizing) : undefined;
+  if (value.knownSizing !== undefined && (!knownSizing || !answerForKnownSizing(knownSizing))) return null;
+  const inputAsset = value.inputAsset !== undefined ? namedAsset(String(value.inputAsset)) : undefined;
+  if (value.inputAsset !== undefined && (!inputAsset || op !== "swap" || !knownSizing)) return null;
   const sourceQuote = typeof value.sourceQuote === "string" && value.sourceQuote.trim() ? value.sourceQuote : undefined;
-  return { ...(value.sizing === "to_floor" ? { sizing: "to_floor" as const } : {}), ...(op ? { op } : {}), ...(asset ? { asset } : {}), slots, ...(sourceQuote ? { sourceQuote } : {}) };
+  return { ...(knownSizing ? { knownSizing } : {}), ...(inputAsset ? { inputAsset } : {}), ...(value.sizing === "to_floor" ? { sizing: "to_floor" as const } : {}), ...(op ? { op } : {}), ...(asset ? { asset } : {}), slots, ...(sourceQuote ? { sourceQuote } : {}) };
 }
 
 /** One object is a one-entry list. A list is one entry per action, in the user's order. */
@@ -526,6 +535,18 @@ export function buildQuestionnaire(
 ): Questionnaire | null {
   void now;
   if (!missing.slots.length) return null;
+  const sizingQuote = missing.knownSizing && "sourceQuote" in missing.knownSizing ? missing.knownSizing.sourceQuote : undefined;
+  if (missing.knownSizing && (!missing.sourceQuote || !messages.some(message => message.includes(missing.sourceQuote!)) ||
+    !answerForKnownSizing(missing.knownSizing) || (sizingQuote !== undefined && !messages.some(message => message.includes(sizingQuote))))) return null;
+  if (missing.inputAsset) {
+    if (missing.op !== "swap" || !namedAsset(missing.inputAsset) || !missing.knownSizing || !missing.slots.every(slot => slot === "asset")) return null;
+    const options = candidateAssets(missing, [missing.op]).filter(asset => asset !== missing.inputAsset).map(asset => ({ id: asset, label: asset }));
+    if (!options.length) return null;
+    const steps: QuestionnaireStep[] = [{ slot: "asset", prompt: "Which asset would you like to receive?", options }];
+    const id = createHash("sha256").update(JSON.stringify({ missing, steps })).digest("hex").slice(0, 16);
+    return { id, title: titleFor(missing, [missing.op]), subtitle: "Choose the asset to receive", op: missing.op, steps,
+      inputAsset: missing.inputAsset, knownSizing: missing.knownSizing };
+  }
   const named = venuesNamed(messages);
   const ops = opsInPlay(missing, messages);
   // This form sizes amounts from holdings. New credit needs capacity and a safety
@@ -632,11 +653,10 @@ export function buildQuestionnaire(
     steps.push({ slot: "venue", prompt: "Where should it go?", options: venueOptions });
   }
   /**
-   * Always asked. The questionnaire carries no sizing of its own, so an amount the model did not
-   * list as missing has nowhere to come from: 25 Sep, live, "supply my usdc" was issued without
-   * an amount step and Send went out with no amount ("Supply 0 asset to Earn").
+   * Legacy partial actions carry no sizing, so they still require an amount step.
+   * A typed, anchored sizing is retained through Send instead of being asked twice.
    */
-  {
+  if (!missing.knownSizing) {
     steps.push({
       slot: "amount",
       prompt: "How much?",
@@ -652,7 +672,8 @@ export function buildQuestionnaire(
   }
   if (!steps.length) return null;
   const id = createHash("sha256").update(JSON.stringify({ missing, steps: steps.map((step) => [step.slot, step.options.map((option) => option.id)]) })).digest("hex").slice(0, 16);
-  return { id, title: titleFor(missing, ops), subtitle: "Choose which, where and how much", steps, namedAsset: chosen, op: missing.op ?? ops[0] ?? null };
+  return { id, title: titleFor(missing, ops), subtitle: missing.knownSizing ? "Choose the missing input" : "Choose which, where and how much", steps, namedAsset: chosen, op: missing.op ?? ops[0] ?? null,
+    ...(missing.knownSizing ? { knownSizing: missing.knownSizing } : {}) };
 }
 
 function checkAnswers(issued: Questionnaire | undefined, answers: QuestionnaireAnswers): string | null {
@@ -680,6 +701,12 @@ function checkAnswers(issued: Questionnaire | undefined, answers: QuestionnaireA
     ?? issued.steps.flatMap((step) => step.options).find((option) => option.op)?.op
     ?? issued.op;
   if (!resolvedOp) return "That answer did not identify an operation.";
+  if (issued.knownSizing) {
+    const expected = answerForKnownSizing(issued.knownSizing);
+    const matches = expected?.kind === "literal" && answers.amount.kind === "literal" ? expected.amount === answers.amount.amount
+      : expected?.kind === "fraction" && answers.amount.kind === "fraction" ? expected.percent === answers.amount.percent : false;
+    return matches ? null : "That sizing was not what was requested.";
+  }
   if (issued.fixedSizing) return answers.amount.kind === issued.fixedSizing ? null : "That sizing was not what was requested.";
   if (answers.amount.kind === "to_floor") return "Maximum credit was not requested in this questionnaire.";
   const amountStep = issued.steps.find((step) => step.slot === "amount");
@@ -714,17 +741,17 @@ export function actionFromAnswers(issued: Questionnaire, answers: QuestionnaireA
   const flow = OP_FLOW[op];
   const pool = venue?.id.startsWith("add_liquidity:") ? lpPairs().find((pair) => venue.id.split(":")[1] === pair.venue && pair.tokens.includes(answers.asset as AssetId)) : undefined;
   const other = pool ? (pool.tokens[0] === answers.asset ? pool.tokens[1] : pool.tokens[0]) : undefined;
-  const sizing: PlanLeg["sizing"] = issued.fixedSizing === "to_floor" && answers.amount.kind === "to_floor"
+  const sizing: PlanLeg["sizing"] = issued.knownSizing ?? (issued.fixedSizing === "to_floor" && answers.amount.kind === "to_floor"
     ? { kind: "to_floor" }
     : answers.amount.kind === "previous_leg"
     ? { kind: "previous_leg" }
     : answers.amount.kind === "fraction"
       ? { kind: "fraction", percent: answers.amount.percent, of: flow.from === "wallet" ? "wallet" : "position", sourceQuote: answers.summary }
-      : answers.amount.kind === "literal" ? { kind: "literal", amount: answers.amount.amount, sourceQuote: answers.summary } : (() => { throw new Error("Unissued maximum sizing"); })();
+      : answers.amount.kind === "literal" ? { kind: "literal", amount: answers.amount.amount, sourceQuote: answers.summary } : (() => { throw new Error("Unissued maximum sizing"); })());
   return {
     op,
-    asset: answers.asset,
-    ...(other ? { assetOut: other } : {}),
+    asset: issued.inputAsset ?? answers.asset,
+    ...(issued.inputAsset ? { assetOut: answers.asset } : other ? { assetOut: other } : {}),
     ...(pool ? { venue: pool.venue } : {}),
     sizing,
     sourceQuote: answers.summary,
@@ -846,8 +873,9 @@ export function buildQuestionnaireSet(
       section: {
         id: one.id, title: one.title, actionIndex: built.length, position: quoteAt(entry.sourceQuote, messages),
         steps: one.steps, ...(one.fixedSizing ? { fixedSizing: one.fixedSizing } : {}), namedAsset: one.namedAsset ?? null, ...(entry.sourceQuote ? { sourceQuote: entry.sourceQuote } : {}),
+        ...(one.knownSizing ? { knownSizing: one.knownSizing } : {}), ...(one.inputAsset ? { inputAsset: one.inputAsset } : {}),
         ...(entry.op ? { op: entry.op } : {}),
-        ...(entry.op === "swap" && entry.sourceQuote && namedAsset(entry.asset)
+        ...(entry.op === "swap" && !entry.inputAsset && entry.sourceQuote && namedAsset(entry.asset)
           ? { assetOut: messageWords(entry.sourceQuote).map((word) => resolveAssetDef(word)?.id).find((id) => id && id !== namedAsset(entry.asset)) }
           : {}),
       },
@@ -875,7 +903,7 @@ export function buildQuestionnaireSet(
   return {
     id,
     title: sections.length === 1 ? sections[0].title : "A few things to fill in",
-    subtitle: sections.length === 1 ? sections[0].fixedSizing ? "Choose the asset to borrow the maximum" : "Choose which, where and how much" : "One section for each action",
+    subtitle: sections.length === 1 ? sections[0].inputAsset ? "Choose the asset to receive" : sections[0].fixedSizing ? "Choose the asset to borrow the maximum" : sections[0].knownSizing ? "Choose the missing input" : "Choose which, where and how much" : "One section for each action",
     steps,
     sections,
     ...(sealed.length ? { stated: sealed } : {}),
@@ -929,7 +957,7 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
       const section = issued.sections?.find((item) => item.id === sectionAnswer.sectionId);
       if (!section) return "That section was not one of the ones asked.";
       // Each section is checked against its OWN sealed asset and op, not the questionnaire's.
-      const problem = checkAnswers({ ...issued, steps: section.steps, fixedSizing: section.fixedSizing, sections: undefined, namedAsset: section.namedAsset ?? null, op: section.op ?? null }, {
+      const problem = checkAnswers({ ...issued, steps: section.steps, fixedSizing: section.fixedSizing, knownSizing: section.knownSizing, inputAsset: section.inputAsset, sections: undefined, namedAsset: section.namedAsset ?? null, op: section.op ?? null }, {
         ...answers, asset: sectionAnswer.asset, venue: sectionAnswer.venue, amount: sectionAnswer.amount, sections: undefined,
       });
       if (problem) return problem;
@@ -997,7 +1025,7 @@ export function actionsFromAnswers(issued: Questionnaire, answers: Questionnaire
   const answered = answers.sections.map((sectionAnswer) => {
     const section = issued.sections?.find((item) => item.id === sectionAnswer.sectionId);
     const action = actionFromAnswers(
-      { ...issued, steps: section?.steps ?? issued.steps, fixedSizing: section?.fixedSizing, op: section?.op ?? issued.op },
+      { ...issued, steps: section?.steps ?? issued.steps, fixedSizing: section?.fixedSizing, knownSizing: section?.knownSizing, inputAsset: section?.inputAsset, op: section?.op ?? issued.op },
       { ...answers, asset: sectionAnswer.asset, venue: sectionAnswer.venue, amount: sectionAnswer.amount, sections: undefined },
     );
     if (action.op === "swap" && section?.assetOut) return { position: section.position ?? 0, action: { ...action, assetOut: section.assetOut } };

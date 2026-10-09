@@ -4,6 +4,7 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from "react"
 import { Check, X, ArrowLeft, ArrowRight } from "lucide-react";
 import { useTheme } from "@/contexts/theme-context";
 import { decimalWad } from "@/lib/copilot/investigation/fixed";
+import { answerForKnownSizing } from "@/lib/copilot/investigation/questionnaire-sizing";
 import type {
   Questionnaire,
   QuestionnaireOption,
@@ -40,7 +41,7 @@ const DEFAULT_PRESETS = [
 ];
 
 export function buildQuestionnaireSummary(
-  questionnaire: { title?: string; namedAsset?: string | null },
+  questionnaire: { title?: string; namedAsset?: string | null; inputAsset?: string; knownSizing?: Questionnaire["knownSizing"] },
   assetOption?: QuestionnaireOption,
   venueOption?: QuestionnaireOption | null,
   amount?: { kind: "fraction"; percent: string } | { kind: "literal"; amount: string } | { kind: "previous_leg" } | { kind: "to_floor" }
@@ -49,6 +50,14 @@ export function buildQuestionnaireSummary(
   const verb = venueOption?.verb || (questionnaire.title ? questionnaire.title.split(" ")[0] : "Supply");
   // An action that named its token has no asset step: the sealed asset is the one chosen.
   const assetLabel = assetOption?.label || questionnaire.namedAsset || "asset";
+  if (questionnaire.inputAsset && questionnaire.knownSizing) {
+    const sizing = questionnaire.knownSizing;
+    const amountAsset = sizing.kind === "literal" && sizing.amountAsset === "assetOut" ? assetLabel : questionnaire.inputAsset;
+    const amountText = sizing.kind === "literal" ? `${sizing.amount} ${amountAsset}`
+      : sizing.kind === "fraction" ? `${sizing.percent}% of my ${questionnaire.inputAsset}` : `all of my ${questionnaire.inputAsset}`;
+    return sizing.kind === "literal" && sizing.amountAsset === "assetOut"
+      ? `${verb} ${questionnaire.inputAsset} to receive ${amountText}` : `${verb} ${amountText} to ${assetLabel}`;
+  }
 
   let amountStr = "";
   if (amount) {
@@ -121,6 +130,8 @@ export function ClarifyQuestionnaire({
         actionIndex: 0,
         steps: questionnaire.steps,
         fixedSizing: questionnaire.fixedSizing,
+        knownSizing: questionnaire.knownSizing,
+        inputAsset: questionnaire.inputAsset,
       },
     ];
   }, [questionnaire]);
@@ -772,7 +783,10 @@ export function ClarifyQuestionnaire({
         const parsed = parseAmountValue(st.amountRaw, maxInfo);
 
         let amountAnswer: QuestionnaireSectionAnswer["amount"];
-        if (sec.fixedSizing === "to_floor") {
+        const knownAnswer = answerForKnownSizing(sec.knownSizing);
+        if (knownAnswer) {
+          amountAnswer = knownAnswer;
+        } else if (sec.fixedSizing === "to_floor") {
           amountAnswer = { kind: "to_floor" };
         } else if (st.linkedOptionId) {
           amountAnswer = { kind: "previous_leg" };
@@ -801,7 +815,7 @@ export function ClarifyQuestionnaire({
         const venueStep = sec.steps.find((s) => s.slot === "venue");
         const assetOpt = assetStep?.options.find((o) => o.id === ans.asset);
         const venueOpt = venueStep?.options.find((o) => o.id === ans.venue);
-        return buildQuestionnaireSummary({ title: sec.title, namedAsset: sec.namedAsset ?? null }, assetOpt, venueOpt, ans.amount);
+        return buildQuestionnaireSummary({ title: sec.title, namedAsset: sec.namedAsset ?? null, inputAsset: sec.inputAsset, knownSizing: sec.knownSizing }, assetOpt, venueOpt, ans.amount);
       });
       const summary = summaryParts.join(", ");
 
@@ -827,7 +841,10 @@ export function ClarifyQuestionnaire({
       const venueOpt = venueStep?.options.find((o) => o.id === st.venueId) ?? null;
 
       let amountAnswer: QuestionnaireAnswers["amount"];
-      if (sec.fixedSizing === "to_floor") {
+      const knownAnswer = answerForKnownSizing(sec.knownSizing);
+      if (knownAnswer) {
+        amountAnswer = knownAnswer;
+      } else if (sec.fixedSizing === "to_floor") {
         amountAnswer = { kind: "to_floor" };
       } else if (st.linkedOptionId) {
         amountAnswer = { kind: "previous_leg" };
@@ -929,8 +946,6 @@ export function ClarifyQuestionnaire({
     return true;
   }, [activeSectionIdx, sections.length, currentState.activeStepIdx, currentSection, currentState.assetId, isStepAutoSkipped]);
 
-  const stepsAsked = currentSection.steps.filter((step) => step.slot === "amount" || step.options.length !== 1);
-  const askedIdx = stepsAsked.indexOf(currentSection.steps[currentState.activeStepIdx]);
   const presetsToRender = currentStep?.presets || DEFAULT_PRESETS;
   const activePercentNum = currentParsedAmount?.kind === "fraction" ? currentParsedAmount.percent : null;
 
@@ -946,22 +961,13 @@ export function ClarifyQuestionnaire({
           : "border-vgray-200 bg-surface text-vgray-900"
       }`}
     >
-      {/* Header: Title, Subtitle, Step count, and Cancel (X) */}
+      {/* Header: Title, subtitle, and Cancel (X) */}
       <div className="flex items-start justify-between gap-3 border-b border-vgray-100 pb-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h2 className="text-[15px] font-semibold leading-tight">
               {currentSection.title || questionnaire.title}
             </h2>
-            {/* Only a step the user answers is counted: a question with a single option is answered for them and is not a step (7 Oct: "Deposit XLM 2 of 2" over one real question). */}
-            {stepsAsked.length > 1 && askedIdx >= 0 && (
-              <span
-                className="text-[12px] font-medium text-vgray-400 tabular-nums"
-                data-testid="step-counter"
-              >
-                {askedIdx + 1} of {stepsAsked.length}
-              </span>
-            )}
           </div>
           {questionnaire.subtitle && (
             <p className="mt-0.5 text-[13px] text-vgray-500 leading-normal">

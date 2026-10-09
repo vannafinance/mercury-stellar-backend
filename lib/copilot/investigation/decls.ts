@@ -252,6 +252,8 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
             properties: {
               op: { type: "string", enum: [...WORKFLOW_OPS] },
               asset: { type: "string", description: "A registry asset id, or a bare family the user said, such as USDC." },
+              inputAsset: { type: "string", enum: [...ASSET_IDS], description: "Swap only: the already specified spend asset when asset is the unresolved receive asset or family. Include knownSizing; ask only for the receive asset." },
+              knownSizing: { ...legSchema().properties!.sizing, description: "Sizing already stated by the user while another input is missing. Use the plan-leg sizing shape with literal, fraction, all_wallet or all_position; preserve its exact quote and amountAsset. Do not request amount again. Never use model allocations or leverage here." },
               sizing: { type: "string", enum: ["to_floor"], description: "The user explicitly requested the maximum loan; amount is already specified by this sizing." },
               slots: { type: "array", items: { type: "string", enum: ["asset", "venue", "amount"] } },
               sourceQuote: { type: "string" },

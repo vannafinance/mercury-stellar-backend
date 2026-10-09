@@ -84,6 +84,9 @@ export interface QuestionnaireStep {
   pair?: Record<string, { asset: string; perUnit: string | null; note?: string }>;
 }
 export interface QuestionnaireSection {
+  knownSizing?: import("./types").PlanSizing;
+  /** When the asset choice is the receive side of a swap, retain its spend side. */
+  inputAsset?: string;
   id: string;
   title: string;
   actionIndex: number;
@@ -103,6 +106,8 @@ export interface SealedAction {
   action: import("./types").StatedAction;
 }
 export interface Questionnaire {
+  knownSizing?: import("./types").PlanSizing;
+  inputAsset?: string;
   id: string;
   title: string;
   subtitle: string;
