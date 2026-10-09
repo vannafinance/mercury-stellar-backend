@@ -61,8 +61,9 @@ ${PRESENTATION}`;
 type Generate = (system: string, user: string, signal: AbortSignal) => Promise<unknown>;
 type ReplyLane = "answer" | "plans" | "completion" | "refusal";
 
-const REFUSAL_SYSTEM = `You explain why a requested borrow could not be prepared. Lead with the requested amount versus the current protocol ceiling. Both figures must come from supplied fact references. Explain a limiting factor only when one was supplied; do not invent a collateral, liquidity or health-factor cause. The rejected plan was not submitted. Describe the ceiling as an observed protocol limit, not a promise that a smaller loan will pass all checks. Keep the explanation concise and relevant to the requested action, without listing unrelated holdings or operations. Do not invent a replacement plan or change execution authority.
-${PRESENTATION}`;
+const REFUSAL_SYSTEM = `You explain why a requested borrow could not be prepared. Lead with the requested amount versus the current protocol ceiling. Both figures must come from supplied fact references. Explain a limiting factor only when one was supplied; do not invent a collateral, liquidity or health-factor cause. The rejected plan was not submitted. Describe the ceiling as an observed protocol limit, not a promise that a smaller loan will pass all checks. Do not invent a replacement plan or change execution authority.
+${PRESENTATION}
+For this refusal, return one short paragraph combining the requested amount, current ceiling, supplied reason and the fact that nothing was submitted. Avoid repeating the limit, explaining internal checks or adding a separate caution paragraph. State what happened in plain language; the ceiling should never be described as a guaranteed executable amount.`;
 
 function borrowRefusalContext(view: ResearchView) {
   const rejected = view.candidates?.rejected ?? [];
