@@ -41,6 +41,8 @@ const PRIORITY: Record<string, number> = {
 const MAX_OBSERVATIONS = 16;
 
 export interface ResearchEvidence {
+  /** Every source pocket must be closed and all proceeds withdrawn, not a partial exit. */
+  portfolioExit?: boolean;
   allowedCandidateIds?: string[];
   requestedSteps?: import("../workflow/types").ProposalStep[];
   /**

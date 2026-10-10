@@ -105,6 +105,12 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
       type: "object",
       properties: {
         intent: { type: "string", enum: ["answer", "strategy"] },
+        portfolioExit: {
+          type: "object",
+          description: "Only when the user requests closing every position, repaying all debt and withdrawing everything to their spendable wallet. Not an Earn-only redemption or a selected venue exit. Preserve this scope even if your proposed plan covers only part of it; sourceQuote is their exact request.",
+          properties: { destination: { type: "string", enum: ["wallet"] }, sourceQuote: { type: "string" } },
+          required: ["destination", "sourceQuote"],
+        },
         relation: { type: "string", enum: ["new", "refine", "side"], description: "How the latest message relates to the conversation. refine: it changes the plan on screen or answers the open question. new: an unrelated request. side: a question asked beside the plan (a balance, a price, a definition) that leaves the plan as it is." },
         positionReadScope: {
           type: "object",
@@ -322,6 +328,7 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.intent !== undefined) goal.intent = source.intent;
   if (source.relation !== undefined) goal.relation = source.relation;
   if (source.positionReadScope !== undefined) goal.positionReadScope = source.positionReadScope;
+  if (source.portfolioExit !== undefined) goal.portfolioExit = source.portfolioExit;
   if (source.actions !== undefined) goal.actions = source.actions;
   if (source.write !== undefined) goal.write = source.write;
   if (source.healthFactorFloor !== undefined) goal.healthFactorFloor = source.healthFactorFloor;

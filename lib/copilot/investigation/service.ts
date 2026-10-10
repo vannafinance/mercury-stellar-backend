@@ -26,6 +26,7 @@ import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { capToOneApproval, joinPlanParts, planCandidateId, resolveJoinedOrParts, unchosenAcquiredUsdc, unchosenUsdcVariant, USDC_QUESTION, usdcChoicesFor, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, type RejectedPlan, verbOf, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { touchesMarginAccount } from "../workflow/types";
 import { missingPositionReads } from "./position-coverage";
+import { enforcePortfolioExit, portfolioExitCoverage, portfolioExitProblem, requestsPortfolioExit } from "./portfolio-exit";
 import { actionsFromAnswers, answerProblem, buildQuestionnaireSet, opsInPlay, readsForQuestionnaire } from "./questionnaire";
 import { requestsMaximumCredit, directMaximumCreditPlan } from "./max-credit";
 import { drawsNewDebt } from "../leg-direction";
@@ -642,6 +643,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       }
     : result.outcome;
   const outcome = askForUnstatedPlanAmounts(askForUnstatedAmounts(decided, messages), messages);
+  const fullPortfolioExit = outcome.kind === "research_complete" && requestsPortfolioExit(outcome.goal, messages);
   /**
    * A conditional or future action is refused as soon as the outcome is known, before any
    * plan read or sizing. Decided from the model's structured `goal.trigger` alone (Grok round
@@ -762,8 +764,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       reason: error instanceof Error ? error.message : "unavailable",
     }));
   // An answer that read one position pocket reads them all (position-coverage.ts).
-  if (outcome.kind === "research_complete" && outcome.goal.intent !== "strategy" && !outcome.plans?.length && !outcome.goal.actions?.length) {
-    const coverage = missingPositionReads(result.observations, outcome.goal, capacityMessages);
+  if (outcome.kind === "research_complete" && (fullPortfolioExit || (outcome.goal.intent !== "strategy" && !outcome.plans?.length && !outcome.goal.actions?.length))) {
+    const coverage = missingPositionReads(result.observations, outcome.goal, capacityMessages, fullPortfolioExit);
     if (coverage.length) {
       result.observations.push(...await collectStrategyReads(scope, scopedMcp, dependencies.signal, Date.now(), coverage, "pc"));
       logPhase("position_coverage", { requested: coverage.length });
@@ -1008,7 +1010,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
      * that belongs upstream: the run must finish. `partial` is carried as a fact so the
      * card can say what happened without re-parsing prose.
      */
-    candidates = !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && rateComparisons.length && requestedBorrow?.usd !== null
+    candidates = !fullPortfolioExit && !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && rateComparisons.length && requestedBorrow?.usd !== null
       ? generateCandidates({
           grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
           debtUsd: capacity?.debtUsd ?? "0",
@@ -1300,6 +1302,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       resolved = resolvePlans(modelPlans, planContext);
     }
     // A plan sized past one approval is refused with the count, not failed later at propose.
+    if (fullPortfolioExit) resolved = enforcePortfolioExit(resolved, modelPlans, portfolioExitCoverage(result.observations, observedNow, planPosition));
     resolved = capToOneApproval(resolved, MAX_WORKFLOW_STEPS);
     /**
      * Plans the sizer refused for how they were built, not for the facts: the model is told which
@@ -1353,7 +1356,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           if (needed.length) result.observations.push(...await collectStrategyReads(scope, scopedMcp, repairSignal, Date.now(), needed, "qr"));
           observedNow = Date.now();
           planComparisons = analyseObservedRates(result.observations, observedNow).comparisons;
-          const retry = capToOneApproval(resolvePlans(repairedPlans, { ...planContext, observations: result.observations, now: observedNow, comparisons: planComparisons }), MAX_WORKFLOW_STEPS);
+          let retry = resolvePlans(repairedPlans, { ...planContext, observations: result.observations, now: observedNow, comparisons: planComparisons });
+          if (fullPortfolioExit) retry = enforcePortfolioExit(retry, repairedPlans, portfolioExitCoverage(result.observations, observedNow, planPosition));
+          retry = capToOneApproval(retry, MAX_WORKFLOW_STEPS);
           const known = new Set(resolved.candidates.map((candidate) => candidate.id));
           const gained = retry.candidates.filter((candidate) => !known.has(candidate.id));
           if (gained.length) {
@@ -1379,7 +1384,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, shapes: resolved.candidates.map((candidate) => candidate.id), rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     // Fixed options only for the assets the user named; the model's composed plans are untouched.
-    const fixedShapes = onlyNamedAssets(candidates, messages);
+    const fixedShapes = fullPortfolioExit ? null : onlyNamedAssets(candidates, messages);
     candidates = mergeCandidateSets(fixedShapes, resolved, borrowing);
     /**
      * The sizer said what fits the facts it read; the protocol's preview says what the
@@ -1492,7 +1497,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * been sealed as a blocking question.
    */
   const offered = Boolean(candidates?.feasible.length);
-  const status: ResearchView["status"] = outcome.kind === "blocked" ? "blocked"
+  const portfolioExitFailure = fullPortfolioExit && !offered
+    ? portfolioExitProblem(undefined, portfolioExitCoverage(result.observations, observedNow, planPosition)) ?? candidates?.rejected[0]?.reason ?? null : null;
+  if (portfolioExitFailure) question = null;
+  const status: ResearchView["status"] = outcome.kind === "blocked" || portfolioExitFailure ? "blocked"
     : offered ? "researched"
       : question ? "needs_input"
         : candidates?.rejected.length ? "researched"
@@ -1513,7 +1521,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         originalRequest: messages[0],
         statedSteps: requestedSteps,
         stopReason: outcome.kind === "stopped" ? outcome.reason : null,
-        blockedReason: outcome.kind === "blocked" ? outcome.reason : null,
+        blockedReason: portfolioExitFailure ?? (outcome.kind === "blocked" ? outcome.reason : null),
         comparisons: planComparisons,
         venuesAllowed: outcome.kind === "research_complete" ? anchoredVenueRows(outcome.goal, messages) : undefined,
       });
@@ -1545,7 +1553,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     .map((o) => ({ capability: o.capability, args: o.args, error: (o.error ?? "no error text").slice(0, 240) }));
   if (failedReads.length) logPhase("reads_failed", { reads: failedReads });
   // The reads the sealed plans need survive sealing, so propose can re-size exactly what was offered.
-  const evidence = compactResearchEvidence(result.observations, capacity, observedNow, readsForPlans(modelPlans, [], observedNow));
+  const evidence = compactResearchEvidence(result.observations, capacity, observedNow, [
+    ...readsForPlans(modelPlans, [], observedNow),
+    ...(fullPortfolioExit ? missingPositionReads([], undefined, [], true) : []),
+  ]);
+  if (fullPortfolioExit) evidence.portfolioExit = true;
   if (questionnaire) evidence.questionnaire = questionnaire;
   if (candidates?.feasible.length) evidence.shown = shownPlans(candidates.feasible);
   // Every option shown can be prepared; the sealed list is exactly the shown list.

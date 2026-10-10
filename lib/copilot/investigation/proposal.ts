@@ -18,6 +18,8 @@ import { collectStrategyReads, readsForPlans, STRATEGY_READS } from "./strategy-
 import { parseCandidateId, requiresMarginAccount, REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { statedFloorFrom } from "./floor";
 import { planCandidateId, resolvePlans } from "./plan";
+import { enforcePortfolioExit, portfolioExitCoverage } from "./portfolio-exit";
+import { missingPositionReads } from "./position-coverage";
 import { compareObservedRates } from "./rate-comparison";
 import { compileProposal } from "./compile";
 import { researchCodec } from "./continuation";
@@ -170,10 +172,14 @@ export async function proposeWorkflow(input: {
    * together) that sequential stack was most of what pushed a propose past the browser's
    * 90s budget (15 Sep, D4). Running them together does not change what either reads.
    */
+  const exitReads = prior.evidence?.portfolioExit ? missingPositionReads([], undefined, [], true) : [];
+  const sealedReads = sealedPlan ? [...readsForPlans([sealedPlan], [], now), ...exitReads] : exitReads;
+  const requiredReads = [...STRATEGY_READS, ...sealedReads.filter((r, index) => !STRATEGY_READS.some(s => s.capability === r.capability && JSON.stringify(s.args) === JSON.stringify(r.args))
+    && sealedReads.findIndex(s => s.capability === r.capability && JSON.stringify(s.args) === JSON.stringify(r.args)) === index)];
   const observationsTask = reused
     ? Promise.resolve(prior.evidence!.observations)
     : collectStrategyReads(scope, input.mcp, input.signal, now,
-        sealedPlan ? [...STRATEGY_READS, ...readsForPlans([sealedPlan], [], now).filter((r) => !STRATEGY_READS.some((s) => s.capability === r.capability && JSON.stringify(s.args) === JSON.stringify(r.args)))] : STRATEGY_READS);
+        requiredReads);
   /**
    * On a stale bundle the floor is the one sealed at investigation (model-anchored to the
    * user's words), not a fresh regex pass over the messages - the regex missed "stays
@@ -243,7 +249,7 @@ export async function proposeWorkflow(input: {
     : liveBasis
       ? { grossCollateralUsd: liveBasis.grossCollateralUsd, debtUsd: liveBasis.debtUsd, floor: liveFloor, issue: liveBasis.issue ? { reason: liveBasis.issue, app: liveBasis.app, contract: liveBasis.contract } : null }
       : null;
-  const resolved = sealedPlan
+  let resolved = sealedPlan
     ? resolvePlans([sealedPlan], {
         scope, observations, now, messages: prior.messages,
         capacity: planPosition,
@@ -263,6 +269,7 @@ export async function proposeWorkflow(input: {
         ...(prior.evidence?.strategyGoal ? { strategyGoal: true } : {}),
       })
     : null;
+  if (resolved && sealedPlan && prior.evidence?.portfolioExit) resolved = enforcePortfolioExit(resolved, [sealedPlan], portfolioExitCoverage(observations, now, planPosition));
   const candidate = resolved
     ? resolved.candidates.find((entry) => entry.id === input.candidateId)
     : candidates?.feasible.find((entry) => entry.id === input.candidateId);

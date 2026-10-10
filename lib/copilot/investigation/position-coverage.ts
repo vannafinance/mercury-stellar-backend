@@ -1,5 +1,6 @@
 import { OP_FLOW } from "../workflow/types";
 import { catalogEntry } from "./catalog";
+import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { StrategyRead } from "./strategy-reads";
 import type { GoalUnderstanding, Observation } from "./types";
 
@@ -19,13 +20,14 @@ export function positionReadCapabilities(): string[] {
   return [...new Set(Object.values(OP_FLOW).map((flow) => flow.positionRead).filter((read): read is NonNullable<typeof read> => !!read))];
 }
 
-export function missingPositionReads(observations: readonly Observation[], goal?: GoalUnderstanding, messages: readonly string[] = []): StrategyRead[] {
+export function missingPositionReads(observations: readonly Observation[], goal?: GoalUnderstanding, messages: readonly string[] = [], forceAll = false): StrategyRead[] {
   const positionReads = positionReadCapabilities();
-  if (!observations.some((item) => positionReads.includes(item.capability as never))) return [];
+  if (!forceAll && !observations.some((item) => positionReads.includes(item.capability as never))) return [];
   const seen = (capability: string, asset?: string) => observations.some((item) =>
-    item.status === "ok" && item.capability === capability && (asset === undefined || item.args.asset === asset));
+    item.status === "ok" && item.capability === capability && (asset === undefined || item.args.asset === asset)
+    && (!forceAll || (!!item.data && Date.now() - item.observedAt <= PRICE_MAX_AGE_MS)));
   const scope = goal?.positionReadScope;
-  const selected = goal?.intent === "answer" && !goal.actions?.length && !goal.write
+  const selected = !forceAll && goal?.intent === "answer" && !goal.actions?.length && !goal.write
     && scope?.kind === "selected" && scope.capabilities.length > 0
     && scope.capabilities.every((capability) => positionReads.includes(capability))
     && scope.sourceQuote.trim().length > 0 && messages.some((message) => message.includes(scope.sourceQuote));

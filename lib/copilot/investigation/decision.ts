@@ -100,7 +100,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return refuse(`unknown kind or keys: kind=${String(raw.kind)} keys=${Object.keys(raw).join(",")}`);
   }
   const goal = raw.goal;
-  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "venuesAllowed") ? ["venuesAllowed"] : []), ...(Object.hasOwn(goal, "reading") ? ["reading"] : []), ...(Object.hasOwn(goal, "namedOps") ? ["namedOps"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
+  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "portfolioExit") ? ["portfolioExit"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "venuesAllowed") ? ["venuesAllowed"] : []), ...(Object.hasOwn(goal, "reading") ? ["reading"] : []), ...(Object.hasOwn(goal, "namedOps") ? ["namedOps"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
     (goal.relation !== undefined && !["new", "refine", "side"].includes(String(goal.relation))) ||
     (goal.intent !== undefined && !["answer", "strategy"].includes(String(goal.intent))) ||
     !text(goal.objective) || !texts(goal.constraints) ||
@@ -113,6 +113,11 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
    * is dropped and counted, like a malformed plan; it must not void the research and the
    * plans beside it (13 Sep: "use my AqUSDC in Earn as collateral" died here).
    */
+  if (goal.portfolioExit !== undefined && (!isRecord(goal.portfolioExit)
+    || !exactKeys(goal.portfolioExit, ["destination", "sourceQuote"])
+    || goal.portfolioExit.destination !== "wallet" || !text(goal.portfolioExit.sourceQuote))) {
+    return refuse("portfolioExit: invalid terminal scope");
+  }
   const actionRows = goal.actions === undefined ? [] : Array.isArray(goal.actions) ? goal.actions.slice(0, 8) : [];
   /**
    * A stated action is a plan leg plus the sentence it came from, validated by the very
@@ -124,9 +129,14 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
    * to survive as free-form `plans` or not at all, which is how a precise multi-leg
    * request came back as unrelated ranked options.
    */
-  const validActions = actionRows.flatMap((action) => {
+  const actionDropReasons: string[] = [];
+  const validActions = actionRows.flatMap((action, index) => {
+    lastPlanDrop = "";
     const leg = parseLeg(action, ["sourceQuote"]);
-    if (!leg || !isRecord(action) || !text(action.sourceQuote, 1600)) return [];
+    if (!leg || !isRecord(action) || !text(action.sourceQuote, 1600)) {
+      actionDropReasons.push(`action ${index + 1}: ${lastPlanDrop || "invalid sourceQuote"}`);
+      return [];
+    }
     return [{ ...leg, sourceQuote: String(action.sourceQuote) }];
   });
   const droppedActions = (goal.actions === undefined ? 0 : Array.isArray(goal.actions) ? goal.actions.length : 1) - validActions.length;
@@ -221,6 +231,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
         && ["all", "selected"].includes(String(goal.positionReadScope.kind))
         && texts(goal.positionReadScope.capabilities) && typeof goal.positionReadScope.sourceQuote === "string"
         ? { positionReadScope: { kind: goal.positionReadScope.kind as "all" | "selected", capabilities: [...goal.positionReadScope.capabilities], sourceQuote: goal.positionReadScope.sourceQuote } } : {}),
+      ...(isRecord(goal.portfolioExit) && exactKeys(goal.portfolioExit, ["destination", "sourceQuote"]) && goal.portfolioExit.destination === "wallet" && text(goal.portfolioExit.sourceQuote) ? { portfolioExit: { destination: "wallet" as const, sourceQuote: goal.portfolioExit.sourceQuote } } : {}),
       ...(goal.intent ? { intent: goal.intent as "answer" | "strategy" } : {}),
       ...(goal.relation ? { relation: goal.relation as "new" | "refine" | "side" } : {}),
       ...(validActions.length ? { actions: structuredClone(validActions) as NonNullable<Extract<ResearchDecision, { kind: "research_complete" }>["goal"]["actions"]> } : {}),
@@ -241,7 +252,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     openQuestions: [...raw.openQuestions],
     ...(parsedPlans.plans.length ? { plans: parsedPlans.plans } : {}),
     ...(parsedPlans.dropped + droppedActions ? { droppedPlans: parsedPlans.dropped + droppedActions } : {}),
-    ...(parsedPlans.reasons.length ? { droppedPlanReasons: parsedPlans.reasons } : {}),
+    ...(parsedPlans.reasons.length || actionDropReasons.length ? { droppedPlanReasons: [...parsedPlans.reasons, ...actionDropReasons] } : {}),
     ...(droppedFindings ? { droppedFindings } : {}),
   };
 }

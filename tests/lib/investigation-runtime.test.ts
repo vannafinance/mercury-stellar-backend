@@ -26,6 +26,33 @@ const read = () => ({ call: vi.fn(async () => ({ debt_usd: "217.59" })) });
 afterEach(() => vi.useRealTimers());
 
 describe("adaptive investigation", () => {
+  it("repairs a fully dropped action once instead of returning a request echo", async () => {
+    const malformed = { ...complete([]), goal: { ...complete([]).goal, intent: "strategy", actions: [
+      { op: "redeem", asset: "XLM", sourceQuote: "redeem all my XLM from Earn", sizing: { kind: "all_position", sourceQuote: "all my XLM" } },
+    ] } };
+    const valid = { ...malformed, goal: { ...malformed.goal, actions: [
+      { ...malformed.goal.actions[0], sizing: { kind: "all_position" } },
+    ] } };
+    const model = vi.fn(async (turn: ResearchTurn) => turn.decisionFeedback ? valid : malformed);
+    const mcp = read();
+    const result = await runInvestigation({ ...request, message: "redeem all my XLM from Earn" }, { model, mcp });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(model.mock.calls[1][0].decisionFeedback).toContain("sizing");
+    expect(result.outcome.kind).toBe("research_complete");
+    if (result.outcome.kind === "research_complete") expect(result.outcome.goal.actions).toHaveLength(1);
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
+  it("stops after one unsuccessful shape repair without rereading or pretending an action is ready", async () => {
+    const malformed = { ...complete([]), goal: { ...complete([]).goal, intent: "strategy", actions: [
+      { op: "redeem", asset: "XLM", sourceQuote: "redeem XLM", sizing: { kind: "unknown" } },
+    ] } };
+    const model = sequence(malformed, malformed);
+    const mcp = read();
+    const result = await runInvestigation(request, { model, mcp });
+    expect(result.outcome).toEqual({ kind: "stopped", reason: "invalid_decision" });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
   it("feeds actual observations into subsequent decisions and returns research, never execution", async () => {
     const turns: ResearchTurn[] = [];
     const mcp = { call: vi.fn(async (tool: string) => tool === "vanna_get_wallet_balance"

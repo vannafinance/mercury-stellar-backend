@@ -267,6 +267,7 @@ export async function runInvestigation(
   let decisionFeedback: string | undefined;
   // The model is told once, not stopped, when it asks again for reads it already holds.
   let repeatNudged = false;
+  let shapeRepairRequested = false;
   // Run-local labels distinguish identical resolved reads without exposing payloads or addresses.
   const readTraceKeys = new Map<string, number>();
   const readTraceKey = (key: string) => {
@@ -345,6 +346,14 @@ export async function runInvestigation(
       }
       span.setAttribute("vanna.investigation.decision", decision.kind);
       if (decision.kind === "research_complete") {
+        if (decision.goal.intent === "strategy" && decision.droppedPlans && !decision.plans?.length && !decision.goal.actions?.length) {
+          const reasons = decision.droppedPlanReasons?.join("; ") || "No valid action or plan survived structural validation";
+          if (shapeRepairRequested) return finish({ kind: "stopped", reason: "invalid_decision" }, reasons);
+          shapeRepairRequested = true;
+          decisionFeedback = `Your requested action shapes were rejected: ${reasons}. Return research_complete with structurally valid actions or plans using the declared leg and sizing schema. Preserve the user's scope and sizing. Do not invent inputs, omit requested actions or read observations again just to repair the shape.`;
+          console.warn("[copilot] investigation shape repair requested", { turn: modelTurns, reasons: decision.droppedPlanReasons });
+          return null;
+        }
         const evidence = new Map(observations.map((observation) => [observation.id, observation]));
         /**
          * Which id failed and why. The sibling `invalid_decision` path has said so since it

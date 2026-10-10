@@ -139,6 +139,29 @@ beforeEach(() => {
 });
 
 describe("model proposes, code disposes - end to end", () => {
+  it("withholds an Earn-only approval for a full portfolio exit with margin and Blend positions", async () => {
+    const request = "close out all my positions and withdraw everything";
+    const scopedMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_get_vtoken_balance") return { human: args.symbol === "XLM" ? "4" : "0", redeemable_human: args.symbol === "XLM" ? "5" : "0" };
+      if (tool === "vanna_get_farm_lp_position") return { lp_shares_human: "0" };
+      if (tool === "vanna_get_blend_position") return { positions: [{ symbol: "XLM", underlying_value: "8" }] };
+      if (tool === "vanna_get_debt") return { debt: [{ symbol: "XLM", balance: "10" }] };
+      if (tool === "vanna_get_collateral") return { collateral: [{ symbol: "XLM", balance: "100" }] };
+      return mcp.call(tool, args);
+    }) };
+    const view = await researchTurn({ message: request, wallet: SCOPE.trader, continuation: null }, {
+      subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: scopedMcp, signal: new AbortController().signal,
+      model: async () => ({ kind: "research_complete", goal: { intent: "strategy", objective: request, constraints: [], borrowing: "forbidden", portfolioExit: { destination: "wallet", sourceQuote: request } },
+        findings: [{ summary: "Exit requested", evidenceIds: [] }], openQuestions: [], plans: [{ title: "Redeem Earn", rationale: "Return Earn holdings", evidenceIds: [], legs: [{ op: "redeem", asset: "XLM", sizing: { kind: "all_position" } }] }] }),
+    });
+    expect(view.status).toBe("blocked");
+    expect(view.candidates?.feasible ?? []).toEqual([]);
+    expect(view.proposalCandidateId).toBeNull();
+    expect(view.question).toBeNull();
+    expect(view.message).toContain("Missing whole-position steps");
+    expect(view.message).toContain("XLM");
+  });
+
   it("turns a composed plan into a ranked option with sized steps, and rejects the one that cannot be sized", async () => {
     let turn = 0;
     const view = await researchTurn(
