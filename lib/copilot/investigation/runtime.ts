@@ -2,7 +2,7 @@ import { MCPError, type MCPClient } from "../mcp-client";
 import { withInvestigationTurn } from "../telemetry";
 import { readCapabilities, resolveRead } from "./capabilities";
 import { catalogEntry } from "./catalog";
-import { isRecord, lastDecisionRefusal, parseDecision } from "./decision";
+import { isRecord, lastDecisionRefusal, lastDecisionRepair, parseDecision } from "./decision";
 import { annotateVenueAssets } from "./facts-by-shape";
 import { boundOnChainStrings } from "./onchain-strings";
 import type {
@@ -326,18 +326,24 @@ export async function runInvestigation(
       const afterModel = stopReason();
       if (afterModel) return finishStop(afterModel);
       let decision;
+      let repair: ReturnType<typeof lastDecisionRepair> = null;
       try {
         const encoded = JSON.stringify(raw);
-        decision = typeof encoded === "string" && Buffer.byteLength(encoded, "utf8") <= 16_384
-          ? parseDecision(raw) : null;
+        if (typeof encoded === "string" && Buffer.byteLength(encoded, "utf8") <= 16_384) {
+          decision = parseDecision(raw);
+          repair = lastDecisionRepair();
+        } else decision = null;
       } catch {
         decision = null;
+        repair = null;
       }
       if (!decision) {
         // Say which check the model failed; the card only says "invalid decision".
         const refusal = lastDecisionRefusal() || "unparseable";
-        if (!decisionFeedback && refusal === "findings: every finding stated a figure with no evidence (1)") {
-          decisionFeedback = "Your last completion was rejected because its numeric finding had no evidenceIds. Return the same completion with every live numeric finding citing an existing successful observation id, or omit that finding. Do not invent an id.";
+        if (!decisionFeedback && repair) {
+          decisionFeedback = repair === "empty_findings"
+            ? "Your last completion had no findings. Return a valid completion that answers the user's request using the observations already present, with at least one meaningful finding and valid evidence references. Preserve the requested actions and scope. Do not invent data or repeat reads merely to repair this completion. If evidence is missing, request only the missing read."
+            : "Your last completion was rejected because its numeric finding had no evidenceIds. Return the same completion with every live numeric finding citing an existing successful observation id, or omit that finding. Do not invent an id or repeat reads merely to repair the completion.";
           console.warn("[copilot] investigation decision repair requested", { turn: modelTurns, reason: refusal });
           return null;
         }

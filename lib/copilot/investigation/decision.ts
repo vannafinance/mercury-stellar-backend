@@ -45,12 +45,15 @@ function parseTrigger(value: unknown): GoalUnderstanding["trigger"] {
  * saying which check the model failed.
  */
 let lastRefusal = "";
+let lastRepair: "empty_findings" | "uncited_findings" | null = null;
 export function lastDecisionRefusal(): string { return lastRefusal; }
-function refuse(reason: string): null { lastRefusal = reason; return null; }
+export function lastDecisionRepair(): typeof lastRepair { return lastRepair; }
+function refuse(reason: string, repair: typeof lastRepair = null): null { lastRefusal = reason; lastRepair = repair; return null; }
 
 /** Strict boundary for model output, regardless of provider schema enforcement. */
 export function parseDecision(raw: unknown): ResearchDecision | null {
   lastRefusal = "";
+  lastRepair = null;
   if (!isRecord(raw)) return refuse("not an object");
   // Single-read form. Kept because it is the natural output for a genuinely dependent
   // read, and the capability registry still validates every name and argument.
@@ -191,7 +194,9 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
   const namedOps = Array.isArray(goal.namedOps) ? goal.namedOps.slice(0, 8).flatMap((row) =>
     isRecord(row) && exactKeys(row, ["op", "sourceQuote"]) && (WORKFLOW_OPS as readonly string[]).includes(String(row.op)) && text(row.sourceQuote, 400)
       ? [{ op: row.op as WorkflowOp, sourceQuote: row.sourceQuote }] : []) : [];
-  if (!Array.isArray(raw.findings) || raw.findings.length === 0 || raw.findings.length > 12 ||
+  if (Array.isArray(raw.findings) && raw.findings.length === 0 && texts(raw.openQuestions))
+    return refuse("findings/openQuestions: findings=0", "empty_findings");
+  if (!Array.isArray(raw.findings) || raw.findings.length > 12 ||
     !texts(raw.openQuestions)) return refuse(`findings/openQuestions: findings=${Array.isArray(raw.findings) ? raw.findings.length : typeof raw.findings}`);
   /**
    * Plans are optional and additive. A malformed plan must not void the research it
@@ -227,7 +232,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     if (!allowEmptyEvidence && finding.evidenceIds.length === 0 && /\d/.test(finding.summary)) { droppedFindings += 1; continue; }
     findings.push({ summary: finding.summary, evidenceIds: [...finding.evidenceIds] });
   }
-  if (!findings.length) return refuse(`findings: every finding stated a figure with no evidence (${droppedFindings})`);
+  if (!findings.length) return refuse(`findings: every finding stated a figure with no evidence (${droppedFindings})`, "uncited_findings");
   return {
     kind: "research_complete",
     goal: {

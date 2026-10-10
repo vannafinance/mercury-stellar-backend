@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { interruptible, runInvestigation } from "@/lib/copilot/investigation/runtime";
 import { readCapabilities, resolveRead } from "@/lib/copilot/investigation/capabilities";
-import { MAX_BATCHED_READS } from "@/lib/copilot/investigation/decision";
+import { MAX_BATCHED_READS, parseDecision } from "@/lib/copilot/investigation/decision";
 import { assertFlashModel } from "@/lib/copilot/investigation/flash-policy";
 import type { InvestigationRequest, ResearchModel, ResearchTurn } from "@/lib/copilot/investigation/types";
 
@@ -26,6 +26,36 @@ const read = () => ({ call: vi.fn(async () => ({ debt_usd: "217.59" })) });
 afterEach(() => vi.useRealTimers());
 
 describe("adaptive investigation", () => {
+  it("does not reuse a prior parse repair for an oversized decision", async () => {
+    parseDecision({ ...complete([]), findings: [] });
+    const model = sequence({ ...complete([]), extra: "x".repeat(20_000) });
+    const result = await runInvestigation(request, { model, mcp: read() });
+    expect(result.outcome).toEqual({ kind: "stopped", reason: "invalid_decision" });
+    expect(model).toHaveBeenCalledTimes(1);
+  });
+  it("repairs an empty completion once using the existing observations", async () => {
+    const malformed = { ...complete(), findings: [] };
+    const model = sequence(inspect("account_debt"), malformed, complete());
+    const mcp = read();
+    const result = await runInvestigation(request, { model, mcp });
+    expect(result.outcome).toEqual(complete());
+    expect(model).toHaveBeenCalledTimes(3);
+    expect(mcp.call).toHaveBeenCalledTimes(1);
+    const repairedTurn = vi.mocked(model).mock.calls[2][0];
+    expect(repairedTurn.decisionFeedback).toContain("no findings");
+    expect(repairedTurn.observations).toHaveLength(1);
+    expect(result.executionAllowed).toBe(false);
+  });
+  it("stops after a repeated empty completion without fabricating an answer or execution", async () => {
+    const malformed = { ...complete([]), findings: [] };
+    const model = sequence(malformed, malformed);
+    const mcp = read();
+    const result = await runInvestigation(request, { model, mcp });
+    expect(result.outcome).toEqual({ kind: "stopped", reason: "invalid_decision" });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(mcp.call).not.toHaveBeenCalled();
+    expect(result.executionAllowed).toBe(false);
+  });
   it("repairs a fully dropped action once instead of returning a request echo", async () => {
     const malformed = { ...complete([]), goal: { ...complete([]).goal, intent: "strategy", actions: [
       { op: "redeem", asset: "XLM", sourceQuote: "redeem all my XLM from Earn", sizing: { kind: "all_position", sourceQuote: "all my XLM" } },
