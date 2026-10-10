@@ -665,6 +665,9 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
         else rejected.push({ title: bridged.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
       }
     }
+    // A successful pocket bridge is the offered workflow. Also retaining the plain
+    // shape can auto-select it and spend unrelated wallet funds instead of the exit.
+    if (bridgedResolved) continue;
     const accountCheck = independentAccountCheck(plan, ctx);
     if (accountCheck) {
       const candidatePlan = { ...plan, legs: accountCheck.legs };
@@ -781,13 +784,19 @@ function withLendPocketBridge(plan: ProposedPlan, ctx: PlanContext): ProposedPla
   let changed = false;
   const next: PlanLeg[] = [];
   for (const leg of plan.legs) {
-    if (leg.op === "lend" && leg.sizing.kind === "previous_leg") {
-      const producer = [...next].reverse().find(earlier => producedAsset(earlier) === leg.asset);
+    const producer = [...next].reverse().find(earlier => producedAsset(earlier) === leg.asset);
+    const matchingPositionExit = (() => {
+      if (leg.op !== "lend" || leg.sizing.kind !== "literal" || producer?.sizing.kind !== "literal"
+        || !POSITION_POCKETS.includes(OP_FLOW[producer.op].from)) return false;
+      try { return decimalWad(producer.sizing.amount) === decimalWad(leg.sizing.amount); }
+      catch { return false; }
+    })();
+    if (leg.op === "lend" && (leg.sizing.kind === "previous_leg" || matchingPositionExit)) {
       // Keep the same-asset handoff, but expose the missing pocket transition. Swap
       // and LP payouts still require their separate measured-output guarantees.
       if (producer && OP_FLOW[producer.op].to === "account"
         && producer.op !== "swap" && producer.op !== "remove_liquidity") {
-        next.push({ op: walletTransfer, asset: leg.asset, sizing: { kind: "previous_leg" } });
+        next.push({ op: walletTransfer, asset: leg.asset, sizing: structuredClone(leg.sizing) });
         changed = true;
       }
       next.push(leg);
@@ -798,7 +807,7 @@ function withLendPocketBridge(plan: ProposedPlan, ctx: PlanContext): ProposedPla
       continue;
     }
     try {
-      resolvePlan({ ...plan, legs: [leg] }, ctx);
+      resolvePlan({ ...plan, legs: [...next, leg] }, ctx);
       next.push(leg);
     } catch (error) {
       if (!(error instanceof Reject) || !error.funding) {
