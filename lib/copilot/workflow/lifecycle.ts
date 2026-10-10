@@ -5,7 +5,7 @@ import { routeMessage } from "../router";
  * sizer - the connected G-wallet is the only input. Kept off `WORKFLOW_OPS` so the
  * shape matrix and journal never treat them as sized legs.
  */
-export const LIFECYCLE_WRITES = ["create_account"] as const;
+export const LIFECYCLE_WRITES = ["create_account", "settle_account"] as const;
 export type LifecycleWriteOp = (typeof LIFECYCLE_WRITES)[number];
 
 export function isLifecycleWriteOp(value: string): value is LifecycleWriteOp {

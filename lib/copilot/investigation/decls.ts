@@ -209,7 +209,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         write: {
           type: "object",
           description:
-            "A lifecycle write, not a plan: no asset, no amount. Opening a margin account is create_account. Quote the user's message. Never combine with goal.actions or plans.",
+            "A lifecycle write, not a plan: no asset, no amount. Opening a margin account is create_account; settling margin borrow positions is settle_account. Settlement requires the owner's wallet signature and does not redeem independent wallet Earn holdings. Quote the user's message. Never combine with goal.actions or plans.",
           properties: {
             op: { type: "string", enum: [...LIFECYCLE_WRITES] },
             sourceQuote: { type: "string" },

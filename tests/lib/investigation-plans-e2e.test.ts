@@ -149,6 +149,29 @@ it("keeps an unresolved direct instruction as a choice without dereferencing its
   expect(view.proposalCandidateId).toBeNull();
 });
 
+it("hands an explicit account settlement to the existing lifecycle execution path", async () => {
+  const message = "settle my account";
+  const view = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {
+    subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp,
+    signal: new AbortController().signal,
+    model: async () => ({ kind: "research_complete", goal: { intent: "strategy", relation: "new", objective: message, constraints: [], borrowing: "forbidden", write: { op: "settle_account", sourceQuote: message } },
+      findings: [{ summary: "Prepare account settlement for wallet review.", evidenceIds: [] }], openQuestions: [] }),
+  });
+  expect(view.pendingWrite).toEqual({ op: "settle_account" });
+  expect(view.proposalCandidateId).toBeNull();
+  expect(view.candidates).toBeNull();
+});
+it("does not substitute margin settlement for a whole-portfolio withdrawal", async () => {
+  const message = "withdraw all funds";
+  const view = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {
+    subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp,
+    signal: new AbortController().signal,
+    model: async () => ({ kind: "research_complete", goal: { intent: "strategy", relation: "new", objective: message, constraints: [], borrowing: "forbidden", portfolioExit: { destination: "wallet", sourceQuote: message }, write: { op: "settle_account", sourceQuote: message } },
+      findings: [{ summary: "Review the complete portfolio exit.", evidenceIds: [] }], openQuestions: [] }),
+  });
+  expect(view.pendingWrite).toBeNull();
+});
+
 it.each([false, true])("nominates a named whole-position exit with duplicate actions=%s as requested actions", async (duplicateActions) => {
   const message = "remove USDC position from blend farm";
   const positionMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {

@@ -3052,6 +3052,8 @@ export function CopilotWorkspace() {
       }
     });
   }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, workflow.error, address, resetWorkflow, resetStrategyAccumulator]);
+  const lifecycleTurnRef = useRef<string | null>(null);
+  lifecycleTurnRef.current = investigation.result ? `${address}:${investigation.result.continuation}` : null;
   useEffect(() => {
     const view = investigation.result;
     if (!view || investigation.loading || investigation.error) return;
@@ -3060,10 +3062,14 @@ export function CopilotWorkspace() {
     if (investigation.resultOrigin !== "live") return;
     const key = `write:${view.continuation}:${op}`;
     if (!claimDispatch(address, key)) return;
+    const turn = `${address}:${view.continuation}`;
     void postCopilot({ pending_write: { op }, message: view.originalRequest }, view.originalRequest).then((sent) => {
       if (!sent) releaseDispatch(address, key);
+      else if (lifecycleTurnRef.current === turn && (sent.kind === "error" || sent.kind === "blocked")) {
+        void investigation.updateLastAssistantText(sent.message);
+      }
     });
-  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, postCopilot, address]);
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, investigation.updateLastAssistantText, postCopilot, address]);
 
   const signJournalXdr = useCallback(async (auto = false) => {
     const view = workflow.view;

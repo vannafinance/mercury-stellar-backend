@@ -877,7 +877,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     ? resolveLifecycleWrite({
         modelWrite: outcome.goal.write,
         messages,
-        hasSizedWork: Boolean(outcome.goal.actions?.length || outcome.plans?.length),
+        hasSizedWork: Boolean(fullPortfolioExit || outcome.goal.actions?.length || outcome.plans?.length),
       })
     : null;
 
