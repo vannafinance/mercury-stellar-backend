@@ -93,5 +93,5 @@ export function enforcePortfolioExit(resolved: ResolvedPlans, plans: readonly Pr
       ...(!coverage.unread.length && coverage.required.length <= MAX_WORKFLOW_STEPS ? { repairable: true as const } : {}) });
     return false;
   });
-  return { candidates, rejected };
+  return { ...resolved, candidates, rejected };
 }

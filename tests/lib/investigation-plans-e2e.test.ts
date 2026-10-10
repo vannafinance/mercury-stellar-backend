@@ -138,6 +138,41 @@ beforeEach(() => {
   mcp.call.mockClear();
 });
 
+it.each([{ asset: "AQUSDC", amount: "25" }, { asset: "SOUSDC", amount: "7.3" }])("proposes the shown collateral-to-Earn bridge for $asset", async ({ asset, amount }) => {
+  const message = `supply ${amount} ${asset} to earn`;
+  const bridgeMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+    if (tool === "vanna_get_collateral") return { collateral: [{ symbol: asset, balance: "100" }] };
+    if (tool === "vanna_get_wallet_balance") return { assets: [
+      { symbol: "XLM", balance: "100", status: "ok" },
+      { symbol: asset, balance: "0", decimals: 7, status: "ok" },
+    ], fee_reserve_xlm: "0.5" };
+    return mcp.call(tool, args);
+  }) };
+  const view = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {
+    subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: bridgeMcp,
+    signal: new AbortController().signal,
+    model: async () => ({ kind: "research_complete", goal: {
+      intent: "strategy", relation: "new", objective: message, constraints: [], borrowing: "forbidden",
+      namedOps: [{ op: "lend", sourceQuote: message }],
+      actions: [{ op: "lend", asset, sizing: { kind: "literal", amount, sourceQuote: message }, sourceQuote: message }],
+    }, findings: [{ summary: "Prepare the requested Earn supply.", evidenceIds: [] }], openQuestions: [] }),
+  });
+  const candidate = view.candidates?.feasible[0];
+  expect(candidate?.steps?.map(step => [step.op, step.asset, step.amount])).toEqual([
+    ["withdraw_collateral", asset, amount], ["lend", asset, amount],
+  ]);
+  expect(view.proposalCandidateId).toBe(candidate!.id);
+  expect(view.proposalCandidateId).not.toBe("requested_actions");
+  bridgeMcp.call.mockClear();
+  const proposal = await proposeWorkflow({ continuation: view.continuation, candidateId: candidate!.id,
+    subject: SCOPE.subject, secret: SECRET, server: "mcp-test", network: "testnet", mcp: bridgeMcp,
+    signal: new AbortController().signal,
+  });
+  expect(proposal.status).toBe("proposed");
+  expect(proposal.steps.map(step => [step.op, step.asset, step.amount])).toEqual(candidate!.steps!.map(step => [step.op, step.asset, step.amount]));
+  expect(bridgeMcp.call).not.toHaveBeenCalled();
+});
+
 it("keeps an unresolved direct instruction as a choice without dereferencing its removed plan", async () => {
   const message = "lend USDC";
   const view = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {

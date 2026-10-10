@@ -1256,6 +1256,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
   }
   let planComparisons = rateComparisons;
+  let resolvedPlanShapes: ProposedPlan[] = [];
   if (modelPlans.length) {
     const mandatoryOps = requestedOperations(outcome.kind === "research_complete" ? outcome.goal : null, messages);
     logPhase("requested_operations", { required: mandatoryOps });
@@ -1372,6 +1373,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             resolved = {
               candidates: [...resolved.candidates, ...gained],
               rejected: [...retry.rejected, ...resolved.rejected.filter((entry) => !entry.repairable)],
+              plans: [...(resolved.plans ?? []), ...(retry.plans ?? [])],
             };
             modelPlans = [...modelPlans.filter((plan) => !repairable.some((entry) => entry.title === plan.title)), ...repairedPlans];
           }
@@ -1389,6 +1391,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       logPhase("plans_unrepaired", { reasons: unrepaired.map((entry) => `${entry.title}: ${entry.reason}`) });
       resolved = { ...resolved, rejected: resolved.rejected.filter((entry) => !entry.repairable) };
     }
+    resolvedPlanShapes = resolved.plans ?? [];
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, shapes: resolved.candidates.map((candidate) => candidate.id), rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     // Fixed options only for the assets the user named; the model's composed plans are untouched.
     const fixedShapes = fullPortfolioExit ? null : onlyNamedAssets(candidates, messages);
@@ -1418,6 +1421,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             result.observations.push(...ceilings);
             observedNow = Date.now();
             const again = capToOneApproval(resolvePlans(modelPlans, { ...planContext, observations: result.observations, now: observedNow }), MAX_WORKFLOW_STEPS);
+            resolvedPlanShapes = again.plans ?? [];
             candidates = await simulateCandidates(mergeCandidateSets(scopedFixed, enforceRequestedOperations(again, mandatoryOps), borrowing), scope, scopedMcp, resizeSignal);
             logPhase("pool_resize", { assets: poolLimited, offered: candidates.feasible.length, ms: Date.now() - resizeStarted });
           } else {
@@ -1564,6 +1568,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   // The reads the sealed plans need survive sealing, so propose can re-size exactly what was offered.
   const evidence = compactResearchEvidence(result.observations, capacity, observedNow, [
     ...readsForPlans(modelPlans, [], observedNow),
+    ...readsForPlans(resolvedPlanShapes, [], observedNow),
     ...(fullPortfolioExit ? missingPositionReads([], undefined, [], true) : []),
   ]);
   if (fullPortfolioExit) evidence.portfolioExit = true;
@@ -1577,7 +1582,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
   }
   if (modelPlans.length) {
-    evidence.plans = modelPlans;
+    // Seal the same effective shapes whose ids and steps were offered. A funding
+    // bridge changes the shape; sealing only its original lend loses that identity.
+    evidence.plans = [...new Map([...modelPlans, ...resolvedPlanShapes].map(plan => [planCandidateId(plan), plan])).values()];
     evidence.position = planPosition;
     // Sealed with the plans it applies to, already anchored to the user's own words.
     if (outcome.kind === "research_complete" && anchoredSlippageAccepted(outcome.goal, messages)) {

@@ -23,7 +23,7 @@ export function enforceRequestedOperations(resolved: ResolvedPlans, required: re
       repairable: true });
     return false;
   });
-  return { candidates, rejected };
+  return { ...resolved, candidates, rejected };
 }
 
 /**

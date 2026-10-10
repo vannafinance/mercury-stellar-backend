@@ -143,6 +143,8 @@ export interface PocketMismatch {
 export interface ResolvedPlans {
   candidates: Candidate[];
   rejected: RejectedPlan[];
+  /** Effective shapes used to size the candidates, including explicitly shown funding bridges. */
+  plans?: ProposedPlan[];
 }
 
 /**
@@ -627,6 +629,7 @@ export function capToOneApproval(resolved: ResolvedPlans, maxSteps: number): Res
   const over = resolved.candidates.filter((candidate) => (candidate.steps?.length ?? 0) > maxSteps);
   if (!over.length) return resolved;
   return {
+    ...resolved,
     candidates: resolved.candidates.filter((candidate) => !over.includes(candidate)),
     rejected: [...resolved.rejected, ...over.map((candidate) => ({
       title: candidate.label, leg: null,
@@ -638,11 +641,13 @@ export function capToOneApproval(resolved: ResolvedPlans, maxSteps: number): Res
 export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): ResolvedPlans {
   const candidates: Candidate[] = [];
   const rejected: RejectedPlan[] = [];
+  const effectivePlans: ProposedPlan[] = [];
   const seen = new Set<string>();
-  const remember = (candidate: Candidate) => {
+  const remember = (candidate: Candidate, plan: ProposedPlan) => {
     if (seen.has(candidate.id)) return;
     seen.add(candidate.id);
     candidates.push(candidate);
+    effectivePlans.push(structuredClone(plan));
   };
   for (const plan of plans) {
     /**
@@ -654,7 +659,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
     const bridged = withLendPocketBridge(plan, ctx);
     let bridgedResolved = false;
     if (bridged) {
-      try { remember(resolvePlan(bridged, ctx)); bridgedResolved = true; }
+      try { remember(resolvePlan(bridged, ctx), bridged); bridgedResolved = true; }
       catch (error) {
         if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...rejectionDetails(error) });
         else rejected.push({ title: bridged.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
@@ -664,7 +669,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
     if (accountCheck) {
       const candidatePlan = { ...plan, legs: accountCheck.legs };
       try {
-        remember(resolvePlan(candidatePlan, ctx));
+        remember(resolvePlan(candidatePlan, ctx), candidatePlan);
         rejected.push(...accountCheck.rejected.map((entry) => ({ title: plan.title, ...entry })));
       } catch (error) {
         if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...rejectionDetails(error) });
@@ -679,7 +684,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
     }
     const candidatePlan = partial ? { ...plan, legs: partial.legs } : plan;
     try {
-      remember(resolvePlan(candidatePlan, ctx));
+      remember(resolvePlan(candidatePlan, ctx), candidatePlan);
       if (partial && !bridged) rejected.push(...partial.rejected.map((entry) => ({ title: plan.title, ...entry })));
     } catch (error) {
       // The bridged path already answers this plan's unfunded leg; its plain attempt failing
@@ -698,7 +703,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
     said.add(key);
     return true;
   });
-  return { candidates, rejected: distinct };
+  return { candidates, rejected: distinct, plans: effectivePlans };
 }
 
 /**
