@@ -26,6 +26,7 @@ import { workflowJournal } from "./proposal";
 import { TOOLS } from "../workflow/allowlist";
 import { WALLET_OPS } from "../workflow/types";
 import { assertSigningTime, checkSigningPreconditions, refreshSigningEnvelope } from "../workflow/signing-envelope";
+import { checkTransactionFee } from "../workflow/fee-budget";
 
 /** Every tool the vocabulary maps to. Derived, so a new op cannot be allowlisted yet unexecutable. */
 const WRITE_TOOLS = new Set(Object.values(TOOLS));
@@ -596,6 +597,9 @@ export async function prepareWorkflowSigning(input: {
   const reason = await validateWorkflowRisk({ ...expected, steps: [step] }, input.mcp, input.signal);
   if (reason) throw new ResearchError("risk_validation_failed", reason, 409);
   const unsignedXdr = await interruptible(() => (input.refreshEnvelope ?? refreshSigningEnvelope)(waiting.unsignedXdr!, scope.trader!), input.signal);
+  // An injected envelope refresher is a server-only test seam. The live signing path
+  // always checks the refreshed maximum fee before exposing it to the wallet.
+  if (!input.refreshEnvelope) await interruptible(() => checkTransactionFee(unsignedXdr, step), input.signal);
   input.signal.throwIfAborted();
   return workflowView(await journal.replaceUnsignedEnvelope(input.id, identity, step.id, waiting.unsignedXdr, unsignedXdr));
 }
@@ -975,6 +979,7 @@ export async function submitWorkflow(input: {
   // A wallet popup may itself have sat unanswered. Do not register or broadcast an expired signature.
   assertSigningTime(input.signedXdr);
   await interruptible(() => (input.checkEnvelope ?? checkSigningPreconditions)(input.signedXdr), input.signal);
+  if (!input.checkEnvelope) await interruptible(() => checkTransactionFee(input.signedXdr, step), input.signal);
   const record = await journal.acceptSignedEnvelope(input.id, identity, step.id, input.signedXdr);
   let submission: import("@stellar/stellar-sdk").rpc.Api.SendTransactionResponse;
   try {
