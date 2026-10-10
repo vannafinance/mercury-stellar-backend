@@ -174,7 +174,12 @@ export function completionFacts(view: WorkflowView, comparisons: readonly RateCo
     const n = index + 1;
     const def = resolveAssetDef(step.asset);
     add(`step${String.fromCharCode(64 + n)}:done`, "what was done", doneClause(step), "");
-    if (step.amount) add(`step${String.fromCharCode(64 + n)}:amount`, "amount settled", step.amount, def?.displayLabel ?? step.asset);
+    const flow = OP_FLOW[step.op as WorkflowOp];
+    // Receipt-share exits already carry their unit and any approved conversion in
+    // the action label. Their raw amount is not an underlying-token quantity.
+    if (step.amount && flow?.from !== "earn" && flow?.from !== "lp") {
+      add(`step${String.fromCharCode(64 + n)}:amount`, "amount settled", step.amount, def?.displayLabel ?? step.asset);
+    }
     const kind = OP_FLOW[step.op as WorkflowOp]?.rate;
     const row = kind ? comparisons.find((comparison) => comparison.asset === step.asset) : undefined;
     const apr = kind === "earn_supply" ? row?.earnSupplyApr : kind === "blend_supply" ? row?.blendSupplyApr : kind === "earn_borrow" ? row?.marginBorrowApr : null;

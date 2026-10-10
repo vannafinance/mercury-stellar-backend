@@ -271,6 +271,23 @@ describe("composing the reply once a run has finished", () => {
   const settled = { id: "s1", op: "supply_blend", asset: "XLM", amount: "5", label: "Supply 5 XLM to Blend", status: "settled" };
   const comparisons = [{ asset: "XLM", blendSupplyApr: "12" }] as never;
 
+  it.each([
+    { op: "redeem", asset: "XLM", amount: "9.9149282", label: "Redeem 9.9149282 VXLM from Earn (≈ 10 XLM)", done: "Redeemed 9.9149282 VXLM from Earn (≈ 10 XLM)" },
+    { op: "redeem", asset: "BLUSDC", amount: "7.13", label: "Redeem 7.13 VUSDC from Earn (≈ 8 BLUSDC)", done: "Redeemed 7.13 VUSDC from Earn (≈ 8 BLUSDC)" },
+    { op: "remove_liquidity", asset: "AQUSDC", amount: "12.4", label: "Remove 12.4 LP shares from Aquarius", done: "Removed 12.4 LP shares from Aquarius" },
+  ])("preserves receipt-share units for $op $asset without offering an underlying amount fact", async ({ done, ...step }) => {
+    const view = run("completed", [{ ...step, id: "s1", status: "settled" }]);
+    const facts = completionFacts(view, [], null);
+    expect(facts.find(fact => fact.id === "stepA:done")?.value).toBe(done);
+    expect(facts.find(fact => fact.id === "stepA:amount")).toBeUndefined();
+    const out = await composeCompletion({ view, request: "exit the stated position", draft: `${done}.`, comparisons: [], healthNow: null },
+      new AbortController().signal, async () => ({ blocks: [{ type: "paragraph", text: "{{stepA:done}}." }] }));
+    expect(out?.message).toBe(`${done}.`);
+    const missingAmount = await composeCompletion({ view, request: "exit the stated position", draft: `${done}.`, comparisons: [], healthNow: null },
+      new AbortController().signal, async () => ({ blocks: [{ type: "paragraph", text: "Completed {{stepA:amount}}." }] }));
+    expect(missingAmount).toBeNull();
+  });
+
   it("binds the approved health target separately from observed health without inventing a post-read", async () => {
     const view = run("completed", [settled]);
     const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", segments: [
