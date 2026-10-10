@@ -29,6 +29,7 @@ import { missingPositionReads } from "./position-coverage";
 import { enforcePortfolioExit, portfolioExitCoverage, portfolioExitProblem, requestsPortfolioExit } from "./portfolio-exit";
 import { actionsFromAnswers, answerProblem, buildQuestionnaireSet, opsInPlay, readsForQuestionnaire } from "./questionnaire";
 import { requestsMaximumCredit, directMaximumCreditPlan } from "./max-credit";
+import { directPositionPlan } from "./direct-position";
 import { drawsNewDebt } from "../leg-direction";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
@@ -1062,12 +1063,12 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     ? planFromStatedActions(shareSameOpLiteralActions(statedActions, messages, ownedElsewhere),
       outcome.kind === "research_complete" ? outcome.goal.objective : messages[0]) : null;
   /**
-   * Its POSITION, not its identity: `withSharedLiteralAmount` below can append a leg,
-   * which would change the plan's candidate id and silently turn the user's own
-   * instruction back into a composed proposal. The transforms map in order and never
-   * reorder, so the index survives what the id does not.
+   * Locate the instruction before the shared-amount transforms, which can append
+   * a leg and change its candidate id. Capture the resulting identity below before
+   * choice filtering can remove or reorder the plans.
    */
-  const statedPlanIndex = statedPlan ? modelPlans.length : outcome.kind === "research_complete" ? directMaximumCreditPlan(outcome.goal, modelPlans, messages) : -1;
+  const statedPlanIndex = statedPlan ? modelPlans.length : outcome.kind === "research_complete"
+    ? Math.max(directMaximumCreditPlan(outcome.goal, modelPlans, messages), directPositionPlan(outcome.goal, modelPlans, messages)) : -1;
   if (statedPlan) modelPlans.push(statedPlan);
   /**
    * A swap that did not say what it buys is completed from the user's sentence here, before
@@ -1075,6 +1076,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * the card and the sealed plan all see the same leg.
    */
   modelPlans = withSharedLiteralAmount(withBoughtAsset(modelPlans, messages), messages, ownedElsewhere);
+  // Keep the instruction's identity across choice filtering and model repair.
+  // An array position can disappear or start pointing at a different proposal.
+  const initialStatedId = statedPlanIndex >= 0 && modelPlans[statedPlanIndex]
+    ? planCandidateId(modelPlans[statedPlanIndex]) : null;
   /**
    * Plans the user asked for together become ONE plan (23 Sep, XS6: "use my whole wallet"
    * came back as one option per asset, and Approve could run only one). Only when the model
@@ -1282,8 +1287,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
        * is one of `modelPlans` by this point, and its id is the only thing separating
        * them again.
        */
-      statedPlanId: statedPlanIndex >= 0 && modelPlans[statedPlanIndex]
-        ? planCandidateId(modelPlans[statedPlanIndex]) : null,
+      statedPlanId: initialStatedId && modelPlans.some(plan => planCandidateId(plan) === initialStatedId)
+        ? initialStatedId : null,
       strategyGoal,
       namedOpAssets: outcome.kind === "research_complete" ? namedOpAssets(outcome.goal.namedOps, messages) : [],
       // Only an acceptance anchored in the user's own message counts.
@@ -1508,7 +1513,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             : outcome.kind === "stopped" ? "incomplete"
               : "needs_input";
   // A stated write, once sized and simulated, is offered as the steps to approve - not as a ranked option.
-  const statedId = statedPlanIndex >= 0 ? planCandidateId(modelPlans[statedPlanIndex]) : null;
+  const statedId = initialStatedId && modelPlans.some(plan => planCandidateId(plan) === initialStatedId)
+    ? initialStatedId : null;
   const statedCandidate = statedId ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
   const requestedSteps = statedCandidate?.steps ?? [];
   if (statedCandidate && candidates) candidates = { ...candidates, feasible: candidates.feasible.filter((c) => c.id !== statedId) };

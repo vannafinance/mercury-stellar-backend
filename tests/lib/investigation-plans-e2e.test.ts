@@ -138,6 +138,36 @@ beforeEach(() => {
   mcp.call.mockClear();
 });
 
+it("keeps an unresolved direct instruction as a choice without dereferencing its removed plan", async () => {
+  const message = "lend USDC";
+  const view = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {
+    subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp,
+    signal: new AbortController().signal,
+    model: async () => ({ kind: "research_complete", goal: { intent: "strategy", relation: "new", objective: message, constraints: [], borrowing: "forbidden", actions: [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_wallet" }, sourceQuote: message }] }, findings: [{ summary: "Prepare the requested lending action.", evidenceIds: [] }], openQuestions: [] }),
+  });
+  expect(view.question).toBeTruthy();
+  expect(view.proposalCandidateId).toBeNull();
+});
+
+it.each([false, true])("nominates a named whole-position exit with duplicate actions=%s as requested actions", async (duplicateActions) => {
+  const message = "remove USDC position from blend farm";
+  const positionMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+    if (tool === "vanna_get_wallet_balance") return { assets: [{ symbol: "BLUSDC", balance: "0", decimals: 7, status: "ok" }] };
+    if (tool === "vanna_get_blend_position") return { positions: [{ symbol: "USDC", underlying_value: "12" }] };
+    return mcp.call(tool, args);
+  }) };
+  const view = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {
+    subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: positionMcp,
+    signal: new AbortController().signal,
+    model: async () => ({ kind: "research_complete", goal: { intent: "strategy", relation: "new", objective: message, constraints: [], borrowing: "forbidden", namedOps: [{ op: "blend_withdraw", sourceQuote: message }], ...(duplicateActions ? { actions: [{ op: "blend_withdraw", asset: "BLUSDC", sizing: { kind: "all_position" }, sourceQuote: message }] } : {}) },
+      findings: [{ summary: "Prepare the requested position exit.", evidenceIds: [] }], openQuestions: [],
+      plans: [{ title: "Exit Blend", rationale: "Return the held position.", evidenceIds: [], legs: [{ op: "blend_withdraw", asset: "BLUSDC", sizing: { kind: "all_position" } }] }] }),
+  });
+  expect(view.proposalCandidateId).toBe("requested_actions");
+  expect(view.question).toBeNull();
+  expect(view.candidates).toBeNull();
+});
+
 describe("model proposes, code disposes - end to end", () => {
   it("withholds an Earn-only approval for a full portfolio exit with margin and Blend positions", async () => {
     const request = "close out all my positions and withdraw everything";

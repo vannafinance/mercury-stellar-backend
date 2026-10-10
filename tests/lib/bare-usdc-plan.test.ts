@@ -77,6 +77,10 @@ describe("an unsupported asset", () => {
 
 /** The one check both the planner and the "ask first" turn use (owner, 23 Sep: option b). */
 describe("unchosenUsdcVariant", () => {
+  it("uses a venue's single registered USDC variant without another choice", () => {
+    expect(unchosenUsdcVariant({ op: "blend_withdraw", asset: "BLUSDC" }, ["remove USDC position from blend farm"])).toBeNull();
+    expect(unchosenUsdcVariant({ op: "lend", asset: "AQUSDC" }, ["lend USDC"])).toBe("AQUSDC");
+  });
   it("flags a swap into a USDC the user never chose", () => {
     expect(unchosenUsdcVariant({ asset: "XLM", assetOut: "SOUSDC" }, ["swap 100 XLM to USDC"])).toBe("SOUSDC");
   });

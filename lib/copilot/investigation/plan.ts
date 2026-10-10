@@ -15,7 +15,7 @@
  * but the combinations are the model's to find.
  */
 
-import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, lpPairs, mentionsBareUsdc, namesAsset, poolVenueFor, resolveAssetDef, swappableWith, USDC_VARIANTS } from "../registry/assets";
+import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, lpPairs, mentionsBareUsdc, namesAsset, poolVenueFor, resolveAssetDef, swappableWith, USDC_VARIANTS, venueUsdc } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_DONE, OP_FLOW, POSITION_POCKETS, producedAsset, SIZED_OPS, touchesMarginAccount, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
@@ -365,6 +365,14 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
      */
     const before = legs[index - 1];
     if (before && before.op === "deposit_collateral" && before.asset === leg.asset && drawsOnWallet(before.sizing)) {
+      // Preserve whole-debt sizing when observed account funds plus this deposit
+      // cover it. Without that evidence, keep the existing bounded handoff.
+      if (leg.sizing.kind === "all_position") {
+        const def = resolveAssetDef(leg.asset);
+        const owed = def?.marginSymbol ? positionRowBalance(ctx.observations, "account_debt", POSITION_ROWS.account_debt, def.marginSymbol, def.id, ctx.now) : null;
+        const held = heldAfterEarlier(ctx, leg.asset, expanded);
+        if (owed !== null && held && !held.unsized && held.available >= decimalWad(owed)) return [leg];
+      }
       return [{ op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
     }
     /**
@@ -379,6 +387,23 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
       const owed = def?.marginSymbol ? positionRowBalance(ctx.observations, "account_debt", POSITION_ROWS.account_debt, def.marginSymbol, def.id, ctx.now) : null;
       const held = def?.marginSymbol ? positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol, def.id, ctx.now) : null;
       if (owed !== null && held !== null && decimalWad(held) >= decimalWad(owed) && decimalWad(owed) > ZERO) return [leg];
+      if (owed !== null && held !== null && decimalWad(held) > ZERO && decimalWad(owed) > decimalWad(held)) {
+        const places = decimalsFrom(ctx.observations).get(leg.asset);
+        if (places !== undefined) {
+          // Repayment uses both pockets. A derived top-up must not turn the final
+          // whole-debt repayment into a repayment of just the wallet deposit.
+          const target = decimalWad(truncateToDecimals(formatWad(decimalWad(owed)), places));
+          const shortfall = target - decimalWad(held);
+          if (shortfall <= ZERO) return [leg];
+          const quantum = BigInt(10) ** BigInt(18 - places);
+          const amount = formatWad(((shortfall + quantum - BigInt(1)) / quantum) * quantum);
+          const wallet = spendableWallet(ctx, leg.asset);
+          if (wallet !== null && wallet < decimalWad(amount)) {
+            throw new Reject(`${verbOf(leg.op)} ${leg.asset}`, `Your margin account has ${held} ${leg.asset} against ${formatWad(target)} ${leg.asset} of debt. Your wallet has ${formatWad(wallet)} ${leg.asset}, which does not cover the remaining ${amount} ${leg.asset}`);
+          }
+          return [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "literal", amount, sourceQuote: "" }, fundsAccount: true }, leg];
+        }
+      }
     }
     if (leg.sizing.kind === "all_wallet" || leg.sizing.kind === "all_position") {
       return [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_wallet" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
@@ -2557,9 +2582,12 @@ export function usdcChoicesFor(message: string): { id: string; label: string; se
  * (registry header): a leg in one variant stands only if the user named that variant, by any
  * of its registry aliases, in some turn. A request that never said USDC is not affected.
  */
-export function unchosenUsdcVariant(leg: { asset: string; assetOut?: string }, messages: readonly string[]): string | null {
+export function unchosenUsdcVariant(leg: { asset: string; assetOut?: string; op?: WorkflowOp }, messages: readonly string[]): string | null {
   if (!messages.some((message) => mentionsBareUsdc(message))) return null;
+  const operation = leg.op;
+  const venueAsset = operation ? venueUsdc().find(row => row.venue === OP_FLOW[operation].venue)?.usdc : undefined;
   for (const chosen of [leg.asset, leg.assetOut].filter((a): a is string => !!a)) {
+    if (chosen === venueAsset) continue;
     if ((USDC_VARIANTS as readonly string[]).includes(chosen) && !messages.some((message) => namesAsset(message, chosen))) return chosen;
   }
   return null;
