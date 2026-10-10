@@ -775,9 +775,24 @@ function independentLendPocketCheck(plan: ProposedPlan, ctx: PlanContext):
  */
 function withLendPocketBridge(plan: ProposedPlan, ctx: PlanContext): ProposedPlan | null {
   if (!plan.legs.some((leg) => leg.op === "lend")) return null;
+  const walletTransfers = WORKFLOW_OPS.filter(op => OP_FLOW[op].from === "account" && OP_FLOW[op].to === "wallet");
+  if (walletTransfers.length !== 1) return null;
+  const walletTransfer = walletTransfers[0];
   let changed = false;
   const next: PlanLeg[] = [];
   for (const leg of plan.legs) {
+    if (leg.op === "lend" && leg.sizing.kind === "previous_leg") {
+      const producer = [...next].reverse().find(earlier => producedAsset(earlier) === leg.asset);
+      // Keep the same-asset handoff, but expose the missing pocket transition. Swap
+      // and LP payouts still require their separate measured-output guarantees.
+      if (producer && OP_FLOW[producer.op].to === "account"
+        && producer.op !== "swap" && producer.op !== "remove_liquidity") {
+        next.push({ op: walletTransfer, asset: leg.asset, sizing: { kind: "previous_leg" } });
+        changed = true;
+      }
+      next.push(leg);
+      continue;
+    }
     if (leg.op !== "lend" || leg.sizing.kind !== "literal") {
       next.push(leg);
       continue;
@@ -801,7 +816,7 @@ function withLendPocketBridge(plan: ProposedPlan, ctx: PlanContext): ProposedPla
         continue;
       }
       next.push({
-        op: "withdraw_collateral",
+        op: walletTransfer,
         asset: leg.asset,
         sizing: { kind: "literal", amount: leg.sizing.amount, sourceQuote: leg.sizing.sourceQuote },
       });

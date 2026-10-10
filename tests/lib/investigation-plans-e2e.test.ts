@@ -138,6 +138,40 @@ beforeEach(() => {
   mcp.call.mockClear();
 });
 
+it.each([{ asset: "XLM", amount: "30", symbol: "XLM" }, { asset: "BLUSDC", amount: "7.3", symbol: "USDC" }])("proposes a wallet transfer between Blend withdrawal and Earn for $asset", async ({ asset, amount, symbol }) => {
+  const message = `withdraw ${amount} ${asset} from blend and lend it in earn`;
+  const bridgeMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+    if (tool === "vanna_get_blend_position") return { positions: [{ symbol, underlying_value: "100" }] };
+    if (tool === "vanna_get_collateral") return { collateral: [{ symbol, balance: "100" }] };
+    return mcp.call(tool, args);
+  }) };
+  const view = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {
+    subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: bridgeMcp,
+    signal: new AbortController().signal,
+    model: async () => ({ kind: "research_complete", goal: {
+      intent: "strategy", relation: "new", objective: message, constraints: [], borrowing: "forbidden",
+      namedOps: [{ op: "blend_withdraw", sourceQuote: message }, { op: "lend", sourceQuote: message }],
+      actions: [
+        { op: "blend_withdraw", asset, sizing: { kind: "literal", amount, sourceQuote: message }, sourceQuote: message },
+        { op: "lend", asset, sizing: { kind: "previous_leg" }, sourceQuote: message },
+      ],
+    }, findings: [{ summary: "Move the requested Blend funds to Earn.", evidenceIds: [] }], openQuestions: [] }),
+  });
+  const candidate = view.candidates?.feasible[0];
+  expect(candidate?.steps?.map(step => [step.op, step.asset, step.amount])).toEqual([
+    ["blend_withdraw", asset, amount], ["withdraw_collateral", asset, amount], ["lend", asset, amount],
+  ]);
+  expect(view.proposalCandidateId).toBe(candidate!.id);
+  expect(view.proposalCandidateId).not.toBe("requested_actions");
+  bridgeMcp.call.mockClear();
+  const proposal = await proposeWorkflow({ continuation: view.continuation, candidateId: candidate!.id,
+    subject: SCOPE.subject, secret: SECRET, server: "mcp-test", network: "testnet", mcp: bridgeMcp,
+    signal: new AbortController().signal,
+  });
+  expect(proposal.steps.map(step => [step.op, step.asset, step.amount])).toEqual(candidate!.steps!.map(step => [step.op, step.asset, step.amount]));
+  expect(bridgeMcp.call).not.toHaveBeenCalled();
+});
+
 it.each([{ asset: "AQUSDC", amount: "25" }, { asset: "SOUSDC", amount: "7.3" }])("proposes the shown collateral-to-Earn bridge for $asset", async ({ asset, amount }) => {
   const message = `supply ${amount} ${asset} to earn`;
   const bridgeMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
