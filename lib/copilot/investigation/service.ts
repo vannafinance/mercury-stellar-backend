@@ -1512,7 +1512,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const statedCandidate = statedId ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
   const requestedSteps = statedCandidate?.steps ?? [];
   if (statedCandidate && candidates) candidates = { ...candidates, feasible: candidates.feasible.filter((c) => c.id !== statedId) };
-  let message = lifecycleOp === "create_account"
+  let message = portfolioExitFailure ?? (lifecycleOp === "create_account"
     ? "No active margin account was found for your wallet. Approve below to deploy and initialize your margin smart account."
     : strategyReply({
         status, facts, candidates: requestedSteps.length ? null : candidates, capacity, question,
@@ -1524,7 +1524,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         blockedReason: portfolioExitFailure ?? (outcome.kind === "blocked" ? outcome.reason : null),
         comparisons: planComparisons,
         venuesAllowed: outcome.kind === "research_complete" ? anchoredVenueRows(outcome.goal, messages) : undefined,
-      });
+      }));
   /**
    * The part that runs is the stated steps; the part a missing margin account blocked must be
    * said too (owner, 24 Sep: "say which part runs"). The reply is built from the steps alone, so
