@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RecordStore } from "@/lib/copilot/workflow/store";
 import type { WorkflowRecord } from "@/lib/copilot/workflow/types";
+import { writeArgsFor } from "@/lib/copilot/workflow/allowlist";
 
 /**
  * Drive an approved journal through MCP writes without touching live RPC or disk.
@@ -81,6 +82,54 @@ beforeEach(() => {
 });
 
 describe("advanceWorkflow", () => {
+  it.each(["109.96", "110.04", "110.2", "99", "unread", "no_baseline"])("funds LP only from the measured swap delta at balance %s and preserves both approval caps", async afterBalance => {
+    const journal = new WorkflowJournal(harness.store);
+    const producer = { id: "swap-output", op: "swap" as const, asset: "XLM", amount: "50", label: "Swap",
+      tool: "vanna_swap", args: writeArgsFor("swap", "XLM", "50", SCOPE, { tokenOut: "AQUSDC", venue: "aquarius", minOut: "9.95" }) };
+    const consumer = { id: "lp-output", op: "add_liquidity" as const, asset: "AQUSDC", amount: "10", label: "Add liquidity",
+      tool: "vanna_add_liquidity", args: writeArgsFor("add_liquidity", "AQUSDC", "10", SCOPE,
+        { tokenOut: "XLM", venue: "aquarius", amountB: "56", minOut: "5" }),
+      sizing: { basis: "settled_payout" as const, fromStep: producer.id, asset: "AQUSDC" } };
+    const created = await journal.create({ scope: SCOPE, server: SERVER, objective: "Swap and LP", messages: [], assumptions: [], constraints: [], floor: null,
+      steps: [producer, consumer] });
+    const id = created.proposal.id; const identity = { scope: SCOPE, server: SERVER };
+    await journal.approve(id, identity, 1, created.proposal.digest, async () => null);
+    await journal.claimNext(id, identity);
+    if (afterBalance !== "no_baseline") await journal.noteBalancesBefore(id, identity, producer.id, { AQUSDC: "100" });
+    await journal.invocationResult(id, identity, producer.id, { kind: "submitted", txHash: HASH });
+    await journal.settled(id, identity, producer.id, HASH, 40, true);
+    const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const mcp: McpCall = { call: async (tool, args) => {
+      seen.push({ tool, args: args as Record<string, unknown> });
+      if (tool === "vanna_get_collateral") {
+        if (afterBalance === "unread") throw new Error("read unavailable");
+        return { collateral: [{ symbol: "AQUSDC", balance: afterBalance }] };
+      }
+      if (tool === "vanna_get_aquarius_pool_stats") return { found: true, pool: { available: true,
+        reserves: { XLM: "1050", AQUSDC: "190" }, total_share: "100", fee: "0.003" } };
+      return { status: "signed_and_submitted", tx_hash: "b".repeat(64) };
+    } };
+    const view = await advance(id, mcp);
+    if (!["109.96", "110.04"].includes(afterBalance)) {
+      expect(view.status).toBe("blocked");
+      expect(seen.some(call => call.tool === "vanna_add_liquidity")).toBe(false);
+      expect(seen.some(call => call.tool === "vanna_get_aquarius_pool_stats")).toBe(false);
+      expect((await journal.read(id, identity)).value.proposal.digest).toBe(created.proposal.digest);
+      return;
+    }
+    expect(view.status).toBe("completed");
+    expect(seen.map(call => call.tool)).toEqual(["vanna_get_collateral", "vanna_get_aquarius_pool_stats", "vanna_add_liquidity"]);
+    const sent = seen[2].args;
+    const used = afterBalance === "109.96" ? 9.96 : 10;
+    expect(Number(sent.amount_a)).toBeCloseTo(used, 7);
+    expect(Number(sent.amount_b)).toBeCloseTo(used * 1050 / 190, 6);
+    expect(Number(sent.amount_a)).toBeLessThanOrEqual(10);
+    expect(Number(sent.amount_b)).toBeLessThanOrEqual(56);
+    expect(Number(sent.min_liquidity_out)).toBeGreaterThan(0);
+    const stored = (await journal.read(id, identity)).value;
+    expect(stored.proposal.digest).toBe(created.proposal.digest);
+    expect(stored.proposal.steps[1].amount).toBe("10");
+  });
   it("settles a signed_and_submitted write from the recorded hash", async () => {
     const id = await approvedBorrow();
     const seen: unknown[] = [];

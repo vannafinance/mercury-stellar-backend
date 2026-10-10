@@ -61,6 +61,41 @@ function ctx(over: Partial<Parameters<typeof resolvePlans>[1]> = {}) {
 const plan = (title: string, legs: ProposedPlan["legs"]): ProposedPlan => ({ title, rationale: `${title} because e1/e6.`, evidenceIds: ["e1", "e6"], legs });
 
 describe("resolvePlans - the 13 Sep prompt gets its options", () => {
+  it("binds a quoted swap output to LP and sizes the other token at the post-swap ratio", () => {
+    const pool = obs("swap-pool", "aquarius_pool_reserves", { found: true, pool: { available: true,
+      reserves: { XLM: "1000", AQUSDC: "200" }, total_share: "100", fee: "0.003" } }, { asset: "AQUSDC" });
+    const observations = [...OBSERVATIONS, pool,
+      obs("aq-price", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }),
+      obs("posted", "account_collateral", { collateral: [{ symbol: "XLM", balance: "200" }, { symbol: "AQUSDC", balance: "0" }] })];
+    const legs: ProposedPlan["legs"] = [
+      { op: "swap", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "literal", amount: "50", sourceQuote: "swap 50 XLM to AQUSDC" } },
+      { op: "add_liquidity", asset: "AQUSDC", assetOut: "XLM", sizing: { kind: "previous_leg" } },
+    ];
+    const result = resolvePlans([plan("Swap and LP", legs)], ctx({ observations, messages: ["swap 50 XLM to AQUSDC and add it as liquidity with XLM"] }));
+    expect(result.rejected).toEqual([]); expect(result.candidates).toHaveLength(1);
+    const steps = result.candidates[0].steps!;
+    const quote = 200 * (50 * 0.997) / (1000 + 50 * 0.997);
+    const amount = Number(steps[1].amount);
+    expect(amount).toBeCloseTo(quote, 6);
+    expect(steps[1].sizing).toEqual({ basis: "settled_payout", fromStep: steps[0].id, asset: "AQUSDC" });
+    expect(Number(steps[1].args.amount_b)).toBeCloseTo(amount * 1050 / (200 - amount), 6);
+    // A pre-swap ratio would promise less XLM than the pool actually needs.
+    expect(Number(steps[1].args.amount_b)).toBeGreaterThan(amount * 5);
+    const insufficient = observations.map(row => row.id === "posted"
+      ? { ...row, data: { collateral: [{ symbol: "XLM", balance: "60" }, { symbol: "AQUSDC", balance: "0" }] } } : row);
+    const blocked = resolvePlans([plan("Swap and LP", legs)], ctx({ observations: insufficient, messages: ["swap 50 XLM to AQUSDC"] }));
+    expect(blocked.candidates).toHaveLength(0);
+    expect(blocked.rejected[0].reason).toContain("post-swap liquidity ratio");
+    const thin = observations.map(row => row.id === "swap-pool" ? { ...row, data: { found: true, pool: { available: true,
+      reserves: { XLM: "1000", AQUSDC: "10" }, total_share: "100", fee: "0.003" } } } : row);
+    const loss = resolvePlans([plan("Swap and LP", legs)], ctx({ observations: thin, messages: ["swap 50 XLM to AQUSDC"] }));
+    expect(loss.candidates).toHaveLength(0);
+    expect(loss.rejected[0].reason).toContain("accept the loss");
+    const accepted = resolvePlans([plan("Swap and LP", legs)], ctx({ observations: thin,
+      messages: ["swap 50 XLM to AQUSDC; I accept the loss"],
+      goal: { slippageAccepted: { accepted: true, sourceQuote: "I accept the loss" } } }));
+    expect(accepted.rejected).toEqual([]); expect(accepted.candidates[0].steps).toHaveLength(2);
+  });
   it("sizes 'deposit idle XLM, supply it to Blend' from the wallet read, allowlists both steps", () => {
     const { candidates, rejected } = resolvePlans([plan("Move idle XLM into Blend", [
       { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },

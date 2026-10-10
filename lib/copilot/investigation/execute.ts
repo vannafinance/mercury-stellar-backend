@@ -362,12 +362,14 @@ export async function removalBalanceBaseline(
   scope: InvestigationScope,
   signal: AbortSignal,
 ): Promise<RemovalBaselineVerdict> {
-  if (step.op !== "remove_liquidity") return { kind: "unchanged" };
+  if (step.op !== "remove_liquidity" && step.op !== "swap") return { kind: "unchanged" };
   const dependents = payoutDependents(proposal, step.id);
   if (!dependents.length) return { kind: "unchanged" };
   const assets = [...new Set(dependents.map((entry) => entry.sizing?.basis === "settled_payout" ? entry.sizing.asset : entry.asset))];
   const read = await readAccountBalances(assets, mcp, scope, signal);
-  if (!read.ok) return { kind: "refuse", message: PAYOUT_UNREAD_BEFORE };
+  if (!read.ok) return { kind: "refuse", message: step.op === "swap"
+    ? "The margin account output balance could not be read before the swap, so its payout cannot be measured. Nothing was submitted. Prepare a new proposal."
+    : PAYOUT_UNREAD_BEFORE };
   return { kind: "recorded", balances: read.balances };
 }
 
@@ -389,28 +391,34 @@ export async function settledRemovalPayout(
   mcp: Pick<MCPClient, "call">,
   scope: InvestigationScope,
   signal: AbortSignal,
+  producer?: ProposalStep,
 ): Promise<SettledPayoutVerdict> {
   const unchanged: SettledPayoutVerdict = { kind: "unchanged" };
   const sizing = step.sizing;
   if (!sizing || sizing.basis !== "settled_payout") return unchanged;
-  if (typeof args.amount !== "string") return { kind: "refuse", message: PAYOUT_UNREAD_AFTER };
+  const liquidity = step.op === "add_liquidity";
+  const origin = producer?.op === "swap" ? "swap" : "removal";
+  const unreadAfter = producer?.op === "swap"
+    ? "The margin account output balance could not be read after the swap settled. Nothing was submitted. Prepare a new proposal."
+    : PAYOUT_UNREAD_AFTER;
+  if (typeof (liquidity ? args.amount_a : args.amount) !== "string") return { kind: "refuse", message: unreadAfter };
   const before = states.find((entry) => entry.id === sizing.fromStep)?.balancesBefore?.[sizing.asset];
   if (before === undefined) return { kind: "refuse", message: PAYOUT_UNRECORDED };
   const read = await readAccountBalances([sizing.asset], mcp, scope, signal);
-  if (!read.ok) return { kind: "refuse", message: PAYOUT_UNREAD_AFTER };
+  if (!read.ok) return { kind: "refuse", message: unreadAfter };
   let beforeWad: bigint, afterWad: bigint, estimateWad: bigint;
   try {
     beforeWad = decimalWad(before);
     afterWad = decimalWad(read.balances[sizing.asset]);
     estimateWad = decimalWad(step.amount);
   } catch {
-    return { kind: "refuse", message: PAYOUT_UNREAD_AFTER };
+    return { kind: "refuse", message: unreadAfter };
   }
   const label = resolveAssetDef(sizing.asset)?.displayLabel ?? sizing.asset;
   if (afterWad < beforeWad) {
     return {
       kind: "refuse",
-      message: `The margin account balance of ${label} did not increase when liquidity was removed. Nothing was submitted. Approve a new proposal to continue.`,
+      message: `The margin account balance of ${label} did not increase after the ${origin}. Nothing was submitted. Approve a new proposal to continue.`,
     };
   }
   const payoutWad = afterWad - beforeWad;
@@ -421,20 +429,23 @@ export async function settledRemovalPayout(
   if (payoutWad < lower || payoutWad > upper) {
     return {
       kind: "refuse",
-      message: `The removal paid ${tokenAmount(payoutWad)} ${label}, outside the approved estimate of ${step.amount} ${label}. Approve a new proposal for the amount that arrived. Nothing was submitted.`,
+      message: `The ${origin} paid ${tokenAmount(payoutWad)} ${label}, outside the approved estimate of ${step.amount} ${label}. Approve a new proposal for the amount that arrived. Nothing was submitted.`,
     };
   }
-  const amount = tokenAmount(payoutWad);
+  // LP approval bounds both tokens. A favorable fill cannot enlarge either cap.
+  const amount = tokenAmount(liquidity && payoutWad > estimateWad ? estimateWad : payoutWad);
   let sent: bigint;
-  try { sent = decimalWad(amount); } catch { return { kind: "refuse", message: PAYOUT_UNREAD_AFTER }; }
+  try { sent = decimalWad(amount); } catch { return { kind: "refuse", message: unreadAfter }; }
   if (sent <= ZERO) {
-    return { kind: "refuse", message: `The removal's payout of ${label} rounds to nothing, so this step was not submitted.` };
+    return { kind: "refuse", message: `The ${origin}'s payout of ${label} rounds to nothing, so this step was not submitted.` };
   }
   if (sent === estimateWad) return unchanged;
   return {
     kind: "adjusted",
     amount,
-    note: `The removal paid ${amount} ${label}. The approved estimate was ${step.amount} ${label}, so this step spends the measured payout.`,
+    note: liquidity
+      ? `The ${origin} paid ${tokenAmount(payoutWad)} ${label}. This step uses ${amount} ${label} within the approved maximum of ${step.amount} ${label}.`
+      : `The ${origin} paid ${amount} ${label}. The approved estimate was ${step.amount} ${label}, so this step spends the measured payout.`,
   };
 }
 
@@ -689,10 +700,6 @@ export async function advanceWorkflow(input: {
   if (stale.kind === "refuse") {
     return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: stale.message }));
   }
-  const liquidity = await staleLiquidityAmounts(step, input.mcp, scope.trader, input.signal);
-  if (liquidity.kind === "refuse") {
-    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: liquidity.message }));
-  }
   /**
    * An amount that WAS the whole position is re-read from the same source that produced
    * it. The position accrues while the plan waits for a click, and the frozen figure is
@@ -706,22 +713,25 @@ export async function advanceWorkflow(input: {
     ? { ...invocation.args, amount: position.amount }
     : invocation.args;
   const swapAdjustedArgs = stale.kind === "adjusted" ? { ...positionArgs, min_out: stale.minOut } : positionArgs;
-  const adjustedArgs = liquidity.kind === "adjusted"
-    ? {
-        ...swapAdjustedArgs,
-        amount_a: liquidity.amountA,
-        amount_b: liquidity.amountB,
-        min_liquidity_out: liquidity.minLiquidityOut,
-      }
-    : swapAdjustedArgs;
   // Tell the MCP a human was shown this fill and took it. Its own impact gate withholds
   // auto-sign otherwise, which for an accepted trade is the same confirmation twice.
   const live = await journal.read(input.id, identity);
-  const payout = await settledRemovalPayout(step, live.value.steps, adjustedArgs, input.mcp, scope, input.signal);
+  const fromStep = step.sizing?.basis === "settled_payout" ? step.sizing.fromStep : null;
+  const producer = fromStep ? live.value.proposal.steps.find(entry => entry.id === fromStep) : undefined;
+  const payout = await settledRemovalPayout(step, live.value.steps, swapAdjustedArgs, input.mcp, scope, input.signal, producer);
   if (payout.kind === "refuse") {
     return workflowView(await journal.pauseForReapproval(input.id, identity, step.id, payout.message));
   }
-  const payoutArgs = payout.kind === "adjusted" ? { ...adjustedArgs, amount: payout.amount } : adjustedArgs;
+  const measuredArgs = payout.kind === "adjusted"
+    ? { ...swapAdjustedArgs, [step.op === "add_liquidity" ? "amount_a" : "amount"]: payout.amount } : swapAdjustedArgs;
+  // Measure first, then derive a fresh proportional pair and share floor inside
+  // the original approval caps. Replacing A after this refresh would leave B stale.
+  const liquidity = await staleLiquidityAmounts({ ...step, args: measuredArgs }, input.mcp, scope.trader, input.signal);
+  if (liquidity.kind === "refuse") {
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: liquidity.message }));
+  }
+  const payoutArgs = liquidity.kind === "adjusted" ? { ...measuredArgs,
+    amount_a: liquidity.amountA, amount_b: liquidity.amountB, min_liquidity_out: liquidity.minLiquidityOut } : measuredArgs;
   const invocationArgs = acceptedLoss && step.op === "swap"
     ? { ...payoutArgs, acknowledged_price_impact: true }
     : payoutArgs;

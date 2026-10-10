@@ -226,7 +226,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           description:
             "For intent=strategy: one to three strategy SHAPES as ordered legs. Sizing is a word, never a number - " +
             "all_wallet (the asset's spendable wallet balance), to_floor (the largest borrow at the user's stated floor, or the protocol minimum if no higher floor was stated; withdrawal of posted collateral requires the user's floor), " +
-            "previous_leg (the amount the previous leg produced, e.g. supply what was just borrowed), " +
+            "previous_leg (the amount an earlier leg produced, including a same-pool swap output funding add_liquidity; the server quotes and measures that output), " +
             "literal (an amount the user typed, with sourceQuote), fraction (a share the user stated - '25%', 'half' - " +
             "of what the leg draws on: of=wallet for the wallet balance, of=position for the Earn position, the posted collateral " +
             "or the debt; with sourceQuote), share (YOUR split of one wallet balance across the legs of this plan: percent, " +

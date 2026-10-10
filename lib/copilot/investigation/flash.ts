@@ -200,6 +200,7 @@ spend on Aquarius, when the pool's live reserves were read; anywhere else it ref
 ratio. Never convert the output amount to an estimated input yourself - that number is not real until the server
 sizes it.
 Add "venue" only when the user named the DEX. A swap spends the margin account, so the tokens must already be in it.
+When the user wants to add a swap's output as liquidity in that same pool, use add_liquidity with asset equal to the swap's assetOut, assetOut equal to the paired token, and previous_leg sizing. Preserve the swap input they requested. The server quotes the output and post-swap ratio for review, measures the actual settled output before the LP step, and requires a fresh approval when that output is outside the approved band. Do not invent a literal output amount. Loss acceptance is still required for a harmful fill.
 remove_liquidity (all_position) exits an LP pool. Its asset is the token XLM is paired with - AQUSDC for Aquarius,
 SOUSDC for Soroswap - never XLM itself, which is the other side of every pair.
 add_liquidity enters one: asset is whichever side the user stated an amount for (literal, all_wallet or fraction -

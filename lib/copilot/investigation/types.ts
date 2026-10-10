@@ -146,7 +146,8 @@ export type PlanOp = WorkflowOp;
  *                 posted collateral for a withdraw, the outstanding debt for a repay
  *   to_floor      the largest borrow that keeps the health factor at the stated floor
  *   previous_leg  the same amount the previous leg produced (borrow → supply it;
- *                 redeem → deposit the underlying it returned)
+ *                 redeem → deposit the underlying it returned; swap → same-pool LP,
+ *                 quoted for approval and measured after settlement)
  *   literal       an amount the user typed, quoted verbatim so it can be anchored
  */
 export type PlanSizing =

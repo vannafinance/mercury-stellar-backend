@@ -897,13 +897,16 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     capUsd?: string;
     /** The amount the tool is called with (vTokens for a redeem). */
     tokens: string | null;
-    /** What the leg leaves for the next one; differs from `tokens` only for a redeem. */
+    /** What the leg leaves for the next one; redeem and quoted swap outputs differ from their inputs. */
     produces: string | null;
     heldTokens: string | null;
     /** A removal's two token amounts, from the pool read. Absent when that read is missing. */
     payouts?: ReadonlyArray<{ asset: string; amount: string }> | null;
-    /** Index of the removal whose payout this leg spends. */
+    /** Index of the producer whose settled payout this leg spends. */
     settledFrom?: number;
+    /** A pool quote is provisional until execution measures the producer's balance delta. */
+    quotedSwapPayout?: string;
+    postSwapPool?: PoolReserves;
     targetOut?: string;
     vtokenSymbol?: string | null;
   }
@@ -1286,7 +1289,43 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const prev = producerIndex >= 0 ? drafts[producerIndex] : undefined;
       if (!prev) throw new Reject(name, "previous_leg needs a preceding leg in the same asset");
       // What the previous leg leaves behind must be what this one spends (the op-flow table).
-      if (prev.leg.op === "swap") throw new Reject(name, "a swap fills at the pool's price, so how much it buys is not known in advance - state the next leg's amount yourself");
+      if (prev.leg.op === "swap") {
+        if (leg.op !== "add_liquidity" || !prev.tokens || !leg.assetOut)
+          throw new Reject(name, "the swap's settled output must be measured before this dependent action can be prepared");
+        const venue = poolVenueFor(prev.leg.asset, leg.asset);
+        if (!venue || poolVenueFor(leg.asset, leg.assetOut) !== venue)
+          throw new Reject(name, "the swap output and liquidity pair do not identify the same pool");
+        const pairedAsset = prev.leg.asset === "XLM" ? leg.asset : prev.leg.asset;
+        const samePoolMutation = (draft: Draft) => ["swap", "add_liquidity", "remove_liquidity"].includes(draft.leg.op)
+          && (draft.leg.asset === pairedAsset || draft.leg.assetOut === pairedAsset);
+        if (drafts.some((draft, at) => at !== producerIndex && samePoolMutation(draft)))
+          throw new Reject(name, "other earlier mutations of this pool prevent a single swap-to-liquidity quote; prepare those steps separately");
+        const reserves = poolReservesOf(ctx.observations, pairedAsset, venue, ctx.now);
+        if (!reserves) throw new Reject(name, `no live ${venue} reserves were read to quote the swap output`);
+        const inputIsXlm = prev.leg.asset === "XLM";
+        const direction = reservesForDirection(reserves, inputIsXlm);
+        const input = decimalWad(prev.tokens);
+        const quote = constantProductOut(input, direction.inWad, direction.outWad, direction.feeWad);
+        if (quote === null || quote <= ZERO) throw new Reject(name, "the pool cannot quote a positive swap output");
+        const amount = precise(formatWad(quote), leg.asset, name);
+        const output = decimalWad(amount);
+        if (output <= ZERO) throw new Reject(name, "the quoted swap output rounds below token precision");
+        prev.quotedSwapPayout = amount;
+        prev.produces = amount;
+        const poolAfter = { ...reserves,
+          xlm: formatWad(decimalWad(reserves.xlm) + (inputIsXlm ? input : -output)),
+          paired: formatWad(decimalWad(reserves.paired) + (inputIsXlm ? -output : input)) };
+        const paired = resolveAssetDef(leg.assetOut)!;
+        const requiredPaired = pairedNeed(output, poolAfter, leg.asset === "XLM");
+        const posted = paired.marginSymbol ? positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, paired.marginSymbol, paired.id, ctx.now) : null;
+        const held = posted === null ? null : pocketBalance("account", decimalWad(posted), drafts, paired.id);
+        if (requiredPaired === null || !held || held.unsized || held.available < requiredPaired)
+          throw new Reject(name, `the margin account does not have verified ${paired.id} funding for the pool's post-swap liquidity ratio`);
+        claimedProducers.add(claimKey(producerIndex, leg.asset));
+        drafts.push({ leg, name, usd: formatWad(mulDown(output, price.price, WAD)), tokens: amount, produces: amount,
+          heldTokens: null, settledFrom: producerIndex, postSwapPool: poolAfter });
+        continue;
+      }
       if (prev.leg.op === "remove_liquidity" && leg.op !== "swap") {
         const raw = prev.payouts?.find((row) => row.asset === leg.asset)?.amount ?? null;
         if (!raw) throw new Reject(name, REMOVAL_PAYOUT_UNKNOWN);
@@ -1800,7 +1839,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * a constant-product pool itself mints by (no oracle needed for either number).
      */
     const addLiquidity = paired && dex ? (() => {
-      const reserves = poolReservesOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, dex, ctx.now);
+      const reserves = d.postSwapPool ?? poolReservesOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, dex, ctx.now);
       if (!reserves) throw new Reject(d.name, `no live ${dex} pool reserves were read this investigation`);
       const statedIsXlm = def.id === "XLM";
       const reserveStatedWad = decimalWad(statedIsXlm ? reserves.xlm : reserves.paired);
@@ -2257,7 +2296,7 @@ const CREDITABLE: ReadonlySet<Pocket> = new Set<Pocket>(["wallet", "account", "b
 function pocketBalance(
   pocket: Pocket,
   starting: bigint,
-  drafts: ReadonlyArray<{ leg: PlanLeg; tokens: string | null; produces: string | null }>,
+  drafts: ReadonlyArray<{ leg: PlanLeg; tokens: string | null; produces: string | null; quotedSwapPayout?: string }>,
   asset: string,
 ): { available: bigint; consumed: boolean; credited: boolean; unsized: boolean } {
   let available = starting;
@@ -2279,7 +2318,7 @@ function pocketBalance(
        * pool gives the trade. Rather than credit a number the chain may not honour, the
        * pocket is marked unsized and a later leg must state its own amount.
        */
-      if (draft.leg.op === "swap") { unsized = true; continue; }
+      if (draft.leg.op === "swap" && !draft.quotedSwapPayout) { unsized = true; continue; }
       if (draft.produces === null) unsized = true;
       // A lend's output is underlying but the Earn pocket is vTokens: crediting it would
       // compare unlike units. Blend is safe - a supply and a withdraw are both in underlying.
