@@ -13,6 +13,18 @@ const account = (balance = "3.9634782", liabilities = "0") => ({ account_id: wal
 const ledger = { base_reserve_in_stroops: 5_000_000 };
 
 describe("prepared transaction fee affordability", () => {
+  it("keeps the user's liquid reserve above the network minimum after the maximum fee", () => {
+    const debit = { ...supply, op: "deposit_collateral" as const, amount: "5" };
+    const reserves = [{ asset: "XLM", amount: "100", sourceQuote: "keep 100 XLM liquid" }];
+    expect(() => assertNativeFeeBudget(envelope("1000000"), debit, account("108.59"), ledger, reserves)).toThrow("0.01 XLM");
+    expect(() => assertNativeFeeBudget(envelope("1000000"), debit, account("108.6"), ledger, reserves)).not.toThrow();
+  });
+  it("protects the same reserve on later account steps, and does not spend token reserves on fees", () => {
+    const reserves = [{ asset: "XLM", amount: "17.25", sourceQuote: "leave 17.25 XLM" },
+      { asset: "BLUSDC", amount: "500", sourceQuote: "keep 500 BLUSDC" }];
+    expect(() => assertNativeFeeBudget(envelope("7648031"), supply, account("21.5"), ledger, reserves)).toThrow("17.25 XLM liquid");
+    expect(() => assertNativeFeeBudget(envelope("7648031"), supply, account("21.5148031"), ledger, reserves)).not.toThrow();
+  });
   it("refuses the observed Blend fee before signing or broadcasting", () => {
     const tx = envelope("7648031"); const before = tx.toXDR();
     expect(() => assertNativeFeeBudget(tx, supply, account(), ledger)).toThrow("0.7648031 XLM in fees");

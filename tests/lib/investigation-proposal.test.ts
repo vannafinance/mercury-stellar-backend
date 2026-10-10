@@ -167,6 +167,7 @@ describe("proposeWorkflow evidence reuse", () => {
     const evidence = compactResearchEvidence(evidenceObservations(), null, NOW);
     evidence.plans = [plan];
     evidence.floor = "1.7";
+    evidence.walletReserves = [{ asset: "XLM", amount: "17.25" }];
     evidence.position = { grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, floor: "1.7", issue: null };
     evidence.allowedCandidateIds = [planCandidateId(plan)];
     const view = await proposeWorkflow({
@@ -176,6 +177,8 @@ describe("proposeWorkflow evidence reuse", () => {
     });
     expect(view.steps.map(step => [step.op, step.asset, step.amount])).toEqual([["borrow", "BLUSDC", "1"], ["supply_blend", "BLUSDC", "1"]]);
     expect((await harness.store.read(""))?.value.proposal.floor).toBe("1.7");
+    expect((await harness.store.read(""))?.value.proposal.walletReserves).toEqual(evidence.walletReserves);
+    expect(view.constraints).toContain("Keep at least 17.25 XLM spendable in the wallet after transaction fees.");
   });
   it("compiles from sealed evidence without a second market or snapshot read", async () => {
     const mcp = { call: vi.fn(async () => { throw new Error("MCP should not be called when evidence is fresh"); }) };
@@ -398,6 +401,7 @@ describe("proposeWorkflow requested_actions", () => {
     const evidence = compactResearchEvidence([], null, NOW);
     evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
     evidence.slippageAccepted = true;
+    evidence.walletReserves = [{ asset: "XLM", amount: "100" }];
     evidence.requestedSteps = [SWAP_STEP];
     const view = await proposeWorkflow({
       continuation: codec.seal(SCOPE, ["swap xlm so i get 1 AQUSDC, i accept the loss"], null, evidence),
@@ -407,6 +411,8 @@ describe("proposeWorkflow requested_actions", () => {
     });
     expect(view.status).toBe("proposed");
     expect((await harness.store.read(""))?.value.proposal.slippageAccepted).toBe(true);
+    expect((await harness.store.read(""))?.value.proposal.walletReserves).toEqual(evidence.walletReserves);
+    expect(view.constraints).toContain("Keep at least 100 XLM spendable in the wallet after transaction fees.");
   });
 
   it("leaves it false when the user never accepted - the refusal is the default", async () => {

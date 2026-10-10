@@ -118,7 +118,8 @@ export async function proposeWorkflow(input: {
      */
     const draft = { scope, candidateId: input.candidateId, server: input.server, objective: prior.messages[0], messages: prior.messages,
       assumptions: ["Amounts are the literal token amounts in your request. No automatic resizing is allowed."],
-      constraints: floor ? [`Health factor at or above ${floor}`] : [], floor, steps,
+      constraints: [...(floor ? [`Health factor at or above ${floor}`] : []), ...reserveConstraints(prior.evidence?.walletReserves)], floor, steps,
+      walletReserves: prior.evidence?.walletReserves,
       slippageAccepted: prior.evidence?.slippageAccepted === true };
     /**
      * Propose holds the compiled plan for the card. Live prices and balances are
@@ -320,7 +321,8 @@ export async function proposeWorkflow(input: {
   try {
     const record = await journal.create({
       scope, candidateId: input.candidateId, server: input.server, objective: candidate.label, messages: prior.messages,
-      assumptions, constraints: proposalFloor ? [`Health factor at or above ${proposalFloor}`] : [],
+      assumptions, constraints: [...(proposalFloor ? [`Health factor at or above ${proposalFloor}`] : []), ...reserveConstraints(walletReserves)],
+      walletReserves,
       floor: proposalFloor, steps: compiled.steps,
       slippageAccepted: prior.evidence?.slippageAccepted === true,
     });
@@ -340,6 +342,10 @@ export async function proposeWorkflow(input: {
 
 export async function validateProposal(proposal: WorkflowProposal): Promise<string | null> {
   return validateWorkflowRisk(proposal, getMcpClient(), AbortSignal.timeout(60_000));
+}
+
+function reserveConstraints(reserves: WorkflowProposal["walletReserves"]): string[] {
+  return (reserves ?? []).map(({ asset, amount }) => `Keep at least ${amount} ${asset} spendable in the wallet after transaction fees.`);
 }
 
 function compileMessage(reason: string): string {

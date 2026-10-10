@@ -117,6 +117,11 @@ export function PlanReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
 
       <p className="mt-3 text-[15px] leading-6 text-vgray-900">{workflow.objective}</p>
       <p className="mt-1 max-w-[68ch] text-[13px] leading-5 text-vgray-500">{workflow.message}</p>
+      {workflow.constraints.length > 0 && (
+        <ul className="mt-2 space-y-1 text-[13px] leading-5 text-vgray-600">
+          {workflow.constraints.map((constraint) => <li key={constraint}>{constraint}</li>)}
+        </ul>
+      )}
 
       <ol className="mt-3 space-y-1.5">
         {workflow.steps.map((step, stepIndex) => (

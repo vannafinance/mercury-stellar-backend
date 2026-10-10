@@ -610,7 +610,7 @@ export async function prepareWorkflowSigning(input: {
   const unsignedXdr = await interruptible(() => (input.refreshEnvelope ?? refreshSigningEnvelope)(waiting.unsignedXdr!, scope.trader!), input.signal);
   // An injected envelope refresher is a server-only test seam. The live signing path
   // always checks the refreshed maximum fee before exposing it to the wallet.
-  if (!input.refreshEnvelope) await interruptible(() => checkTransactionFee(unsignedXdr, step), input.signal);
+  if (!input.refreshEnvelope) await interruptible(() => checkTransactionFee(unsignedXdr, step, fetch, expected.walletReserves), input.signal);
   input.signal.throwIfAborted();
   return workflowView(await journal.replaceUnsignedEnvelope(input.id, identity, step.id, waiting.unsignedXdr, unsignedXdr));
 }
@@ -751,6 +751,19 @@ export async function advanceWorkflow(input: {
   }
 
   phase("prewrite_checks");
+  // MCP write tools may submit under an existing delegated session. Reserve floors
+  // are currently checked on the manual signing path, so do not allow that bypass.
+  if (live.value.proposal.walletReserves?.length) {
+    let signing: unknown;
+    try {
+      signing = await interruptible(() => input.mcp.call("vanna_auto_sign_status", { wallet_address: scope.trader }, scope.trader!),
+        AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]));
+    } catch { /* An unavailable signing status does not authorize a write. */ }
+    if (!isRecord(signing) || signing.enabled !== false || signing.error) {
+      return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed",
+        message: "This wallet-reserve plan needs manual signing so each live transaction fee can be checked. Auto-approve could not be confirmed Off. Nothing was submitted. Prepare a fresh plan with Auto-approve Off." }));
+    }
+  }
   let build: Record<string, unknown>;
   try {
     const raw = await interruptible(() => input.mcp.call(invocation.tool, invocationArgs, scope.trader!),
@@ -989,7 +1002,7 @@ export async function submitWorkflow(input: {
   // A wallet popup may itself have sat unanswered. Do not register or broadcast an expired signature.
   assertSigningTime(input.signedXdr);
   await interruptible(() => (input.checkEnvelope ?? checkSigningPreconditions)(input.signedXdr), input.signal);
-  if (!input.checkEnvelope) await interruptible(() => checkTransactionFee(input.signedXdr, step), input.signal);
+  if (!input.checkEnvelope) await interruptible(() => checkTransactionFee(input.signedXdr, step, fetch, expected.walletReserves), input.signal);
   const record = await journal.acceptSignedEnvelope(input.id, identity, step.id, input.signedXdr);
   let submission: import("@stellar/stellar-sdk").rpc.Api.SendTransactionResponse;
   try {

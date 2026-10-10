@@ -302,6 +302,8 @@ export interface WorkflowProposal {
   assumptions: string[];
   constraints: string[];
   floor: string | null;
+  /** User-owned wallet floors, copied from anchored sealed research and covered by the approval digest. */
+  walletReserves?: { asset: string; amount: string }[];
   /**
    * The user accepted a fill far below fair value, in their own words. Carried from the
    * sealed research so the decision survives to approval - the pre-write re-quote lowers
