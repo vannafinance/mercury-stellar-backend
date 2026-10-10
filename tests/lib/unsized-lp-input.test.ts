@@ -12,6 +12,17 @@ describe("unsized farm add → amount card, not a prose ask", () => {
     expect(String(r.token_b).toUpperCase()).toBe("AQUSDC");
   });
 
+  it("lets the named pool, not the bare USDC in the message, pick the variant", () => {
+    const soroswap = routeMessage("add liquidity to the soroswap xlm/usdc pool");
+    expect(soroswap.kind === "write" && String(soroswap.token_b).toUpperCase()).toBe("SOUSDC");
+    // A variant the user did name still wins over the venue's default.
+    const named = routeMessage("add liquidity on aquarius with blusdc");
+    expect(named.kind === "write" && String(named.token_b).toUpperCase()).toBe("BLUSDC");
+    // No venue: the bare form is kept so which-USDC is asked, never a default guessed.
+    const bare = routeMessage("add liquidity xlm/usdc");
+    expect(bare.kind === "write" && String(bare.token_b).toUpperCase()).toBe("USDC");
+  });
+
   it("add liquidity in Soroswap pool is add_liquidity SOUSDC, no amount", () => {
     const r = routeMessage("add liquidity in my soroswap pool");
     expect(r.kind).toBe("write");

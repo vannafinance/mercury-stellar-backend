@@ -27,7 +27,7 @@ import { refreshWalletBalancesOnChain } from '@/hooks/use-wallet';
  * staleTime 4s gives stale-while-revalidate (data stays on screen during
  * background refetch). Dual-writes into `useEarnPoolStore`.
  *
- * @returns `{ pools, isLoading, isRefreshing, lastUpdated, error, refresh }` —
+ * @returns `{ pools, isLoading, isRefreshing, lastUpdated, error, refresh }` -
  *   `pools` falls back to the store snapshot until the first fetch resolves.
  */
 export const usePoolData = () => {
@@ -45,7 +45,7 @@ export const usePoolData = () => {
       // Pool stats now come from the cached /api/pools edge route (shared across
       // all users; APY/exchange-rate computed server-side). Still dual-written
       // into the earn store so direct store readers keep working.
-      // Prefer a fresh read when a mutation just landed — the previous 30s
+      // Prefer a fresh read when a mutation just landed - the previous 30s
       // CDN TTL left Total Supply / APY stale for 15–20s after a supply.
       const bust = typeof window !== 'undefined'
         && Boolean(sessionStorage.getItem('earn:pools:fresh'));
@@ -224,7 +224,7 @@ const resyncEarnAfterTx = (qc: ReturnType<typeof useQueryClient>) => {
   try {
     sessionStorage.setItem('earn:pools:fresh', '1');
   } catch {
-    // sessionStorage may be unavailable in privacy modes — refetch still helps.
+    // sessionStorage may be unavailable in privacy modes - refetch still helps.
   }
   void qc.invalidateQueries({ queryKey: ['earn'] });
 };
@@ -367,7 +367,7 @@ export const useWithdrawLiquidity = () => {
 /**
  * On-chain earn-pool transaction history for the connected user, sourced from
  * Mercury (full history) merged with a bounded RPC fallback for whatever
- * Mercury is currently missing — Mercury has been observed returning a genuine
+ * Mercury is currently missing - Mercury has been observed returning a genuine
  * 502 for this wallet's lending-pool queries (a real outage, not "no data"),
  * which previously wiped this history out entirely since Mercury was the only
  * source. Promise.allSettled, not Promise.all: each source degrades
@@ -397,7 +397,7 @@ export const useEarnTransactions = () => {
       const mercury = mercurySettled.status === 'fulfilled' ? mercurySettled.value : [];
       const rpcFallback = rpcSettled.status === 'fulfilled' ? rpcSettled.value : [];
 
-      // Composite key, not hash alone — a single atomic tx can emit more than
+      // Composite key, not hash alone - a single atomic tx can emit more than
       // one event under the same hash elsewhere in this protocol (e.g.
       // margin's deposit+borrow), so this follows the same established
       // discipline even though a plain supply/withdraw is normally 1:1.

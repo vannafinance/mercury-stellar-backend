@@ -10,8 +10,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
  * independent calls, so when the collateral side partly fails its total collapses while the
  * debt total survives.
  *
- * The protocol does not let an account hold debt with no collateral — it would already be
- * liquidated — so that shape is a failed read. What these tests pin is that the copilot
+ * The protocol does not let an account hold debt with no collateral - it would already be
+ * liquidated - so that shape is a failed read. What these tests pin is that the copilot
  * REFUSES it rather than computing on it: quoting a health factor of 0.01 is a false alarm
  * that pushes someone into an unnecessary repay, and sizing headroom against $10.43 of
  * collateral is not conservative, it is simply wrong.
@@ -51,7 +51,7 @@ describe("a position that could not be read fully", () => {
   });
 
   it("also refuses when collateral survives but has fallen under the liquidation threshold", async () => {
-    // Debt $1,732 against $1,800 gross is HF 1.04 — below 1.10, so a live account should
+    // Debt $1,732 against $1,800 gross is HF 1.04 - below 1.10, so a live account should
     // already have been liquidated. Far likelier a half-read than a real position.
     snapshot.mockResolvedValue({ ...full, grossCollateralValue: 1800, collateralBalances: { XLM: 9500 } });
     expect(await computeAccountPosition("CACCOUNT")).toBeNull();
@@ -61,14 +61,14 @@ describe("a position that could not be read fully", () => {
     snapshot.mockResolvedValue(full);
     const position = await computeAccountPosition("CACCOUNT");
     expect(position).toMatchObject({ grossCollateralUsd: "4211.63", debtUsd: "1732.61" });
-    // 4211.63 / 1732.61, full precision — not the 2.43 the rail rounds to.
+    // 4211.63 / 1732.61, full precision - not the 2.43 the rail rounds to.
     expect(position?.healthFactor).toMatch(/^2\.43/);
   });
 
   it("accepts a debt-free account, where there is nothing to be inconsistent with", async () => {
     snapshot.mockResolvedValue({
       ...full, borrowedBalances: {}, totalBorrowedValue: 0,
-      // No collateral positions either — an empty account is a legitimate read.
+      // No collateral positions either - an empty account is a legitimate read.
       collateralBalances: {}, grossCollateralValue: 0,
     });
     const position = await computeAccountPosition("CACCOUNT");

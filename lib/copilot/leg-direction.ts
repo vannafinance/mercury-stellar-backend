@@ -4,7 +4,7 @@ import { OP_FLOW, POCKET_HOLDER, type Pocket, type WorkflowOp } from "./workflow
  * Which way a leg moves value, and whether that contradicts what the user said.
  *
  * Live, 22 Sep: "withdraw 30 XLM from blend and lend it in earn" planned
- * `lend 30 XLM` then `deploy_to_blend BLUSDC` — money INTO Blend, the opposite of
+ * `lend 30 XLM` then `deploy_to_blend BLUSDC` - money INTO Blend, the opposite of
  * what was asked, in an asset never mentioned, one signature from executing. The
  * multi-goal planner pushes a Blend leg on the mere PRESENCE of the word "blend"
  * (`any(text, "farm", "blend", "deploy")`), with nothing anywhere asking which
@@ -12,12 +12,12 @@ import { OP_FLOW, POCKET_HOLDER, type Pocket, type WorkflowOp } from "./workflow
  * correctly, so only plans were wrong.
  *
  * Direction is already stated once, as data, in `OP_FLOW`'s `from`/`to` pockets. This
- * reads it rather than teaching a planner which verbs mean "out" — a verb-to-op table
+ * reads it rather than teaching a planner which verbs mean "out" - a verb-to-op table
  * is how the two got to disagree in the first place.
  */
 
 /**
- * Planner spellings for ops `OP_FLOW` names differently. Names only — an alias never
+ * Planner spellings for ops `OP_FLOW` names differently. Names only - an alias never
  * changes a flow, it just says which canonical row to read.
  */
 const OP_ALIASES: Readonly<Record<string, WorkflowOp>> = {
@@ -37,7 +37,7 @@ export function flowOf(op: string): { from: Pocket; to: Pocket } | null {
  * `debt` is a pocket but never a spoken source.
  *
  * Every other pocket is somewhere a user can say money came "from". Debt is borrowing
- * capacity — a borrow draws on it, but nobody says "from my debt" to mean that, while
+ * capacity - a borrow draws on it, but nobody says "from my debt" to mean that, while
  * "repay from my wallet" is ordinary. Read as a stated source it would make `repay`
  * (account → debt) look like it lands in the source, and refuse a legitimate repay.
  */
@@ -52,7 +52,7 @@ const POCKET_SYNONYMS: Readonly<Record<string, Pocket>> = {
 
 /**
  * The words a user says for each pocket, derived from the pocket table rather than
- * listed here — a pocket's own name is the word for it, so a pocket added to
+ * listed here - a pocket's own name is the word for it, so a pocket added to
  * `POCKET_HOLDER` is understood without touching this file. Only the words that differ
  * from the key need saying.
  */
@@ -66,7 +66,7 @@ const VENUE_POCKETS: Readonly<Record<string, Pocket>> = {
 };
 
 /**
- * Pockets the sentence names as the SOURCE of the money — "from blend", "out of earn".
+ * Pockets the sentence names as the SOURCE of the money - "from blend", "out of earn".
  *
  * Grammar, not vocabulary: a source preposition in front of a venue word. That is why
  * this can be shared by every op instead of belonging to any one of them.
@@ -98,7 +98,7 @@ export function contradictsStatedSource(op: string, text: string): boolean {
 }
 
 /**
- * Whether an op draws on borrowing capacity — read from `OP_FLOW`, never from the verb.
+ * Whether an op draws on borrowing capacity - read from `OP_FLOW`, never from the verb.
  *
  * `debt` as a SOURCE is what "this creates new debt" means, and it is already stated once,
  * as data, for every op. An op added to `OP_FLOW` is classified here without touching this
@@ -114,7 +114,7 @@ export function drawsNewDebt(op: string): boolean {
  * Live, 23 Sep, auto-approve on, one click from executing: "lend me 50xlm" was understood as
  * "Borrow 50 XLM on margin". The deterministic extractor read the same sentence as `lend`.
  * Supplying capital and taking on debt are opposite actions, and the word that flipped it was
- * "me" — "lend me X" idiomatically means "loan me X", which is a defensible reading of the
+ * "me" - "lend me X" idiomatically means "loan me X", which is a defensible reading of the
  * English and the wrong reading of a product whose Earn surface is called Lend.
  *
  * Because BOTH readings are defensible, this does not pick one. It reports that the sentence
@@ -123,8 +123,8 @@ export function drawsNewDebt(op: string): boolean {
  * this module exists to replace, and would be wrong whenever "lend me" really did mean
  * borrow.
  *
- * Narrow on purpose. Ops that differ in destination but agree about debt — `lend` versus
- * `deposit_collateral`, both "put money in" — are NOT a disagreement worth stopping for; the
+ * Narrow on purpose. Ops that differ in destination but agree about debt - `lend` versus
+ * `deposit_collateral`, both "put money in" - are NOT a disagreement worth stopping for; the
  * cost of asking must stay below the cost of the mistake.
  */
 export function disagreesOnNewDebt(a: string, b: string): boolean {

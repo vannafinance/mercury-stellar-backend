@@ -13,7 +13,7 @@ export const TOOLS: Readonly<Record<WorkflowOp, string>> = Object.freeze({
 });
 
 /**
- * The exact argument set a step must carry for its op — wallet ops name the lender, margin
+ * The exact argument set a step must carry for its op - wallet ops name the lender, margin
  * ops the account. The key names are the MCP tool's own: `allowedInvocation` compares them
  * one for one, so a rename here is a refused write rather than a silent mismatch.
  */
@@ -26,8 +26,8 @@ export function writeArgsFor(
 ): Record<string, unknown> {
   if (op === "add_liquidity") {
     // vanna_add_liquidity(smart_account, token_a, token_b, amount_a, amount_b, min_liquidity_out, trader, venue)
-    // token_a/amount_a are whichever side the leg stated — same convention as swap's
-    // token_in/amount_in — never assumed to be XLM: a leg stated in the paired token
+    // token_a/amount_a are whichever side the leg stated - same convention as swap's
+    // token_in/amount_in - never assumed to be XLM: a leg stated in the paired token
     // (e.g. "add 500 AQUSDC to the pool") must not have its amount mislabeled as XLM's.
     return {
       smart_account: scope.smartAccount, token_a: symbol, token_b: extra?.tokenOut ?? "",
@@ -45,7 +45,7 @@ export function writeArgsFor(
   if (op === "swap") {
     // vanna_swap(smart_account, token_in, token_out, amount_in, min_out, trader, venue)
     // `acknowledged_price_impact` is frozen onto the proposal and sent only when
-    // the user approves that card — MCP withholds Sign Service auto-sign above
+    // the user approves that card - MCP withholds Sign Service auto-sign above
     // 10% impact unless this flag is true.
     const args: Record<string, unknown> = {
       smart_account: scope.smartAccount, token_in: symbol, token_out: extra?.tokenOut ?? "",
@@ -75,7 +75,7 @@ export function allowedInvocation(step: ProposalStep, scope: Pick<InvestigationS
   let extra: { tokenOut?: string; venue?: string; minOut?: string; amountB?: string; acknowledgedPriceImpact?: boolean; redeemAll?: boolean } | undefined;
   /**
    * Entering a pool names the other side of the pair and the paired amount the sizer
-   * derived for it — the ratio is not the model's to guess, and never re-derived here from
+   * derived for it - the ratio is not the model's to guess, and never re-derived here from
    * whatever step.args happens to carry: allowedInvocation's job is to confirm the step
    * matches what writeArgsFor would build from the SAME inputs, not to re-price anything.
    */
@@ -100,7 +100,7 @@ export function allowedInvocation(step: ProposalStep, scope: Pick<InvestigationS
     extra = { venue };
   }
   // A swap names a second asset; it must be one the registry knows and the account accepts,
-  // and it must carry the floor it will not accept less than — a swap with no floor at all
+  // and it must carry the floor it will not accept less than - a swap with no floor at all
   // is what left the propose-time preview unable to project anything but oracle parity.
   if (step.op === "swap") {
     const out = typeof step.args.token_out === "string" ? resolveAssetDef(step.args.token_out) : null;

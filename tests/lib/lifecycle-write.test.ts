@@ -20,6 +20,16 @@ const base = {
 };
 
 describe("lifecycle writes are not plan ops", () => {
+  it("preserves an explicitly requested account settlement without turning it into sized repayments", () => {
+    const message = "settle my account";
+    const decision = parseDecision({ ...base, goal: { ...base.goal, objective: message, write: { op: "settle_account", sourceQuote: message } } });
+    expect(decision?.kind).toBe("research_complete");
+    if (decision?.kind !== "research_complete") return;
+    expect(anchoredLifecycleWrite(decision.goal.write, [message], false)).toBe("settle_account");
+    expect(anchoredLifecycleWrite(decision.goal.write, ["what is my debt?"], false)).toBeNull();
+    expect(anchoredLifecycleWrite(decision.goal.write, [message], true)).toBeNull();
+    expect(WORKFLOW_OPS).not.toContain("settle_account");
+  });
   it("keeps create_account off the sized op table", () => {
     expect(WORKFLOW_OPS).not.toContain("create_account");
   });

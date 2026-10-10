@@ -6,7 +6,7 @@
  * First signed-in battery, 11 Sep: `vanna_get_max_borrow` returned in 8.5s with
  * `max_borrow_human` present, the normalizer had no `case "max_borrow"`, and the user was
  * told "max borrow: no supported display fields were available". 13 Sep, same shape:
- * `farm_overview` and `collateral_config` — the data the prompt was about — read fine and
+ * `farm_overview` and `collateral_config` - the data the prompt was about - read fine and
  * were discarded the same way. Twelve of the loop's twenty-six capabilities had no case.
  *
  * The handoff's acceptance test, verbatim: *"delete no MCP tool, add no case, and
@@ -18,16 +18,43 @@
 import { describe, expect, it, vi } from "vitest";
 import { normalizeResearchFacts } from "@/lib/copilot/investigation/normalize";
 import { annotateVenueAssets, extractFactsByShape } from "@/lib/copilot/investigation/facts-by-shape";
+import { factualAnswer, factualReplyBlocks } from "@/lib/copilot/investigation/answer";
 import type { Observation } from "@/lib/copilot/investigation/types";
 
 const read = (capability: string, data: Observation["data"], args: Record<string, unknown> = {}): Observation => ({
   id: `obs-${capability}`, capability, args, observedAt: 1000, status: "ok", data,
 });
+
+it("uses declared human amounts instead of their raw siblings on any read shape", () => {
+  const result = extractFactsByShape(read("unfamiliar_market", {
+    symbol: "XLM", total_liquidity: "14064405576100000000000",
+    total_liquidity_human: "14064.4055761", total_assets: "80222700000000000000000",
+    total_assets_human: "80222.7", supply_apr_pct: "23.87",
+  }));
+  expect(result.facts.map(f => f.path)).not.toContain("total_liquidity");
+  expect(result.facts.map(f => f.path)).not.toContain("total_assets");
+  expect(result.facts.find(f => f.path === "total_liquidity_human")?.value).toBe("14064.4055761");
+  expect(result.facts.find(f => f.path === "total_assets_human")?.value).toBe("80222.7");
+  expect(result.facts.find(f => f.path === "supply_apr_pct")?.unit).toBe("% APR");
+});
 const noFields = /no supported display fields/;
 const fact = (result: ReturnType<typeof normalizeResearchFacts>, sourcePath: string) =>
   result.facts.find((f) => f.sourcePath === sourcePath);
 
-describe("facts by shape — the reads that had no case", () => {
+describe("facts by shape - the reads that had no case", () => {
+  it("keeps zero limits and equal limits for different assets in the fallback reply", () => {
+    const observations = ["XLM", "AQUSDC"].map((asset, index) => ({
+      ...read("max_borrow", { symbol: asset, max_borrow_human: "0" }, { asset }),
+      id: `capacity-${index}`,
+    }));
+    const { facts } = normalizeResearchFacts(observations);
+    const reply = factualAnswer(facts, "How much could I borrow?");
+    expect(reply).toContain("XLM max borrow: 0 XLM");
+    expect(reply).toContain("AQUSDC max borrow: 0 AQUSDC");
+    expect(JSON.stringify(factualReplyBlocks(facts))).toContain("AQUSDC max borrow");
+    expect(reply).not.toMatch(/approve|execute|choose/i);
+  });
+
   it("renders max_borrow's number instead of reporting it unavailable", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = normalizeResearchFacts([read("max_borrow", {
@@ -136,7 +163,7 @@ describe("facts by shape — the reads that had no case", () => {
       total_debt_usd: "5076.8601",
     } });
     expect((data.debt as Array<Record<string, unknown>>).map((r) => [r.symbol, r.asset])).toEqual([["USDC", "BLUSDC"], ["XLM", "XLM"]]);
-    // The row keeps its wire symbol — the sizer matches `marginSymbol` on it — and gains the id the model must use.
+    // The row keeps its wire symbol - the sizer matches `marginSymbol` on it - and gains the id the model must use.
   });
 
   it("annotates an Earn pool row by the asset the read was for, not the venue-unique spelling", () => {
@@ -171,7 +198,7 @@ describe("facts by shape — the reads that had no case", () => {
   });
 });
 
-describe("facts by shape — what is never a fact", () => {
+describe("facts by shape - what is never a fact", () => {
   it("does not invent a unit for a bare number", () => {
     const { facts } = extractFactsByShape(read("x", { foo: "123", bar: 4.5, total: "99" }));
     expect(facts).toEqual([]);
@@ -204,7 +231,7 @@ describe("facts by shape — what is never a fact", () => {
       fee_reserve_xlm: "0.5", note: "…",
     })]);
     // The 13 Sep card said "wallet balances: some entries were unavailable" for the USDC line. It is not unavailable.
-    expect(result.warnings).toEqual(["wallet balances: EURC was unavailable — No EURC trustline on this wallet."]);
+    expect(result.warnings).toEqual(["wallet balances: EURC was unavailable - No EURC trustline on this wallet."]);
     expect(result.facts.map((f) => [f.label, f.value, f.unit])).toEqual([
       ["XLM wallet balance", "10206.8356118", "XLM"],
       ["AQUSDC wallet balance", "0.0000000", "AQUSDC"],

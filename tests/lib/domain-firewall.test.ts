@@ -1,10 +1,13 @@
+import prompts from "../fixtures/copilot-prompts.json";
 import { describe, it, expect } from "vitest";
-import { evaluateDomainFirewall } from "@/lib/copilot/domain-firewall";
+import { evaluateDomainFirewall, isStructurallyLarge, PASTE_SHAPE } from "@/lib/copilot/domain-firewall";
+
+function cataloguePrompts(): string[] { return prompts; }
 
 describe("the firewall reads plurals and inflections, not just dictionary singulars", () => {
   /**
    * The allowlist matched product nouns with `\b` on both ends, and a trailing `\b` after
-   * a singular stem does not match its plural — `position\b` fails on "positions" because
+   * a singular stem does not match its plural - `position\b` fails on "positions" because
    * `s` is a word character. So "…my current open position" was answered and "…my current
    * open positions" was refused with "I only help with Vanna Finance on Stellar", about a
    * Vanna position, on the Vanna copilot page.
@@ -50,7 +53,7 @@ describe("the firewall reads plurals and inflections, not just dictionary singul
     }
   });
 
-  it("keeps general chat out — widening the vocabulary must not open the door", () => {
+  it("keeps general chat out - widening the vocabulary must not open the door", () => {
     for (const ask of [
       "what is the capital of france",
       "who won the world cup",
@@ -200,5 +203,30 @@ describe("domain firewall", () => {
     expect(evaluateDomainFirewall("how much yield can I generate in crypto vaults").allow).toBe(true);
     expect(evaluateDomainFirewall("is my collateral safe from slippage").allow).toBe(true);
     expect(evaluateDomainFirewall("explain my borrow capacity and headroom").allow).toBe(true);
+  });
+
+  it("does not finish a word-list allow when the message is structurally large", () => {
+    const ask = `Keep my health factor above 1.3 and put idle XLM to work. ${"Compare Earn and Blend before borrowing. ".repeat(6)}`;
+    expect(ask.length).toBeGreaterThan(PASTE_SHAPE.minChars.value);
+    expect(isStructurallyLarge(ask)).toBe(true);
+    expect(evaluateDomainFirewall(ask).allow).toBe(true);
+    expect(evaluateDomainFirewall(ask).reason).toBe("allow:needs_classifier");
+    expect(evaluateDomainFirewall("supply 5 xlm to blend").reason).not.toBe("allow:needs_classifier");
+  });
+
+  it("flags a short box-drawn table by character share, not by length or line count", () => {
+    const table = "┌────┬────┐\n│ XLM │ 10 │\n└────┴────┘";
+    expect(table.length).toBeLessThan(PASTE_SHAPE.minChars.value);
+    expect(table.split(/\n/)).toHaveLength(3);
+    expect(isStructurallyLarge(table)).toBe(true);
+  });
+
+  it("never flags a catalogue prompt as structurally large", () => {
+    const prompts = cataloguePrompts();
+    expect(prompts.length).toBeGreaterThan(10);
+    for (const prompt of prompts) {
+      expect(isStructurallyLarge(prompt), prompt).toBe(false);
+      expect(prompt.length, prompt).toBeLessThan(PASTE_SHAPE.minChars.value);
+    }
   });
 });

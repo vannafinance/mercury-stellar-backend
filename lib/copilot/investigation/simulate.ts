@@ -1,6 +1,6 @@
 /**
  * Propose-time simulation: before a plan is shown, its steps are put to the protocol's
- * own preview — the MCP `preview` actions, which read the RiskEngine's liquidation
+ * own preview - the MCP `preview` actions, which read the RiskEngine's liquidation
  * snapshot and the oracle and ask the contract's `is_borrow_allowed` /
  * `is_withdraw_allowed`, the pool's borrow ceiling and Earn's minimum. The sizer projects
  * with the facts it read; the preview asks the thing that will actually say yes or no.
@@ -10,7 +10,7 @@
  * Every preview answers against the CURRENT chain state. A step whose funds or health
  * depend on an earlier step of the same plan (a Blend supply that takes what the deposit
  * before it put in; a borrow after a deposit that raises health) cannot be previewed
- * truthfully — the preview would refuse what the run would allow. Those steps are
+ * truthfully - the preview would refuse what the run would allow. Those steps are
  * `dependent`: the sizer's projection stands for them, and the card says so. Which steps
  * depend on which is read from the op-flow table, not from the op names.
  *
@@ -43,6 +43,25 @@ export interface StepSimulation {
   limitingFactor: string | null;
   /** Projected account after the step, as the RiskEngine snapshot arithmetic states it. */
   projected: { collateralUsd: string; debtUsd: string; ltvPct: string; healthy: boolean } | null;
+  /**
+   * Previewed against the account BEFORE the earlier steps (see `conservativelyPreviewable`).
+   * "Allowed" then still holds once they run; the projected LTV does not, so it is not quoted.
+   */
+  beforeEarlierSteps?: true;
+}
+
+/**
+ * A step that follows earlier ones can still be put to the protocol when the answer cannot
+ * get worse by running them first: it LOWERS health (a borrow or a withdraw) and every step
+ * before it only RAISES health (a deposit). If the protocol allows it on today's account,
+ * it allows it after the deposit too, and pool limits do not depend on the deposit at all.
+ * A refusal is inconclusive (it may pass once the deposit lands), so it stays projected.
+ * 23 Sep, X11: "deposit 100 XLM, borrow 5563 XLM" put only the deposit to the protocol, and
+ * the borrow, the leg that moves health most, stood on the projection alone.
+ */
+export function conservativelyPreviewable(steps: readonly ProposalStep[], index: number): boolean {
+  if (OP_FLOW[steps[index].op].health !== "lowers") return false;
+  return steps.slice(0, index).every((earlier) => OP_FLOW[earlier.op].health === "raises");
 }
 
 export interface PlanSimulation {
@@ -55,7 +74,7 @@ export interface PlanSimulation {
 
 /** The preview each venue offers, by the legacy name the transport maps to `{ tool, action: "preview" }`.
  * Blend supply/withdraw is valued on the same RiskEngine snapshot as margin (b-token
- * receipt = underlying × b_rate), so it uses `vanna_preview_margin` — not a second
+ * receipt = underlying × b_rate), so it uses `vanna_preview_margin` - not a second
  * Blend-only preview, and not a venue lock. Aquarius/Soroswap writes are margin-venue
  * ops (`add_liquidity` / `remove_liquidity` / `swap`); those rows stay null. */
 const PREVIEW_TOOL: Record<Venue, string | null> = {
@@ -73,8 +92,8 @@ function operationOf(op: WorkflowOp): string {
 
 /**
  * A step can be previewed against the current state only when nothing before it in the
- * plan changes what the preview would look at: the pocket it draws from, or — for a
- * margin step — the account's health.
+ * plan changes what the preview would look at: the pocket it draws from, or - for a
+ * margin step - the account's health.
  */
 export function dependsOnEarlier(steps: readonly ProposalStep[], index: number): boolean {
   const step = steps[index];
@@ -88,7 +107,7 @@ export function dependsOnEarlier(steps: readonly ProposalStep[], index: number):
 }
 
 /**
- * A swap's args carry no `symbol`/`amount` at all — `writeArgsFor` built them as
+ * A swap's args carry no `symbol`/`amount` at all - `writeArgsFor` built them as
  * `token_in`/`amount_in` (plus `token_out`/`min_out`), since a swap moves two assets, not
  * one. Sourcing the spent side from the op's own argument shape here, and passing the
  * SAME `min_out` the write carries, is what lets `vanna_preview_margin`'s swap branch
@@ -190,12 +209,12 @@ function summarise(steps: readonly ProposalStep[], results: StepSimulation[]): P
       : "Not simulated against the protocol: every step follows from the one before it, so the projection stands." };
   }
   const said = allowed.map((r) => {
-    const after = r.projected ? ` (LTV ${r.projected.ltvPct}% after)` : "";
+    const after = r.beforeEarlierSteps ? " (checked before the steps ahead of it)" : r.projected ? ` (LTV ${r.projected.ltvPct}% after)` : "";
     return `${label(r.stepId)} allowed${after}`;
   }).join("; ");
   /**
    * What the margin preview answers for a swap is "does the account stay healthy if this
-   * fills at its floor" — it reads the RiskEngine and the oracle, and asks the pool
+   * fills at its floor" - it reads the RiskEngine and the oracle, and asks the pool
    * nothing. Saying only "allowed" let that read as "this trade will go through", which
    * is how a card stayed clickable for a swap the DEX then refused (15 Sep, live). The
    * pool has the final word at approve time, so the card says which question was answered.
@@ -207,7 +226,7 @@ function summarise(steps: readonly ProposalStep[], results: StepSimulation[]): P
   const rest = dependent.length && unavailable.length
     ? `${dependent.length + unavailable.length} other step${dependent.length + unavailable.length === 1 ? "" : "s"} could not be simulated ahead`
     : dependent.length
-      ? `${dependent.length === 1 ? "the other step follows" : `the other ${dependent.length} steps follow`} from it and stand on the projection`
+      ? `${dependent.length === 1 ? "the other step follows from it and stands" : `the other ${dependent.length} steps follow from it and stand`} on the projection`
       : `${unavailable.length === 1 ? "one step" : `${unavailable.length} steps`} could not be simulated`;
   return { verdict: "partial", steps: results, summary: `Simulated against the protocol: ${said}; ${rest}.${fill}` };
 }
@@ -219,10 +238,14 @@ export async function simulateSteps(
   mcp: Pick<MCPClient, "call">,
   signal: AbortSignal,
 ): Promise<PlanSimulation> {
-  const results: StepSimulation[] = await Promise.all(steps.map(async (step, index) =>
-    dependsOnEarlier(steps, index)
-      ? { stepId: step.id, verdict: "dependent" as const, reason: "follows from the step before it; projected, not simulated", limitingFactor: null, projected: null }
-      : previewStep(step, scope, mcp, signal)));
+  const dependent = (step: ProposalStep): StepSimulation =>
+    ({ stepId: step.id, verdict: "dependent", reason: "follows from the step before it; projected, not simulated", limitingFactor: null, projected: null });
+  const results: StepSimulation[] = await Promise.all(steps.map(async (step, index) => {
+    if (!dependsOnEarlier(steps, index)) return previewStep(step, scope, mcp, signal);
+    if (!conservativelyPreviewable(steps, index)) return dependent(step);
+    const checked = await previewStep(step, scope, mcp, signal);
+    return checked.verdict === "allowed" ? { ...checked, beforeEarlierSteps: true } : dependent(step);
+  }));
   return summarise(steps, results);
 }
 
@@ -251,7 +274,13 @@ export async function simulateCandidates(
     const simulation = simulated.get(candidate.id);
     if (!simulation) { feasible.push(candidate); continue; }
     if (simulation.verdict === "blocked") {
-      rejected.push({ label: candidate.label, reason: simulation.summary, asset: candidate.asset });
+      // A borrow the protocol refused on one of the POOL's limits (its structured limiting factor, never its sentence) can pass at
+      // a smaller amount; the caller reads the protocol's own ceiling and sizes again. A refusal on the account's health cannot.
+      const blockedStep = simulation.steps.find((step) => step.verdict === "blocked");
+      const planStep = candidate.steps?.find((step) => step.id === blockedStep?.stepId);
+      const poolLimited = planStep && OP_FLOW[planStep.op].from === "debt" && blockedStep?.limitingFactor && blockedStep.limitingFactor !== "collateral_health"
+        ? { poolLimited: { asset: planStep.asset } } : {};
+      rejected.push({ label: candidate.label, reason: simulation.summary, asset: candidate.asset, ...poolLimited });
       continue;
     }
     feasible.push({ ...candidate, simulation });

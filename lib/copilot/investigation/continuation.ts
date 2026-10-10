@@ -73,7 +73,7 @@ export function researchCodec(secret: string, server: string, now = Date.now) {
     },
     /**
      * Decrypt a continuation without a pre-resolved scope. The caller must re-resolve
-     * scope independently and confirm it still matches — used by proposal routes, which
+     * scope independently and confirm it still matches - used by proposal routes, which
      * receive only the sealed token and must not take a wallet from the browser.
      */
     read,

@@ -8,7 +8,7 @@ import { planFromStatedActions } from "@/lib/copilot/investigation/plan";
  * `goal.actions` is the deterministic route from "the user asked for exactly this" to a
  * sized plan: it does not depend on the model composing anything, which is what stops a
  * concrete request from being answered with alternatives. It used to be validated against
- * `{op, asset, amount, sourceQuote}` — a bare decimal — while `PlanLeg` carried `sizing`,
+ * `{op, asset, amount, sourceQuote}` - a bare decimal - while `PlanLeg` carried `sizing`,
  * `assetOut` and `venue`. The narrower form fed the wider one, so an instruction the plan
  * contract could hold perfectly well was rejected on the way in: `"2x"` failed the decimal
  * test, and `exactKeys` dropped any action naming a pool's other token or its DEX.
@@ -22,7 +22,7 @@ import { planFromStatedActions } from "@/lib/copilot/investigation/plan";
  * back as unrelated ranked options.
  *
  * These tests use that prompt's shapes rather than a single-field probe, because the point
- * is not that one field was added — it is that the two contracts are now the SAME contract
+ * is not that one field was added - it is that the two contracts are now the SAME contract
  * (one `parseLeg`, one `legSchema`) and cannot drift apart again.
  */
 

@@ -18,7 +18,15 @@ describe("Copilot entry lanes", () => {
     "what is my health factor?",
     "withdraw 100 XLM collateral",
     "remove XLM position or USDC position from Blend farm",
-  ])("routes a plain capability directly: %s", (message) => {
+  ])("investigates a plain capability first (INVESTIGATE_FIRST, 2ca1c3c): %s", (message) => {
+    // A stated action is researched and then executed without a plan card (HANDOFF rule 10);
+    // the keyword lane that answered it directly is off.
+    expect(classifyCopilotEntry(message)).toBe("strategy");
+  });
+
+  it("keeps a settled refusal on the direct lane", () => {
+    const message = "send my funds to GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5";
+    expect(routeMessage(message).kind).toBe("restricted");
     expect(classifyCopilotEntry(message)).toBe("direct");
   });
 
@@ -39,6 +47,7 @@ describe("Copilot entry lanes", () => {
     // Un-enumerated strategy phrasing:
     "where should I allocate my 500 XLM for maximum returns",
     "analyze the best allocation across venues for my funds",
+    "liquidate my XLM position",
   ])("routes strategy/dynamic workflows to investigation: %s", (message) => {
     expect(classifyCopilotEntry(message)).toBe("strategy");
   });

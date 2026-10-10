@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 const NO_STORE = { headers: { "Cache-Control": "no-store" } };
 
 /**
- * The conversation list and the one that is open — what the page paints on load. The
+ * The conversation list and the one that is open - what the page paints on load. The
  * open conversation's transcript, evidence token and last view come along so the thread
  * is restored in one round-trip, as it was when the store held a single thread.
  */

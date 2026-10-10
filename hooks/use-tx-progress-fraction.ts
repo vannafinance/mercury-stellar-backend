@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useTxProgressStore } from "@/store/tx-progress-store";
 
-// Kept identical to TransactionProgressModal's own constants — both read
+// Kept identical to TransactionProgressModal's own constants - both read
 // this same shared fraction so the modal's bar and the background toast's
 // progress ring (shown after the modal is dismissed) never diverge.
 const STEP_PATTERN = /^Step\s+(\d+)\s*\/\s*(\d+)\s*:\s*(.*)$/i;
@@ -15,7 +15,7 @@ const ASYMPTOTE = 0.94;
  * `useTxProgressStore` (message step prefix, phase, submittedAt,
  * forceComplete). See TransactionProgressModal's doc comment for why the
  * "confirming" phase animates on an asymptotic curve rather than jumping to
- * 100% — the same reasoning applies here.
+ * 100% - the same reasoning applies here.
  */
 export function useTxProgressFraction(): number {
   const message = useTxProgressStore((s) => s.message);
@@ -24,7 +24,7 @@ export function useTxProgressFraction(): number {
   const forceComplete = useTxProgressStore((s) => s.forceComplete);
 
   // Re-renders on an interval only while actually animating (mirrors the
-  // modal's own tick effect) — otherwise idle while "signing" or done.
+  // modal's own tick effect) - otherwise idle while "signing" or done.
   const [, forceTick] = useState(0);
   useEffect(() => {
     if (phase !== "confirming" || forceComplete) return;

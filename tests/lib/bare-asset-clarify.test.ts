@@ -1,7 +1,7 @@
 /**
  * A bare recognized asset name with no verb ("SOUSDC", "XLM") named a real token in our
  * domain but said nothing about what to do with it, and fell through everything to the
- * generic capabilities blurb — reported live when answering a swap's "which token did
+ * generic capabilities blurb - reported live when answering a swap's "which token did
  * you mean?" clarify with just the token name. In-domain input should always ask what to
  * do with it; the generic blurb is reserved for genuinely out-of-domain input.
  */

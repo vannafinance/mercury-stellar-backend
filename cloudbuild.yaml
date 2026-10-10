@@ -27,7 +27,7 @@ substitutions:
   # Pinned deliberately. All of the copilot's live QA was done on this model,
   # and routing accuracy is the feature — a silent model change is a silent
   # behaviour change. Fallbacks live in lib/copilot/config.ts.
-  _VERTEX_MODEL: gemini-3.7-flash
+  _VERTEX_MODEL: gemini-3.8-flash
   _WORKFLOW_PROJECT: vanna-mcp
   _WORKFLOW_DATABASE: copilot-workflows
   # The mcp.vanna.finance domain mapping (ghs.googlehosted.com) dropped 8 of 20

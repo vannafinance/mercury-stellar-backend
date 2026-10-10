@@ -15,7 +15,7 @@ import type { WorkflowView } from "@/lib/copilot/workflow/types";
  * and re-posted `originalRequest`.
  *
  * Two things are pinned here, because the workspace effects read both:
- *  - where a view came from — a turn this page ran (`live`) versus one read back
+ *  - where a view came from - a turn this page ran (`live`) versus one read back
  *    (`restored`), for the investigation and for the journal;
  *  - that a claim to dispatch is granted once per subject and survives a remount, and is
  *    handed back when the dispatch did not happen.
@@ -88,10 +88,14 @@ describe("an investigation says whether the page ran it or read it back", () => 
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404 } as unknown as Response)));
     const { result } = renderHook(() => useInvestigation(WALLET));
     await flush();
-    // The answer is on screen …
+    // A reload starts a new chat (owner, 25 Sep): nothing is on screen, so nothing can re-fire …
+    expect(result.current.result).toBeNull();
+    expect(result.current.turns).toHaveLength(0);
+    // … and the chat, reopened from History, is a record, not a turn to run again.
+    const archived = result.current.conversations.find((c) => c.title === "withdraw all funds");
+    await act(async () => { await result.current.open(archived!.id); });
     expect(result.current.result?.originalRequest).toBe("withdraw all funds");
     expect(result.current.turns).toHaveLength(2);
-    // … and it is a record, not a turn to run again.
     expect(result.current.resultOrigin).toBe("restored");
   });
 });

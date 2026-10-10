@@ -18,7 +18,8 @@ vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
   return { ...actual, resolveInvestigationScope: mocks.resolveInvestigationScope };
 });
 
-vi.mock("@/lib/copilot/investigation/capacity", () => ({
+vi.mock("@/lib/copilot/investigation/capacity", async (importOriginal) => ({
+  PROTOCOL_MAX_BORROW_FLOOR: (await importOriginal<typeof import("@/lib/copilot/investigation/capacity")>()).PROTOCOL_MAX_BORROW_FLOOR,
   computeAccountPosition: mocks.computeAccountPosition,
   computeBorrowCapacity: mocks.computeBorrowCapacity,
   computeSizingBasis: mocks.computeSizingBasis,
@@ -139,6 +140,35 @@ describe("postedHealthFactorFromSnapshot", () => {
 });
 
 describe("researchTurn fast path", () => {
+  it("keeps a slow complete health read instead of discarding it at the optional strategy budget", async () => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("read deadline", "TimeoutError")), ms);
+      return controller.signal;
+    });
+    try {
+      mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+      mocks.computeAccountPosition.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({ grossCollateralUsd: "300", debtUsd: "100", healthFactor: "3" }), 11_000)));
+      const mcp = { call: vi.fn(() => new Promise<Record<string, unknown>>(resolve => setTimeout(() => resolve({ collateral_usd: "200", debt_usd: "100" }), 9_000))) };
+      const pending = researchTurn({ message: "what's my health factor?", wallet: SCOPE.trader, continuation: null }, deps({ mcp }));
+      await vi.advanceTimersByTimeAsync(21_000);
+      const result = await pending;
+      expect(result.status).toBe("researched");
+      expect(result.facts).toContainEqual(expect.objectContaining({ sourcePath: "health_factor", value: "3" }));
+      expect(result.message).not.toContain("could not read");
+      expect(result.warnings).toEqual([]);
+      expect(result.executionAllowed).toBe(false);
+    } finally { timeout.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it("returns one failure response without pipeline notes when no read succeeded", () => {
+    const result = fastPathView({ message: "what's my health factor?", scope: SCOPE, observations: [{ id: "e0", capability: "liquidation_snapshot", args: {}, observedAt: Date.now(), status: "error", error: "health_unavailable" }], secret: "a".repeat(32), server: "mcp-test" });
+    expect(result.status).toBe("incomplete");
+    expect(result.facts).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.executionAllowed).toBe(false);
+  });
   it("answers a price question from one public read without the investigation loop", async () => {
     const mcp = { call: vi.fn(async () => ({ price_usd: "0.11" })) };
     const result = await researchTurn(
@@ -151,7 +181,7 @@ describe("researchTurn fast path", () => {
     expect(mocks.resolveInvestigationScope).not.toHaveBeenCalled();
   });
 
-  it("answers health from liquidation_snapshot without waiting on a hung snapshot", async () => {
+  it("answers without waiting on a hung snapshot, and never states the contract figure as the HF", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
     mocks.computeAccountPosition.mockResolvedValue(null);
     const mcp = {
@@ -173,8 +203,9 @@ describe("researchTurn fast path", () => {
       expect.objectContaining({ smart_account: SCOPE.smartAccount }),
       SCOPE.trader,
     );
-    expect(result.message).toMatch(/3\.42/);
-    expect(result.message).toMatch(/posted collateral/);
+    // Owner, 29 Sep: the HF told is the Margin page's; with that read hung, no other number stands in.
+    expect(result.message).toMatch(/could not read a live figure/);
+    expect(result.message).not.toMatch(/3\.42/);
     expect(result.message).not.toMatch(/can read higher/);
     expect(result.executionAllowed).toBe(false);
   });
@@ -296,17 +327,16 @@ describe("researchTurn fast path", () => {
     expect(result.status).toBe("researched");
   });
 
-  it("offers a standing-order mandate and does not execute", async () => {
+  it("stores no standing-order mandate from wording and executes nothing (25 Sep)", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
     mocks.computeAccountPosition.mockResolvedValue(null);
     const result = await researchTurn(
       { message: "when my health factor drops below 1.2 repay 10 XLM", wallet: SCOPE.trader, continuation: null },
-      deps({}),
+      deps({ mcp: { call: vi.fn(async () => ({})) }, model: async () => ({ kind: "blocked", reason: "not now" }) }),
     );
-    expect(result.status).toBe("blocked");
-    expect(result.message).toContain(STANDING_ORDER_OFFER);
+    expect(result.message).not.toContain(STANDING_ORDER_OFFER);
+    expect(result.message).not.toMatch(/Mandate /);
     expect(result.executionAllowed).toBe(false);
-    expect(result.message).toMatch(/Mandate /);
   });
 
   it("sizes a stated write from live reads and refuses it with the wallet's own figures when nothing is spendable (14 Sep: 'lend 1 xlm to earn')", async () => {
@@ -338,7 +368,7 @@ describe("researchTurn fast path", () => {
     const result = await researchTurn({ message: "lend 1 xlm to earn", wallet: SCOPE.trader, continuation: null }, deps({ model, mcp }));
     expect(result.proposalCandidateId).not.toBe("requested_actions");
     expect(result.candidates?.feasible).toEqual([]);
-    expect(result.candidates?.rejected[0]?.reason).toBe("lend XLM: 3.94 XLM is held, but 3.5 XLM is the chain's minimum balance and 0.5 XLM is the fee reserve — nothing is spendable.");
+    expect(result.candidates?.rejected[0]?.reason).toBe("lend XLM: 3.94 XLM is held, but 3.5 XLM is the chain's minimum balance and 0.5 XLM is the fee reserve - nothing is spendable.");
     expect(result.message).toMatch(/3\.94 XLM is held/);
     expect(result.executionAllowed).toBe(false);
   });
@@ -367,9 +397,46 @@ describe("researchTurn fast path", () => {
     const result = await researchTurn({ message: "lend 1 xlm to earn", wallet: SCOPE.trader, continuation: null }, deps({ model, mcp }));
     expect(result.status).toBe("researched");
     expect(result.proposalCandidateId).toBe("requested_actions");
-    expect(result.message).toMatch(/^Lend 1 XLM to Earn\. Approve to run this step\./);
+    expect(result.message).toBe("Lend 1 XLM to Earn.");
     expect(result.candidates?.feasible ?? []).toEqual([]);
     expect(result.executionAllowed).toBe(false);
+  });
+
+  it("does not nominate requested_actions when a typo was assumed via near match", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    mocks.computeAccountPosition.mockResolvedValue(null);
+    const mcp = { call: vi.fn(async (tool: string) => {
+      if (tool === "vanna_get_wallet_balance") return { assets: [
+        { symbol: "BLUSDC", balance: "100", spendable: "100", min_balance: "0", status: "ok" },
+      ], fee_reserve_xlm: "0" };
+      if (tool === "vanna_get_price") return { price_usd: "1.00" };
+      if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "62.5" };
+      if (tool === "vanna_preview_earn") return { error: "invalid_input", message: "preview unsupported" };
+      throw new Error(`Unexpected tool ${tool}`);
+    }) };
+    const typoModel = vi.fn(async () => ({
+      kind: "research_complete",
+      goal: { intent: "strategy", relation: "new", objective: "lend 1 BLUSD to earn", constraints: [], borrowing: "forbidden",
+        actions: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "lend 1 BLUSD to earn" }, sourceQuote: "lend 1 BLUSD to earn" }] },
+      findings: [{ summary: "User requested lend.", evidenceIds: [] }],
+      openQuestions: [],
+    }));
+    // Typo'd direct action: "BLUSD" is near-match distance 1 to "BLUSDC"
+    const typoResult = await researchTurn({ message: "lend 1 BLUSD to earn", wallet: SCOPE.trader, continuation: null }, deps({ model: typoModel, mcp }));
+    expect(typoResult.status).toBe("researched");
+    expect(typoResult.proposalCandidateId).toBeNull();
+
+    // Exactly typed direct action: "BLUSDC" has no near-match findings
+    const exactModel = vi.fn(async () => ({
+      kind: "research_complete",
+      goal: { intent: "strategy", relation: "new", objective: "lend 1 BLUSDC to earn", constraints: [], borrowing: "forbidden",
+        actions: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "lend 1 BLUSDC to earn" }, sourceQuote: "lend 1 BLUSDC to earn" }] },
+      findings: [{ summary: "User requested lend.", evidenceIds: [] }],
+      openQuestions: [],
+    }));
+    const exactResult = await researchTurn({ message: "lend 1 BLUSDC to earn", wallet: SCOPE.trader, continuation: null }, deps({ model: exactModel, mcp }));
+    expect(exactResult.status).toBe("researched");
+    expect(exactResult.proposalCandidateId).toBe("requested_actions");
   });
 
   it("answers health from still-fresh carried evidence without another chain read", async () => {
@@ -413,10 +480,10 @@ describe("researchTurn fast path", () => {
     });
     const fromAccount = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("800", "0"), model }));
     expect(fromAccount.proposalCandidateId).toBe("requested_actions");
-    expect(fromAccount.message).toMatch(/^Repay 1 XLM\. Approve to run this step\./);
+    expect(fromAccount.message).toBe("Repay 1 XLM.");
     const fromWallet = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("0", "100"), model }));
     expect(fromWallet.proposalCandidateId).toBe("requested_actions");
-    expect(fromWallet.message).toMatch(/^Deposit 1 XLM as collateral, then Repay 1 XLM\. Approve to run these steps\./);
+    expect(fromWallet.message).toBe("Deposit 1 XLM as collateral, then Repay 1 XLM.");
     const nothing = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("0", "0"), model }));
     expect(nothing.proposalCandidateId).not.toBe("requested_actions");
     expect(nothing.candidates?.rejected[0]?.reason).toBe("deposit collateral XLM: XLM is not in the connected wallet.");

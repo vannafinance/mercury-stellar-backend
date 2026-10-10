@@ -3,7 +3,7 @@
  *
  * `compactData` is an allowlist whose fallback is `{}`. Neither pool capability had a
  * branch, so a pool read that succeeded on one turn came back as an empty object on the
- * next — and `poolReservesFrom` cannot quote nothing.
+ * next - and `poolReservesFrom` cannot quote nothing.
  *
  * Live, 16 Sep: "the soroswap pool's live on-chain reserves were unavailable" for a pair
  * whose reserves had just been read successfully, and the same hole made every Aquarius
@@ -51,7 +51,7 @@ describe.each([
     expect(carried.capability).toBe(capability);
   });
 
-  it("still quotes after compaction — the whole point of carrying it", () => {
+  it("still quotes after compaction - the whole point of carrying it", () => {
     const reserves = poolReservesFrom(carried.data);
     expect(reserves).not.toBeNull();
     expect(reserves!.xlm).toBe("22033.5854513");

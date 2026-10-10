@@ -1,24 +1,12 @@
 name: Deploy dev
 
-# dev → Cloud Run service vanna-app-dev → test.stellar.vanna.finance
+# Manual dispatch → Cloud Run service vanna-app-dev → test.stellar.vanna.finance
 #
 # Auth is Workload Identity Federation: GitHub mints an OIDC token, GCP trades
 # it for a short-lived token on vanna-deployer. No service-account JSON key is
 # stored in GitHub secrets — the org policy blocks key creation anyway.
 
 on:
-  push:
-    branches: [dev]
-    # None of these change the container, and a full rebuild runs ~16 minutes.
-    # Editing a provisioning script should not cost a deploy. cloudbuild.yaml and
-    # this file are deliberately NOT ignored — both change how the app is built
-    # or run. workflow_dispatch still forces a deploy when one is wanted.
-    paths-ignore:
-      - "infra/**"
-      - "**/*.md"
-      - ".gitattributes"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/deploy-prod.yml"
   workflow_dispatch:
 
 # id-token: write is what lets the runner mint the OIDC assertion. Without it
@@ -27,7 +15,7 @@ permissions:
   contents: read
   id-token: write
 
-# A second push to dev should supersede an in-flight deploy, not race it.
+# A second manual dispatch supersedes an in-flight development deploy.
 concurrency:
   group: deploy-dev
   cancel-in-progress: true

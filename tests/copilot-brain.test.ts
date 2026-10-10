@@ -6,7 +6,7 @@ import { resolve } from "path";
 // the brain module.
 //
 // Why the warm-up is here and not left to the first test: importing `@/lib/copilot` pulls
-// in the whole brain graph, and that transform+load is real work — measured at just over
+// in the whole brain graph, and that transform+load is real work - measured at just over
 // five seconds when the full suite is running and every worker is competing for CPU. Left
 // inside `it()`, it is charged to that test's 5s budget, so the FIRST test in this file
 // failed with "Test timed out in 5000ms" on roughly every other full-suite run while
@@ -55,7 +55,7 @@ describe("in-process copilot brain", () => {
     expect(res.message.toLowerCase()).toMatch(/xlm|price|\$|usd/);
     expect(res.request_id).toBeTruthy();
     // Real data reached the user either way: as `answer` when the structured path
-    // succeeds (raw `data` is then deliberately omitted — see handle.ts's `structured`
+    // succeeds (raw `data` is then deliberately omitted - see handle.ts's `structured`
     // return path), or as `data` when it doesn't.
     expect(res.answer ?? res.data).toBeTruthy();
   }, 90_000);

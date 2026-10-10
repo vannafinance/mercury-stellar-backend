@@ -5,7 +5,7 @@
  *
  *   "if my health factor is above 2 borrow another 5 USDC, otherwise leave it"
  *       → routed straight to a borrow. The CONDITION was discarded, so the borrow
- *         would run whatever the health factor actually was — the exact opposite of
+ *         would run whatever the health factor actually was - the exact opposite of
  *         what the user asked for.
  *
  *   "keep an eye on my position and if it starts getting risky pull some collateral"
@@ -24,11 +24,11 @@
  */
 
 /**
- * "do X only when Y" — a write gated on a condition we do not evaluate.
+ * "do X only when Y" - a write gated on a condition we do not evaluate.
  *
  * "when XLM hits $0.50 sell everything" and "when my health factor drops below 1.2
  * repay 10 XLM" name their trigger with "when ... hits/reaches/drops/..." rather than
- * "if", so the original `\bif\b`-only pattern missed them — and worse, since the
+ * "if", so the original `\bif\b`-only pattern missed them - and worse, since the
  * router already recognises "repay 10 XLM" as a plain write, the SECOND example ran
  * for real with the condition silently dropped, the exact failure this guard exists
  * to catch. The "when" alternative below mirrors the "if ... above/below/..." shape.
@@ -36,13 +36,13 @@
 const CONDITIONAL =
   /\bif\b[^.?!]*\b(then|otherwise|else)\b|\b(only if|unless|provided that|as long as|in case)\b|\bif\b[^.?!]*\b(above|below|under|over|drops?|falls?|rises?|goes?|is fine|is ok|is safe|stays?)\b|\bwhen\b[^.?!]*\b(hits?|reaches?|crosses?|exceeds?|above|below|under|over|drops?|falls?|rises?|goes?)\b/i;
 
-/** "watch this and act later" — a standing order with no scheduler behind it. */
+/** "watch this and act later" - a standing order with no scheduler behind it. */
 const STANDING_ORDER =
   /\b(keep an eye|keep watching|keep checking|monitor|watch my|watch the|whenever|every time|each time|as soon as|automatically|on its own|by yourself|without me|while i(?:'m| am)? (?:away|offline|asleep|not here|gone)|24\/7|round the clock|continuously|never let|make sure .* (?:never|always|stays?))\b/i;
 
 /**
  * "every day at 9am lend 5 XLM" is the same unfulfilled promise as STANDING_ORDER's
- * "keep an eye on it" — a recurring schedule, not a one-off action — but named by clock
+ * "keep an eye on it" - a recurring schedule, not a one-off action - but named by clock
  * time instead of a watch verb, so it slipped past every word in that list and reached
  * a live `needs_wallet_sign` for a single lend with no schedule anywhere in sight.
  */
@@ -55,7 +55,7 @@ export type AutomationGap =
   | null;
 
 const CONDITIONAL_MESSAGE =
-  "That instruction is conditional, and I won't guess the condition — running the " +
+  "That instruction is conditional, and I won't guess the condition - running the " +
   "action anyway would be the opposite of what you asked.\n\n" +
   "I execute one instruction at a time and can't gate an action on a value I haven't " +
   "checked yet. Do this instead:\n" +
@@ -64,7 +64,7 @@ const CONDITIONAL_MESSAGE =
   "That way you see the number the decision was based on before anything executes.";
 
 const STANDING_ORDER_MESSAGE =
-  "I can't watch your position while you're away — I only run when you send a message, " +
+  "I can't watch your position while you're away - I only run when you send a message, " +
   "and every transaction still needs your signature, so nothing can execute unattended.\n\n" +
   "I'd rather say that plainly than answer once and leave you thinking something is " +
   "monitoring in the background.\n\n" +
@@ -76,7 +76,7 @@ const STANDING_ORDER_MESSAGE =
 /**
  * Detect an instruction whose defining clause the copilot cannot honour.
  *
- * Only applied to writes and plans — a conditional phrased around a READ is harmless,
+ * Only applied to writes and plans - a conditional phrased around a READ is harmless,
  * because reading a value never changes anything.
  */
 export function detectAutomationGap(message: string, willWrite: boolean): AutomationGap {
@@ -87,29 +87,40 @@ export function detectAutomationGap(message: string, willWrite: boolean): Automa
   // and pull collateral if it gets risky" routes to a one-off health READ, which looks
   // like a successful answer while quietly ignoring the actual request. Reads are
   // harmless to run, but the unfulfilled promise to watch is the same either way, and a
-  // message can be both ("watch it and if it drops, sell") — the honest answer is the
+  // message can be both ("watch it and if it drops, sell") - the honest answer is the
   // one about not being able to watch at all.
   if (STANDING_ORDER.test(m) || RECURRING_SCHEDULE.test(m)) {
     return { kind: "standing_order", message: STANDING_ORDER_MESSAGE };
   }
 
-  // A condition around a read is harmless — reading a value changes nothing — so this
+  // A condition around a read is harmless - reading a value changes nothing - so this
   // only guards writes.
-  if ((willWrite || isConditionalWriteRequest(m)) && CONDITIONAL.test(m)) {
+  if (willWrite && CONDITIONAL.test(m)) {
     return { kind: "conditional", message: CONDITIONAL_MESSAGE };
   }
   return null;
 }
 
-const CONDITIONAL_WRITE_PATTERN =
-  /\b(if|when|once|after|whenever|unless|until|as soon as)\b[\s\S]*\b(repay|borrow|withdraw|deposit|supply|redeem|swap|trade|claim|execute|send|transfer|liquidate)\b|\b(repay|borrow|withdraw|deposit|supply|redeem|swap|trade|claim|execute|send|transfer|liquidate)\b[\s\S]*\b(if|when|once|after|whenever|unless|until|as soon as)\b/i;
+/** The investigation's refusal when the user asked to act on a future event. */
+export const CONDITIONAL_REFUSAL =
+  "I can't schedule or execute conditional financial actions. " +
+  "Please submit a specific action for review when you are ready.";
 
-export function isConditionalWriteRequest(message: string): boolean {
-  const text = message.trim();
-  if (!text) return false;
-  if (!CONDITIONAL_WRITE_PATTERN.test(text)) return false;
-  // Informational / rate checks should not be blocked as conditional writes
-  if (/\b(rate|apy|apr|fee|price|utilization)\b/i.test(text)) return false;
-  if (/^(?:can|could|how|what|why|is it possible|may i)\b/i.test(text)) return false;
-  return true;
+/**
+ * Refuse a future condition whenever the model names one.
+ *
+ * A sizing limit ("borrow until HF is 1.5") is `kind: "none"` and is not a refusal.
+ *
+ * Fails safe, on purpose (Claude's audit, 24 Sep). This gate stands between the user's
+ * words and a write that can run at once, so the two ways it can be wrong are not equal:
+ * a wrong refusal costs the user one rephrase, while a wrong pass executes now what they
+ * asked to happen later. So a future condition is refused even when its quote does not
+ * appear in the user's messages, or is missing. `messages` is kept for the caller's
+ * signature and for a quote the UI may show later.
+ */
+export function futureConditionRefusal(
+  trigger: { kind: "none" | "future_condition"; sourceQuote?: string } | undefined,
+  _messages: readonly string[],
+): string | null {
+  return trigger?.kind === "future_condition" ? CONDITIONAL_REFUSAL : null;
 }

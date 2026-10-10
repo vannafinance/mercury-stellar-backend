@@ -5,7 +5,7 @@ import { vertexAuthMode } from "@/lib/copilot/vertex";
  * Which credential Vertex will use, and in what order.
  *
  * This decision is invisible until it fails, and when it fails the symptom is not an error
- * the user can read — the routing call throws, understanding falls back to keyword
+ * the user can read - the routing call throws, understanding falls back to keyword
  * matching, and the reply becomes the generic capability paragraph. That is what made the
  * same prompt answer on one machine and not another, so the selection is pinned here.
  */
@@ -129,7 +129,7 @@ describe("vertexAuthMode", () => {
    * Cloud Run holds no key and no OIDC token: the credential is the attached service
    * account, reachable only through the metadata server, which an env-var check cannot
    * see. Reporting "developer_login" there put a `gcloud login` warning on every healthy
-   * deployed revision — on a host with no gcloud binary and no user login — while Vertex
+   * deployed revision - on a host with no gcloud binary and no user login - while Vertex
    * was authenticating fine through ADC. A warning that fires on a working deploy is worse
    * than none, because it teaches people to ignore the real one.
    */
@@ -147,7 +147,7 @@ describe("vertexAuthMode", () => {
 
   it("an explicit key still wins over the attached account", () => {
     // A deploy that deliberately mounts its own key should report that key, not the
-    // ambient host identity — getAccessToken tries the key first, so the chip must agree.
+    // ambient host identity - getAccessToken tries the key first, so the chip must agree.
     setEnv({ K_SERVICE: "vanna-app-dev", GOOGLE_SERVICE_ACCOUNT_JSON: KEY_JSON });
     expect(vertexAuthMode()).toBe("service_account");
   });

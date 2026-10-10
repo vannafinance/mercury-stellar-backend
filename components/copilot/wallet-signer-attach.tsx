@@ -11,14 +11,14 @@ import { useUserStore } from "@/store/user";
  * ## What this is for
  *
  * Attaching Vanna's signer quorum to the user's wallet is part of connecting, not part of
- * auto-approve. Auto-approve governs the signing SESSION — whether a write goes through
+ * auto-approve. Auto-approve governs the signing SESSION - whether a write goes through
  * without a per-transaction prompt. Whether Vanna is a signer at all is what makes the
  * wallet usable by the protocol in the first place, and it belongs to the moment the user
  * connects.
  *
  * The app used to run the two together: the only code that ever attached the signer or
  * wrote `identity_wallet_bindings` lived behind the auto-sign enable gesture. With
- * auto-approve off, no binding could ever exist, so every copilot turn — reads included —
+ * auto-approve off, no binding could ever exist, so every copilot turn - reads included -
  * answered "I couldn't verify the wallet link this turn", and nothing in the product could
  * resolve it except granting the permission the user had just declined.
  *
@@ -36,7 +36,7 @@ import { useUserStore } from "@/store/user";
  * ## Why Privy only
  *
  * `verifyQuorumIsSigner` resolves the wallet through Privy's own wallet list, so a wallet
- * Privy did not issue — Freighter — cannot pass it by construction, whatever the user
+ * Privy did not issue - Freighter - cannot pass it by construction, whatever the user
  * approves in the browser. Running this for an external wallet would produce a guaranteed
  * failure on every connect rather than a binding, so it is skipped. Freighter proves
  * ownership with a SEP-53 challenge instead (`FreighterWalletSession`); that path does
@@ -129,7 +129,7 @@ export function WalletSignerAttach() {
           );
         }
       } catch (e) {
-        // Includes the user dismissing Privy's sheet — a legitimate "no", not an error
+        // Includes the user dismissing Privy's sheet - a legitimate "no", not an error
         // worth interrupting them over. Writes still work; they just ask each time.
         console.warn(
           `[copilot] could not attach the Vanna signer (${

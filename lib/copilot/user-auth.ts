@@ -1,5 +1,5 @@
 /**
- * End-user login for the Copilot — Connect OAuth (authorization code + PKCE)
+ * End-user login for the Copilot - Connect OAuth (authorization code + PKCE)
  * with an RFC 8707 `resource` indicator.
  *
  * Server-only. Never import from a client component.
@@ -7,8 +7,8 @@
  * ## Why this exists
  *
  * The app authenticates to the MCP with a WorkOS M2M credential. That works for
- * reads, but an M2M token's `sub` is the CLIENT id — one value shared by every
- * user of this app — so it cannot stand in as "who is asking" on a money path.
+ * reads, but an M2M token's `sub` is the CLIENT id - one value shared by every
+ * user of this app - so it cannot stand in as "who is asking" on a money path.
  * The Sign Service now refuses it outright (a user assertion's `sub` must start
  * with `user_`), which is what closes the F3 impersonation hole.
  *
@@ -16,12 +16,12 @@
  *
  * A plain AuthKit session token has the right `sub` but **no `aud` claim at all**,
  * so it clears neither the MCP's verifier nor the Sign Service's. An OAuth
- * authorization-code flow is what produces a token with an audience — which is
+ * authorization-code flow is what produces a token with an audience - which is
  * why this is a real login flow rather than "read the AuthKit session and forward
  * it". Which audience depends on the client type:
  *
  *   hand-created Connect OAuth app (what we have)
- *     aud = <the Copilot's client_id>      resource must NOT be sent — see below
+ *     aud = <the Copilot's client_id>      resource must NOT be sent - see below
  *     sub = user_…
  *
  *   DCR / CIMD client
@@ -36,13 +36,13 @@
  * `resource` is therefore CONDITIONAL (copilotConfig.mcpSendResource, default
  * off). A hand-created Connect OAuth app answers an explicit `resource` on the
  * token endpoint with `400 invalid_target` even when the URI is registered as
- * Default — that error is exactly what broke the first live login attempt.
+ * Default - that error is exactly what broke the first live login attempt.
  *
  * ## Scope of this module
  *
  * Pure-ish and dependency-free (Node `crypto` + `fetch`, same posture as the Sign
  * Service's verifier). It builds URLs, exchanges/refreshes codes, and seals the
- * session cookie. It does NOT touch Next.js request objects — the route handlers
+ * session cookie. It does NOT touch Next.js request objects - the route handlers
  * in app/api/auth/* own that, so everything here is unit-testable.
  */
 
@@ -60,14 +60,14 @@ export class UserAuthError extends Error {
 export const SESSION_COOKIE = "vanna_user_session";
 /** Short-lived cookie holding PKCE verifier + state between /login and /callback. */
 export const PKCE_COOKIE = "vanna_oauth_tx";
-/** PKCE transactions are abandoned far more often than completed — keep it short. */
+/** PKCE transactions are abandoned far more often than completed - keep it short. */
 export const PKCE_TTL_SECONDS = 600;
 
 /** Refresh this many ms before `exp` so a token cannot expire mid-request. */
 export const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
 export interface UserSession {
-  /** WorkOS `sub` — always `user_…`; this is the identity bindings are keyed on. */
+  /** WorkOS `sub` - always `user_…`; this is the identity bindings are keyed on. */
   sub: string;
   email?: string;
   accessToken: string;
@@ -108,11 +108,11 @@ export function createState(): string {
  *
  *   MCP_RESOURCE          a DCR/CIMD client that was sent `resource`
  *   WORKOS_CLIENT_ID      the Connect app's own client id
- *   WORKOS_ENV_CLIENT_ID  the WorkOS environment client id — what a hand-created
+ *   WORKOS_ENV_CLIENT_ID  the WorkOS environment client id - what a hand-created
  *                         Connect OAuth token ACTUALLY carries, observed live
  *
  * ⚠️ The third is also the M2M token's audience. `aud` therefore does not
- * separate a user from the machine credential in this environment — `sub` does,
+ * separate a user from the machine credential in this environment - `sub` does,
  * and only `sub` does. This list is a diagnostic aid and a mirror of the Sign
  * Service's WORKOS_AUDIENCE; it is NOT an authorization decision. The decision
  * is the `^user_` subject check, enforced server-side in
@@ -128,7 +128,7 @@ export function acceptedUserAudiences(): string[] {
 
 /**
  * Should this deployment send `resource`? Single source of truth for all three
- * legs of the flow — authorize, exchange, refresh — because sending it on some
+ * legs of the flow - authorize, exchange, refresh - because sending it on some
  * but not others is how you get a token whose audience changes after the first
  * refresh.
  */
@@ -162,7 +162,7 @@ export function buildAuthorizationUrl(input: {
   const clientId = copilotConfig.workosClientIdUser;
   if (!clientId) {
     throw new UserAuthError(
-      "WORKOS_CLIENT_ID is not set — end-user login is not configured. " +
+      "WORKOS_CLIENT_ID is not set - end-user login is not configured. " +
         "This is the Connect OAuth client id, not WORKOS_M2M_CLIENT_ID.",
     );
   }
@@ -215,7 +215,7 @@ async function postToken(
   if (!res.ok || parsed.error) {
     throw new UserAuthError(
       `WorkOS token endpoint returned ${res.status}: ${parsed.error ?? "error"}` +
-        (parsed.error_description ? ` — ${parsed.error_description}` : ""),
+        (parsed.error_description ? ` - ${parsed.error_description}` : ""),
     );
   }
   if (!parsed.access_token) {
@@ -227,7 +227,7 @@ async function postToken(
 /** Read `sub`/`email`/`exp` out of a JWT WITHOUT verifying it.
  *
  * Safe here and only here: this token came straight from the token endpoint over
- * TLS, and it is never trusted as an authorization decision on this side — the
+ * TLS, and it is never trusted as an authorization decision on this side - the
  * MCP and the Sign Service verify it properly. We decode purely to know which
  * user we are holding a token for and when to refresh it.
  */
@@ -267,7 +267,7 @@ function sessionFromTokenResponse(body: TokenResponse, previous?: UserSession): 
 
   const sub = claims.sub ?? previous?.sub;
   if (!sub) {
-    throw new UserAuthError("WorkOS access token has no `sub` claim — cannot identify the user");
+    throw new UserAuthError("WorkOS access token has no `sub` claim - cannot identify the user");
   }
   if (!sub.startsWith("user_")) {
     // Catch a misconfigured client early and locally, with a message that names the
@@ -275,7 +275,7 @@ function sessionFromTokenResponse(body: TokenResponse, previous?: UserSession): 
     // away during a transaction is a much worse place to discover it.
     throw new UserAuthError(
       `Logged in as "${sub}", which is not an end-user subject. This looks like an ` +
-        "M2M/client-credentials client — check that WORKOS_CLIENT_ID is the Connect " +
+        "M2M/client-credentials client - check that WORKOS_CLIENT_ID is the Connect " +
         "OAuth client, not WORKOS_M2M_CLIENT_ID.",
     );
   }
@@ -321,7 +321,7 @@ export async function exchangeCodeForSession(
 /**
  * Refresh an expiring session.
  *
- * Whatever the exchange did about `resource`, this does the same — via the one
+ * Whatever the exchange did about `resource`, this does the same - via the one
  * shared resourceParam(). The two legs must agree: sending it only on the
  * exchange would 400 here, and sending it only here would silently change the
  * audience 30 minutes after login, which is the harder failure to diagnose
@@ -333,7 +333,7 @@ export async function refreshSession(
   resourceOverride?: string,
 ): Promise<UserSession> {
   if (!session.refreshToken) {
-    throw new UserAuthError("Session has no refresh token — the user must sign in again");
+    throw new UserAuthError("Session has no refresh token - the user must sign in again");
   }
   const resource = resourceParam(resourceOverride);
   const body = await postToken(
@@ -367,7 +367,7 @@ function sealKey(): Buffer {
   const secret = copilotConfig.sessionSecret;
   if (!secret) {
     throw new UserAuthError(
-      "COPILOT_SESSION_SECRET is not set — cannot seal the user session cookie. " +
+      "COPILOT_SESSION_SECRET is not set - cannot seal the user session cookie. " +
         "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('base64url'))\"",
     );
   }
@@ -401,7 +401,7 @@ export function seal(value: unknown): string {
     // drop, which would look like "login succeeded but the user is logged out".
     throw new UserAuthError(
       `Sealed session is ${out.length} bytes, over the ${MAX_COOKIE_BYTES}-byte cookie budget. ` +
-        "The access token is unusually large — reduce requested scopes.",
+        "The access token is unusually large - reduce requested scopes.",
     );
   }
   return out;
@@ -420,7 +420,7 @@ export function unseal<T>(sealed: string | undefined | null): T | null {
     const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     return JSON.parse(plaintext.toString("utf8")) as T;
   } catch {
-    // Wrong key, tampering, or an older format — treat as no session, never throw
+    // Wrong key, tampering, or an older format - treat as no session, never throw
     // into a request path. The user simply appears logged out and can sign in again.
     return null;
   }

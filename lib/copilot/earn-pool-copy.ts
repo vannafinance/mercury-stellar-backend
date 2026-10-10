@@ -4,7 +4,7 @@ import type { AnswerFact, StructuredAnswer } from "./answer-schema";
  * The figures the Earn pool read (`vanna_get_pool_stats`) actually returns.
  *
  * Declared once and used both for the row type below and to recognise a question that
- * this read can answer — see {@link namesEarnPoolMetric}. Adding a figure to the read
+ * this read can answer - see {@link namesEarnPoolMetric}. Adding a figure to the read
  * adds it here, and both follow.
  */
 export const EARN_POOL_METRIC_FIELDS = [
@@ -23,8 +23,8 @@ export type EarnPoolRow = {
 /**
  * Does this question name a figure the Earn pool read returns?
  *
- * "What is the XLM supply APY" was answered with a chip — "XLM is on more than one
- * surface. Earn is the lending pool; Farm is Blend / LP. Which one?" — and adding the
+ * "What is the XLM supply APY" was answered with a chip - "XLM is on more than one
+ * surface. Earn is the lending pool; Farm is Blend / LP. Which one?" - and adding the
  * word "earn" to the same sentence produced the APY immediately. The chip exists for a
  * question about the SURFACE ("how is my XLM pool doing?"), where there is genuinely
  * nothing to pick between; a question that names a figure has already said what it wants,

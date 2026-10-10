@@ -117,6 +117,11 @@ export function PlanReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
 
       <p className="mt-3 text-[15px] leading-6 text-vgray-900">{workflow.objective}</p>
       <p className="mt-1 max-w-[68ch] text-[13px] leading-5 text-vgray-500">{workflow.message}</p>
+      {workflow.constraints.length > 0 && (
+        <ul className="mt-2 space-y-1 text-[13px] leading-5 text-vgray-600">
+          {workflow.constraints.map((constraint) => <li key={constraint}>{constraint}</li>)}
+        </ul>
+      )}
 
       <ol className="mt-3 space-y-1.5">
         {workflow.steps.map((step, stepIndex) => (
@@ -124,7 +129,6 @@ export function PlanReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
             <span className="w-4 shrink-0 text-right tabular-nums text-vgray-400">{stepIndex + 1}</span>
             <span className="min-w-0 break-words">
               {step.label}
-              <span className="tabular-nums text-vgray-500"> ({step.amount} {step.asset})</span>
             </span>
           </li>
         ))}
@@ -160,7 +164,7 @@ export function PlanReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
       )}
       {shortfall && (
         <p role="alert" className="mt-2 text-[12.5px] text-imperial-600">
-          A pocket no longer covers this plan. Refresh, or ask for a new plan — clicking Approve would fail the live check.
+          A pocket no longer covers this plan. Refresh, or ask for a new plan - clicking Approve would fail the live check.
         </p>
       )}
       <p className="mt-3 text-[12px] text-vgray-500">

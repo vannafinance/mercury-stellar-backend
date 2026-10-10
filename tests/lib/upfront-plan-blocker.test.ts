@@ -1,6 +1,6 @@
 /**
  * A plan whose first step is STATICALLY impossible (never depends on amount, balance,
- * or live chain state — e.g. swapping into BLUSDC, which trades on no AMM) should be
+ * or live chain state - e.g. swapping into BLUSDC, which trades on no AMM) should be
  * refused before it is ever shown as a multi-step "Approve & run" card, not after the
  * user approves it and it pauses one signature in.
  *
@@ -10,7 +10,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 // A multi-goal plan isn't on handleChat's "keywordConfident" allowlist, so a real run
-// also asks Vertex to independently confirm the route — a live network call this test
+// also asks Vertex to independently confirm the route - a live network call this test
 // environment can't make. Rejecting it exercises the documented keyword fallback.
 vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/copilot/vertex")>();

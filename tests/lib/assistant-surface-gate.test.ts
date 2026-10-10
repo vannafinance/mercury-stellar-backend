@@ -1,8 +1,8 @@
 /**
  * The floating "Vanna Assistant" widget (docked on every page besides /copilot) and the
  * dedicated /copilot workspace hit the exact same `/api/copilot` endpoint and the exact
- * same `handleChat`. The widget is meant to be a Gemini-Assist-style page guide — explain,
- * answer, navigate — never sign or submit a transaction; that belongs on the Copilot page.
+ * same `handleChat`. The widget is meant to be a Gemini-Assist-style page guide - explain,
+ * answer, navigate - never sign or submit a transaction; that belongs on the Copilot page.
  * Before this fix there was no way to tell them apart server-side: "deposit 5 XLM as
  * collateral" typed into the floating widget signed and submitted for real, identically to
  * typing it on /copilot. `surface: "assistant"` now gates both the structured write
@@ -11,7 +11,7 @@
  *
  * Both cases here return before `handleChat` ever touches MCP (the redirect fires ahead of
  * any `runWrite` / `runPlan` / `handleAutoSignAction` call), so no MCP mode setup or mocking
- * is needed — this is true regardless of `MCP_MODE`.
+ * is needed - this is true regardless of `MCP_MODE`.
  */
 import { describe, expect, it } from "vitest";
 import { handleChat } from "@/lib/copilot/handle";
@@ -70,9 +70,8 @@ describe("assistant surface never executes a transaction", () => {
 
   /**
    * What this case guards is the gate above it: the copilot is never redirected the way the
-   * widget is. Which brain answers on that surface has since changed — a plain, fully stated
-   * capability used to be handed to investigation from here, and now the direct lane answers
-   * it with the capability the user named. An open-ended goal still reaches investigation.
+   * widget is. Under investigate-first (2ca1c3c) a stated capability on the copilot surface is
+   * handed to investigation, never keyword-planned here.
    */
   it("does not treat the copilot surface as the assistant widget", async () => {
     process.env.MCP_MODE = "mock";
@@ -84,8 +83,7 @@ describe("assistant surface never executes a transaction", () => {
         message: "deposit 5 XLM as collateral",
       });
       expect(res.intent?.template_id).not.toBe("assistant_surface_redirect");
-      expect(res.kind).not.toBe("blocked");
-      expect(res.intent?.template_id).toBe("deposit_collateral");
+      expect(res.intent?.template_id).toBe("investigation_owns_planning");
     } finally {
       delete process.env.MCP_MODE;
       resetMcpClient();
@@ -97,7 +95,7 @@ describe("assistant surface never executes a transaction", () => {
       ...base,
       surface: "assistant",
       message:
-        "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 — you can use spot and farm markets yourself, and you can even take new loans.",
+        "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 - you can use spot and farm markets yourself, and you can even take new loans.",
     });
     expect(res.kind).toBe("blocked");
     expect(res.intent?.template_id).toBe("assistant_surface_redirect");

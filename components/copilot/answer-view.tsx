@@ -4,7 +4,7 @@
  * Renders a structured read answer.
  *
  * The model returns headline / facts / note / venue as data; layout, alignment and
- * precision are decided here. That is the point — every formatting rule the prompt used
+ * precision are decided here. That is the point - every formatting rule the prompt used
  * to beg for (no markdown, two decimals on percentages, name the venue, bullets for
  * three or more figures) is now either impossible to violate or applied in one place.
  *
@@ -18,7 +18,7 @@
  * on this card:
  *
  *   - the value column stretched, squeezing the label column until "REGISTRY" wrapped one
- *     letter at a time — "REG / IST / RY";
+ *     letter at a time - "REG / IST / RY";
  *   - and where the address was shortened to fit, it rendered `CBBQQULN…5LDXUO`, which
  *     cannot be checked against a deployment. "Is this the right contract?" is the *only*
  *     question anyone asks of a protocol address, and a truncated one cannot answer it.
@@ -59,7 +59,7 @@ function toneColor(tone: AnswerFact["tone"]): string {
   switch (tone) {
     case "good":
       // The `ok` status ink, not the earn venue's. They are the same green family, but a
-      // venue answers "which product" and a tone answers "is this good" — reusing the
+      // venue answers "which product" and a tone answers "is this good" - reusing the
       // venue token here made colour mean two things on one card.
       return "var(--cp-ok-fg)";
     case "warn":
@@ -75,7 +75,7 @@ function toneColor(tone: AnswerFact["tone"]): string {
  * Tone, carried by SHAPE as well as colour.
  *
  * A tinted figure is invisible as a tone to anyone who cannot separate the hues, and this
- * card reports health factors and debt — the two numbers where "is this bad" is the whole
+ * card reports health factors and debt - the two numbers where "is this bad" is the whole
  * question. The glyph is `aria-hidden` and paired with a real word for screen readers, so
  * the meaning arrives three ways: shape, colour and text.
  */
@@ -109,7 +109,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
         window.setTimeout(() => setDone(false), 1400);
       })
       .catch(() => {
-        /* clipboard blocked — the value is still selectable */
+        /* clipboard blocked - the value is still selectable */
       });
   }, [value]);
 
@@ -144,7 +144,7 @@ const labelStyle: React.CSSProperties = {
   letterSpacing: ".14em",
   textTransform: "uppercase",
   color: "var(--cp-g400)",
-  // Never shatter a word to fit a column — this is what produced "REG / IST / RY".
+  // Never shatter a word to fit a column - this is what produced "REG / IST / RY".
   overflowWrap: "normal",
   wordBreak: "keep-all",
 };
@@ -349,7 +349,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
         : null}
 
       {/*
-        Figures — the design's two-column pair grid inside one hairline panel, so a set of
+        Figures - the design's two-column pair grid inside one hairline panel, so a set of
         numbers aligns down a column and the whole set reads as one object rather than as a
         run of loose rows.
       */}
@@ -362,7 +362,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
              *
              * A per-row override used to decide this alone: "collateral left before
              * liquidation" (>22 chars) went full-width while "amount borrowed" (under the
-             * threshold) stayed half-width in the same two-fact answer — the short row's
+             * threshold) stayed half-width in the same two-fact answer - the short row's
              * value then landed at the grid's midpoint while the long row's value reached
              * the far right edge, so the two rows visibly did not line up. A pair grid only
              * reads as one object when every row shares the same width.
@@ -423,7 +423,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
       ) : null}
 
       {/*
-        LP / farm positions — their own box, one step down in visual weight from the plain
+        LP / farm positions - their own box, one step down in visual weight from the plain
         figures grid above. These are collateral held THROUGH a venue (a Blend supply, an
         Aquarius LP share) rather than plain margin collateral, and listing them in the same
         grid as XLM/BLUSDC read as duplicate or confusing entries.
@@ -477,7 +477,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
       ) : null}
 
       {/*
-        Earn positions — same box treatment as LP/farm, its own section: vToken supply is
+        Earn positions - same box treatment as LP/farm, its own section: vToken supply is
         a genuinely different pool from margin collateral or a farm-venue LP share, and a
         token can be held in more than one of these three at once.
       */}
@@ -530,7 +530,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
       ) : null}
 
       {/*
-        Identifiers — the design's scrolling register, not a stack of cards.
+        Identifiers - the design's scrolling register, not a stack of cards.
 
         Sixteen addresses is the payload this card was drawn for, and the design's answer to
         "sixteen identical rows" is density plus alignment rather than grouping: every label
@@ -540,7 +540,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
 
         The label truncates with an ellipsis and keeps its full text in `title`. That is
         deliberately NOT the old "1fr auto" grid that shattered "REGISTRY" into "REG / IST /
-        RY" — `nowrap` makes shattering impossible, while the value keeps `break-all` so a
+        RY" - `nowrap` makes shattering impossible, while the value keeps `break-all` so a
         56-character address wraps inside its own cell and never widens the row.
       */}
       {identifiers.length > 0 ? (

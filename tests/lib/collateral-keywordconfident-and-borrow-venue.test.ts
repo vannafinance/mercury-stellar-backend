@@ -3,22 +3,22 @@
  *
  * 14. "What is Balance of XLM in my Margin Account" (a word-order variant of an already-
  *     fixed phrasing, "What is my XLM Balance in Margin account?") fell to the generic
- *     capabilities blurb. Both keyword-route to `query_collateral` identically —
+ *     capabilities blurb. Both keyword-route to `query_collateral` identically -
  *     `query_collateral`/`query_debt` were simply never added to handleChat's
  *     "keywordConfident" allowlist, so even a correct keyword match still went to Vertex
- *     "to confirm," and Vertex's own guess (not the router's) decided the answer —
+ *     "to confirm," and Vertex's own guess (not the router's) decided the answer -
  *     non-deterministic by word order.
  * 13. "USDC pool stats" (bare "USDC", no variant named) silently defaulted to the Vanna
  *     Earn pool's own reserve with no indication that BLUSDC/AQUSDC/SOUSDC are three
- *     separate deployments — the same "which USDC variant" ambiguity this session
+ *     separate deployments - the same "which USDC variant" ambiguity this session
  *     already resolves for writes (`ambiguousUsdcSlot`), never applied to this read.
- * 15. "Can I borrow 20 BLUSDC?" — one of the product's own suggested prompts — answered
+ * 15. "Can I borrow 20 BLUSDC?" - one of the product's own suggested prompts - answered
  *     "You cannot borrow 20 BLUSDC from the Vanna earn pool because your collateral
  *     health is insufficient." `vanna_can_borrow`/`vanna_can_withdraw` are margin-only
  *     tools (`collateral_health` is meaningless for an Earn deposit), but this generic
  *     read path has no dedicated handler, so `venue` and the venue's name inside the
  *     prose were both a free-form guess by the formatting model from the tool name
- *     alone, with no venue hint — it guessed "Earn" from the BLUSDC/AQUSDC/SOUSDC
+ *     alone, with no venue hint - it guessed "Earn" from the BLUSDC/AQUSDC/SOUSDC
  *     symbols alone.
  */
 import { describe, expect, it, vi } from "vitest";
@@ -145,7 +145,7 @@ describe("THE LIVE BUG: a borrow-eligibility check is never labelled as the Earn
   it("corrects venue and headline wording for vanna_can_borrow", async () => {
     process.env.MCP_MODE = "mock";
     resetMcpClient();
-    // Simulate the model's own (wrong) guess — this is what it produced live.
+    // Simulate the model's own (wrong) guess - this is what it produced live.
     mocks.vertexExplainStructured.mockResolvedValue({
       headline: "You cannot borrow 20 BLUSDC from the Vanna earn pool because your collateral health is insufficient.",
       facts: [{ label: "allowed to borrow", value: "false" }],
@@ -157,7 +157,7 @@ describe("THE LIVE BUG: a borrow-eligibility check is never labelled as the Earn
       expect(res.answer?.headline).not.toMatch(/vanna earn pool/i);
       // Reported live: a second raw-data card underneath duplicated the structured
       // answer's own facts (smart account address, boolean flags, a duplicate "reason"
-      // paragraph, full-precision twins of numbers already shown rounded) — dropped
+      // paragraph, full-precision twins of numbers already shown rounded) - dropped
       // entirely now that the structured answer already states everything.
       expect(res.data).toBeUndefined();
       expect(res.answer?.headline).toMatch(/your margin account/i);

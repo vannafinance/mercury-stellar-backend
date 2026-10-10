@@ -18,12 +18,12 @@ import type { ResearchCapacity } from "./view";
  * What the sealed continuation carries forward, so Prepare can re-size the plan the user
  * clicked. The position reads are DERIVED from the op-flow table rather than listed here:
  * a hand-kept list is one a new op falls off silently, and on 14 Sep exactly that happened
- * — `blend_withdraw` sized correctly on the card, the seal dropped `blend_position`, and
+ * - `blend_withdraw` sized correctly on the card, the seal dropped `blend_position`, and
  * Prepare answered "no XLM Blend supply was read this investigation".
  */
 const KEEP = new Set<string>([
   "wallet_balances", "asset_price", "earn_market", "blend_markets", "aquarius_pool_reserves", "soroswap_pool_reserves",
-  "account_position", "account_health",
+  "account_position", "account_health", "max_borrow",
   ...WORKFLOW_OPS.flatMap((op) => OP_FLOW[op].positionRead ? [OP_FLOW[op].positionRead as string] : []),
 ]);
 const PRIORITY: Record<string, number> = {
@@ -41,11 +41,13 @@ const PRIORITY: Record<string, number> = {
 const MAX_OBSERVATIONS = 16;
 
 export interface ResearchEvidence {
+  /** Every source pocket must be closed and all proceeds withdrawn, not a partial exit. */
+  portfolioExit?: boolean;
   allowedCandidateIds?: string[];
   requestedSteps?: import("../workflow/types").ProposalStep[];
   /**
    * The model's composed shapes, sealed so propose can re-size the one the user picked
-   * from the same evidence without a second model turn — a model turn is not
+   * from the same evidence without a second model turn - a model turn is not
    * deterministic, and the option the user clicked must be the option that compiles.
    */
   plans?: import("./types").ProposedPlan[];
@@ -56,26 +58,52 @@ export interface ResearchEvidence {
    * gets the trade at the fresh price instead of a refusal they cannot lift.
    */
   slippageAccepted?: boolean;
+  /** Amounts the user said to keep in the wallet, anchored when sealed, so a re-propose sizes around them too. */
+  walletReserves?: { asset: string; amount: string }[];
+  /**
+   * The request named a goal, not an instruction, when it was sized (no stated plan): a bare "USDC" then covers every held
+   * variant and only a variant a leg would ACQUIRE needs the user's choice. Carried so approving the plan sizes it under the
+   * same reading - without it the approval asked "you said USDC without saying which one" about a plan that had just been
+   * shown (7 Oct, live, Approve on a BLUSDC plan).
+   */
+  strategyGoal?: boolean;
+  /** The borrow size the user stated (the model's own literal leg), so a re-propose honours it without re-reading the wording. */
+  statedBorrow?: { asset: string; tokens: number };
   /** The margin position the plans were sized against (contract basis), the sources' disagreement if any, and the user's stated floor (null = none). */
   position?: import("./plan").PlanContext["capacity"];
   floor?: string | null;
   capturedAt: number;
   observations: Observation[];
   capacity: ResearchCapacity | null;
+  /** The plans this turn showed, by letter, for the next turn's model to read a follow-up against. */
+  shown?: import("./types").ShownPlan[];
+  /** The questionnaire this turn issued, so a later answer can be checked against these options. */
+  questionnaire?: import("./view").Questionnaire;
 }
 
+/**
+ * `required` is what the sealed plans need to be re-sized at propose (strategy-reads
+ * `readsForPlans`, derived from the plans' own legs). Those reads are kept first and are
+ * never cut by the size cap; the cap only trims the rest. 23 Sep, X12 "earn and farm": the
+ * joined plan was sized from the Aquarius LP position, but that read had no priority, fell
+ * past the 16-read cap, and propose then refused the plan it had just offered
+ * ("no AQUSDC LP position was read"), so the card never appeared.
+ */
 export function compactResearchEvidence(
   observations: readonly Observation[],
   capacity: ResearchCapacity | null,
   capturedAt: number,
+  required: readonly { capability: string; args: Record<string, unknown> }[] = [],
 ): ResearchEvidence {
+  const needed = (o: Observation) => required.some((r) => r.capability === o.capability &&
+    (r.args.asset === undefined || r.args.asset === o.args.asset));
   const ranked = observations
     .filter((observation) => KEEP.has(observation.capability))
     .slice()
-    .sort((a, b) => (PRIORITY[a.capability] ?? 99) - (PRIORITY[b.capability] ?? 99));
+    .sort((a, b) => Number(needed(b)) - Number(needed(a)) || (PRIORITY[a.capability] ?? 99) - (PRIORITY[b.capability] ?? 99));
   const kept: Observation[] = [];
   for (const observation of ranked) {
-    if (kept.length >= MAX_OBSERVATIONS) break;
+    if (kept.length >= MAX_OBSERVATIONS && !needed(observation)) break;
     kept.push(compactObservation(observation));
   }
   return {
@@ -123,7 +151,7 @@ function isCapacity(value: unknown): value is ResearchCapacity {
   return typeof value.floor === "string" && typeof value.grossCollateralUsd === "string"
     && typeof value.debtUsd === "string" && typeof value.maxBorrowUsd === "string"
     && (health === null || typeof health === "string")
-    && (floorSource === undefined || floorSource === "user" || floorSource === "configured_safety_buffer");
+    && (floorSource === undefined || floorSource === "user" || floorSource === "configured_safety_buffer" || floorSource === "protocol_minimum");
 }
 
 function isCompactObservation(value: unknown): value is Observation {
@@ -155,6 +183,14 @@ function compactArgs(args: Record<string, unknown>): Record<string, unknown> {
 }
 
 function compactData(capability: string, data: Record<string, unknown>): Record<string, unknown> {
+  // Recompilation must retain the protocol ceiling used in research, alongside the
+  // user's health floor. Dropping it changes the amount on the execution card.
+  if (capability === "max_borrow") {
+    return { ...(data.max_borrow_human !== undefined ? { max_borrow_human: data.max_borrow_human } : {}),
+      ...(data.max_borrow_wad !== undefined ? { max_borrow_wad: data.max_borrow_wad } : {}),
+      ...(data.limiting_factor !== undefined ? { limiting_factor: data.limiting_factor } : {}),
+    };
+  }
   if (capability === "asset_price") {
     return { price_usd: data.price_usd };
   }
@@ -169,6 +205,17 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
       supply_apy_pct: data.supply_apy_pct,
       borrow_apr_pct: data.borrow_apr_pct,
       utilization_pct: data.utilization_pct,
+    };
+  }
+  // The share count is what an LP exit is sized from (plan.ts farmLpPositionOf); without this
+  // branch the read was sealed as {} and propose could not re-size the exit.
+  if (capability === "farm_lp_position") {
+    return {
+      ...(data.lp_shares_human !== undefined ? { lp_shares_human: data.lp_shares_human } : {}),
+      ...(data.venue !== undefined ? { venue: data.venue } : {}),
+      ...(data.token_a !== undefined ? { token_a: data.token_a } : {}),
+      ...(data.token_b !== undefined ? { token_b: data.token_b } : {}),
+      ...(data.resolved !== undefined ? { resolved: data.resolved } : {}),
     };
   }
   if (capability === "earn_position") {
@@ -250,7 +297,7 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
    * A pool read carries the numbers a swap is quoted from, not a display summary.
    *
    * `compactData` is an allowlist whose fallback is `{}`, and neither pool capability had
-   * a branch — so a pool read sealed on one turn came back as an empty object on the next,
+   * a branch - so a pool read sealed on one turn came back as an empty object on the next,
    * and `poolReservesFrom` saw nothing. Live, 16 Sep: "the soroswap pool's live on-chain
    * reserves were unavailable" on a pair whose reserves had just been read successfully,
    * and the same hole made Aquarius reads warn "no supported display fields were

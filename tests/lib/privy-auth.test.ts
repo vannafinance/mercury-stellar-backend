@@ -1,7 +1,7 @@
 /**
  * The Privy access token is the end-user assertion on the money path, so this
- * verifier is a security boundary: everything downstream — which wallet may be
- * signed for, whose bindings are read — keys on the `sub` it returns.
+ * verifier is a security boundary: everything downstream - which wallet may be
+ * signed for, whose bindings are read - keys on the `sub` it returns.
  *
  * Tests drive the real crypto with a locally generated P-256 key and a real
  * JWKS document, so a signature that would not verify against Privy cannot pass
@@ -24,7 +24,7 @@ const SUB = "did:privy:cmrx9k2p400abcd0lm12efgh";
 const KID = "test-key-1";
 
 const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
-/** A second key, never published — for "signed by something else" cases. */
+/** A second key, never published - for "signed by something else" cases. */
 const foreign = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
 
 function jwksFor(key: crypto.KeyObject, kid = KID) {
@@ -105,7 +105,7 @@ describe("a genuine Privy token is accepted", () => {
   });
 
   it("tolerates a token that expired within the clock-skew window", async () => {
-    // 30s, deliberately the same tolerance the Sign Service applies — the two
+    // 30s, deliberately the same tolerance the Sign Service applies - the two
     // hops must not disagree about the same token.
     const identity = await verify(signToken(validClaims({ exp: nowSec - 20 })));
     expect(identity.sub).toBe(SUB);

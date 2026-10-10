@@ -6,11 +6,16 @@ import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import { withClientDeadline } from "@/lib/copilot/client-deadline";
 import { useLedgerTick } from "@/contexts/ledger-subscriber";
 
-async function postJson(url: string, body: unknown, signal: AbortSignal): Promise<WorkflowView> {
+async function postJson(url: string, body: unknown, signal: AbortSignal, existingPlan = false): Promise<WorkflowView> {
   signal.throwIfAborted();
   const headers = await withClientDeadline(copilotRequestHeaders(), AbortSignal.any([signal, AbortSignal.timeout(10_000)]));
   signal.throwIfAborted();
-  const response = await fetch(url, { method: "POST", headers, signal, body: JSON.stringify(body) });
+  const response = await fetch(url, { method: "POST", headers, signal, body: JSON.stringify(body) }).catch((error: unknown) => {
+    if (error instanceof TypeError) throw new Error(existingPlan
+      ? "The server could not be reached. Your plan is saved. Reconnect and check its progress before trying again."
+      : "The server could not be reached. Reconnect and try preparing the plan again.");
+    throw error;
+  });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const message = payload && typeof payload === "object" && "message" in payload && typeof payload.message === "string"
@@ -20,12 +25,20 @@ async function postJson(url: string, body: unknown, signal: AbortSignal): Promis
   return payload as WorkflowView;
 }
 
+/** A plan that will do nothing more on its own: finished, cancelled or refused before it ran. */
+export function finished(view: Pick<WorkflowView, "status">): boolean {
+  return view.status === "completed" || view.status === "cancelled" || view.status === "blocked";
+}
+
 function running(view: WorkflowView): boolean {
   return view.status === "approved" || view.status === "running";
 }
 
 /** Ledgers close about every five seconds; a waiting plan is re-checked far less often than that. */
 const RECHECK_MIN_MS = 30_000;
+
+/** How long a submitted step may go without being asked about when no ledger close arrives. */
+export const LEDGER_FALLBACK_MS = 8_000;
 
 /** A step whose transaction is on its way to a ledger: waiting on the chain, not on a person. */
 export function inFlight(view: WorkflowView): boolean {
@@ -36,7 +49,7 @@ export function useWorkflow(wallet: string | null = null) {
   /**
    * `restored` marks a journal this page read back rather than one it just produced.
    * Auto-approve and auto-sign issue transactions, and a card rehydrated on mount is not
-   * the user pressing anything — so they wait for a real action on a restored plan while
+   * the user pressing anything - so they wait for a real action on a restored plan while
    * the ledger loop, which only looks submitted hashes up, carries on.
    */
   const [state, setState] = useState<{
@@ -72,6 +85,16 @@ export function useWorkflow(wallet: string | null = null) {
         const response = await fetch(`/api/copilot/workflow/${id}`, { headers, signal: controller.signal, cache: "no-store" });
         if (!response.ok) return;
         const view = await response.json() as WorkflowView;
+        /**
+         * A reload starts a new chat (owner, 25 Sep), so a run that already finished is not
+         * put back on the blank screen: its receipt lives in its own conversation in History.
+         * A run still in progress IS shown, because hiding a transaction mid-flight would leave
+         * the user unable to see it land or sign its next step.
+         */
+        if (finished(view)) {
+          try { if (storageKey) localStorage.removeItem(storageKey); } catch { /* storage unavailable */ }
+          return;
+        }
         if (!controller.signal.aborted) setState({ view, loading: false, error: null, restored: true });
       } catch { /* user can start a fresh investigation */ }
     })();
@@ -85,7 +108,7 @@ export function useWorkflow(wallet: string | null = null) {
   const runUntilPaused = useCallback(async (initial: WorkflowView, signal: AbortSignal) => {
     let view = initial;
     for (let step = 0; step < 8 && running(view); step++) {
-      view = await postJson(`/api/copilot/workflow/${view.id}/advance`, {}, signal);
+      view = await postJson(`/api/copilot/workflow/${view.id}/advance`, {}, signal, true);
       const advanced = view;
       if (!signal.aborted) setState((previous) => ({ ...previous, view: advanced, loading: true, error: null }));
       if (inFlight(view)) break;
@@ -95,15 +118,28 @@ export function useWorkflow(wallet: string | null = null) {
 
   /**
    * A submitted step settles when a ledger closes, not when a person clicks. The run pauses
-   * on it above; here every ledger close asks the server once more — `advance` on such a step
-   * only looks its hash up, it never issues anything — and once the ledger has answered the
+   * on it above; here every ledger close asks the server once more - `advance` on such a step
+   * only looks its hash up, it never issues anything - and once the ledger has answered the
    * run carries on to the next step by itself. 13 Sep: both steps of the first redeem →
    * deposit had succeeded on chain while the card still said "Broadcasting…", because the
    * only thing that ever asked again was the "Check progress" button.
    */
+  /**
+   * The ledger stream is a public Horizon connection that drops often on testnet, and it was
+   * the only thing that ever re-asked about a submitted step. When it went quiet the card
+   * stayed on "Waiting for the ledger to close" with the step already settled server-side
+   * (7 Oct, live). While a step is on its way to a ledger, this clock asks anyway.
+   */
+  const [beat, setBeat] = useState(0);
+  const waitingOnChain = !!state.view && running(state.view) && inFlight(state.view);
+  useEffect(() => {
+    if (!waitingOnChain) return;
+    const id = setInterval(() => setBeat((previous) => previous + 1), LEDGER_FALLBACK_MS);
+    return () => clearInterval(id);
+  }, [waitingOnChain]);
   useEffect(() => {
     const view = viewRef.current;
-    if (tick === 0 || !view || loadingRef.current || !running(view) || !inFlight(view)) return;
+    if ((tick === 0 && beat === 0) || !view || loadingRef.current || !running(view) || !inFlight(view)) return;
     active.current?.abort();
     const controller = new AbortController(); active.current = controller;
     setState(previous => ({ ...previous, loading: true, error: null }));
@@ -116,12 +152,12 @@ export function useWorkflow(wallet: string | null = null) {
         if (active.current === controller) setState(previous => ({ ...previous, loading: false }));
       }
     })();
-  }, [tick, runUntilPaused]);
+  }, [tick, beat, runUntilPaused]);
 
   /** Answers whether a plan was prepared, so a caller holding a one-shot claim can release it. */
   /**
    * A plan sized at one moment waits for a person, and the world moves while it waits.
-   * Approve re-reads funds, prices and projected health — but only at the click, which is
+   * Approve re-reads funds, prices and projected health - but only at the click, which is
    * too late to be information. So the same check runs against the card while it waits,
    * at most once per `RECHECK_MIN_MS` of ledger closes and never for a hidden tab, and a
    * plan that no longer holds is withdrawn with the server's reason rather than left
@@ -194,7 +230,7 @@ export function useWorkflow(wallet: string | null = null) {
     try {
       const approved = await postJson(`/api/copilot/workflow/${current.id}/approve`, {
         revision: current.revision, digest: current.digest,
-      }, controller.signal);
+      }, controller.signal, true);
       const view = await runUntilPaused(approved, controller.signal);
       if (!controller.signal.aborted && active.current === controller) setState({ view, loading: false, error: null, restored: false });
       return true;
@@ -209,10 +245,11 @@ export function useWorkflow(wallet: string | null = null) {
     } finally {
       clearTimeout(timer);
     }
-  }, [state.view, state.loading, runUntilPaused]);
+  }, [state.loading, runUntilPaused]);
 
-  const confirm = useCallback(async (signedXdr: string) => {
-    const current = state.view;
+  const confirm = useCallback(async (signedXdr: string, expectedId?: string) => {
+    const current = viewRef.current;
+    if (expectedId && current?.id !== expectedId) return;
     if (!current || state.loading) return;
     active.current?.abort();
     const controller = new AbortController();
@@ -220,7 +257,7 @@ export function useWorkflow(wallet: string | null = null) {
     const timer = setTimeout(() => controller.abort(), 180_000);
     setState((previous) => ({ ...previous, loading: true, error: null }));
     try {
-      const confirmed = await postJson(`/api/copilot/workflow/${current.id}/submit`, { signedXdr }, controller.signal);
+      const confirmed = await postJson(`/api/copilot/workflow/${current.id}/submit`, { signedXdr }, controller.signal, true);
       const view = await runUntilPaused(confirmed, controller.signal);
       if (!controller.signal.aborted && active.current === controller) setState({ view, loading: false, error: null, restored: false });
     } catch (error) {
@@ -233,7 +270,66 @@ export function useWorkflow(wallet: string | null = null) {
     } finally {
       clearTimeout(timer);
     }
-  }, [state.view, state.loading, runUntilPaused]);
+  }, [state.loading, runUntilPaused]);
+
+  const restore = useCallback(async (id: string) => {
+    active.current?.abort();
+    const controller = new AbortController(); active.current = controller;
+    setState({ view: null, loading: true, error: null, restored: true });
+    try {
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]);
+      const headers = await withClientDeadline(copilotRequestHeaders(), signal);
+      const response = await fetch(`/api/copilot/workflow/${encodeURIComponent(id)}`, { headers, signal, cache: "no-store" });
+      if (!response.ok) throw new Error(response.status === 401 ? "Reconnect your wallet session to resume this plan." : "The saved plan could not be loaded. Try opening this chat again.");
+      const view = await response.json() as WorkflowView;
+      if (!controller.signal.aborted && active.current === controller) setState({ view, loading: false, error: null, restored: true });
+    } catch (error) {
+      if (active.current === controller && !controller.signal.aborted) setState(previous => ({ ...previous, loading: false,
+        error: error instanceof TypeError ? "The server could not be reached. Reconnect and open this chat again." : error instanceof Error ? error.message : "The saved plan could not be loaded." }));
+      else if (active.current === controller) setState(previous => ({ ...previous, loading: false, error: "Loading the saved plan timed out. Open this chat again to retry." }));
+    }
+  }, []);
+
+  const prepareSign = useCallback(async (): Promise<WorkflowView | null> => {
+    const current = viewRef.current;
+    if (!current || loadingRef.current) return null;
+    active.current?.abort();
+    const controller = new AbortController(); active.current = controller;
+    setState(previous => ({ ...previous, loading: true, error: null }));
+    try {
+      const view = await postJson(`/api/copilot/workflow/${current.id}/prepare-sign`, {},
+        AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]), true);
+      if (controller.signal.aborted || active.current !== controller) return null;
+      setState(previous => ({ ...previous, view, loading: false, error: null }));
+      return view;
+    } catch (error) {
+      if (active.current === controller) setState(previous => ({ ...previous, loading: false,
+        error: error instanceof Error ? error.message : "The transaction could not be refreshed. Try signing again." }));
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => {
+      const current = viewRef.current;
+      if (!current || loadingRef.current || document.visibilityState === "hidden") return;
+      const signal = AbortSignal.timeout(20_000);
+      void (async () => {
+        try {
+          const headers = await withClientDeadline(copilotRequestHeaders(), signal);
+          const response = await fetch(`/api/copilot/workflow/${current.id}`, { headers, signal, cache: "no-store" });
+          if (!response.ok) return;
+          const view = await response.json() as WorkflowView;
+          // A return-to-tab read must not replace an action or another conversation opened meanwhile.
+          if (viewRef.current !== current || loadingRef.current) return;
+          setState(previous => ({ ...previous, view, restored: true, error: null }));
+        } catch { /* Explicit sign/retry reports failures; background reads preserve the saved card. */ }
+      })();
+    };
+    window.addEventListener("online", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.removeEventListener("online", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, []);
 
   const resume = useCallback(async () => {
     if (!state.view || state.loading) return;
@@ -247,6 +343,7 @@ export function useWorkflow(wallet: string | null = null) {
   }, [state.view, state.loading, runUntilPaused]);
   const reset = useCallback(() => {
     active.current?.abort();
+    viewRef.current = null;
     if (storageKey) try { localStorage.removeItem(storageKey); } catch { /* storage unavailable */ }
     setState({ view: null, loading: false, error: null, restored: false });
   }, [storageKey]);
@@ -273,5 +370,5 @@ export function useWorkflow(wallet: string | null = null) {
   const quote = onScreen(liveQuote) && !stale
     ? { minOut: liveQuote!.minOut, note: liveQuote!.note }
     : null;
-  return { ...state, stale, quote, propose, approve, confirm, resume, cancelPlan, reset };
+  return { ...state, stale, quote, propose, approve, confirm, resume, cancelPlan, reset, restore, prepareSign };
 }

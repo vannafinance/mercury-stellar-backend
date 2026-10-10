@@ -1,27 +1,27 @@
 /**
  * Deterministic risk gate + before→after health simulation for margin writes.
- * Cannot be bypassed by prompt injection — pure code.
+ * Cannot be bypassed by prompt injection - pure code.
  */
 
 import { copilotConfig } from "./config";
 import type { MCPClient } from "./mcp-client";
 import type { CopilotAction, RiskResult, Simulation } from "./types";
 import { OP_FLOW } from "./workflow/types";
+import { LIQUIDATION_THRESHOLD } from "../margin-health";
 
-const LIQ_THRESHOLD = 1.0; // HF < 1.0 = liquidatable
 /**
- * The product's own health factor is a plain ratio — `avgHealthFactor =
- * grossCollateralValue / effectiveDebtValue` in lib/margin-health.ts, confirmed by the
- * Margin page's own displayed number ("Collateral / Debt", no discount). This constant
- * used to be 0.9, silently multiplying collateral by 90% in every before→after
- * projection — since `hf_before` almost always comes straight from a real MCP/snapshot
- * read (bypassing this), only `hf_after` ever hit the discount, so EVERY write's
- * projected health factor after a deposit/withdraw/borrow/repay was ~10% off from what
- * the exact same formula would show once the write actually landed — e.g. a deposit
- * projected to WORSEN health factor (1.50 → 1.35) when adding collateral can only ever
- * help or leave it unchanged. No test caught it because this module had zero coverage.
+ * The product's liquidation line on its own plain-ratio health factor (lib/margin-health.ts).
+ * The RiskEngine requires HF strictly above it, so a projection AT the line is liquidatable.
  */
-const DEFAULT_LT = 1.0;
+const LIQ_THRESHOLD = LIQUIDATION_THRESHOLD;
+/**
+ * The product's own health factor is a plain ratio - `avgHealthFactor =
+ * grossCollateralValue / effectiveDebtValue` in lib/margin-health.ts, confirmed by the
+ * Margin page's own displayed number ("Collateral / Debt", no discount). A discount
+ * applied to one side only made projections lie: first a 0.9 default on `hf_after` (a
+ * deposit projected to WORSEN health, 1.50 → 1.35), then the MCP's `liquidation_threshold`
+ * (~0.909) on `hf_before` alone. `hfFrom` is the one formula for both sides.
+ */
 
 function n(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -93,13 +93,14 @@ async function fetchHealth(
       n(r.collateral) ??
       0;
     const debt = n(r.debt_usd) ?? n(r.total_debt_usd) ?? n(r.debt) ?? 0;
-    const lt = n(r.liquidation_threshold) ?? DEFAULT_LT;
     let hf = n(r.health_factor) ?? n(r.hf) ?? n(r.avg_health_factor);
-    // Live MCP often omits health_factor and only returns collateral/debt/ltv.
-    if (hf == null && debt > 0 && collateral > 0) hf = (collateral * lt) / debt;
+    // Live MCP omits health_factor. Its `liquidation_threshold` is an LTV bound (~0.909 =
+    // 1/1.1), not a collateral discount: multiplying by it reported HF / 1.1 (1.78 where the
+    // sidebar showed the real ratio).
+    if (hf == null && debt > 0 && collateral > 0) hf = hfFrom(collateral, debt);
 
     /**
-     * A Soroban budget overrun arrives as a SUCCESSFUL response carrying an error field —
+     * A Soroban budget overrun arrives as a SUCCESSFUL response carrying an error field -
      * it never rejects. `runRead` documents exactly this and re-raises so its fallback can
      * run; here the catch below was simply unreachable, so the payload
      *
@@ -107,7 +108,7 @@ async function fetchHealth(
      *       message: "…get_current_total_balance: HostError: Error(Budget, ExceededLimit)" }
      *
      * parsed to collateral 0 / debt 0 / hf null and became a zeroed baseline. The card then
-     * said "reading your current position failed" — true, but only because nothing here
+     * said "reading your current position failed" - true, but only because nothing here
      * noticed. It fires on accounts holding several collateral tokens, which is why it
      * looked like intermittent RPC flakiness rather than a shape the code never handled.
      *
@@ -123,12 +124,12 @@ async function fetchHealth(
   } catch (e) {
     /**
      * `vanna_get_account_health` blows the Soroban CPU budget on accounts holding several
-     * collateral tokens — `runRead` documents this and already falls back to
+     * collateral tokens - `runRead` documents this and already falls back to
      * `computeMarginSnapshot`, the same read the margin page renders from.
      *
      * This function had no such fallback and swallowed the error SILENTLY, returning a
      * zeroed baseline. Downstream that is indistinguishable from an empty account, so the
-     * card reported "reading your current position failed" on a funded, healthy one — and
+     * card reported "reading your current position failed" on a funded, healthy one - and
      * because nothing was logged, it looked like intermittent RPC flakiness for hours.
      * It is neither intermittent nor RPC: it tracks how many collateral tokens the account
      * holds, which is why it appeared only as this test account accumulated them.
@@ -146,9 +147,9 @@ async function fetchHealth(
   }
 }
 
-function hfFrom(collateral: number, debt: number, lt = DEFAULT_LT): number | null {
+function hfFrom(collateral: number, debt: number): number | null {
   if (debt <= 0) return null; // ∞
-  return (collateral * lt) / debt;
+  return collateral / debt;
 }
 
 export interface RiskSimInput {
@@ -183,7 +184,7 @@ export async function evaluateWriteRisk(
 
   if (action.multi_leg) {
     reasons.push(
-      "multi-leg strategy: legs are not guaranteed atomic — confirm carefully before signing",
+      "multi-leg strategy: legs are not guaranteed atomic - confirm carefully before signing",
     );
     decision = "needs_confirmation";
   }
@@ -206,7 +207,7 @@ export async function evaluateWriteRisk(
             liquidation_threshold: LIQ_THRESHOLD,
             amount_usd: 0,
             asset,
-            // Nothing failed here — this op simply does not move margin collateral or debt.
+            // Nothing failed here - this op simply does not move margin collateral or debt.
             margin_applicable: false,
           }
         : null,
@@ -295,12 +296,12 @@ export async function evaluateWriteRisk(
     amount_usd: amountUsd,
     asset,
     /**
-     * Whether this op moves margin health at all — read off `OP_FLOW`, which already
+     * Whether this op moves margin health at all - read off `OP_FLOW`, which already
      * declares it per op and is the same table the sizer and the planner use.
      *
      * It was only ever set on the `!requires_account` branch above, so an op that spends
-     * FROM the margin account but changes neither collateral nor debt — a Blend supply, a
-     * Blend withdraw — came down this path and produced a real-looking projection of
+     * FROM the margin account but changes neither collateral nor debt - a Blend supply, a
+     * Blend withdraw - came down this path and produced a real-looking projection of
      * itself: "59.40 → 59.40", drawn as a health card over a write that cannot move
      * health. `OP_FLOW[op].health === "neutral"` is that fact, stated once, where the
      * rest of the system already reads it.
@@ -315,9 +316,9 @@ export async function evaluateWriteRisk(
       ? action.min_hf
       : null;
   const policyFloor = copilotConfig.minHealthFactor;
-  const hardFloor = 1.0;
+  const hardFloor = LIQ_THRESHOLD;
 
-  // Already close to liquidation — warn before any debt-increasing write.
+  // Already close to liquidation - warn before any debt-increasing write.
   if (
     hfBefore != null &&
     hfBefore < 1.2 &&
@@ -329,21 +330,21 @@ export async function evaluateWriteRisk(
     reasons.unshift(
       `Account HF is already ${hfBefore.toFixed(2)} (near liquidation). Prefer repay or add collateral before increasing risk.`,
     );
-    if (hfBefore < hardFloor) {
+    if (hfBefore <= hardFloor) {
       decision = "block";
-      reasons.unshift(`HF ${hfBefore.toFixed(2)} < 1.00 — liquidatable now. Repay debt or deposit collateral first.`);
+      reasons.unshift(`HF ${hfBefore.toFixed(2)} is at or below the ${hardFloor.toFixed(2)} liquidation line - liquidatable now. Repay debt or deposit collateral first.`);
     } else {
       // No `decision !== "block"` guard: nothing above this point can have set "block",
       // so TS narrows it away and the comparison fails `next build`. The escalation is
-      // one-directional anyway — a later block below still wins.
+      // one-directional anyway - a later block below still wins.
       decision = "needs_confirmation";
     }
   }
 
-  if (hfAfter != null && hfAfter < hardFloor) {
+  if (hfAfter != null && hfAfter <= hardFloor) {
     decision = "block";
     reasons.unshift(
-      `projected health factor ${hfAfter.toFixed(2)} < 1.00 — would be instantly liquidatable`,
+      `projected health factor ${hfAfter.toFixed(2)} is at or below the ${hardFloor.toFixed(2)} liquidation line - would be instantly liquidatable`,
     );
   } else if (userFloor != null && hfAfter != null && hfAfter < userFloor) {
     decision = "block";

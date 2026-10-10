@@ -1,13 +1,13 @@
 /**
  * Vanna's farmable Aquarius pairs. Must mirror `AQUARIUS_POOLS` in
- * lib/aquarius-utils.ts, which is the source of truth — it carries the actual
+ * lib/aquarius-utils.ts, which is the source of truth - it carries the actual
  * pool contract addresses the app transacts against.
  *
  * XLM/AQUA is deliberately absent: the protocol has no XLM/AQUA pool (confirmed
  * by the contracts owner, and `AQUARIUS_POOLS` holds only XLM/USDC and XLM/USDT).
  * It was previously listed here from the test-prompt doc, and because the filter
  * below matches against Aquarius's *whole* public API dump, an unrelated AQUA pool
- * satisfied the pair and got presented as farmable — with blank APY and liquidity,
+ * satisfied the pair and got presented as farmable - with blank APY and liquidity,
  * since Vanna has no position or address for it.
  */
 export const VANNA_AQUARIUS_FARM_PAIRS: Array<{ pair: string; a: string; b: string }> = [

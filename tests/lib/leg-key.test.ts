@@ -5,7 +5,7 @@ describe("leg identity survives an amount being filled in", () => {
   /**
    * The observed failure: a carry's borrow leg was planned as "Borrow XLM", the user typed
    * 15, and the executor returned "Borrow 15 XLM". The exact keys differ, so the resolved
-   * leg was appended instead of updating the original — leaving the original stuck on
+   * leg was appended instead of updating the original - leaving the original stuck on
    * "paused · needs input" with its question still open, a duplicate row reporting settled,
    * a leg count of 5 for a 4-step plan, and a restarted server index that renumbered leg 2
    * as leg 1.

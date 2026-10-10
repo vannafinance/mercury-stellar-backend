@@ -3,7 +3,7 @@
  *
  * MCP / Sign Service often return a single paragraph with the full tx hash,
  * explorer URL, and C-address. The Copilot UI already shows hash + Expert link
- * in dedicated rows — repeating them in `message` / `human_summary` makes every
+ * in dedicated rows - repeating them in `message` / `human_summary` makes every
  * prompt look like a wall of text (and often duplicates the same blob twice).
  */
 
@@ -44,7 +44,7 @@ export function cleanExecutionCopy(opts: {
 /**
  * Strip auto-sign plumbing out of a message that is heading for the WALLET-SIGN path.
  *
- * Manual signing is the DEFAULT — auto-approve is off for every new user. So on that path
+ * Manual signing is the DEFAULT - auto-approve is off for every new user. So on that path
  * "auto-sign did not happen" is not news, it is the setting the user chose, and MCP's
  * explanation of why is a description of a feature they are not using.
  *
@@ -53,10 +53,10 @@ export function cleanExecutionCopy(opts: {
  *   "Could not auto-complete account creation via the Sign Service: This wallet is not
  *    bound to the authenticated user. Run wallet connect again WHILE SIGNED IN, then retry.
  *    The binding is stamped at /wallets/connect/start from the forwarded user assertion, so
- *    a connect performed with only the app's M2M credential — or before sign-in existed —
+ *    a connect performed with only the app's M2M credential - or before sign-in existed -
  *    records no binding.. You can still sign the unsigned_xdr with your own wallet."
  *
- * — an internal endpoint path, a credential model and a doubled full stop, in front of a
+ * - an internal endpoint path, a credential model and a doubled full stop, in front of a
  * user whose account creation was about to work perfectly well by signing in their wallet.
  * It reads as a failure, which is why it was reported as "opening an account does not work
  * with auto-approve off". Nothing was broken except the sentence.
@@ -178,7 +178,7 @@ export function farmReceiptLine(...parts: Array<string | null | undefined>): str
 
 /**
  * One-line staged/executed title. The MCP receipt paragraph is not a summary.
- * Live: “Deposit 100 AQUSDC in Lending Pool” — not a 6-line dump.
+ * Live: “Deposit 100 AQUSDC in Lending Pool” - not a 6-line dump.
  */
 export function shortWriteLabel(opts: {
   op: string;

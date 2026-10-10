@@ -1,6 +1,6 @@
 /**
  * The share-sized levered deposit must work for EVERY collateral/loan pair, in both
- * directions — not just the XLM → BLUSDC case it was first found on.
+ * directions - not just the XLM → BLUSDC case it was first found on.
  *
  * The merge and the sizing are asset-agnostic by construction (the share sizes the
  * collateral, the leverage sizes the loan against its USD value), so these tests exist to
@@ -14,7 +14,7 @@ import { slotsToAction } from "@/lib/copilot/registry/intent";
 
 const ASSETS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"] as const;
 
-/** The shape coalesce accepts — spelled out so the generic keeps every optional slot. */
+/** The shape coalesce accepts - spelled out so the generic keeps every optional slot. */
 type Step = {
   kind: string;
   op: string;
@@ -29,7 +29,7 @@ type Step = {
 const PAIRS: Array<[string, string]> = [];
 for (const a of ASSETS) for (const b of ASSETS) PAIRS.push([a, b]);
 
-describe("coalesce — a share-sized levered deposit merges for every asset pair", () => {
+describe("coalesce - a share-sized levered deposit merges for every asset pair", () => {
   for (const [coll, loan] of PAIRS) {
     it(`${coll} collateral → ${loan} borrow at 2x merges into one deposit_and_borrow`, () => {
       const steps = coalesceLeveragedDepositBorrow<Step>(
@@ -44,7 +44,7 @@ describe("coalesce — a share-sized levered deposit merges for every asset pair
       expect(steps[0].asset).toBe(coll);
       expect(steps[0].leverage).toBe(2);
       expect(steps[0].args?.borrow_asset).toBe(loan);
-      // The share survives the merge — it is what sizes the collateral half.
+      // The share survives the merge - it is what sizes the collateral half.
       expect(steps[0].args?.fraction).toBe(0.25);
     });
   }
@@ -66,7 +66,7 @@ describe("the approval card shows a share for every asset pair", () => {
       );
       expect(frozen.steps).toHaveLength(1);
       expect(frozen.steps[0].fraction).toBe(0.5);
-      // "no amount yet" must NOT fire — a share IS the amount.
+      // "no amount yet" must NOT fire - a share IS the amount.
       expect(frozen.warnings.join(" ")).not.toMatch(/no amount yet/i);
       // A levered step is still two signatures, whatever the assets are.
       expect(frozen.signature_count).toBe(2);
@@ -90,7 +90,7 @@ describe("a share satisfies requires_amount for every collateral asset", () => {
 
 /**
  * The borrow size itself is `deposit_value × (L − 1)`, converted through the oracle when
- * the two tokens differ — the same rule `borrow-box.tsx` uses. Verified here across pairs
+ * the two tokens differ - the same rule `borrow-box.tsx` uses. Verified here across pairs
  * so a cross-asset position cannot silently size like a same-asset one.
  */
 describe("planLeverage sizes the loan from collateral VALUE, across assets", () => {

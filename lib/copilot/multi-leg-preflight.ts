@@ -27,7 +27,7 @@ export type PreflightIssue = {
  * Run static + light live checks on expanded legs.
  * Does not invent balances. Network failure on balance read → warn only.
  *
- * Note: `needs_setup` (trustline/faucet XDR) is NOT a preflight block — runWrite
+ * Note: `needs_setup` (trustline/faucet XDR) is NOT a preflight block - runWrite
  * returns that as needs_wallet_sign so HostError #13 never occurs. Only hard
  * impossibilities (no wallet, insufficient after setup probe) block here.
  */
@@ -61,7 +61,7 @@ export async function preflightExpandedLegs(
       op: "account",
       label: "Margin account",
       message:
-        "No smart account bound yet — deposit/borrow/farm need a C-address. The agent will try to resolve one; open an account if this fails.",
+        "No smart account bound yet - deposit/borrow/farm need a C-address. The agent will try to resolve one; open an account if this fails.",
     });
   }
 
@@ -138,7 +138,7 @@ export async function preflightExpandedLegs(
       continue;
     }
 
-    // Deposit wallet readiness — block only when setup is impossible.
+    // Deposit wallet readiness - block only when setup is impossible.
     // needs_setup is deferred to runWrite so the user can sign changeTrust/faucet.
     if (leg.op === "deposit_collateral" && ctx.trader) {
       try {

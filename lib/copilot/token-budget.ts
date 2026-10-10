@@ -3,8 +3,8 @@ import { copilotConfig } from "./config";
 
 /**
  * Per-subject daily Vertex token cap. This is a hard billing meter, not a latency
- * timeout — a long investigation does not trip it unless the day's token count does.
- * In-memory, one process — same deployment assumption as write-dedupe. Guest traffic
+ * timeout - a long investigation does not trip it unless the day's token count does.
+ * In-memory, one process - same deployment assumption as write-dedupe. Guest traffic
  * shares the "guest" bucket. The subject must be the verified Privy/WorkOS `sub`
  * (or `"guest"`), never the client-supplied `user_id`.
  */

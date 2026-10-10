@@ -1,14 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useViewportScale } from "@/lib/hooks/useViewportScale";
+import { setAssistantOpen } from "@/store/assistant-session";
+import Image from "next/image";
 
 /**
- * The chat shell for /copilot: a fixed left rail and a stage that scrolls inside itself.
+ * The chat shell for /copilot: a sticky left rail, and a thread that scrolls with the page.
  *
  * Structure only. It owns the two column widths, the rail's single scroll region (the
  * whole panel, not Recents alone) and the grid that centres the composer on an empty
- * page and docks it to the bottom once a thread exists. It owns none of the content —
+ * page and docks it to the bottom once a thread exists. It owns none of the content -
  * the rail's controls, the thread's cards and the composer are passed in, so this file
  * can never change an answer's wording or a card's styling.
  *
@@ -30,6 +32,10 @@ import { useViewportScale } from "@/lib/hooks/useViewportScale";
 /** Rail widths, from the deployed mock. */
 const RAIL_FULL = 292;
 const RAIL_MINI = 60;
+/** Breathing room above a pinned message, in px. */
+const PIN_GAP = 12;
+/** Scoped presentation mode, derived from shell props; no financial or persisted state. */
+export const CopilotRailPresentation = createContext(false);
 
 export interface CopilotShellProps {
   collapsed: boolean;
@@ -52,6 +58,8 @@ export interface CopilotShellProps {
   empty: boolean;
   /** When a send or reply landing changes the thread content, triggers the bottom-scroll check. */
   scrollKey?: unknown;
+  /** Identifies the conversation so pin state cannot leak across equal-sized threads. */
+  conversationId?: string | null;
   /** When the user has just submitted a prompt, forces scrolling to bottom unconditionally. */
   justSubmitted?: boolean;
 }
@@ -66,51 +74,227 @@ export function CopilotShell({
   composer,
   empty,
   scrollKey,
+  conversationId,
   justSubmitted,
 }: CopilotShellProps) {
   const shell = useRef<HTMLDivElement | null>(null);
-  const stageScrollRef = useRef<HTMLDivElement | null>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
   const wasNearBottomRef = useRef(true);
+  /** Where the copilot area starts on screen (the navbar's bottom edge), in visual px. */
+  const topEdgeRef = useRef(0);
+  const zoomRef = useRef(1);
+  const [narrow, setNarrow] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const panelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const compact = collapsed && !narrow;
 
-  const handleScroll = useCallback(() => {
-    const el = stageScrollRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    wasNearBottomRef.current = distanceFromBottom <= 120;
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 860px)");
+    const update = () => { setNarrow(query.matches); setDrawerOpen(false); };
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
   }, []);
+
+  useEffect(() => {
+    if (!narrow || !drawerOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const panelButton = panelButtonRef.current;
+    document.body.style.overflow = "hidden";
+    const focusable = () => [panelRef.current, ...document.querySelectorAll<HTMLElement>("[data-cp-rail-popup]")].flatMap((root) => Array.from(root?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), [tabindex="0"]') ?? [])).filter((element) => element.getClientRects().length > 0);
+    const frame = requestAnimationFrame(() => focusable()[0]?.focus());
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !document.querySelector("[data-cp-rail-popup]")) { event.preventDefault(); setDrawerOpen(false); }
+      if (event.key !== "Tab") return;
+      const elements = focusable();
+      const first = elements[0];
+      const last = elements.at(-1);
+      if (!first) { event.preventDefault(); return; }
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", keydown);
+      panelButton?.focus();
+    };
+  }, [narrow, drawerOpen]);
+
+  /**
+   * The chat scrolls with the PAGE, not inside a box of its own. 23 Sep, owner: a second
+   * scrollbar for the chat was not wanted; the page scrollbar and the mouse wheel anywhere
+   * over the chat should move it. The navbar and the rail are sticky, the composer is stuck
+   * to the bottom of the window, and everything else is ordinary document flow.
+   */
+  const handleScroll = useCallback(() => {
+    const doc = document.scrollingElement ?? document.documentElement;
+    wasNearBottomRef.current = doc.scrollHeight - window.scrollY - window.innerHeight <= 120;
+  }, []);
+  useEffect(() => {
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [handleScroll]);
 
   const scrollToBottom = useCallback(() => {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const el = stageScrollRef.current;
-        if (el) {
-          el.scrollTop = el.scrollHeight;
-          wasNearBottomRef.current = true;
-        }
+        const doc = document.scrollingElement ?? document.documentElement;
+        window.scrollTo({ top: doc.scrollHeight });
+        wasNearBottomRef.current = true;
       });
     });
   }, []);
 
-  useEffect(() => {
-    if (justSubmitted) {
-      wasNearBottomRef.current = true;
-      scrollToBottom();
-    } else if (wasNearBottomRef.current) {
-      scrollToBottom();
+  /**
+   * On send, the new message is pinned to the top of the chat area and the reply grows
+   * beneath it, the pattern ChatGPT, Claude and Gemini use. Jumping to the bottom (as before)
+   * scrolled the user's own message out of sight while a long plan rendered, 23 Sep.
+   *
+   * A spacer under the thread gives the page room to put the message at the top even while
+   * the reply is short. As the reply grows the spacer only shrinks, so the scroll position
+   * never moves and the message stays put. It is recomputed on resize rather than per token,
+   * which keeps it from jittering. Pinned until the next send; a restored conversation with
+   * no send still opens at the bottom.
+   */
+  const pinnedRef = useRef<HTMLElement | null>(null);
+  const pinnedConversationRef = useRef<string | null | undefined>(conversationId);
+  const wasSubmittedRef = useRef(false);
+  const [spacer, setSpacer] = useState(0);
+
+  /** Visual px between the top of the chat area and the top of the composer. */
+  const room = useCallback(() => {
+    const composerHeight = composerRef.current?.getBoundingClientRect().height ?? 0;
+    return window.innerHeight - topEdgeRef.current - composerHeight - PIN_GAP;
+  }, []);
+
+  const fitSpacer = useCallback(() => {
+    const thread = threadRef.current;
+    const bubble = pinnedRef.current;
+    if (!thread || !bubble || !bubble.isConnected) {
+      setSpacer(0);
+      return;
     }
-  }, [scrollKey, justSubmitted, scrollToBottom]);
+    const below = thread.getBoundingClientRect().bottom - bubble.getBoundingClientRect().top;
+    // Visual px back into layout px, for a style inside the zoomed wrapper.
+    setSpacer(Math.max(0, room() - below) / (zoomRef.current || 1));
+  }, [room]);
+
+  const latestBubble = () => {
+    const bubbles = threadRef.current?.querySelectorAll<HTMLElement>("[data-cp-user-bubble]");
+    return bubbles?.length ? bubbles[bubbles.length - 1] : null;
+  };
+
+  const pinLatest = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const bubble = latestBubble();
+        // Nothing to pin (no bubble rendered): keep the previous behaviour and show the end.
+        if (!bubble) { scrollToBottom(); return; }
+        pinnedRef.current = bubble;
+        fitSpacer();
+        // Scroll after the spacer lands, or the browser clamps it to the old page height.
+        requestAnimationFrame(() => {
+          window.scrollBy({ top: bubble.getBoundingClientRect().top - topEdgeRef.current - PIN_GAP });
+          wasNearBottomRef.current = false;
+        });
+      });
+    });
+  }, [fitSpacer, scrollToBottom]);
+
+  useEffect(() => {
+    const previous = pinnedConversationRef.current;
+    /**
+     * A new chat has no id until the server records its first turn, so "no id -> an id" is the
+     * SAME conversation landing its first reply: the pin must survive it, or the message the
+     * user just sent is unpinned the moment its answer arrives. Only a switch between two
+     * different conversations, or an emptied thread, clears the pin.
+     */
+    if (!previous && conversationId && !empty) {
+      pinnedConversationRef.current = conversationId;
+      return undefined;
+    }
+    if (previous !== conversationId || empty) {
+      pinnedConversationRef.current = conversationId;
+      pinnedRef.current = null;
+      const frame = requestAnimationFrame(() => setSpacer(0));
+      return () => cancelAnimationFrame(frame);
+    }
+    return undefined;
+  }, [conversationId, empty]);
+
+  useEffect(() => {
+    const rising = Boolean(justSubmitted) && !wasSubmittedRef.current;
+    wasSubmittedRef.current = Boolean(justSubmitted);
+    if (rising) { pinLatest(); return; }
+    if (pinnedRef.current) return;
+    if (wasNearBottomRef.current) scrollToBottom();
+  }, [scrollKey, justSubmitted, scrollToBottom, pinLatest]);
+
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (!thread || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      // The pending bubble is replaced by the recorded one when the turn lands; follow it.
+      if (pinnedConversationRef.current === conversationId && pinnedRef.current && !pinnedRef.current.isConnected) {
+        const bubble = latestBubble();
+        if (bubble) pinnedRef.current = bubble;
+        else {
+          pinnedRef.current = null;
+          setSpacer(0);
+        }
+      }
+      fitSpacer();
+    });
+    observer.observe(thread);
+    return () => observer.disconnect();
+  }, [conversationId, fitSpacer]);
+
+  /**
+   * A send is detected from the thread itself: exactly one new message bubble appeared.
+   * `justSubmitted` alone missed almost every send, because the workspace records the turn at
+   * once and its `pendingUser` is null by the next render (23 Sep, the "aquarius lp" reply
+   * never pinned). The recorded bubble replacing the pending one keeps the count, so a send
+   * pins once; a restored chat that loads many turns at once still opens at the end.
+   */
+  const bubbleCountRef = useRef<number | null>(null);
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (!thread || typeof MutationObserver === "undefined") return;
+    const count = () => thread.querySelectorAll("[data-cp-user-bubble]").length;
+    bubbleCountRef.current = count();
+    const observer = new MutationObserver(() => {
+      const now = count();
+      const before = bubbleCountRef.current ?? now;
+      bubbleCountRef.current = now;
+      if (now === before + 1) pinLatest();
+    });
+    observer.observe(thread, { childList: true, subtree: true });
+    return () => observer.disconnect();
+    // Re-counted per conversation: opening a saved chat with one message is not a send.
+  }, [pinLatest, conversationId]);
   const zoom = useViewportScale(1440);
   const [height, setHeight] = useState<number | null>(null);
+  /** The navbar's bottom edge in layout px: where the sticky rail sits once the page scrolls. */
+  const [stickyTop, setStickyTop] = useState(0);
 
   const measure = useCallback(() => {
     const node = shell.current;
     if (!node) return;
-    // `getBoundingClientRect` reports visual pixels — already multiplied by the wrapper's
-    // zoom — while the style we set is interpreted in layout pixels. Divide to convert.
-    const top = node.getBoundingClientRect().top;
+    // `getBoundingClientRect` reports visual pixels - already multiplied by the wrapper's
+    // zoom - while the style we set is interpreted in layout pixels. Divide to convert.
+    // The page scrolls now, so the shell's top is taken at scroll 0 (its document offset);
+    // the sticky navbar ends exactly there.
+    const top = node.getBoundingClientRect().top + window.scrollY;
+    zoomRef.current = zoom || 1;
+    topEdgeRef.current = top;
     const visible = window.innerHeight - top;
     const layout = visible / (zoom || 1);
     setHeight(layout > 320 ? layout : 320);
+    setStickyTop(top / (zoom || 1));
   }, [zoom]);
 
   /**
@@ -118,7 +302,7 @@ export function CopilotShell({
    *
    * A single `requestAnimationFrame` was not enough: it fired before the navbar above had
    * settled, the height state was never set, and the shell silently kept its fallback
-   * `calc(100dvh - 96px)` — 23px short of the viewport at 1440x900, which shows as a dead
+   * `calc(100dvh - 96px)` - 23px short of the viewport at 1440x900, which shows as a dead
    * strip under the rail. The navbar's height is not a constant this file may assume, so
    * the only reliable answer is to observe it: `useLayoutEffect` catches the first
    * correct layout, and a ResizeObserver on the document element and on the shell's own
@@ -138,23 +322,40 @@ export function CopilotShell({
   }, [measure]);
 
   return (
+    <div className="cp-shell-frame">
+      <div className="cp-mobile-toolbar" inert={narrow && drawerOpen ? true : undefined}>
+        <button ref={panelButtonRef} type="button" className="cp-rail-icon" aria-label="Open the panel" aria-expanded={drawerOpen} aria-controls="copilot-panel" onClick={() => setDrawerOpen(true)}><PanelIcon /></button>
+        <button type="button" className="cp-mobile-assist" onClick={() => setAssistantOpen(true)}><Image src="/logos/vanna-icon.png" alt="" width={16} height={16} />Assist</button>
+      </div>
     <div
       ref={shell}
+      className="cp-shell"
+      data-cp-collapsed={compact}
       style={{
+        ["--cp-panel-top" as string]: `${stickyTop}px`,
         display: "flex",
-        alignItems: "stretch",
+        alignItems: "flex-start",
+        // At least one window tall; taller as the thread grows, since the PAGE scrolls.
         // Until the first measurement lands, fall back to a viewport height: at zoom 1
         // that is already correct, and above 1440px it is corrected on the same frame.
-        height: height ? `${height}px` : "calc(100dvh - 96px)",
-        minHeight: 0,
-        overflow: "hidden",
+        minHeight: height ? `${height}px` : "calc(100dvh - 96px)",
       }}
     >
       <aside
+        ref={panelRef}
+        id="copilot-panel"
+        className={`cp-panel ${drawerOpen ? "cp-panel-open" : ""}`}
+        role={narrow ? "dialog" : undefined}
+        aria-label="Copilot panel"
+        aria-modal={narrow && drawerOpen ? true : undefined}
+        inert={narrow && !drawerOpen ? true : undefined}
         style={{
-          position: "relative",
+          // Stays in view while the page scrolls, and keeps its own scroll for the rail.
+          position: "sticky",
+          top: stickyTop,
+          height: height ? `${height}px` : "calc(100dvh - 96px)",
           flex: "none",
-          width: collapsed ? RAIL_MINI : RAIL_FULL,
+          width: compact ? RAIL_MINI : RAIL_FULL,
           minWidth: 0,
           background: "var(--surface)",
           borderRight: "1px solid var(--g100)",
@@ -162,37 +363,23 @@ export function CopilotShell({
           overflow: "visible",
         }}
       >
-        {collapsed ? (
+        <CopilotRailPresentation.Provider value={compact}>
           <div
-            style={{
-              position: "absolute",
-              inset: "0 auto 0 0",
-              width: RAIL_MINI,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 10,
-              padding: "14px 0",
-            }}
-          >
-            {railMini}
-          </div>
-        ) : (
-          <div
-            className="cp-rail-scroll"
+            className={`cp-rail-scroll cp-rail-layout ${compact ? "cp-rail-compact" : ""}`}
             style={{
               position: "absolute",
               inset: 0,
-              width: RAIL_FULL,
+              width: compact ? RAIL_MINI : RAIL_FULL,
               display: "flex",
               flexDirection: "column",
               minWidth: 0,
-              overflowX: "hidden",
-              overflowY: "auto",
+              overflowX: compact ? "visible" : "hidden",
+              overflowY: compact ? "visible" : "auto",
               overscrollBehavior: "contain",
             }}
           >
             <div
+              className="cp-rail-heading"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -202,20 +389,9 @@ export function CopilotShell({
                 flex: "none",
               }}
             >
-              <span
-                style={{
-                  fontFamily: "var(--font-plus-jakarta-sans), system-ui, sans-serif",
-                  fontSize: 12,
-                  lineHeight: "18px",
-                  fontWeight: 600,
-                  color: "var(--g900)",
-                }}
-              >
-                Copilot
-              </span>
               <button
                 type="button"
-                onClick={onToggleCollapsed}
+                onClick={narrow ? () => setDrawerOpen(false) : onToggleCollapsed}
                 title="Collapse"
                 aria-label="Collapse the panel"
                 className="cp-rail-icon"
@@ -233,38 +409,49 @@ export function CopilotShell({
                 <PanelIcon />
               </button>
             </div>
-            <div style={{ flex: "none" }}>{railTop}</div>
-            <div style={{ flex: "none", minWidth: 0 }}>{railBody}</div>
+            {compact && <div className="cp-legacy-mini">{railMini}</div>}
+            <div className="cp-rail-slot">{railTop}</div>
+            <div className="cp-rail-slot">{railBody}</div>
           </div>
-        )}
+        </CopilotRailPresentation.Provider>
       </aside>
+      {narrow && drawerOpen && <button type="button" className="cp-panel-scrim" aria-label="Close the panel" onClick={() => setDrawerOpen(false)} />}
 
       <main
+        className="cp-main"
+        inert={narrow && drawerOpen ? true : undefined}
         style={{
           flex: 1,
           minWidth: 0,
-          minHeight: 0,
+          alignSelf: "stretch",
           display: "grid",
+          // At least one window tall, so a short thread still docks the composer at the bottom.
+          minHeight: height ? `${height}px` : "calc(100dvh - 96px)",
           // Empty: equal spacers above and below, so the composer sits in the middle.
-          // Threaded: the lower spacer collapses and the thread takes the space, which
-          // docks the composer to the bottom without it ever being position: fixed.
-          gridTemplateRows: empty ? "minmax(0,1fr) auto minmax(0,1fr)" : "minmax(0,1fr) auto 0fr",
+          // Threaded: the lower spacer collapses and the thread takes the space above the
+          // composer, which then sticks to the bottom of the window as the page scrolls.
+          gridTemplateRows: empty ? "minmax(0,1fr) auto minmax(0,1fr)" : "1fr auto 0fr",
           transition: "grid-template-rows .48s cubic-bezier(.22,1,.36,1)",
         }}
       >
-        <div
-          ref={stageScrollRef}
-          onScroll={handleScroll}
-          className="cp-stage-scroll"
-          style={{ minWidth: 0, minHeight: 0, overflowY: "auto", padding: "0 20px" }}
-        >
-          <div style={{ maxWidth: 760, margin: "0 auto" }}>{thread}</div>
+        <div className="cp-stage" style={{ minWidth: 0, padding: "0 20px" }}>
+          <div ref={threadRef} style={{ maxWidth: 760, margin: "0 auto" }}>{thread}</div>
+          <div aria-hidden style={{ height: spacer }} />
         </div>
-        <div style={{ minWidth: 0, padding: "8px 20px 14px" }}>
+        <div
+          ref={composerRef}
+          className="cp-composer-wrap"
+          style={{
+            minWidth: 0, padding: "8px 20px 14px",
+            // Over the thread as it scrolls beneath; the page colour so nothing shows through.
+            ...(empty ? {} : { position: "sticky", bottom: 0, background: "var(--page)", zIndex: 5 }),
+          }}
+        >
           <div style={{ maxWidth: 680, margin: "0 auto" }}>{composer}</div>
         </div>
         <div />
       </main>
+    </div>
     </div>
   );
 }

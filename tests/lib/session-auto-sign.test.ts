@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import {
   hopAutoSubmitKey,
+  mayAutoSignJournalStep,
   promoteSignableAutoSignResponse,
   shouldArmAutoApprove,
   shouldAutoApproveProposedWorkflow,
@@ -13,6 +14,8 @@ import {
   signServiceFromSessionRead,
   preserveLastConclusiveSignState,
   hasAuthenticatedPrivyHeader,
+  disableVerdict,
+  autoApproveToggleBlock,
 } from "@/components/copilot/session-auto-sign";
 
 describe("hopAutoSubmitKey", () => {
@@ -63,7 +66,7 @@ describe("shouldSessionAutoSubmit", () => {
   });
 
   it("needs_confirmation is NOT a click gate (staged borrow after deposit)", () => {
-    // Live: risk chip said "confirm" and UI claimed "risk gate flagged — needs your
+    // Live: risk chip said "confirm" and UI claimed "risk gate flagged - needs your
     // click" while auto-approve was on. Confirmation is normal staged copy.
     expect(
       shouldSessionAutoSubmit({
@@ -78,7 +81,7 @@ describe("shouldSessionAutoSubmit", () => {
 
   it("does NOT re-prompt for enable when needs_auto_sign has XDR", () => {
     // The live multi-leg bug: hop 2 came back needs_auto_sign while hop 1 was
-    // needs_wallet_sign — auto-approve was on but only the first kind auto-fired.
+    // needs_wallet_sign - auto-approve was on but only the first kind auto-fired.
     expect(
       shouldSessionAutoSubmit({
         kind: "needs_auto_sign",
@@ -143,7 +146,7 @@ describe("shouldAutoApproveProposedWorkflow", () => {
    * "deposit my idle XLM and supply it to Blend" sized itself and settled with nothing
    * to click (17 Sep, live). The rail promises the prompt goes away, not the review.
    */
-  it("does not auto-click a non-swap plan — the signing prompt is what auto sign skips", () => {
+  it("does not auto-click a non-swap plan - the signing prompt is what auto sign skips", () => {
     expect(
       shouldAutoApproveProposedWorkflow({
         sessionSigning: true,
@@ -160,7 +163,7 @@ describe("shouldAutoApproveProposedWorkflow", () => {
     ).toBe(false);
   });
 
-  it("does not auto-click a swap plan — that click is the price-impact acknowledgement", () => {
+  it("does not auto-click a swap plan - that click is the price-impact acknowledgement", () => {
     expect(
       shouldAutoApproveProposedWorkflow({
         sessionSigning: true,
@@ -172,7 +175,7 @@ describe("shouldAutoApproveProposedWorkflow", () => {
 
   /**
    * The acknowledgement the click stands for, the user already gave in words, before
-   * the plan was sealed — and the sealed plan carries it. Demanding the click anyway
+   * the plan was sealed - and the sealed plan carries it. Demanding the click anyway
    * is asking them to agree twice to one price, which is the dead end that made an
    * accepted swap unexecutable (17 Sep: "swap xlm so i will get 1 AqUSDC", accepted,
    * refused). The proposal's own flag is what distinguishes the two cases.
@@ -292,8 +295,10 @@ describe("signServiceFromSessionRead", () => {
         data: {
           enabled: true,
           status: "enabled",
-          max_per_tx_usd: 1000,
-          max_per_day_usd: 2500,
+          cap_unit: "token_units", network: "testnet",
+          token_caps_enforced: true,
+          max_per_tx_tokens: 1000,
+          max_per_day_tokens: 2500,
         },
       }),
     ).toEqual({
@@ -339,5 +344,57 @@ describe("signServiceFromSessionRead", () => {
         data: { error: "not_configured", enabled: false },
       }),
     ).toEqual({ status: "unavailable", reason: "not_configured" });
+  });
+});
+
+
+it("Freighter dispatch opens only explicitly permitted wallet requests without bypassing review gates", () => {
+  const step = { kind: "needs_wallet_sign", sessionSigning: true, hasSignableXdr: true, allowSessionSign: false, walletSigningRequired: true };
+  expect(shouldSessionAutoSubmit(step)).toBe(false);
+  expect(shouldSessionAutoSubmit({ ...step, allowWalletDispatch: true })).toBe(true);
+  expect(shouldSessionAutoSubmit({ ...step, allowWalletDispatch: false })).toBe(false);
+  expect(shouldSessionAutoSubmit({ ...step, allowWalletDispatch: true, riskDecision: "block" })).toBe(false);
+});
+
+describe("mayAutoSignJournalStep", () => {
+  it("never signs silently a step the Sign Service refused, whatever the reason said", () => {
+    expect(mayAutoSignJournalStep({ signRefusal: "Over your per-transaction limit." })).toBe(false);
+    expect(mayAutoSignJournalStep({ signRefusal: "The session has lapsed." })).toBe(false);
+  });
+  it("lets a step that was simply never auto-signed follow the session signing mode", () => {
+    expect(mayAutoSignJournalStep({})).toBe(true);
+    expect(mayAutoSignJournalStep({ signRefusal: undefined })).toBe(true);
+  });
+});
+
+describe('disableVerdict', () => {
+  it('confirms only when the signer answered without an error', () => {
+    expect(disableVerdict({ kind: 'answer', data: { revoked: 1 } })).toBe('confirmed');
+  });
+  it('treats no answer as unconfirmed, because the session may still be live', () => {
+    expect(disableVerdict(null)).toBe('unconfirmed');
+  });
+  it('treats an error kind or an error in the data as unconfirmed', () => {
+    expect(disableVerdict({ kind: 'error', data: {} })).toBe('unconfirmed');
+    expect(disableVerdict({ kind: 'answer', data: { error: 'revoke failed' } })).toBe('unconfirmed');
+  });
+  it('treats an unbound wallet as off, since no session can exist for it', () => {
+    expect(disableVerdict({ kind: 'needs_wallet_bind' })).toBe('unbound');
+  });
+});
+
+describe('autoApproveToggleBlock', () => {
+  const free = { switching: false, replyRunning: false, hasWallet: true };
+  it('lets the switch proceed when nothing is running', () => {
+    expect(autoApproveToggleBlock(free)).toBeNull();
+  });
+  it('refuses a click while a reply is running, and says why', () => {
+    expect(autoApproveToggleBlock({ ...free, replyRunning: true })?.message).toMatch(/current reply to finish/);
+  });
+  it('refuses a click while the previous switch is in flight', () => {
+    expect(autoApproveToggleBlock({ ...free, switching: true })?.message).toMatch(/Still switching/);
+  });
+  it('asks for a wallet when none is connected', () => {
+    expect(autoApproveToggleBlock({ ...free, hasWallet: false })?.tone).toBe('error');
   });
 });

@@ -30,6 +30,19 @@ jobs:
         run: npx tsc --noEmit
       - name: Investigation eval
         run: npx vitest run tests/lib/investigation-eval.test.ts
+      - name: Copilot behavior regressions
+        run: >-
+          npx vitest run
+          tests/lib/investigation-capacity.test.ts
+          tests/lib/investigation-proposal.test.ts
+          tests/lib/investigation-runtime.test.ts
+          tests/lib/compose-reply.test.ts
+          tests/lib/max-credit.test.ts
+          tests/lib/questionnaire-credit.test.ts
+          tests/lib/questionnaire-service-roundtrip.test.ts
+          tests/components/clarify-questionnaire.test.tsx
+          tests/components/running-plan.test.tsx
+          tests/components/investigation-card-stated-run.test.tsx
       - name: Build
         run: npm run build
 

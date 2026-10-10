@@ -159,7 +159,7 @@ export const useBlendEvents = (tokenSymbol?: string) => {
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<BlendEvent[]> => {
       if (!marginAccountAddress) return [];
-      // Mercury + a bounded RPC fallback, merged via Promise.allSettled —
+      // Mercury + a bounded RPC fallback, merged via Promise.allSettled -
       // same fix already applied to margin/Earn/Aquarius/Soroswap history.
       const [mercurySettled, rpcSettled] = await Promise.allSettled([
         getBlendEventsFromMercury(marginAccountAddress),
@@ -429,7 +429,7 @@ export const useAllAquariusLpPositions = (marginAccountAddress: string | null) =
  * the AccountManager's Trader_AquariusDeposit/Trader_AquariusWithdraw events
  * instead (server-side account-scoped, like margin), but the 2026-07-19
  * Controller-Facade refactor removed all event publishing from the exec path,
- * so that event stopped firing entirely — see lib/mercury-aquarius.ts. The
+ * so that event stopped firing entirely - see lib/mercury-aquarius.ts. The
  * pool event has no reliable account field, so attribution is best-effort
  * (same caveat Soroswap's un-scoped pair-event read already has).
  *
@@ -508,7 +508,7 @@ export const buildLpChartData = (
 
   if (events.length === 0) {
     if (currentLpBalance <= 0) return [];
-    // No event history — build a monthly flat-line series covering the last 12 months
+    // No event history - build a monthly flat-line series covering the last 12 months
     const points: Array<{ date: string; amount: number }> = [];
     for (let m = 12; m >= 1; m--) {
       const d = new Date(now);
@@ -563,7 +563,7 @@ export const buildSupplyChartData = (
 
   if (events.length === 0) {
     if (currentValue <= 0) return [];
-    // No event history — build a monthly flat-line series covering the last 12 months
+    // No event history - build a monthly flat-line series covering the last 12 months
     // so all time-range filters ("3 Months", "6 Months", "1 Year") show data.
     const points: Array<{ date: string; amount: number }> = [];
     for (let m = 12; m >= 1; m--) {

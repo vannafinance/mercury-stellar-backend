@@ -1,9 +1,34 @@
 // @vitest-environment happy-dom
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ExecutionStepper } from "@/components/copilot/execution-stepper";
 
 describe("ExecutionStepper", () => {
+  it("tells the user why auto-approve stopped and still offers manual signing", () => {
+    const onSign = vi.fn();
+    render(
+      <ExecutionStepper
+        currentStepIndex={0}
+        autoApprove={true}
+        onSign={onSign}
+        steps={[{ id: "s1", op: "swap", label: "Swap", asset: "XLM", amount: "5000", status: "signing", refusal: "This is outside your auto-approve limits, so it needs your own signature." }]}
+      />,
+    );
+    expect(screen.getByText("This is outside your auto-approve limits, so it needs your own signature.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in wallet" }));
+    expect(onSign).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("shows no refusal line when the step was not refused", () => {
+    render(
+      <ExecutionStepper currentStepIndex={0} autoApprove={true} onSign={vi.fn()}
+        steps={[{ id: "s1", op: "swap", label: "Swap", asset: "XLM", amount: "5", status: "signing" }]} />,
+    );
+    expect(screen.queryByText(/needs your own signature/)).toBeNull();
+    cleanup();
+  });
   it("renders multi-leg execution statuses accurately", () => {
     render(
       <ExecutionStepper
@@ -40,15 +65,18 @@ describe("ExecutionStepper", () => {
       />,
     );
 
-    expect(screen.getByText("Execution Progress")).toBeTruthy();
-    expect(screen.getByText("Autonomous")).toBeTruthy();
+    expect(screen.getByRole("region", { name: /execution progress/i })).toBeTruthy();
+    expect(screen.getByText("Executing")).toBeTruthy();
+    expect(screen.getByText("Step 2 of 3")).toBeTruthy();
+    expect(screen.queryByText("Signed within your auto-approve limits.")).toBeNull();
     expect(screen.getByText("Deposit 1,000 USDC Collateral")).toBeTruthy();
     expect(screen.getByText("Borrow 500 XLM")).toBeTruthy();
     expect(screen.getByText("Supply to Blend")).toBeTruthy();
     expect(screen.getByText("Settled")).toBeTruthy();
     expect(screen.getByText("Signing…")).toBeTruthy();
-    expect(screen.getByText("Queued")).toBeTruthy();
-    expect(screen.getByText(/tx 8a92b1c4…/)).toBeTruthy();
+    expect(screen.getByText("Next")).toBeTruthy();
+    expect(screen.getByText(/8a92b1…1a2/)).toBeTruthy();
+    expect(screen.getByText("Ledger 142,981")).toBeTruthy();
   });
 
   it("handles retry for failed step", () => {
@@ -75,5 +103,86 @@ describe("ExecutionStepper", () => {
     const retryBtn = screen.getByText("Retry");
     fireEvent.click(retryBtn);
     expect(onRetry).toHaveBeenCalledWith(0);
+    expect(screen.getByText("Stopped at step 1")).toBeTruthy();
+    expect(screen.getByText("0 of 1 went through")).toBeTruthy();
+  });
+
+  const two = (first: "settled" | "signing", second: "pending" | "settled") => [
+    { id: "a", op: "deposit_collateral", label: "Deposit 100 XLM", asset: "XLM", amount: "100", status: first },
+    { id: "b", op: "borrow", label: "Borrow 20 BLUSDC", asset: "BLUSDC", amount: "20", status: second },
+  ] as const;
+
+  it("puts Sign on the waiting step when auto-approve is off", () => {
+    const onSign = vi.fn();
+    render(<ExecutionStepper currentStepIndex={0} steps={[...two("signing", "pending")]} onSign={onSign} onStop={() => {}} />);
+    expect(screen.getByText("Your signature needed")).toBeTruthy();
+    fireEvent.click(screen.getByText("Sign in wallet"));
+    expect(onSign).toHaveBeenCalled();
+    expect(screen.queryByText("Nothing is sent without your signature.")).toBeNull();
+    expect(screen.getByText("Cancel remaining steps")).toBeTruthy();
+  });
+
+  it("still offers Sign when auto-approve hands the step back to the wallet", () => {
+    const onSign = vi.fn();
+    render(<ExecutionStepper currentStepIndex={0} autoApprove steps={[...two("signing", "pending")]} onSign={onSign} />);
+    expect(screen.getByText("Your signature needed")).toBeTruthy();
+    fireEvent.click(screen.getByText("Sign in wallet"));
+    expect(onSign).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows Completed and no stop button once every step settled", () => {
+    render(<ExecutionStepper currentStepIndex={1} autoApprove steps={[...two("settled", "settled")]} onStop={() => {}} />);
+    expect(screen.getByText("Completed")).toBeTruthy();
+    expect(screen.queryByText("Stop after this step")).toBeNull();
+  });
+
+  it("halts on a step whose outcome is unknown, offers no Retry, and points to the explorer", () => {
+    const onRetry = vi.fn();
+    render(
+      <ExecutionStepper
+        currentStepIndex={0}
+        onRetry={onRetry}
+        onStop={() => {}}
+        steps={[{ id: "u", op: "lend", label: "Lend 5 XLM", asset: "XLM", amount: "5", status: "uncertain", txHash: "cd".repeat(32) }]}
+      />,
+    );
+    expect(screen.getByText("Check step 1")).toBeTruthy();
+    expect(screen.getByText("Outcome unknown")).toBeTruthy();
+    expect(screen.getByText(/Check it on the explorer/)).toBeTruthy();
+    expect(screen.queryByText("Retry")).toBeNull();
+    expect(screen.queryByText("Cancel remaining steps")).toBeNull();
+  });
+
+  it("shows a wallet mark only on a step waiting for the wallet, and a spinner on one in flight", () => {
+    const { rerender } = render(<ExecutionStepper currentStepIndex={0} steps={[...two("signing", "pending")]} onSign={() => {}} />);
+    expect(screen.getByLabelText("Waiting for your wallet")).toBeTruthy();
+    expect(screen.queryByLabelText("In progress")).toBeNull();
+    rerender(<ExecutionStepper currentStepIndex={0} autoApprove steps={[...two("signing", "pending")]} />);
+    expect(screen.getByLabelText("In progress")).toBeTruthy();
+    expect(screen.queryByLabelText("Waiting for your wallet")).toBeNull();
+  });
+
+  describe("progress", () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("counts the seconds a step has been in flight", () => {
+      vi.useFakeTimers();
+      render(<ExecutionStepper currentStepIndex={0} autoApprove steps={[{ id: "a", op: "borrow", label: "Borrow 5 XLM", asset: "XLM", amount: "5", status: "submitting" }]} />);
+      expect(screen.queryByText("3s")).toBeNull();
+      act(() => { vi.advanceTimersByTime(3200); });
+      expect(screen.getByText("3s")).toBeTruthy();
+    });
+
+    it("closes a ring before the tick only for a step that settled while the card was open", () => {
+      const live = [{ id: "a", op: "borrow", label: "Borrow 5 XLM", asset: "XLM", amount: "5", status: "submitting" as const }];
+      const { container, rerender } = render(<ExecutionStepper currentStepIndex={0} autoApprove steps={live} />);
+      expect(container.querySelector(".cp-exec-ring")).toBeNull();
+      rerender(<ExecutionStepper currentStepIndex={0} autoApprove steps={[{ ...live[0], status: "settled" as const, txHash: "ab".repeat(32), ledger: 9 }]} />);
+      expect(container.querySelector(".cp-exec-ring")).not.toBeNull();
+      cleanup();
+      const restored = render(<ExecutionStepper currentStepIndex={0} autoApprove steps={[{ ...live[0], status: "settled" as const }]} />);
+      expect(restored.container.querySelector(".cp-exec-ring")).toBeNull();
+      expect(restored.container.querySelector(".cp-exec-tick")).not.toBeNull();
+    });
   });
 });

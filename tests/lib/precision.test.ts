@@ -1,5 +1,5 @@
 /**
- * Token precision is the protocol's number, read per token — never a default. The Notion
+ * Token precision is the protocol's number, read per token - never a default. The Notion
  * reference lists the USDC family at 6 places; the deployed SACs report 7. The chain wins.
  */
 import { describe, expect, it } from "vitest";
@@ -8,7 +8,7 @@ import type { Observation } from "@/lib/copilot/investigation/types";
 
 const obs = (capability: string, data: Record<string, unknown>): Observation => ({ id: capability, capability, args: {}, observedAt: 1, status: "ok", data });
 
-describe("decimalsFrom — a price's precision is not a token's", () => {
+describe("decimalsFrom - a price's precision is not a token's", () => {
   it("ignores `decimals` on an oracle price row and keeps the SAC's (13 Sep: XLM repay cut to 14 places)", () => {
     const now = 1_700_000_000_000;
     const read = (id: string, capability: string, data: Record<string, unknown>, args: Record<string, unknown> = {}) =>

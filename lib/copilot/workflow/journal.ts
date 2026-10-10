@@ -2,13 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { Networks, TransactionBuilder } from "@stellar/stellar-sdk";
 import type { RecordStore, Stored } from "./store";
 import type { ProposalStep, WorkflowProposal, WorkflowRecord } from "./types";
+import { PLAN_TTL_MS } from "../plan-ttl";
 
 /**
  * What a pre-broadcast check may conclude.
  *
  * `resize` exists because blocking between legs is NOT neutral: if leg one borrowed and
  * leg two supplies the proceeds, stopping leaves the user holding borrowed money that pays
- * interest and earns nothing — worse than completing at a smaller size. It is accepted only
+ * interest and earns nothing - worse than completing at a smaller size. It is accepted only
  * for a step whose amount was DERIVED from a constraint, only downward, and only within the
  * bound recorded in the proposal the user approved.
  */
@@ -31,26 +32,31 @@ function bound(record: WorkflowRecord, identity: Identity) {
 
 /**
  * Strategy cards are live financial proposals, not durable instructions. Approval performs
- * another risk/balance read, but after five minutes the user must prepare a fresh card so
+ * another risk/balance read, but after the shared plan retention window a fresh card is required so
  * rates, balances, position sizes and pool state cannot be mistaken for current values.
  */
-export const PROPOSAL_TTL_MS = 5 * 60_000;
+export const PROPOSAL_TTL_MS = PLAN_TTL_MS;
+
+import { MAX_WORKFLOW_STEPS } from "./types";
+export { MAX_WORKFLOW_STEPS };
 
 /** Every write is conditional; neither a repeated POST nor another replica can claim a leg twice. */
 export class WorkflowJournal {
   constructor(private readonly store: RecordStore<WorkflowRecord>, private readonly now = Date.now) {}
   async create(input: Omit<WorkflowProposal, "id" | "revision" | "digest" | "createdAt" | "expiresAt">) {
-    if (!input.steps.length || input.steps.length > 8 || new Set(input.steps.map(s => s.id)).size !== input.steps.length)
+    if (!input.steps.length || input.steps.length > MAX_WORKFLOW_STEPS || new Set(input.steps.map(s => s.id)).size !== input.steps.length)
       throw new Error("invalid_proposal_steps");
     /**
      * A proposal shown for approval must already be sized. `sizing.ts` resolves "max"
      * against the floor BEFORE anything reaches here, so a sentinel or a zero arriving at
-     * this point means the resolution was skipped — and asking someone to approve a step
+     * this point means the resolution was skipped - and asking someone to approve a step
      * whose real amount is decided later is not informed consent.
      *
-     * Bounded downstream sizing (leg two spending leg one's actual output) is the one case
-     * the plan permits, and it needs a declared dependency and bound that `ProposalStep`
-     * does not yet carry. Refused here rather than waved through as an unbounded "max".
+     * Bounded downstream sizing (leg two spending leg one's actual output) is carried as a
+     * real estimate plus `sizing.basis === "settled_payout"`. The number below is that
+     * estimate, so the user approves a figure. Execute may send the measured payout
+     * inside the approved band; it does not edit this proposal, and an unbounded "max"
+     * is still refused.
      */
     if (input.steps.some(s => !/^\d+(\.\d+)?$/.test(s.amount) || Number(s.amount) <= 0))
       throw new Error("unsized_proposal_step");
@@ -104,7 +110,7 @@ export class WorkflowJournal {
     /**
      * A timeout or RPC miss is not a consumed approval. Returning to `proposed`
      * keeps Approve enabled so a flaky testnet read is not a dead card. Policy
-     * refusals (funds, floor) still block — those will not pass on a retry of
+     * refusals (funds, floor) still block - those will not pass on a retry of
      * the same amounts.
      */
     const retry = Boolean(reason && isRetryableRiskReason(reason));
@@ -119,7 +125,7 @@ export class WorkflowJournal {
    * Approval is not a standing licence: between approving a two-step plan and broadcasting
    * its second step, a price can move the health factor through the floor the user set. So
    * `ready` is consulted per step, not once at approval, and any reason it returns BLOCKS
-   * the run instead of adjusting the amount to make it fit — silently re-sizing to squeeze
+   * the run instead of adjusting the amount to make it fit - silently re-sizing to squeeze
    * a transaction through is the failure mode this exists to prevent.
    *
    * Order matters. The step is claimed BEFORE the external read, so a crash mid-check
@@ -169,8 +175,34 @@ export class WorkflowJournal {
     await this.save(current);
     throw new WorkflowConflict("step_not_ready");
   }
+  /**
+   * Balances taken immediately before a removal is submitted. Stored on the step
+   * state, never on the proposal, so the approved amount and its digest stay put.
+   */
+  async noteBalancesBefore(id: string, identity: Identity, stepId: string, balances: Record<string, string>) {
+    const record = await this.read(id, identity);
+    const step = record.value.steps.find(s => s.id === stepId);
+    if (!step || !["invoking", "awaiting_signature"].includes(step.status)) throw new WorkflowConflict("step_changed");
+    step.balancesBefore = balances;
+    return this.save(record);
+  }
+  /**
+   * Stop before broadcast and ask for a new approval. The step goes back to pending
+   * and the run to blocked: nothing was submitted, so this is not an on-chain failure.
+   */
+  async pauseForReapproval(id: string, identity: Identity, stepId: string, reason: string) {
+    const record = await this.read(id, identity);
+    const step = record.value.steps.find(s => s.id === stepId);
+    if (!step || step.status !== "invoking") throw new WorkflowConflict("step_changed");
+    const message = reason.slice(0, 500);
+    step.status = "pending";
+    step.message = message;
+    record.value.status = "blocked";
+    record.value.message = message;
+    return this.save(record);
+  }
   async invocationResult(id: string, identity: Identity, stepId: string,
-    result: { kind: "submitted"; txHash: string; note?: string } | { kind: "unsigned"; unsignedXdr: string; note?: string }
+    result: { kind: "submitted"; txHash: string; note?: string } | { kind: "unsigned"; unsignedXdr: string; note?: string; refusal?: string }
       | { kind: "uncertain"; txHash?: string } | { kind: "failed"; message: string }) {
     const record = await this.read(id, identity);
     const step = record.value.steps.find(s => s.id === stepId);
@@ -184,6 +216,7 @@ export class WorkflowJournal {
     } else if (result.kind === "unsigned") {
       if (!result.unsignedXdr || result.unsignedXdr.length > 100_000) throw new Error("invalid_transaction_envelope");
       step.status = "awaiting_signature"; step.unsignedXdr = result.unsignedXdr;
+      if (result.refusal) step.signRefusal = result.refusal.slice(0, 400); else delete step.signRefusal;
       record.value.status = "awaiting_signature";
       record.value.message = result.note
         ? `Approve the transaction in your wallet to continue. ${result.note}`
@@ -226,6 +259,15 @@ export class WorkflowJournal {
     record.value.message = "Transaction submitted; waiting for ledger confirmation.";
     return this.save(record);
   }
+  /** Replace only an unsubmitted envelope; concurrent refreshes and late signatures lose the CAS. */
+  async replaceUnsignedEnvelope(id: string, identity: Identity, stepId: string, expectedXdr: string, unsignedXdr: string) {
+    const record = await this.read(id, identity);
+    const step = record.value.steps.find(s => s.id === stepId);
+    if (record.value.status !== "awaiting_signature" || !step || step.status !== "awaiting_signature" ||
+        step.unsignedXdr !== expectedXdr || step.txHash || step.signedXdr) throw new WorkflowConflict("step_changed");
+    step.unsignedXdr = unsignedXdr;
+    return this.save(record);
+  }
   /** Persist the exact signed envelope and hash BEFORE network submission. */
   async acceptSignedEnvelope(id: string, identity: Identity, stepId: string, signedXdr: string) {
     const record = await this.read(id, identity);
@@ -254,10 +296,23 @@ export class WorkflowJournal {
     const base = !success ? "The transaction failed on chain. Remaining steps were stopped."
       : record.value.status === "completed" ? "All approved transactions were confirmed on chain." : "Step confirmed. Remaining steps still require fresh validation.";
     // The note travels with the step that earned it (e.g. a swap's floor moved and was
-    // adjusted before broadcast), so it survives past this settlement's own generic message —
+    // adjusted before broadcast), so it survives past this settlement's own generic message -
     // otherwise the one thing recording what price it actually swapped at is overwritten the
     // instant the ledger confirms, moments after it was written.
     record.value.message = success && note ? `${base} ${note}` : base;
+    return this.save(record);
+  }
+  /** A matching RPC response explicitly refused broadcast; this is not ledger failure. */
+  async submissionRejected(id: string, identity: Identity, stepId: string, hash: string, status: "ERROR" | "TRY_AGAIN_LATER", resultCode?: string) {
+    const record = await this.read(id, identity);
+    const step = record.value.steps.find((entry) => entry.id === stepId);
+    if (!step || step.status !== "submitted" || step.txHash !== hash || !step.signedXdr)
+      throw new WorkflowConflict("submission_mismatch");
+    step.status = "failed";
+    // Keep the signed envelope/hash for audit. Never assign latestLedger as settledLedger.
+    step.message = resultCode || status;
+    record.value.status = "blocked";
+    record.value.message = step.message;
     return this.save(record);
   }
   /**
@@ -268,7 +323,7 @@ export class WorkflowJournal {
    * out is to ask the ledger about the reference that was being submitted.
    *
    * Requires a recorded reference. With no hash there is nothing to look up, and inventing
-   * a search over recent account activity would guess which transaction was ours —
+   * a search over recent account activity would guess which transaction was ours -
    * `unreconcilable_without_reference` says so instead of guessing.
    *
    * `found: false` means the ledger has no such transaction, so nothing was spent and the

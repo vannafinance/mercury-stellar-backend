@@ -10,7 +10,7 @@ import { allowedInvocation } from "../workflow/allowlist";
 import { isRecord } from "./decision";
 import { interruptible } from "./runtime";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
-import { constantProductOut, isDangerousFill, poolReservesFrom, reservesForDirection, slippageFloor, type PoolReserves } from "./pool-quote";
+import { constantProductOut, isDangerousFill, liquidityFloor, poolReservesFrom, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
 import { WorkflowConflict, type StepReadiness } from "../workflow/journal";
 import { workflowView, type WorkflowProposal, type WorkflowView, type ProposalStep } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
@@ -25,6 +25,8 @@ import { resolveAssetDef } from "../registry/assets";
 import { workflowJournal } from "./proposal";
 import { TOOLS } from "../workflow/allowlist";
 import { WALLET_OPS } from "../workflow/types";
+import { assertSigningTime, checkSigningPreconditions, refreshSigningEnvelope } from "../workflow/signing-envelope";
+import { checkTransactionFee } from "../workflow/fee-budget";
 
 /** Every tool the vocabulary maps to. Derived, so a new op cannot be allowlisted yet unexecutable. */
 const WRITE_TOOLS = new Set(Object.values(TOOLS));
@@ -78,20 +80,20 @@ export type StaleLiquidityVerdict =
  * ## The race this closes
  *
  * The floor is derived when the plan is built; the swap is sent when the user approves it,
- * seconds or minutes later. A pool does not stand still in between — 15 Sep, live, the same
+ * seconds or minutes later. A pool does not stand still in between - 15 Sep, live, the same
  * 1,000 XLM → AQUSDC swap was refused by the DEX (HostError #2006) at approve time on a
  * floor that had been perfectly fine moments before.
  *
  * A moved price is not, by itself, a reason to stop: the user asked to swap 100 XLM, not to
  * receive exactly one number or nothing. So the pool is re-quoted here, and the write
- * proceeds whenever the fresh fill is still a FAIR one — only a fill that is itself
+ * proceeds whenever the fresh fill is still a FAIR one - only a fill that is itself
  * dangerous (the same oracle-price-impact threshold the propose-time card refuses on) stops
  * the write, and it stops BEFORE anything is sent, naming both figures:
  *
  * - Pool still pays the approved floor → send it UNCHANGED.
  * - Pool pays less, but the fresh fill is still fair (within the impact threshold) → send it
  *   with the floor LOWERED to what the pool actually offers, minus the same slippage margin
- *   the original floor used. The eventual result names the price it actually settled at —
+ *   the original floor used. The eventual result names the price it actually settled at -
  *   never a silent substitution the user has to discover from their balance afterward.
  * - Pool pays so much less that the fresh fill is itself a bad trade → refuse, naming both
  *   figures. This is the one case a floor must not be lowered to fit: an already-thin pool
@@ -99,7 +101,7 @@ export type StaleLiquidityVerdict =
  *   of the approval it happens on.
  *
  * Fails OPEN. If the pool or price reads are unavailable, slow, or not an Aquarius pair, the
- * write proceeds unchanged — the DEX's own floor check is still the backstop, and a stats
+ * write proceeds unchanged - the DEX's own floor check is still the backstop, and a stats
  * endpoint being down is not a reason to block a swap the user approved.
  */
 export async function staleSwapFloor(
@@ -112,7 +114,7 @@ export async function staleSwapFloor(
   const unchanged: StaleFloorVerdict = { kind: "unchanged" };
   // Re-quote ANY swap venue, not just Aquarius. A price that moved between the plan and
   // the approval is the normal case, and a Soroswap leg that skipped this carried its
-  // plan-time floor all the way to signing — which is how a floor sized at oracle parity
+  // plan-time floor all the way to signing - which is how a floor sized at oracle parity
   // reached the wallet against a pool paying less than half of it (16 Sep, live).
   const swapVenue = typeof step.args.venue === "string" ? step.args.venue : "";
   if (step.op !== "swap" || (swapVenue !== "aquarius" && swapVenue !== "soroswap")) return unchanged;
@@ -132,7 +134,7 @@ export async function staleSwapFloor(
       AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
     );
     // `swap_killed` is the AMM API's description of a pool, not the chain's answer, and
-    // refusing on it blocked swaps that settle — see the note in plan.ts. The re-quote
+    // refusing on it blocked swaps that settle - see the note in plan.ts. The re-quote
     // below is the real check: it refuses when the pool cannot actually fill the floor.
     reserves = poolReservesFrom(payload);
   } catch { return step.targetOut ? { kind: "refuse", message: "The live pool could not be re-quoted for the exact output you approved. Nothing was submitted." } : unchanged; }
@@ -152,7 +154,7 @@ export async function staleSwapFloor(
   if (quoted >= floorWad) return unchanged;
 
   // The pool pays less than approved. Whether that is fine or dangerous is not a question
-  // the pool's own reserves can answer — it needs the oracle, the same way the propose-time
+  // the pool's own reserves can answer - it needs the oracle, the same way the propose-time
   // guard does, so both ends of the same trade are judged by the same yardstick.
   let inUsd: unknown, outUsd: unknown;
   try {
@@ -174,11 +176,11 @@ export async function staleSwapFloor(
   // A user who accepted the loss gets the trade, re-quoted: the floor drops to what the
   // pool pays NOW, which is what "execute at whatever price" has to mean if it is to mean
   // anything safe. Sending no floor at all would leave the fill to whoever moves the pool
-  // next in the same ledger, so the fresh quote — not nothing — becomes the floor.
+  // next in the same ledger, so the fresh quote - not nothing - becomes the floor.
   if (isDangerousFill(inUsdWad, outUsdWad) && !slippageAccepted) {
     return {
       kind: "refuse",
-      message: `Not submitted — the pool's price moved after you approved this, and now fills at a loss: `
+      message: `Not submitted - the pool's price moved after you approved this, and now fills at a loss: `
         + `${tokenIn} → ${tokenOut} would settle for about ${formatWad(quoted)} ${tokenOut} for ${amountIn} ${tokenIn}, `
         + `well below the ${minOut} ${tokenOut} floor you approved and below what ${tokenIn} is worth. `
         + `Ask again for a fresh quote, or say you accept the loss and it will be swapped as asked.`,
@@ -219,11 +221,11 @@ function tokenAmount(value: bigint, places = 7): string {
  * ## The race this closes
  *
  * A full exit is sized from a position read, frozen into the proposal as a literal, and
- * then waits — for the proposal to build, for a person to press Approve, and with
+ * then waits - for the proposal to build, for a person to press Approve, and with
  * auto-sign off for that person to sign. A Blend supply does not hold still through any
  * of that: the b-rate accrues, so the underlying the plan named is quietly no longer the
  * underlying the position holds. Send the frozen figure and the exit either leaves dust
- * behind or, when the balance moved the other way, reverts on chain — after signing,
+ * behind or, when the balance moved the other way, reverts on chain - after signing,
  * which is the worst moment to learn it.
  *
  * Only steps whose sizing recorded `whole_position` are touched. A number the user stated
@@ -231,7 +233,7 @@ function tokenAmount(value: bigint, places = 7): string {
  * distinction `StepSizing` exists to carry.
  *
  * Fails OPEN. A read that is unavailable, slow or shaped unexpectedly leaves the approved
- * amount alone — the protocol's own balance check is still the backstop, and a read being
+ * amount alone - the protocol's own balance check is still the backstop, and a read being
  * down is not a reason to refuse an exit the user approved. A position that now reads ZERO
  * is the one hard stop: there is nothing to withdraw, and saying so beats a revert.
  */
@@ -288,6 +290,165 @@ export async function stalePositionAmount(
   };
 }
 
+/** What measuring a removal's settled payout decided, immediately before the next write. */
+export type SettledPayoutVerdict =
+  | { kind: "unchanged" }
+  | { kind: "adjusted"; amount: string; note: string }
+  | { kind: "refuse"; message: string };
+
+/** What reading the margin account immediately before a removal is submitted decided. */
+export type RemovalBaselineVerdict =
+  | { kind: "unchanged" }
+  | { kind: "recorded"; balances: Record<string, string> }
+  | { kind: "refuse"; message: string };
+
+const PAYOUT_UNREAD_BEFORE = "The margin account balance could not be read before removing liquidity, so the payout cannot be measured. Nothing was submitted. Approve a new proposal to try again.";
+const PAYOUT_UNREAD_AFTER = "The margin account balance could not be read after the removal settled, so this step was not submitted. Approve a new proposal to continue.";
+const PAYOUT_UNRECORDED = "The balance from before the removal was not recorded, so this step was not submitted. Approve a new proposal to continue.";
+
+function payoutDependents(proposal: WorkflowProposal, removalId: string): ProposalStep[] {
+  return proposal.steps.filter((entry) => entry.sizing?.basis === "settled_payout" && entry.sizing.fromStep === removalId);
+}
+
+/**
+ * One collateral read, parsed the same way the sizer reads a posted balance.
+ * A missing row on a well-formed read is zero. An untrusted row or a failed call is a failure.
+ */
+async function readAccountBalances(
+  assets: readonly string[],
+  mcp: Pick<MCPClient, "call">,
+  scope: InvestigationScope,
+  signal: AbortSignal,
+): Promise<{ ok: true; balances: Record<string, string> } | { ok: false }> {
+  const trader = scope.trader;
+  if (!trader || !scope.smartAccount || assets.length === 0) return { ok: false };
+  let data: Record<string, unknown>;
+  try {
+    const read = resolveRead("account_collateral", {}, scope);
+    const payload = await interruptible(
+      () => mcp.call(read.tool, read.args, trader),
+      AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
+    );
+    if (!isRecord(payload) || payload.error || !Array.isArray(payload.collateral)) return { ok: false };
+    data = payload;
+  } catch {
+    return { ok: false };
+  }
+  const balances: Record<string, string> = {};
+  for (const asset of assets) {
+    const def = resolveAssetDef(asset);
+    if (!def?.marginSymbol) return { ok: false };
+    const rows = data.collateral as unknown[];
+    const untrusted = rows.some((entry) => isRecord(entry)
+      && (entry.symbol === def.marginSymbol || entry.symbol === def.id)
+      && entry.balance_untrusted === true);
+    if (untrusted) return { ok: false };
+    const amount = positionRowIn(data, POSITION_ROWS.account_collateral, def.marginSymbol, def.id) ?? "0";
+    try { decimalWad(amount); } catch { return { ok: false }; }
+    balances[asset] = amount;
+  }
+  return { ok: true, balances };
+}
+
+/**
+ * Read the margin-account balances a later leg will difference, immediately before
+ * the removal is submitted. Planning reads are not reused. A removal with no
+ * settled-payout dependent is left alone.
+ */
+export async function removalBalanceBaseline(
+  step: ProposalStep,
+  proposal: WorkflowProposal,
+  mcp: Pick<MCPClient, "call">,
+  scope: InvestigationScope,
+  signal: AbortSignal,
+): Promise<RemovalBaselineVerdict> {
+  if (step.op !== "remove_liquidity" && step.op !== "swap") return { kind: "unchanged" };
+  const dependents = payoutDependents(proposal, step.id);
+  if (!dependents.length) return { kind: "unchanged" };
+  const assets = [...new Set(dependents.map((entry) => entry.sizing?.basis === "settled_payout" ? entry.sizing.asset : entry.asset))];
+  const read = await readAccountBalances(assets, mcp, scope, signal);
+  if (!read.ok) return { kind: "refuse", message: step.op === "swap"
+    ? "The margin account output balance could not be read before the swap, so its payout cannot be measured. Nothing was submitted. Prepare a new proposal."
+    : PAYOUT_UNREAD_BEFORE };
+  return { kind: "recorded", balances: read.balances };
+}
+
+/**
+ * Spend what the removal actually paid in this leg's asset.
+ *
+ * The approved amount stays the pool-read estimate. The sent amount is the rise in
+ * the margin-account balance of that asset since the read taken just before the
+ * removal was submitted. The band is `SWAP_SLIPPAGE_BPS` on either side of the
+ * estimate, the same margin `slippageFloor` applies below a quote. Outside that
+ * band the leg is not submitted.
+ *
+ * Fails closed. A missing or unreadable balance does not fall back to the estimate.
+ */
+export async function settledRemovalPayout(
+  step: ProposalStep,
+  states: ReadonlyArray<{ id: string; balancesBefore?: Record<string, string> }>,
+  args: Record<string, unknown>,
+  mcp: Pick<MCPClient, "call">,
+  scope: InvestigationScope,
+  signal: AbortSignal,
+  producer?: ProposalStep,
+): Promise<SettledPayoutVerdict> {
+  const unchanged: SettledPayoutVerdict = { kind: "unchanged" };
+  const sizing = step.sizing;
+  if (!sizing || sizing.basis !== "settled_payout") return unchanged;
+  const liquidity = step.op === "add_liquidity";
+  const origin = producer?.op === "swap" ? "swap" : "removal";
+  const unreadAfter = producer?.op === "swap"
+    ? "The margin account output balance could not be read after the swap settled. Nothing was submitted. Prepare a new proposal."
+    : PAYOUT_UNREAD_AFTER;
+  if (typeof (liquidity ? args.amount_a : args.amount) !== "string") return { kind: "refuse", message: unreadAfter };
+  const before = states.find((entry) => entry.id === sizing.fromStep)?.balancesBefore?.[sizing.asset];
+  if (before === undefined) return { kind: "refuse", message: PAYOUT_UNRECORDED };
+  const read = await readAccountBalances([sizing.asset], mcp, scope, signal);
+  if (!read.ok) return { kind: "refuse", message: unreadAfter };
+  let beforeWad: bigint, afterWad: bigint, estimateWad: bigint;
+  try {
+    beforeWad = decimalWad(before);
+    afterWad = decimalWad(read.balances[sizing.asset]);
+    estimateWad = decimalWad(step.amount);
+  } catch {
+    return { kind: "refuse", message: unreadAfter };
+  }
+  const label = resolveAssetDef(sizing.asset)?.displayLabel ?? sizing.asset;
+  if (afterWad < beforeWad) {
+    return {
+      kind: "refuse",
+      message: `The margin account balance of ${label} did not increase after the ${origin}. Nothing was submitted. Approve a new proposal to continue.`,
+    };
+  }
+  const payoutWad = afterWad - beforeWad;
+  // `SWAP_SLIPPAGE_BPS` (0.5%) is the margin a quote is already held to. The same width sits on either side of the estimate.
+  const band = (estimateWad * SWAP_SLIPPAGE_BPS) / BigInt(10_000);
+  const lower = estimateWad > band ? estimateWad - band : ZERO;
+  const upper = estimateWad + band;
+  if (payoutWad < lower || payoutWad > upper) {
+    return {
+      kind: "refuse",
+      message: `The ${origin} paid ${tokenAmount(payoutWad)} ${label}, outside the approved estimate of ${step.amount} ${label}. Approve a new proposal for the amount that arrived. Nothing was submitted.`,
+    };
+  }
+  // LP approval bounds both tokens. A favorable fill cannot enlarge either cap.
+  const amount = tokenAmount(liquidity && payoutWad > estimateWad ? estimateWad : payoutWad);
+  let sent: bigint;
+  try { sent = decimalWad(amount); } catch { return { kind: "refuse", message: unreadAfter }; }
+  if (sent <= ZERO) {
+    return { kind: "refuse", message: `The ${origin}'s payout of ${label} rounds to nothing, so this step was not submitted.` };
+  }
+  if (sent === estimateWad) return unchanged;
+  return {
+    kind: "adjusted",
+    amount,
+    note: liquidity
+      ? `The ${origin} paid ${tokenAmount(payoutWad)} ${label}. This step uses ${amount} ${label} within the approved maximum of ${step.amount} ${label}.`
+      : `The ${origin} paid ${amount} ${label}. The approved estimate was ${step.amount} ${label}, so this step spends the measured payout.`,
+  };
+}
+
 /**
  * Refresh an LP leg's token ratio and share floor immediately before invoking the MCP.
  *
@@ -314,6 +475,10 @@ export async function staleLiquidityAmounts(
   if (!tokenA || !tokenB || !approvedA || !approvedB) return unchanged;
 
   let reserves: PoolReserves | null = null;
+  // Why the refresh failed. The refusal below is unchanged; this only keeps the cause, which
+  // was swallowed: 23 Sep, X10 leg 5 said "reserves could not be refreshed" and the reason
+  // (a swapped token_0 and an empty fee in the MCP payload) had to be dug out of the MCP.
+  let why = "";
   try {
     const payload = await interruptible(
       () => mcp.call(
@@ -324,8 +489,13 @@ export async function staleLiquidityAmounts(
       AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
     );
     reserves = poolReservesFrom(payload);
-  } catch { /* handled below */ }
+    // MCP errors often arrive as a 200 with an error body, so an unreadable payload is kept too.
+    if (!reserves) why = `unusable payload: ${JSON.stringify(payload).slice(0, 400)}`;
+  } catch (error) {
+    why = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  }
   if (!reserves) {
+    console.warn("[copilot] LP reserves refresh failed", { venue, tokenA, tokenB, why });
     return { kind: "refuse", message: "The pool's live reserves could not be refreshed, so stale liquidity amounts were not submitted. Prepare the plan again." };
   }
 
@@ -356,7 +526,7 @@ export async function staleLiquidityAmounts(
     const sharesFromA = (amountAWad * decimalWad(reserves.totalShare)) / reserveA;
     const sharesFromB = (amountBWad * decimalWad(reserves.totalShare)) / reserveB;
     const expectedShares = sharesFromA < sharesFromB ? sharesFromA : sharesFromB;
-    const minLiquidityOut = tokenAmount(slippageFloor(expectedShares));
+    const minLiquidityOut = tokenAmount(liquidityFloor(expectedShares, amountAWad, amountBWad));
     if (decimalWad(minLiquidityOut) <= ZERO) {
       return { kind: "refuse", message: "The refreshed LP share floor rounds to zero. Nothing was submitted." };
     }
@@ -394,7 +564,7 @@ export async function lookupTransaction(hash: string): Promise<{ found: true; su
     const ledger = Number(tx.ledger);
     if (!Number.isSafeInteger(ledger) || ledger <= 0) return { found: false };
     return { found: true, success: tx.status === "SUCCESS", ledger };
-  } catch { /* RPC unavailable — leave the step submitted */ }
+  } catch { /* RPC unavailable - leave the step submitted */ }
   return { found: false };
 }
 
@@ -413,6 +583,38 @@ async function settleSubmitted(
   return journal.settled(id, identity, step.id, step.txHash, outcome.ledger, outcome.success, note);
 }
 
+/** Explicit signing preparation. Never invokes a write tool or advances a later leg. */
+export async function prepareWorkflowSigning(input: {
+  id: string; subject: string; secret: string; server: string; network: string;
+  mcp: Pick<MCPClient, "call">; signal: AbortSignal;
+  refreshEnvelope?: typeof refreshSigningEnvelope;
+  lookupTx?: LedgerLookup;
+}): Promise<WorkflowView> {
+  const journal = workflowJournal(input.secret);
+  const stored = await journal.lookup(input.id, input.subject);
+  const expected = stored.value.proposal;
+  if (expected.server !== input.server || expected.scope.network !== input.network)
+    throw new ResearchError("context_expired", "The execution environment changed. Prepare a fresh plan.", 409);
+  const scope = await resolveInvestigationScope({ subject: input.subject, wallet: expected.scope.trader, network: input.network },
+    input.mcp, input.signal);
+  const identity = { scope, server: input.server };
+  const record = (await journal.read(input.id, identity)).value;
+  const waiting = record.steps.find(s => s.status === "awaiting_signature");
+  if (record.status !== "awaiting_signature" || !waiting?.unsignedXdr) {
+    return workflowView(await settleSubmitted(journal, input.id, identity, input.lookupTx ?? lookupTransaction));
+  }
+  const step = expected.steps.find(s => s.id === waiting.id);
+  if (!step || !scope.trader) throw new WorkflowConflict("step_changed");
+  const reason = await validateWorkflowRisk({ ...expected, steps: [step] }, input.mcp, input.signal);
+  if (reason) throw new ResearchError("risk_validation_failed", reason, 409);
+  const unsignedXdr = await interruptible(() => (input.refreshEnvelope ?? refreshSigningEnvelope)(waiting.unsignedXdr!, scope.trader!), input.signal);
+  // An injected envelope refresher is a server-only test seam. The live signing path
+  // always checks the refreshed maximum fee before exposing it to the wallet.
+  if (!input.refreshEnvelope) await interruptible(() => checkTransactionFee(unsignedXdr, step, fetch, expected.walletReserves), input.signal);
+  input.signal.throwIfAborted();
+  return workflowView(await journal.replaceUnsignedEnvelope(input.id, identity, step.id, waiting.unsignedXdr, unsignedXdr));
+}
+
 export async function advanceWorkflow(input: {
   id: string;
   subject: string;
@@ -425,6 +627,15 @@ export async function advanceWorkflow(input: {
   lookupTx?: LedgerLookup;
 }): Promise<WorkflowView> {
   const journal = workflowJournal(input.secret);
+  // Where an execution's seconds go (25 Sep: a card sat on its in-flight line long enough to
+  // be reported). One line per phase, keyed by workflow, so a slow run can be read back.
+  const startedAt = Date.now();
+  let lastAt = startedAt;
+  const phase = (name: string, extra?: Record<string, unknown>) => {
+    const now = Date.now();
+    console.info("[copilot] workflow phase", { id: input.id, phase: name, ms: now - lastAt, total: now - startedAt, ...extra });
+    lastAt = now;
+  };
   const stored = await journal.lookup(input.id, input.subject);
   const expected = stored.value.proposal.scope;
   if (stored.value.proposal.server !== input.server || expected.network !== input.network)
@@ -436,9 +647,11 @@ export async function advanceWorkflow(input: {
     scope.smartAccount !== expected.smartAccount || scope.network !== expected.network) {
     throw new ResearchError("context_expired", "This investigation has expired or the connected account changed. Start a new investigation to refresh its context.");
   }
+  phase("scope");
   const identity = identityOf(stored.value.proposal);
   const lookup = input.lookupTx ?? lookupTransaction;
   let record = await settleSubmitted(journal, input.id, identity, lookup);
+  phase("settle_previous");
   if (record.steps.some(s => ["submitted", "invoking", "submitting"].includes(s.status))) return workflowView(record);
   if (["completed", "blocked", "cancelled", "uncertain", "awaiting_signature"].includes(record.status)) {
     return workflowView(record);
@@ -450,6 +663,7 @@ export async function advanceWorkflow(input: {
   let step: ProposalStep;
   try {
     step = await journal.claimNext(input.id, identity, input.ready ?? readyForStep);
+    phase("claim", { tool: step.tool });
   } catch (error) {
     if (error instanceof WorkflowConflict && error.message === "no_pending_step") {
       return workflowView((await journal.read(input.id, identity)).value);
@@ -476,19 +690,15 @@ export async function advanceWorkflow(input: {
   }
   /**
    * Re-quote the pool before spending the user's approval on a price that has already moved.
-   * A moved price alone does not stop the write — only a fill that would itself be a bad
+   * A moved price alone does not stop the write - only a fill that would itself be a bad
    * trade does (`staleSwapFloor`'s own "refuse" case). Otherwise the floor is sent as
-   * approved, or lowered to what the pool actually offers with a note recording it — never
+   * approved, or lowered to what the pool actually offers with a note recording it - never
    * a silent substitution the user only discovers from their balance afterward.
    */
   const acceptedLoss = stored.value.proposal.slippageAccepted === true;
   const stale = await staleSwapFloor(step, input.mcp, scope.trader, input.signal, acceptedLoss);
   if (stale.kind === "refuse") {
     return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: stale.message }));
-  }
-  const liquidity = await staleLiquidityAmounts(step, input.mcp, scope.trader, input.signal);
-  if (liquidity.kind === "refuse") {
-    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: liquidity.message }));
   }
   /**
    * An amount that WAS the whole position is re-read from the same source that produced
@@ -503,36 +713,69 @@ export async function advanceWorkflow(input: {
     ? { ...invocation.args, amount: position.amount }
     : invocation.args;
   const swapAdjustedArgs = stale.kind === "adjusted" ? { ...positionArgs, min_out: stale.minOut } : positionArgs;
-  const adjustedArgs = liquidity.kind === "adjusted"
-    ? {
-        ...swapAdjustedArgs,
-        amount_a: liquidity.amountA,
-        amount_b: liquidity.amountB,
-        min_liquidity_out: liquidity.minLiquidityOut,
-      }
-    : swapAdjustedArgs;
   // Tell the MCP a human was shown this fill and took it. Its own impact gate withholds
   // auto-sign otherwise, which for an accepted trade is the same confirmation twice.
+  const live = await journal.read(input.id, identity);
+  const fromStep = step.sizing?.basis === "settled_payout" ? step.sizing.fromStep : null;
+  const producer = fromStep ? live.value.proposal.steps.find(entry => entry.id === fromStep) : undefined;
+  const payout = await settledRemovalPayout(step, live.value.steps, swapAdjustedArgs, input.mcp, scope, input.signal, producer);
+  if (payout.kind === "refuse") {
+    return workflowView(await journal.pauseForReapproval(input.id, identity, step.id, payout.message));
+  }
+  const measuredArgs = payout.kind === "adjusted"
+    ? { ...swapAdjustedArgs, [step.op === "add_liquidity" ? "amount_a" : "amount"]: payout.amount } : swapAdjustedArgs;
+  // Measure first, then derive a fresh proportional pair and share floor inside
+  // the original approval caps. Replacing A after this refresh would leave B stale.
+  const liquidity = await staleLiquidityAmounts({ ...step, args: measuredArgs }, input.mcp, scope.trader, input.signal);
+  if (liquidity.kind === "refuse") {
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: liquidity.message }));
+  }
+  const payoutArgs = liquidity.kind === "adjusted" ? { ...measuredArgs,
+    amount_a: liquidity.amountA, amount_b: liquidity.amountB, min_liquidity_out: liquidity.minLiquidityOut } : measuredArgs;
   const invocationArgs = acceptedLoss && step.op === "swap"
-    ? { ...adjustedArgs, acknowledged_price_impact: true }
-    : adjustedArgs;
+    ? { ...payoutArgs, acknowledged_price_impact: true }
+    : payoutArgs;
   const note = [
     stale.kind === "adjusted" ? stale.note : null,
     liquidity.kind === "adjusted" ? liquidity.note : null,
     position.kind === "adjusted" ? position.note : null,
+    payout.kind === "adjusted" ? payout.note : null,
   ].filter((value): value is string => !!value).join(" ") || null;
 
+  const baseline = await removalBalanceBaseline(step, live.value.proposal, input.mcp, scope, input.signal);
+  if (baseline.kind === "refuse") {
+    return workflowView(await journal.pauseForReapproval(input.id, identity, step.id, baseline.message));
+  }
+  if (baseline.kind === "recorded") {
+    await journal.noteBalancesBefore(input.id, identity, step.id, baseline.balances);
+  }
+
+  phase("prewrite_checks");
+  // MCP write tools may submit under an existing delegated session. Reserve floors
+  // are currently checked on the manual signing path, so do not allow that bypass.
+  if (live.value.proposal.walletReserves?.length) {
+    let signing: unknown;
+    try {
+      signing = await interruptible(() => input.mcp.call("vanna_auto_sign_status", { wallet_address: scope.trader }, scope.trader!),
+        AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]));
+    } catch { /* An unavailable signing status does not authorize a write. */ }
+    if (!isRecord(signing) || signing.enabled !== false || signing.error) {
+      return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed",
+        message: "This wallet-reserve plan needs manual signing so each live transaction fee can be checked. Auto-approve could not be confirmed Off. Nothing was submitted. Prepare a fresh plan with Auto-approve Off." }));
+    }
+  }
   let build: Record<string, unknown>;
   try {
     const raw = await interruptible(() => input.mcp.call(invocation.tool, invocationArgs, scope.trader!),
       AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]));
     if (!isRecord(raw)) throw new Error("invalid_write_result");
     build = raw;
+    phase("mcp_write", { tool: invocation.tool });
   } catch (error) {
     // This catch used to be silent: a step went "uncertain" with nothing in any log
     // explaining why, so a timeout, a transport error and a malformed payload were
     // indistinguishable from the outside. `error` is never a broadcast proof either way,
-    // so the outcome is unchanged — only the diagnostic trail is new.
+    // so the outcome is unchanged - only the diagnostic trail is new.
     console.warn("[copilot] write call failed, step marked uncertain", {
       tool: invocation.tool,
       name: error instanceof Error ? error.name : typeof error,
@@ -547,7 +790,7 @@ export async function advanceWorkflow(input: {
    *
    * A write it could not auto-sign is not a write that failed: `maybe_auto_sign` keeps the
    * built envelope and annotates it `signing_status: "needs_wallet_sign"` with the reason
-   * auto-sign was unavailable in `error` — an unbound wallet, a dead session, a cap. This
+   * auto-sign was unavailable in `error` - an unbound wallet, a dead session, a cap. This
    * line used to read `unsigned && !build.error`, so any reason at all disqualified a
    * perfectly signable transaction from the wallet-sign route below and dropped it into
    * "error", where `preBroadcastRejection` reported the MCP's own signing instructions to
@@ -560,8 +803,8 @@ export async function advanceWorkflow(input: {
 
   /**
    * The MCP's error envelope (`mcp_server/error_handling.py`) attaches `reason`, `code`
-   * or `contract_diagnostic` only to failures it classified INSIDE the tool — simulation
-   * and validation, before anything was submitted — and a submitted transaction always
+   * or `contract_diagnostic` only to failures it classified INSIDE the tool - simulation
+   * and validation, before anything was submitted - and a submitted transaction always
    * carries its hash. Such an envelope is a rejection with a reason, and the reason is
    * the one line the user needs; filing it as "uncertain" hid it (13 Sep deposit).
    */
@@ -579,13 +822,14 @@ export async function advanceWorkflow(input: {
     }
     record = await journal.invocationResult(input.id, identity, step.id, { kind: "submitted", txHash, note: note ?? undefined });
     record = await settleSubmitted(journal, input.id, identity, lookup, note ?? undefined);
+    phase("settle", { settled: record.steps.find(s => s.id === step.id)?.status === "settled" });
     persistRun(record, input.subject);
     return workflowView(record);
   }
 
   if (result.status === "needs_wallet_sign" && result.unsigned_xdr) {
     /**
-     * Auto sign was armed and the transaction still came back unsigned — the Sign
+     * Auto sign was armed and the transaction still came back unsigned - the Sign
      * Service refused this one. Say why.
      *
      * Its reason is the thing the user needs and the only thing that tells them what to
@@ -603,26 +847,48 @@ export async function advanceWorkflow(input: {
     record = await journal.invocationResult(input.id, identity, step.id, {
       kind: "unsigned", unsignedXdr: result.unsigned_xdr,
       note: [note, refusal].filter(Boolean).join(" ") || undefined,
+      refusal: autoSignRefusalCode(build) ?? undefined,
     });
     return workflowView(record);
   }
 
   // A returned error can occur after broadcasting. Without a transaction reference
   // or a proven pre-broadcast rejection, don't claim that nothing was submitted.
+  // The MCP's own words are logged (7 Oct: a deposit came back "outcome unknown" and nothing recorded why).
+  console.warn("[copilot] write returned no transaction reference, step marked uncertain", {
+    tool: invocation.tool,
+    error: typeof build.error === "string" ? build.error.slice(0, 200) : build.error,
+    message: typeof build.message === "string" ? build.message.slice(0, 400) : undefined,
+    submissionUncertain: build.submission_uncertain,
+    signingStatus: build.signing_status,
+  });
   record = await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" });
   return workflowView(record);
 }
 
 /**
- * Why auto sign did not sign this one — MCP's own sentence, or null when it signed or
+ * Why auto sign did not sign this one - MCP's own sentence, or null when it signed or
  * was never armed.
  *
  * `auto_sign` is the Sign Service's verdict on this transaction: "on" when it signed,
  * and anything else ("rejected" over a cap or an allowlist, "disabled" with no session,
  * "unavailable" when unreachable) when it did not. Only the refusals carry a message,
- * and it is passed through verbatim — which reason exists, and what to do about each,
+ * and it is passed through verbatim - which reason exists, and what to do about each,
  * is the Sign Service's to say, not something this file should keep its own copy of.
  */
+/**
+ * The structured reason auto-approve did not sign, or null when it was not in force. "rejected" is the
+ * Sign Service refusing under an armed session (its policy `reason` code rides along); "unavailable" is
+ * the signer being unreachable, which cannot be taken as permission. "disabled" is the user's own switch
+ * being off: nothing was refused, so there is nothing to explain.
+ */
+export function autoSignRefusalCode(build: Record<string, unknown>): string | null {
+  const verdict = typeof build.auto_sign === "string" ? build.auto_sign : null;
+  if (verdict === "rejected") return typeof build.reason === "string" && build.reason ? build.reason.slice(0, 80) : "rejected";
+  if (verdict === "unavailable") return "unavailable";
+  return null;
+}
+
 export function autoSignRefusal(build: Record<string, unknown>): string | null {
   const verdict = typeof build.auto_sign === "string" ? build.auto_sign : null;
   if (!verdict || verdict === "on") return null;
@@ -649,12 +915,12 @@ export function preBroadcastRejection(
   if (!classified) return null;
   const message = typeof build.message === "string" && build.message.trim() ? build.message.trim() : `${build.error}${build.reason ? ` (${String(build.reason).replaceAll("_", " ")})` : ""}`;
   const note = swapFloorNote(step, message);
-  return `Not submitted — the protocol rejected this step before broadcast: ${message}${note ? ` ${note}` : ""}`;
+  return `Not submitted - the protocol rejected this step before broadcast: ${message}${note ? ` ${note}` : ""}`;
 }
 
 /**
  * A swap carries a floor (`min_out`) the DEX must meet or the call reverts, and the raw
- * revert is a bare contract code — "HostError #2006" told the user nothing (15 Sep, live).
+ * revert is a bare contract code - "HostError #2006" told the user nothing (15 Sep, live).
  * The floor is the one thing about that failure we can state as fact, so it is named, and
  * the likeliest reading of it is offered AS a reading, not as a diagnosis: the error codes
  * belong to the DEX's own contract, not to Vanna's, so their meanings are not ours to
@@ -662,7 +928,7 @@ export function preBroadcastRejection(
  *
  * This is now the SECOND line of defence, not the first: `staleSwapFloor` re-quotes the
  * pool before the write and states "the price moved" in plain words with both figures.
- * A rejection that still reaches here is one that re-quote could not foresee — the pool
+ * A rejection that still reaches here is one that re-quote could not foresee - the pool
  * read was unavailable, the pair is not Aquarius, or the pool moved inside the last moment.
  */
 function swapFloorNote(step: { op?: string; args?: Record<string, unknown> } | undefined, message: string): string | null {
@@ -670,7 +936,7 @@ function swapFloorNote(step: { op?: string; args?: Record<string, unknown> } | u
   const floor = typeof step.args?.min_out === "string" ? step.args.min_out : null;
   const bought = typeof step.args?.token_out === "string" ? step.args.token_out : null;
   if (!floor || !bought || !/contract|hosterror|simulation/i.test(message)) return null;
-  return `This swap would only settle for at least ${floor} ${bought}; a DEX refuses the call outright when its pool cannot meet that, which is the most likely reading here — the code itself belongs to the DEX's contract, so it is not proof.`;
+  return `This swap would only settle for at least ${floor} ${bought}; a DEX refuses the call outright when its pool cannot meet that, which is the most likely reading here - the code itself belongs to the DEX's contract, so it is not proof.`;
 }
 
 export async function confirmWorkflow(input: {
@@ -711,6 +977,10 @@ export async function confirmWorkflow(input: {
 export async function submitWorkflow(input: {
   id: string; signedXdr: string; subject: string; secret: string; server: string; network: string;
   mcp: Pick<MCPClient, "call">; signal: AbortSignal;
+  /** Server-only seams for controlled submission/settlement tests. */
+  sendTx?: (signedXdr: string) => Promise<import("@stellar/stellar-sdk").rpc.Api.SendTransactionResponse>;
+  checkEnvelope?: typeof checkSigningPreconditions;
+  lookupTx?: LedgerLookup;
 }): Promise<WorkflowView> {
   const journal = workflowJournal(input.secret);
   const stored = await journal.lookup(input.id, input.subject);
@@ -726,13 +996,28 @@ export async function submitWorkflow(input: {
   const reason = await validateWorkflowRisk({ ...expected, steps: [step] }, input.mcp,
     AbortSignal.any([input.signal, AbortSignal.timeout(25_000)]));
   if (reason) throw new ResearchError("risk_validation_failed", reason);
+  const baseline = await removalBalanceBaseline(step, expected, input.mcp, scope, input.signal);
+  if (baseline.kind === "refuse") throw new ResearchError("step_not_ready", baseline.message);
+  if (baseline.kind === "recorded") await journal.noteBalancesBefore(input.id, identity, step.id, baseline.balances);
+  // A wallet popup may itself have sat unanswered. Do not register or broadcast an expired signature.
+  assertSigningTime(input.signedXdr);
+  await interruptible(() => (input.checkEnvelope ?? checkSigningPreconditions)(input.signedXdr), input.signal);
+  if (!input.checkEnvelope) await interruptible(() => checkTransactionFee(input.signedXdr, step, fetch, expected.walletReserves), input.signal);
   const record = await journal.acceptSignedEnvelope(input.id, identity, step.id, input.signedXdr);
+  let submission: import("@stellar/stellar-sdk").rpc.Api.SendTransactionResponse;
   try {
     const [sdk, config] = await Promise.all([import("@stellar/stellar-sdk"), import("@/lib/stellar-utils")]);
-    await interruptible(() => new sdk.rpc.Server(config.SOROBAN_RPC_URL).sendTransaction(
+    submission = await interruptible(() => input.sendTx ? input.sendTx(input.signedXdr) : new sdk.rpc.Server(config.SOROBAN_RPC_URL).sendTransaction(
       sdk.TransactionBuilder.fromXDR(input.signedXdr, sdk.Networks.TESTNET)), AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]));
   } catch { return workflowView(record); }
-  return workflowView(await settleSubmitted(journal, input.id, identity, lookupTransaction));
+  const submitted = record.steps.find((entry) => entry.id === step.id)!;
+  if (submission.hash?.toLowerCase() === submitted.txHash &&
+    (submission.status === "ERROR" || submission.status === "TRY_AGAIN_LATER")) {
+    const code = submission.errorResult?.result().switch().name;
+    return workflowView(await journal.submissionRejected(input.id, identity, step.id, submitted.txHash!, submission.status, code));
+  }
+  // PENDING/DUPLICATE need ledger confirmation. An ambiguous response never permits a resend.
+  return workflowView(await settleSubmitted(journal, input.id, identity, input.lookupTx ?? lookupTransaction));
 }
 
 function journalMessage(code: string): string {

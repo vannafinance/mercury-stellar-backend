@@ -1,26 +1,106 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AutoApproveMenu, type AutoApproveMenuProps } from "./auto-approve-menu";
 import { zoneOf, zoneLabel } from "./health-dial";
 import type { ConversationSummary } from "@/lib/copilot/investigation/thread";
 import { COIN_ICONS } from "@/lib/constants/margin";
+import { INLINE_COIN_ICONS } from "@/components/copilot/coin-icon-data";
+import { HEALTH_FACTOR_INFINITY_SENTINEL } from "@/lib/margin-health";
+import { CopilotRailPresentation } from "./copilot-shell";
+import Image from "next/image";
 
 /**
  * The left rail's contents: New chat, Auto-approve, health factor, positions, recents.
  *
- * Every figure here is the same value the page already computed — the rail is a second
+ * Every figure here is the same value the page already computed - the rail is a second
  * view of one state, never its own copy. The health zone comes from `zoneOf`/`zoneLabel`
  * in health-dial, so the rail cannot disagree with the dial about what "healthy" means.
  *
  * Sizes are the deployed mock's: 14/21 semibold for a section label, 13/20 semibold
  * monospace for a figure, 12/18 for its caption. `min-width: 0` is on every row that
- * holds text, because a flex item defaults to `min-width: auto` — its content's width —
+ * holds text, because a flex item defaults to `min-width: auto` - its content's width -
  * and one long conversation title was enough to push the rail past 292px.
  */
 
 const VANNA_FONT = "var(--font-plus-jakarta-sans), system-ui, sans-serif";
+
+function healthFactorLabel(value: number | null): string {
+  if (value == null || Number.isNaN(value)) return "-";
+  return value >= HEALTH_FACTOR_INFINITY_SENTINEL ? "∞" : value.toFixed(2);
+}
+
+/** A value change remounts only its tint, never the rail or any action controls. */
+function HealthValue({ value }: { value: number | null }) {
+  const [frame, setFrame] = useState({ value, revision: 0 });
+  if (!Object.is(frame.value, value)) setFrame({ value, revision: frame.revision + 1 });
+  return <span key={frame.revision} className={frame.revision ? "cp-hf-value cp-hf-tint" : "cp-hf-value"}>{healthFactorLabel(value)}</span>;
+}
+
+/** One section's two presentations; hover previews, click pins, no account state. */
+function RailFlyout({ label, icon, summary, heading, children, order }: {
+  label: string; icon: React.ReactNode; summary?: React.ReactNode;
+  heading: React.ReactNode; children: React.ReactNode; order: number;
+}) {
+  const compact = useContext(CopilotRailPresentation);
+  const [open, setOpen] = useState(false);
+  const pinned = useRef(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [position, setPosition] = useState({ left: 68, top: 0 });
+  const clear = () => { if (timer.current) clearTimeout(timer.current); };
+  const preview = () => {
+    clear();
+    const rect = trigger.current?.getBoundingClientRect();
+    if (rect) setPosition({ left: Math.max(8, Math.min(rect.right + 8, window.innerWidth - 280)), top: Math.max(8, Math.min(rect.top, window.innerHeight - 180)) });
+    setOpen(true);
+  };
+  const leave = () => {
+    clear();
+    timer.current = setTimeout(() => {
+      if (!pinned.current && !panel.current?.contains(document.activeElement)) setOpen(false);
+    }, 160);
+  };
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => { pinned.current = false; setOpen(false); };
+    const outside = (event: PointerEvent) => {
+      if (!trigger.current?.contains(event.target as Node) && !panel.current?.contains(event.target as Node)) close();
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { close(); trigger.current?.focus(); } };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    window.addEventListener("resize", close);
+    const scroll = (event: Event) => { if (!panel.current?.contains(event.target as Node)) close(); };
+    window.addEventListener("scroll", scroll, true);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", scroll, true);
+    };
+  }, [open]);
+  if (!compact) return <div className="cp-rail-section" style={{ order }}>{heading}{children}</div>;
+  return <div className="cp-rail-section" style={{ order }}>
+    <button ref={trigger} type="button" className="cp-rail-mix cp-icon-button" aria-label={label} aria-expanded={open} aria-haspopup="dialog" onMouseEnter={preview} onMouseLeave={leave} onFocus={preview} onBlur={leave} onClick={() => { pinned.current = !pinned.current; if (pinned.current) preview(); else setOpen(false); }}>
+      {icon}{summary}
+    </button>
+    {open && createPortal(<div ref={panel} className="cp-root cp-rail-flyout" role="dialog" aria-label={label} style={{ ...position, maxHeight: `calc(100dvh - ${position.top + 8}px)` }} onMouseEnter={clear} onMouseLeave={leave} onFocus={clear} onBlur={leave}>
+      <div className="mb-3 text-[14px] font-semibold text-vgray-900">{label}</div>{heading}{children}
+    </div>, document.body)}
+  </div>;
+}
+
+function HealthIcon() {
+  return <svg className="cp-health-icon" aria-hidden width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3.34 19a10 10 0 1 1 17.32 0" /><path className="cp-health-needle" d="m12 14 4-4" /></svg>;
+}
+
+function PositionIcon() {
+  return <span className="cp-position-stack" aria-hidden><img src={INLINE_COIN_ICONS.XLM} alt="" width={17} height={17} /><Image src={COIN_ICONS.USDC} alt="" width={17} height={17} /></span>;
+}
 
 export interface RailPosition {
   /** Stable key and display symbol, exactly as the account reported it. */
@@ -30,7 +110,7 @@ export interface RailPosition {
    * which is how the mock shows an LP position as one row rather than two.
    */
   pairedSymbol?: string;
-  /** "Margin · Collateral", "Margin · Borrowed" — the venue and what the holding is. */
+  /** "Margin · Collateral", "Margin · Borrowed" - the venue and what the holding is. */
   role: string;
   amount: string;
   usd: string;
@@ -59,29 +139,32 @@ export function CopilotRailTop({
 }) {
   return (
     <>
-      <div style={{ padding: "0 16px 4px" }}>
+      <div className="cp-rail-new" style={{ padding: "0 16px 4px", order: 1 }}>
         <button
           type="button"
           onClick={onNewChat}
-          className="cp-icon-button flex w-full cursor-pointer items-center gap-2.5 rounded-r2 px-2 py-2 text-[14px] leading-[21px] font-semibold text-vgray-900 transition-colors hover:bg-violet-50 hover:text-violet-500"
+          className="cp-rail-row cp-icon-button flex w-full cursor-pointer items-center gap-2.5 rounded-r2 px-2 py-2 text-[14px] leading-[21px] font-semibold text-vgray-900 transition-colors"
           style={{ marginLeft: -8, marginRight: -8, width: "calc(100% + 16px)" }}
         >
           <NewChatIcon size={16} />
           New chat
         </button>
       </div>
-      <div style={{ padding: "0 16px 10px" }}>
+      <div className="cp-rail-auto" style={{ padding: "0 16px", order: 3 }}>
         <AutoApproveMenu {...autoApprove} variant="rail" />
       </div>
     </>
   );
 }
 
-/** Health factor, positions, recents — same column as New chat. */
+/** Health factor, positions, recents - same column as New chat. */
 export function CopilotRailBody({
   hasWallet,
   healthFactor,
   positions,
+  accountLoading = false,
+  accountError = false,
+  onRetryAccount,
   conversations,
   activeId,
   onOpen,
@@ -92,6 +175,9 @@ export function CopilotRailBody({
   /** Null when there is no account to read, which the rail says rather than showing 0. */
   healthFactor: number | null;
   positions: RailPosition[];
+  accountLoading?: boolean;
+  accountError?: boolean;
+  onRetryAccount?: () => void;
   conversations: ConversationSummary[];
   activeId: string | null;
   onOpen: (id: string) => void;
@@ -101,65 +187,58 @@ export function CopilotRailBody({
   const [positionsOpen, setPositionsOpen] = useState(true);
   const [recentsOpen, setRecentsOpen] = useState(true);
 
-  if (!hasWallet) {
-    return (
-      <div style={{ minWidth: 0, padding: "4px 16px 16px", display: "flex", flexDirection: "column", gap: 16 }}>
-        <p className="text-[13px] leading-[20px] text-vgray-500">
-          Connect your wallet to see your health factor and positions.
-        </p>
-        <RecentsList
-          recentsOpen={recentsOpen}
-          onToggle={() => setRecentsOpen((v) => !v)}
-          conversations={conversations}
-          activeId={activeId}
-          onOpen={onOpen}
-          onRename={onRename}
-          onDelete={onDelete}
-        />
-      </div>
-    );
-  }
-
   const zone = zoneOf(healthFactor);
 
   return (
-    <div style={{ minWidth: 0, padding: "4px 16px 16px", display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Health factor — the number and the zone, nothing else. The dial, the scale and
+    <div className="cp-rail-body">
+      {/* Health factor - the number and the zone, nothing else. The dial, the scale and
           the collateral/borrowed strip stay off the rail by design. */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
-        <div className="text-[14px] leading-[21px] font-semibold text-vgray-900">Health factor</div>
-        <div style={{ flex: "none", textAlign: "right", minWidth: 0 }}>
+      <RailFlyout order={2} label="Health factor" icon={<HealthIcon />} summary={<span className="text-[11px] font-semibold text-vgray-900"><HealthValue value={healthFactor} /></span>} heading={
+      <div className="cp-rail-row cp-health-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <HealthIcon />
+        <div className="flex-1 text-[14px] leading-[21px] font-semibold text-vgray-900">Health factor</div>
+        <div className="flex flex-none items-center gap-1.5" style={{ minWidth: 0 }}>
           <div className="text-[13px] leading-[20px] font-semibold text-vgray-900" style={{ fontFamily: VANNA_FONT }}>
-            {healthFactor == null ? "—" : healthFactor.toFixed(2)}
+            <HealthValue value={healthFactor} />
           </div>
           <div className="text-[12px] leading-[18px] text-vgray-500" style={{ textTransform: "capitalize" }}>
-            {zoneLabel(zone)}
+            {accountLoading ? "Loading" : accountError ? "Unavailable" : zoneLabel(zone)}
           </div>
         </div>
       </div>
+      }>
+        {!hasWallet && <p className="px-2 pb-2 text-[12px] leading-[18px] text-vgray-500">Connect your wallet to see your health factor and positions.</p>}
+        {hasWallet && accountError && <div className="px-2 pb-2 text-[12px] leading-[18px] text-vgray-500" role="status">
+          Account refresh failed.{positions.length > 0 ? " Showing previously loaded positions." : " Your positions could not be loaded."}
+          {onRetryAccount && <button type="button" onClick={onRetryAccount} className="ml-2 underline">Retry account data</button>}
+        </div>}
+      </RailFlyout>
 
-      <div>
+      <RailFlyout order={4} label="Positions" icon={<PositionIcon />} heading={
         <button
           type="button"
           onClick={() => setPositionsOpen((v) => !v)}
           aria-expanded={positionsOpen}
-          className="cp-icon-button flex w-full cursor-pointer items-center gap-1.5 py-0.5 text-vgray-900 transition-colors hover:text-violet-500"
+          className="cp-rail-row cp-icon-button flex w-full cursor-pointer items-center gap-2.5 text-vgray-900 transition-colors"
         >
+          <PositionIcon />
           <span className="flex-1 text-left text-[14px] leading-[21px] font-semibold">Positions</span>
+          <span aria-hidden className="text-[12px] font-normal text-vgray-500">{accountLoading || (accountError && positions.length === 0) ? "-" : positions.length}</span>
           <Caret open={positionsOpen} />
         </button>
+        }>
         {positionsOpen && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "8px 0 2px" }}>
+          <div className="cp-position-list">
             {positions.length === 0 ? (
-              <p className="text-[12px] leading-[18px] text-vgray-400">Nothing open.</p>
+              <p className="text-[12px] leading-[18px] text-vgray-400">{!hasWallet ? "Connect your wallet to see positions." : accountLoading ? "Loading positions…" : accountError ? "Positions unavailable." : "Nothing open."}</p>
             ) : (
               positions.map((p) => (
                 <div key={`${p.role}:${p.symbol}`} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  {/* The app's own icon map, not the mock's assets — a token must not be
+                  {/* The app's own icon map, not the mock's assets - a token must not be
                       drawn from two sources that can disagree about what it looks like. */}
                   <div style={{ position: "relative", width: p.pairedSymbol ? 26 : 20, height: 20, flex: "none" }}>
                     <img
-                      src={COIN_ICONS[p.symbol.toUpperCase()] ?? "/coins/default.svg"}
+                      src={INLINE_COIN_ICONS[p.symbol.toUpperCase()] ?? COIN_ICONS[p.symbol.toUpperCase()] ?? "/coins/default.svg"}
                       alt=""
                       width={20}
                       height={20}
@@ -167,7 +246,7 @@ export function CopilotRailBody({
                     />
                     {p.pairedSymbol && (
                       <img
-                        src={COIN_ICONS[p.pairedSymbol.toUpperCase()] ?? "/coins/default.svg"}
+                        src={INLINE_COIN_ICONS[p.pairedSymbol.toUpperCase()] ?? COIN_ICONS[p.pairedSymbol.toUpperCase()] ?? "/coins/default.svg"}
                         alt=""
                         width={20}
                         height={20}
@@ -177,7 +256,7 @@ export function CopilotRailBody({
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="truncate text-[14px] leading-[21px] font-semibold text-vgray-900">{p.symbol}</div>
-                    <div className="truncate text-[12px] leading-[18px] text-vgray-500">{p.role}</div>
+                    <div title={p.role} className="truncate text-[12px] leading-[18px] text-vgray-500">{p.role}</div>
                   </div>
                   <div style={{ flex: "none", textAlign: "right" }}>
                     <div className="text-[13px] leading-[20px] font-semibold text-vgray-900" style={{ fontFamily: VANNA_FONT }}>{p.amount}</div>
@@ -188,7 +267,7 @@ export function CopilotRailBody({
             )}
           </div>
         )}
-      </div>
+      </RailFlyout>
 
       <RecentsList
         recentsOpen={recentsOpen}
@@ -221,19 +300,20 @@ function RecentsList({
   onDelete: (id: string) => void;
 }) {
   return (
-    <div style={{ minWidth: 0 }}>
+    <RailFlyout order={5} label="Recents" icon={<RecentIcon size={18} />} heading={
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={recentsOpen}
-        className="flex w-full cursor-pointer items-center gap-1.5 py-0.5 text-vgray-900 transition-colors hover:text-violet-500"
+        className="cp-rail-row cp-icon-button flex w-full cursor-pointer items-center gap-2.5 text-vgray-900 transition-colors"
       >
         <RecentIcon size={14} />
         <span className="flex-1 text-left text-[14px] leading-[21px] font-semibold">Recents</span>
         <Caret open={recentsOpen} />
       </button>
+      }>
       {recentsOpen && (
-        <div style={{ padding: "6px 0 4px", display: "flex", flexDirection: "column" }}>
+        <div className="cp-recents-list" style={{ padding: "2px 0 4px", display: "flex", flexDirection: "column" }}>
           {conversations.length === 0 ? (
             <p className="text-[12px] leading-[18px] text-vgray-400">No chats yet.</p>
           ) : (
@@ -251,7 +331,7 @@ function RecentsList({
           )}
         </div>
       )}
-    </div>
+    </RailFlyout>
   );
 }
 
@@ -348,7 +428,7 @@ function RecentRow({
       className={`group relative flex items-center gap-0.5 rounded-r2 ${
         active || menuOpen ? "bg-vgray-50" : "hover:bg-vgray-50"
       }`}
-      style={{ minWidth: 0, margin: "0 -6px", padding: "2px 4px" }}
+      style={{ minWidth: 0, margin: "0 -8px", padding: "2px 4px" }}
     >
       <button
         type="button"
@@ -407,7 +487,7 @@ function RecentRow({
 /**
  * The collapsed rail: the few controls that still need to be reachable at 60px.
  *
- * Deliberately not every rail control — a 60px column cannot hold a health factor and a
+ * Deliberately not every rail control - a 60px column cannot hold a health factor and a
  * positions list without lying about them. Expanding is one click away, and the icons
  * here are the ones that start work rather than report it.
  */
@@ -516,11 +596,11 @@ export function CopilotRailMini({
       )}
       <div aria-hidden className="my-0.5 h-px w-[26px] bg-vgray-100" />
       <div
-        title={healthFactor == null ? "Health factor unavailable" : `Health factor ${healthFactor.toFixed(2)}`}
+        title={healthFactor == null ? "Health factor unavailable" : `Health factor ${healthFactorLabel(healthFactor)}`}
         className="text-[12px] leading-[18px] font-semibold text-vgray-900"
         style={{ fontFamily: VANNA_FONT }}
       >
-        {healthFactor == null ? "—" : healthFactor.toFixed(2)}
+        {healthFactorLabel(healthFactor)}
       </div>
     </>
   );

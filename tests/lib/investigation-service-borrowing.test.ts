@@ -17,7 +17,8 @@ vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
   return { ...actual, resolveInvestigationScope: mocks.resolveInvestigationScope };
 });
 
-vi.mock("@/lib/copilot/investigation/capacity", () => ({
+vi.mock("@/lib/copilot/investigation/capacity", async (importOriginal) => ({
+  PROTOCOL_MAX_BORROW_FLOOR: (await importOriginal<typeof import("@/lib/copilot/investigation/capacity")>()).PROTOCOL_MAX_BORROW_FLOOR,
   computeAccountPosition: mocks.computeAccountPosition,
   computeBorrowCapacity: mocks.computeBorrowCapacity,
 }));
@@ -111,7 +112,7 @@ describe("unspecified borrowing with a stated floor", () => {
     expect(result.executionAllowed).toBe(false);
   });
 
-  it("still returns ranked options when the time budget expires after rates were read", async () => {
+  it("keeps a timed-out model conclusion incomplete instead of inventing ranked options from rates", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
     mocks.computeAccountPosition.mockResolvedValue({
       grossCollateralUsd: CAPACITY.grossCollateralUsd,
@@ -162,9 +163,10 @@ describe("unspecified borrowing with a stated floor", () => {
       },
     );
 
-    expect(result.status).toBe("researched");
-    expect(result.warnings.some((warning) => /ran out of time/i.test(warning))).toBe(true);
-    expect((result.candidates?.feasible.length ?? 0) + (result.candidates?.rejected.length ?? 0)).toBeGreaterThan(0);
+    expect(result.status).toBe("incomplete");
+    expect(result.proposalCandidateId).toBeNull();
+    expect((result.candidates?.feasible.length ?? 0) + (result.candidates?.rejected.length ?? 0)).toBe(0);
+    expect(result.checks.some(check => check.status === "ok")).toBe(true);
     expect(result.executionAllowed).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-// Vanna Copilot workspace — Gemini understands intent; MCP executes.
+// Vanna Copilot workspace - Gemini understands intent; MCP executes.
 //
 // Layout follows the Copilot design: a full-width intent composer, a turn card
 // (agent-run → answer / staged / executed), and account health under that. Auto-approve
@@ -33,6 +33,7 @@ import { setAutoApprove, useCopilotSettingsStore } from "@/store/copilot-setting
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
+import { acceptedTestnetBudget, defaultTestnetBudget } from "@/lib/copilot/auto-approve-budget";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import type { Simulation as ServerSimulation } from "@/lib/copilot/types";
 import { liveUsdLabel, oracleSwapRateLabel } from "@/lib/copilot/swap-quote";
@@ -44,14 +45,19 @@ import {
   waitForAccountSequenceApplied,
   type SignXdrResult,
 } from "./sign-xdr";
+import { isInvestigationStale } from "./investigation-staleness";
+import { liveQuestionnaire, type QuestionnaireDismissal } from "./questionnaire-visibility";
 import {
   hopAutoSubmitKey,
+  mayAutoSignJournalStep,
   promoteSignableAutoSignResponse,
   shouldArmAutoApprove,
   shouldAutoApproveProposedWorkflow,
   shouldSessionAutoSubmit,
   signServiceFromSessionRead,
   preserveLastConclusiveSignState,
+  disableVerdict,
+  autoApproveToggleBlock,
 } from "./session-auto-sign";
 import {
   claimFirstAwaitingLeg,
@@ -69,6 +75,9 @@ import {
 } from "./resume-policy";
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
 import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { completionReply } from "@/lib/copilot/investigation/completion";
+import { completionMatches, completionStep, needsCompletionRecovery, immediateCompletion, settledTransactions, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
+import { REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { buildRunReceipt } from "./run-receipt";
 import { answerToText } from "@/lib/copilot/answer-schema";
 import { shortWriteLabel } from "@/lib/copilot/execution-copy";
@@ -83,8 +92,9 @@ import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { PLAN_TTL_MS } from "@/lib/copilot/plan-ttl";
 import { claimDispatch, releaseDispatch } from "@/lib/copilot/dispatch-once";
 import { lpSides } from "@/lib/copilot/lp-pair";
-import { AssistantMessage, UserBubble, ChatTurns } from "./chat-message";
+import { AssistantMessage, UserBubble, ChatTurns, REPLY_CARD_GAP_PX } from "./chat-message";
 import { ExecutionStepper } from "./execution-stepper";
+import { runningPlan, runningPlanText } from "./running-plan";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
 import { useLiveInvestigation } from "@/contexts/investigation-context";
@@ -92,10 +102,13 @@ import { CopilotShell } from "./copilot-shell";
 import { CopilotRailTop, CopilotRailBody, CopilotRailMini } from "./copilot-rail";
 import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useLiveWorkflow } from "@/contexts/workflow-context";
+import { finished as finishedWorkflow } from "@/hooks/use-workflow";
+import { fetchComposedCompletion } from "@/hooks/composed-completion";
 import { InvestigationCard } from "./investigation-card";
+import { ClarifyQuestionnaire } from "./clarify-questionnaire";
 import { ConversationMenu } from "./conversation-menu";
 import { AutoApproveMenu } from "./auto-approve-menu";
-import { shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
+import { bringsItsOwnPlan, isStaleFinishedRun, runIsOnEarlierTurn } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
   status: string;
@@ -117,7 +130,7 @@ interface AutoSignPrompt {
   message: string;
   options?: Array<{ id: string; label: string; description?: string }>;
   pending_write?: CopilotAction | null;
-  /** MCP payload (e.g. default_cap_usd) — keep for UI labels, never invent caps. */
+  /** MCP payload (e.g. independent signer defaults) - keep for UI labels, never invent caps. */
   raw?: Record<string, unknown> | null;
 }
 
@@ -151,7 +164,7 @@ interface ChatResponse {
     | "needs_wallet_bind"
     | "plan_preview";
   message: string;
-  /** Present on plan_preview — posted back verbatim as approved_plan. */
+  /** Present on plan_preview - posted back verbatim as approved_plan. */
   plan?: PlanPreview | null;
   /** Structured read answer; `message` holds the same content as plain text. */
   answer?: StructuredAnswer | null;
@@ -162,6 +175,7 @@ interface ChatResponse {
     risk?: { decision: "allow" | "block" | "needs_confirmation"; reasons?: string[] } | null;
     simulation?: Simulation | null;
     allow_session_sign?: boolean;
+    allow_wallet_dispatch?: boolean;
   } | null;
   data?: Record<string, unknown> | null;
   intent?: { template_id?: string | null } | null;
@@ -177,7 +191,7 @@ interface ChatResponse {
     /** The loan slot, independent of the collateral `asset` above. */
     borrow_asset?: string | null;
     borrow_amount?: number | null;
-    /** Which asset slot a variant chip answers — see pickClarifyOption. */
+    /** Which asset slot a variant chip answers - see pickClarifyOption. */
     clarify_slot?: "collateral" | "borrow" | "fraction" | null;
     /** Repay share when clarify_slot is fraction (0.1 … 1). */
     fraction?: number | null;
@@ -190,7 +204,7 @@ interface ChatResponse {
   wallet_bind?: {
     status: "needs_consent" | "pending" | "bound" | "expired" | "unavailable";
     request_id?: string | null;
-    /** Fallback only — the in-app consent below is the normal route. */
+    /** Fallback only - the in-app consent below is the normal route. */
     connect_url?: string | null;
     /** Privy signer quorum to authorize in-app. Absent → link fallback only. */
     signer_id?: string | null;
@@ -198,8 +212,8 @@ interface ChatResponse {
     poll_schedule_seconds?: number[] | null;
     wallet_address?: string | null;
     retry_action?: "use_defaults" | "custom" | "disable" | null;
-    max_per_tx_usd?: number | string | null;
-    max_per_day_usd?: number | string | null;
+    max_per_tx_tokens?: number | string | null;
+    max_per_day_tokens?: number | string | null;
   } | null;
   mcp?: {
     tool?: string | null;
@@ -232,6 +246,44 @@ interface ChatResponse {
     tx_hash?: string | null;
     steps?: Array<{ tool: string; label: string; status: string; message: string }>;
   } | null;
+}
+
+/** Keep the bind panel's last actionable state when a later poll is less informative. */
+export function preserveWalletBindPanelResponse(
+  previous: ChatResponse | null,
+  incoming: ChatResponse,
+): ChatResponse {
+  if (previous?.kind !== "needs_wallet_bind" || incoming.kind !== "needs_wallet_bind") {
+    return incoming;
+  }
+  const priorBind = previous.wallet_bind;
+  const nextBind = incoming.wallet_bind;
+  if (
+    !priorBind?.request_id ||
+    !nextBind?.request_id ||
+    priorBind.request_id !== nextBind.request_id
+  ) {
+    return incoming;
+  }
+
+  const keepTerminalReason =
+    nextBind.status === "pending" &&
+    (priorBind.status === "unavailable" || priorBind.status === "expired");
+  const connectUrl =
+    nextBind.status === "expired"
+      ? (nextBind.connect_url ?? null)
+      : (nextBind.connect_url ?? priorBind.connect_url);
+
+  return {
+    ...incoming,
+    ...(keepTerminalReason ? { message: previous.message } : {}),
+    wallet_bind: {
+      ...priorBind,
+      ...nextBind,
+      ...(keepTerminalReason ? { status: priorBind.status } : {}),
+      connect_url: connectUrl,
+    },
+  };
 }
 
 /**
@@ -300,7 +352,7 @@ export function followUpFor(
   return undefined;
 }
 
-// The surface's four status colours, as tokens rather than literals — read by ~60
+// The surface's four status colours, as tokens rather than literals - read by ~60
 // `style` values below, so a literal here is a literal sixty times.
 //
 // These were hex constants named for their hue (EMERALD / AMBER / IMPERIAL), and the
@@ -311,7 +363,7 @@ export function followUpFor(
 // stayed light-mode-pale".
 //
 // And the bright hues are not readable as text on a white card: emerald is 2.54:1,
-// amber 2.15:1, imperial 3.21:1 — all three fail WCAG AA, and they were painting the
+// amber 2.15:1, imperial 3.21:1 - all three fail WCAG AA, and they were painting the
 // risk-gate chips, the health-factor figure, the settled badges and ~30 other labels.
 // So these now resolve to the palette's status INKS, which is what the names say now.
 // Each ink is dark in light mode and bright in dark mode:
@@ -338,13 +390,13 @@ const ACCENT = "var(--cp-violet-500)";
  *
  * Both halves of that matter, and both were bugs:
  *
- * The fills used to be built as `` `${color}18` `` — an alpha byte appended to a
+ * The fills used to be built as `` `${color}18` `` - an alpha byte appended to a
  * 6-digit hex. The moment a colour became `var(--cp-ok-fg)` that produced
  * `var(--cp-ok-fg)18`, which is not a colour, and the fill silently disappeared. An
  * interpolated token cannot carry alpha, so a tint has to be its own token.
  *
  * Worse, the session log PERSISTED its colour into localStorage. Stored history
- * therefore pinned whatever the palette was on the day each row was written — a
+ * therefore pinned whatever the palette was on the day each row was written - a
  * reader found `#10b981`, `var(--cp-emerald)` and `var(--cp-ok-fg)` side by side in
  * one store, three generations of the same "settled" green, and the oldest rows kept
  * rendering at 2.54:1 where the fix could never reach them. A tone survives a
@@ -370,15 +422,15 @@ const TONE_TINT: Record<Tone, string> = {
 };
 
 function truncAddr(a: string | null | undefined): string {
-  if (!a) return "—";
+  if (!a) return "-";
   return a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
 }
 function truncHash(h: string | null | undefined): string {
-  if (!h) return "—";
+  if (!h) return "-";
   return h.length > 18 ? `${h.slice(0, 10)}…${h.slice(-6)}` : h;
 }
 function usd(n: number | null | undefined): string {
-  if (n == null || !Number.isFinite(n)) return "—";
+  if (n == null || !Number.isFinite(n)) return "-";
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 function prettyKey(k: string): string {
@@ -402,7 +454,7 @@ function prettyVal(v: unknown): string {
     /**
      * Group the integer part for readability, but never round away real precision
      * the source string carried. The readable answer above this card already shows
-     * a rounded figure (see `listPositionRows` in handle.ts) — this facts card is
+     * a rounded figure (see `listPositionRows` in handle.ts) - this facts card is
      * where the exact on-chain amount belongs, e.g. a position's "1228.8656935"
      * rather than a lossy "1,228.8657".
      */
@@ -463,16 +515,16 @@ function readGuardianFloor(): number {
 const AUTO_CAPS_KEY = "vanna_copilot_auto_caps";
 /**
  * The caps the Autonomy card reports. Read through one function so the summary chip and
- * the value written after MCP replies cannot drift apart — brief §6.5: two numbers about
+ * the value written after MCP replies cannot drift apart - brief §6.5: two numbers about
  * the same thing must never disagree.
  */
 function readAutoCaps(): { tx: number; day: number } | null {
   try {
     const raw = localStorage.getItem(AUTO_CAPS_KEY);
     if (!raw) return null;
-    const c = JSON.parse(raw) as { max_per_tx_usd?: number; max_per_day_usd?: number };
-    const tx = Number(c.max_per_tx_usd);
-    const day = Number(c.max_per_day_usd);
+    const c = JSON.parse(raw) as { max_per_tx_tokens?: number; max_per_day_tokens?: number };
+    const tx = Number(c.max_per_tx_tokens);
+    const day = Number(c.max_per_day_tokens);
     if (!Number.isFinite(tx) || tx <= 0) return null;
     return { tx, day: Number.isFinite(day) && day > 0 ? day : tx };
   } catch {
@@ -482,7 +534,7 @@ function readAutoCaps(): { tx: number; day: number } | null {
 
 /**
  * Default vs custom spend caps. The default figure is owned by MCP and only
- * reported after enable — this UI must not print a dollar amount before that.
+ * reported after enable - this UI must not print a token limit before that.
  */
 interface LogLeg {
   label: string;
@@ -497,14 +549,14 @@ interface LogEntry {
   status: string;
   /**
    * Optional because this is PERSISTED data and rows written before the palette work
-   * carry a `color` hex instead — see `entryTone`, which recovers the tone from
+   * carry a `color` hex instead - see `entryTone`, which recovers the tone from
    * `status` so an old row picks up the current palette rather than staying frozen in
    * whatever the colours were the day it was written.
    */
   tone?: Tone;
   /** When the turn was recorded. Absent on rows stored before history was persisted. */
   ts?: number;
-  /** Multi-leg / agent-chain parent — child hops update this instead of new rows. */
+  /** Multi-leg / agent-chain parent - child hops update this instead of new rows. */
   strategy?: boolean;
   legs?: LogLeg[];
 }
@@ -512,7 +564,7 @@ interface LogEntry {
 /**
  * How many turns the copilot remembers.
  *
- * The log used to hold 8 and live in component state, so it was gone on reload — which is
+ * The log used to hold 8 and live in component state, so it was gone on reload - which is
  * why history had to be added rather than merely surfaced. 40 is enough to cover a working
  * session without the stored blob getting large.
  */
@@ -523,7 +575,7 @@ const historyKey = (address: string) => `vanna_copilot_history:${address}`;
 
 /**
  * The tone of a stored row. `status` is persisted and carries the same meaning, so a
- * row written before tones existed needs no migration — it just resolves through here
+ * row written before tones existed needs no migration - it just resolves through here
  * and paints with today's palette.
  *
  * The one thing `status` cannot recover on its own is which flavour of "in progress" a
@@ -551,7 +603,7 @@ interface Step {
  * The label above each block of the page.
  *
  * These are headings, and they render as headings: the Assistant builds its picture of
- * the page from h1/h2/h3, so as paragraphs they were invisible to it — asked what this
+ * the page from h1/h2/h3, so as paragraphs they were invisible to it - asked what this
  * page was, it saw one heading ("Vanna Copilot") and a wall of undifferentiated text,
  * and had nothing to scroll to. `as="p"` is for the kicker above the h1, which labels
  * the page rather than a section within it.
@@ -588,7 +640,7 @@ function Eyebrow({
  * middle is what goes; the full value stays in `title` and remains selectable.
  */
 /**
- * A full protocol address or tx hash — the values whose whole point is being checkable.
+ * A full protocol address or tx hash - the values whose whole point is being checkable.
  *
  * Stellar addresses are exactly 56 base32 chars; hashes are 64 hex. Matched precisely so
  * an ordinary long string in a fact value is not laid out as an identifier.
@@ -599,7 +651,7 @@ function isFullIdentifier(s: string): boolean {
 
 function shortenValue(v: string): { text: string; full: string | null } {
   const s = v.trim();
-  // Long hex that is NOT a 64-char hash (XDR fragments) still gets shortened — nobody
+  // Long hex that is NOT a 64-char hash (XDR fragments) still gets shortened - nobody
   // verifies an envelope by eye.
   if (!isFullIdentifier(s) && s.length > 34 && /^[0-9a-fA-F]{34,}$/.test(s)) {
     return { text: `${s.slice(0, 10)}…${s.slice(-6)}`, full: s };
@@ -610,8 +662,8 @@ function shortenValue(v: string): { text: string; full: string | null } {
 /**
  * One fact row.
  *
- * A full identifier gets a STACKED row — label above, complete value below, wrapping on
- * `break-all` — because "is this the right contract?" is the only question anyone asks of
+ * A full identifier gets a STACKED row - label above, complete value below, wrapping on
+ * `break-all` - because "is this the right contract?" is the only question anyone asks of
  * a protocol address, and `CBBQQULN…5LDXUO` cannot answer it. Callers that genuinely want
  * a compact chip (the wallet pill, a tx-hash receipt) pass an already-shortened string via
  * `truncAddr` / `truncHash`, so they are unaffected.
@@ -621,7 +673,7 @@ function shortenValue(v: string): { text: string; full: string | null } {
  *
  * `truncate` (overflow-hidden + ellipsis) was applied to every non-identifier value
  * unconditionally, so a full sentence like a swap's "Swap 10 XLM for at least 1.234
- * SOUSDC (min received after slippage)" silently lost everything past the fold —
+ * SOUSDC (min received after slippage)" silently lost everything past the fold -
  * reported live, more than once, as "half message in summary". A fixed character
  * count is a real, generalized threshold here (not a per-instance patch): anything
  * this long cannot fit a value column beside a label and was never going to, whatever
@@ -662,7 +714,7 @@ function Row({ k, v, color }: { k: string; v: string; color?: string }) {
        *
        * FactsGrid is a two-column grid and this label is `shrink-0`, so
        * "COLLATERAL LEFT BEFORE LIQUIDATION" filled its half-width cell, ran into the next
-       * column's label, and squeezed its own figure down to "1…" — the number the row exists
+       * column's label, and squeezed its own figure down to "1…" - the number the row exists
        * to show. Spanning both columns is cheaper than truncating the value or shattering the
        * label, which are the two failures this surface already fixed once elsewhere.
        */
@@ -688,7 +740,7 @@ function Row({ k, v, color }: { k: string; v: string; color?: string }) {
  */
 const CHAIN_DELAY_MS = 1200;
 
-/** Fresh HF from the margin store after a rail refresh — not a React-closure snapshot. */
+/** Fresh HF from the margin store after a rail refresh - not a React-closure snapshot. */
 function readLiveHfFromStore(): number | null {
   const store = useMarginAccountInfoStore.getState();
   if (!store.hasMarginAccount) return null;
@@ -718,7 +770,7 @@ const BTN_TINT =
 /**
  * Secondary action sitting ON a violet-tinted panel (the auto-sign gate).
  *
- * BTN_QUIET is transparent with a violet-50 hover, which is the panel's own colour — on that
+ * BTN_QUIET is transparent with a violet-50 hover, which is the panel's own colour - on that
  * panel it had no edge and no hover, so "Custom limits" read as a label rather than a button.
  * This one carries the page surface, so it looks raised against the tint in both themes.
  */
@@ -727,7 +779,7 @@ const BTN_ON_TINT =
   "disabled:cursor-not-allowed disabled:text-vgray-300";
 /**
  * Disabled drops the gradient rather than fading it. A translucent gradient over a dark
- * panel is a muddy brown-violet that reads as a rendering fault, not as "not yet" — the
+ * panel is a muddy brown-violet that reads as a rendering fault, not as "not yet" - the
  * plan card already solves this by swapping to flat grey, and this matches it.
  */
 /**
@@ -735,7 +787,7 @@ const BTN_ON_TINT =
  *
  * The disabled state used to strip the gradient (`disabled:bg-none`) and repaint the
  * button grey with grey text. In dark mode that grey sat almost exactly on the surface
- * colour, so Run looked broken rather than idle — and in light mode it read as
+ * colour, so Run looked broken rather than idle - and in light mode it read as
  * permanently unavailable. The design keeps the gradient in every state; a disabled
  * control should look *quiet*, not absent, so it now just loses some opacity and keeps
  * white text, which stays legible against the gradient in both themes.
@@ -777,7 +829,7 @@ function StepList({ steps, running }: { steps: Step[]; running: boolean }) {
 
 /**
  * A leg as the server sends it. `multiLegUiData` spreads the whole MultiLegStep, so
- * op/asset/amount arrive too — declared here rather than cast at each use site, because
+ * op/asset/amount arrive too - declared here rather than cast at each use site, because
  * the run card badges legs by `op` and getting that wrong mislabels the venue.
  * `index` is 1-based (handle.ts increments before assigning).
  */
@@ -792,7 +844,7 @@ type MultiLegStepUi = {
   tx_hash?: string | null;
   hf_after?: number | null;
   message?: string;
-  /** A swap leg's destination — see RunLeg.tokenOut for why this is carried. */
+  /** A swap leg's destination - see RunLeg.tokenOut for why this is carried. */
   token_in?: string | null;
   token_out?: string | null;
   token_a?: string | null;
@@ -805,7 +857,7 @@ type ResumeLeg = {
   amount?: number | null;
   leverage?: number | null;
   label?: string;
-  /** A swap leg's destination — carried so a resume replays or corrects it. */
+  /** A swap leg's destination - carried so a resume replays or corrects it. */
   token_in?: string | null;
   token_out?: string | null;
   token_a?: string | null;
@@ -866,20 +918,20 @@ function MultiLegStrategyCard({
    *
    * The headline is written per hop and describes that hop's moment. Once the client
    * signed the final leg it was never refreshed, so a card whose every step read "done"
-   * still announced "Paused for signature — finish signing to continue", and the session
+   * still announced "Paused for signature - finish signing to continue", and the session
    * log said executed while the card asked for a signature that had already happened.
    *
    * A card can always see its own step list, so it decides from that: nothing here can
    * claim to be waiting while every step says done, whatever arrives in the payload.
    */
   const title = allOk
-    ? "All steps completed — strategy is live."
+    ? "All steps completed - strategy is live."
     : anyFail
       ? rawTitle
       : /paused for signature|finish signing/i.test(rawTitle)
         ? autoContinues
-          ? "Waiting for auto-sign — your session key is signing this leg."
-          : "Needs your signature — approve in your wallet to continue."
+          ? "Waiting for auto-sign - your session key is signing this leg."
+          : "Needs your signature - approve in your wallet to continue."
         : rawTitle;
 
   const tone = (status?: string): Tone => {
@@ -896,7 +948,7 @@ function MultiLegStrategyCard({
     return "muted";
   };
   const mark = (status?: string) => {
-    // Never show SIGN on completed legs — only while that leg still needs a signature.
+    // Never show SIGN on completed legs - only while that leg still needs a signature.
     if (status === "ok" || status === "done") return "Done";
     if (status === "needs_sign" || status === "needs_wallet_sign" || status === "staged") return "Sign";
     if (status === "stopped_hf") return "HF";
@@ -962,7 +1014,7 @@ function MultiLegStrategyCard({
         {steps.map((s, i) => {
           const st = String(s.status || "");
           const isOk = st === "ok" || st === "done";
-          // XDR byte counts / "do not invent a hash" are model instructions — only show
+          // XDR byte counts / "do not invent a hash" are model instructions - only show
           // messages that explain a real failure.
           const showDetail =
             !!s.message &&
@@ -1013,17 +1065,17 @@ function MultiLegStrategyCard({
       </ol>
 
       <div className="border-t border-vgray-100 px-5 py-3">
-        {/* Spinner only while legs remain incomplete — never under fully done strategies. */}
+        {/* Spinner only while legs remain incomplete - never under fully done strategies. */}
         <p className="flex items-center gap-2 text-[12px] leading-relaxed text-vgray-500">
           {allOk ? (
             "All steps completed on-chain."
           ) : anyFail ? (
-            "Stopped early. Only steps marked Done are on-chain — nothing later was claimed as done."
+            "Stopped early. Only steps marked Done are on-chain - nothing later was claimed as done."
           ) : (
             <>
               <Loader2 size={13} className="shrink-0 animate-spin text-violet-500" />
               {autoContinues
-                ? "Running the next step — signing with your session key."
+                ? "Running the next step - signing with your session key."
                 : "In progress or waiting on the next action."}
             </>
           )}
@@ -1079,7 +1131,7 @@ function isRealStrategyRun(
  *
  * Only advance after a real hop lands: staged for signature, already executed,
  * auto-sign gate, or wallet-bind. error / blocked / plain answer mean the leg
- * did not run — keep the full remaining queue for retry.
+ * did not run - keep the full remaining queue for retry.
  */
 function isChainableHopResponse(
   hop: Pick<ChatResponse, "kind"> | null | undefined,
@@ -1095,7 +1147,7 @@ function isChainableHopResponse(
 
 /**
  * Executed write receipt: live fill rate when we have one (DEX swap) + full tx hash.
- * Shown for every on-chain write — not only swaps — so remove-LP etc. are checkable.
+ * Shown for every on-chain write - not only swaps - so remove-LP etc. are checkable.
  */
 function ExecutedTxReceipt({
   action,
@@ -1193,8 +1245,8 @@ function SwapOracleRateLine({ tokenIn, tokenOut }: { tokenIn: string; tokenOut: 
  * Supporting figures for a response.
  *
  * `shown` carries the values the structured answer above has ALREADY rendered. Without it
- * the same six protocol addresses appeared twice on one card — once as answer rows, once
- * again here — which reads as two lists that might disagree rather than one fact stated
+ * the same six protocol addresses appeared twice on one card - once as answer rows, once
+ * again here - which reads as two lists that might disagree rather than one fact stated
  * once. Matched on VALUE, not label: the answer says "REGISTRY" where the payload key is
  * `registry`, and an address is unique enough that value equality is the reliable join.
  */
@@ -1243,7 +1295,7 @@ function FactsGrid({
      * on-chain integer unit, and `session_id` is internal bookkeeping nobody acts on.
      * `final_status`/`tx_hash` are what is left, and are what actually answer "did it
      * work and what do I check it against". The server (`factsForUi`, explain.ts) sends
-     * keys already humanized to spaces ("tx hash", not "tx_hash") — both spellings are
+     * keys already humanized to spaces ("tx hash", not "tx_hash") - both spellings are
      * listed since this grid is also handed raw, un-humanized data on some paths.
      */
     "status",
@@ -1278,7 +1330,7 @@ function FactsGrid({
       {/*
        * Reported live: "give my margin account collateral" on a 6-asset account (6
        * summary figures + 6 per-asset amounts = 12 rows) silently lost the two
-       * lowest-value assets — this cap cut them with no sign anything was missing, the
+       * lowest-value assets - this cap cut them with no sign anything was missing, the
        * same class of silent-drop bug already fixed server-side in `factsForUi`
        * (lib/copilot/explain.ts). Raised well past any real account's own asset count
        * (currently ~10 assets, doubled worst-case across collateral + debt) while still
@@ -1300,15 +1352,15 @@ function FactsGrid({
  * finished at 51.36 against a rail of 51.31. Two health factors on one screen, both
  * presented as current.
  *
- * What the simulation contributes is the EFFECT of the action — the collateral and debt
- * deltas — which is the part the client cannot compute. The baseline is the account state,
+ * What the simulation contributes is the EFFECT of the action - the collateral and debt
+ * deltas - which is the part the client cannot compute. The baseline is the account state,
  * and there is exactly one of those on this page: the store the rail renders from. So the
  * deltas are re-applied to the live figures and the health factor is recomputed with
  * `deriveMarginHealth`, the same function the rail uses, which is what makes the two
  * numbers incapable of disagreeing.
  *
  * Falls back to the served simulation whenever the store has no funded account to rebase
- * onto — an unconnected wallet, or a first paint before the snapshot lands.
+ * onto - an unconnected wallet, or a first paint before the snapshot lands.
  */
 function rebaseSimulationOnLiveAccount(sim: Simulation): Simulation {
   // An op that never touches margin has a deliberately empty baseline and its own
@@ -1364,7 +1416,7 @@ function ImpactPanel({ sim: served }: { sim: Simulation }) {
     { k: "debt", before: usd(sim.debt_before), after: usd(sim.debt_after) },
   ];
 
-  // A zeroed baseline means the account read failed, not that the position is empty —
+  // A zeroed baseline means the account read failed, not that the position is empty -
   // the two are indistinguishable in this payload. Rendering it drew a full panel of
   // "$0.00 → $0.00" and "∞ → ∞" beside a funded account, which reads as a real
   // projection of nothing happening. Say what we know instead of drawing a false one.
@@ -1375,7 +1427,7 @@ function ImpactPanel({ sim: served }: { sim: Simulation }) {
     /**
      * An empty baseline has TWO causes and they need different sentences.
      *
-     * `margin_applicable: false` means the op never touches margin — an Earn supply or
+     * `margin_applicable: false` means the op never touches margin - an Earn supply or
      * redeem moves wallet tokens and leaves collateral and debt untouched. Saying "reading
      * your current position failed" there reports a failure that did not occur, on a card
      * whose margin numbers were correct moments before. Only a genuinely absent baseline
@@ -1389,8 +1441,8 @@ function ImpactPanel({ sim: served }: { sim: Simulation }) {
         </p>
         <p className="text-[13px] leading-[19px] text-vgray-500">
           {notApplicable
-            ? "None — this moves tokens in your wallet and doesn't touch your margin account, so your collateral, debt and health factor are unchanged."
-            : "Not available — reading your current position failed, so there is no baseline to project from. Your live figures are on the margin page."}
+            ? "None - this moves tokens in your wallet and doesn't touch your margin account, so your collateral, debt and health factor are unchanged."
+            : "Not available - reading your current position failed, so there is no baseline to project from. Your live figures are on the margin page."}
         </p>
       </div>
     );
@@ -1445,12 +1497,20 @@ function ImpactPanel({ sim: served }: { sim: Simulation }) {
   );
 }
 
+
+/** The fewest milliseconds between two background auto-sign status reads (focus, visibility, poll). */
+const AUTO_SIGN_STATUS_MIN_GAP_MS = 20_000;
+
+/** How long switching auto-approve on or off may take before the toggle is released again. */
+const AUTO_SIGN_SWITCH_TIMEOUT_MS = 30_000;
 export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
   // Lives in the root layout, not here: an in-flight run must survive leaving this page.
   const investigation = useLiveInvestigation();
 
   const workflow = useLiveWorkflow();
+  const restoreWorkflow = workflow.restore;
+  const prepareWorkflowSign = workflow.prepareSign;
   const persistedWorkflowReceiptRef = useRef<string | null>(null);
   const walletKind = useUserStore((s) => s.walletKind);
   const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
@@ -1463,12 +1523,17 @@ export function CopilotWorkspace() {
 
   // Same live snapshot feed as margin / portfolio so the right rail tracks
   // real on-chain HF / collateral / debt instead of a one-shot store paint.
-  const { snapshot, refresh: refreshSnapshot } = useAccountSnapshot(address);
+  const { snapshot, isLoading: snapshotLoading, error: snapshotError, refresh: refreshSnapshot } = useAccountSnapshot(address);
 
   const [intentText, setIntentText] = useState("");
   const [submitted, setSubmitted] = useState<string | null>(null);
   const [signingJournal, setSigningJournal] = useState(false);
-  /** The prompt the user typed — never replaced by "Approved plan" on resume hops. */
+  const signAttemptRef = useRef<object | null>(null);
+  useEffect(() => {
+    signAttemptRef.current = null;
+    setSigningJournal(false);
+  }, [address]);
+  /** The prompt the user typed - never replaced by "Approved plan" on resume hops. */
   const originalIntentRef = useRef("");
   /** Collateral/debt tail paused because HF dropped below the stated floor. */
   const [hfPaused, setHfPaused] = useState(false);
@@ -1476,18 +1541,18 @@ export function CopilotWorkspace() {
   const [signing, setSigning] = useState(false);
   /**
    * After a failed auto-sign for a hop key, stop the spinner for THAT hop only.
-   * Storing the key (not a boolean) so hop 2 never inherits hop 1's blocked flag —
+   * Storing the key (not a boolean) so hop 2 never inherits hop 1's blocked flag -
    * a boolean stayed true across the first paint of the next leg and looked like
    * "auto-approve on but needs your click" while session signing was still enabled.
    */
   const [autoSubmitBlockedKey, setAutoSubmitBlockedKey] = useState<string | null>(null);
   const [response, setResponse] = useState<ChatResponse | null>(null);
-  /** Always read latest response in signWithWallet — avoids stale XDR after hop advance. */
+  /** Always read latest response in signWithWallet - avoids stale XDR after hop advance. */
   const responseRef = useRef<ChatResponse | null>(null);
   responseRef.current = response;
   /** One rebuild attempt per txBadSeq (do not loop forever). Cleared on hop success. */
   const badSeqRebuildRef = useRef(false);
-  /** Hop keys that already started auto-submit (declared early — used inside signWithWallet). */
+  /** Hop keys that already started auto-submit (declared early - used inside signWithWallet). */
   const autoSubmittedRef = useRef<string | null>(null);
   const [health, setHealth] = useState<BrainHealth | null>(null);
   const [customTx, setCustomTx] = useState("500");
@@ -1495,8 +1560,8 @@ export function CopilotWorkspace() {
   const [showCustom, setShowCustom] = useState(false);
   const [railCapsMode, setRailCapsMode] = useState<"defaults" | "custom">("defaults");
   const [savedCaps, setSavedCaps] = useState<{ tx: number; day: number } | null>(null);
-  /** MCP `default_cap_usd` — shown under Default, never guessed from a custom session. */
-  const [mcpDefaultCap, setMcpDefaultCap] = useState<number | null>(null);
+  /** MCP `independent signer defaults` - shown under Default, never guessed from a custom session. */
+  const [mcpDefaultCaps, setMcpDefaultCaps] = useState<{ tx: number; day: number } | null>(null);
   const [log, setLogRaw] = useState<LogEntry[]>([]);
 
   /**
@@ -1506,8 +1571,8 @@ export function CopilotWorkspace() {
    * several writers mint one: the strategy branch reuses the parent id across hops, the
    * hop fold promotes a parent with that same id, and single-turn rows use request_id.
    * Two of those could land on one id, and duplicate keys make React drop or duplicate
-   * rows silently. Deduping on write keeps the newest copy — the one carrying the latest
-   * leg statuses — rather than papering over it with a composite key in the JSX.
+   * rows silently. Deduping on write keeps the newest copy - the one carrying the latest
+   * leg statuses - rather than papering over it with a composite key in the JSX.
    */
   const setLog = useCallback(
     (updater: LogEntry[] | ((prev: LogEntry[]) => LogEntry[])) => {
@@ -1528,7 +1593,7 @@ export function CopilotWorkspace() {
    * History survives a reload.
    *
    * It did not before: the log lived in component state and the card was called "Session
-   * log" because that is genuinely all it was — refresh the page and every turn was gone.
+   * log" because that is genuinely all it was - refresh the page and every turn was gone.
    * Stored per wallet, because a turn is about that wallet's account and showing another
    * wallet's history next to this one's balances would be worse than showing none.
    *
@@ -1539,21 +1604,21 @@ export function CopilotWorkspace() {
    * A run the user walked away from must not read as one still in progress.
    *
    * Owner-reported: "sometimes in session log it still showed in progress when completed."
-   * Reproduced 2026-08-10 — a `lend` staged at 08:xx, never signed, still said `staged`
+   * Reproduced 2026-08-10 - a `lend` staged at 08:xx, never signed, still said `staged`
    * SEVEN HOURS later, and only cleared when the same prompt was run again (plan ids are a
    * deterministic fingerprint, so the second run updated the first run's row).
    *
    * Nothing was broken in the status mapping: a row only leaves a pre-terminal state when
    * something reports a terminal one, and an abandoned run never reports anything. A plan
    * can wait for Approve for up to a day (`PLAN_TTL_MS`); a staged row older than that is
-   * finished — it just never said so. Applied ONLY on hydration, so a live run in this tab
+   * finished - it just never said so. Applied ONLY on hydration, so a live run in this tab
    * is never relabelled underneath the user.
    */
   const settleAbandonedRow = (e: LogEntry): LogEntry => {
     const PRE_TERMINAL = new Set(["staged", "needs sign", "in progress", "needs authorization"]);
     if (!PRE_TERMINAL.has(String(e.status))) return e;
     // Generous margin over the plan TTL, so a genuine wait-to-Approve is never
-    // mislabelled — this only catches rows that outlived any possible in-flight run.
+    // mislabelled - this only catches rows that outlived any possible in-flight run.
     if (Date.now() - Number(e.ts || 0) < PLAN_TTL_MS + 60 * 60_000) return e;
     return {
       ...e,
@@ -1599,7 +1664,7 @@ export function CopilotWorkspace() {
        * THE SAVE PATH MAY NEVER EMPTY A NON-EMPTY STORE.
        *
        * This effect and the hydrate effect above both fire on the commit where `address`
-       * first becomes non-null, and effects run in declaration order — so hydrate reads
+       * first becomes non-null, and effects run in declaration order - so hydrate reads
        * storage and calls setLogRaw, then this runs with `log` still the empty initial
        * state and writes `[]` straight over the history it just read. The rows are
        * normally written back on the next commit and nobody notices. Reload inside that
@@ -1617,7 +1682,7 @@ export function CopilotWorkspace() {
       }
       localStorage.setItem(key, JSON.stringify(log.slice(0, HISTORY_MAX)));
     } catch {
-      /* quota / private mode — history is a convenience, not a requirement */
+      /* quota / private mode - history is a convenience, not a requirement */
     }
   }, [address, log]);
 
@@ -1636,7 +1701,7 @@ export function CopilotWorkspace() {
   const strategyParentRef = useRef<{ id: string; prompt: string } | null>(null);
   /**
    * Accumulated multi-leg steps across sequential hop POSTs. Each hop only returns
-   * the legs it ran; the session log already merges via legKey — the strategy card
+   * the legs it ran; the session log already merges via legKey - the strategy card
    * must use the same accumulator or it renumbers the last hop as "1.".
    */
   const strategyStepsRef = useRef<MultiLegStepUi[]>([]);
@@ -1646,7 +1711,7 @@ export function CopilotWorkspace() {
    *
    * The receipt was keyed by `response.request_id`, which is per REQUEST, and a multi-leg
    * run is many requests. Leg 2 therefore wrote under a new key, failed to find the turn
-   * leg 1 had written, and fell through to "first assistant turn with no receipt" — so the
+   * leg 1 had written, and fell through to "first assistant turn with no receipt" - so the
    * run's receipt landed on an earlier turn and stayed frozen at one leg.
    */
   const runReceiptIdRef = useRef<string | null>(null);
@@ -1656,7 +1721,7 @@ export function CopilotWorkspace() {
    * A resume posts only the first remaining leg (splitResumeBatch) so the card
    * repaints between legs instead of freezing while the server runs the whole
    * tail in one request. The server plans only what it is given, so its
-   * `remaining_legs` comes back empty and cannot carry the queue — this ref is
+   * `remaining_legs` comes back empty and cannot carry the queue - this ref is
    * the queue. See resume-policy.ts.
    */
   const strategyTailRef = useRef<ResumeLeg[]>([]);
@@ -1666,7 +1731,7 @@ export function CopilotWorkspace() {
    * Cleared when a new user turn starts (resetStrategyAccumulator).
    */
   const strategyCompleteRef = useRef(false);
-  /** Strategy meta (summary, HF floor, SA) from multi-leg payloads — survives hop clears. */
+  /** Strategy meta (summary, HF floor, SA) from multi-leg payloads - survives hop clears. */
   const strategyMetaRef = useRef<Record<string, unknown>>({});
   const abortRef = useRef<AbortController | null>(null);
   /** Bumped when enable/disable lands so an in-flight GET /sessions cannot overwrite it. */
@@ -1680,6 +1745,7 @@ export function CopilotWorkspace() {
    * has to be cleared here or a "fetch failed" note stays on a blank chat.
    */
   const leavePlanCard = useCallback(() => {
+    signAttemptRef.current = null;
     setSigningJournal(false);
     workflow.reset();
     setIntentText("");
@@ -1687,11 +1753,46 @@ export function CopilotWorkspace() {
     setResponse(null);
     setLoading(false);
     cancelledRef.current = false;
-    abortRef.current?.abort();
+    abortRef.current?.abort("workspace reset");
     abortRef.current = null;
   }, [workflow]);
   const startNewChat = useCallback(() => { leavePlanCard(); investigation.newChat(); }, [leavePlanCard, investigation]);
-  const openConversation = useCallback((id: string) => { leavePlanCard(); void investigation.open(id); }, [leavePlanCard, investigation]);
+  const openConversation = useCallback((id: string) => {
+    leavePlanCard();
+    if (id === investigation.conversationId) {
+      void investigation.open(id);
+      const receiptTurn = [...investigation.turns].reverse().find(turn => turn.executionReceipt);
+      const receipt = receiptTurn?.executionReceipt;
+      let savedId: string | null = null;
+      try { savedId = localStorage.getItem(`vanna-workflow-chat:${address}:${id}`); } catch { /* server receipt is the fallback */ }
+      if (receipt && (!["completed", "cancelled", "blocked"].includes(receipt.status)
+        || needsCompletionRecovery(receipt, receiptTurn?.completion))) void restoreWorkflow(receipt.workflowId);
+      else if (!receipt && savedId) void restoreWorkflow(savedId);
+    } else void investigation.open(id);
+  }, [leavePlanCard, investigation, address, restoreWorkflow]);
+  const restoredConversationRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (investigation.resultOrigin !== "restored" || investigation.loading) {
+      restoredConversationRef.current = null;
+      return;
+    }
+    const key = `${address}:${investigation.conversationId}`;
+    if (restoredConversationRef.current === key) return;
+    const receiptTurn = [...investigation.turns].reverse().find(turn => turn.executionReceipt);
+    const receipt = receiptTurn?.executionReceipt;
+    let savedId: string | null = null;
+    try { savedId = localStorage.getItem(`vanna-workflow-chat:${key}`); } catch { /* server receipt is the fallback */ }
+    const id = receipt?.workflowId ?? savedId;
+    if (!id || receipt && ["completed", "cancelled", "blocked"].includes(receipt.status)
+      && !needsCompletionRecovery(receipt, receiptTurn?.completion)) return;
+    restoredConversationRef.current = key;
+    void restoreWorkflow(id);
+  }, [address, investigation.conversationId, investigation.resultOrigin, investigation.loading, investigation.turns, restoreWorkflow]);
+  useEffect(() => {
+    if (!address || !investigation.conversationId || !workflow.view || investigation.loading) return;
+    if (investigation.resultOrigin !== "live" && !investigation.turns.some(turn => turn.executionReceipt?.workflowId === workflow.view?.id)) return;
+    try { localStorage.setItem(`vanna-workflow-chat:${address}:${investigation.conversationId}`, workflow.view.id); } catch { /* journal remains authoritative */ }
+  }, [address, investigation.conversationId, investigation.resultOrigin, investigation.loading, investigation.turns, workflow.view]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -1699,8 +1800,8 @@ export function CopilotWorkspace() {
    * Grow the intent box to fit its text, capped at six rows.
    *
    * Driven by an effect on `intentText` rather than the change handler, because the text is
-   * also set programmatically — a Prompts chip, a reset, restoring the original intent after
-   * a run — and those paths would otherwise leave a multi-line value in a one-row box.
+   * also set programmatically - a Prompts chip, a reset, restoring the original intent after
+   * a run - and those paths would otherwise leave a multi-line value in a one-row box.
    */
   useEffect(() => {
     const node = inputRef.current;
@@ -1782,7 +1883,7 @@ export function CopilotWorkspace() {
       if (at >= 0) {
         merged[at] = {
           ...merged[at],
-          // The resolved label wins — the row should read "Borrow 15 XLM", not stay on the
+          // The resolved label wins - the row should read "Borrow 15 XLM", not stay on the
           // amount-less wording it was planned with. Same for USDC → AQUSDC.
           label:
             labelHasAmount(keyed) || isUsdcVariantResolution(String(merged[at].label || ""), keyed)
@@ -1849,7 +1950,7 @@ export function CopilotWorkspace() {
 
   // Session signing via Sign Service applies to Privy embedded wallets.
   // For Freighter, auto-approve acts as auto-dispatch directly to the extension popup.
-  const sessionSigningAvailable = (walletKind === "privy" || walletKind === "freighter") && !!address;
+  const sessionSigningAvailable = walletKind === "privy" && !!address;
 
   const [autoApprovePending, setAutoApprovePending] = useState(false);
 
@@ -1858,7 +1959,7 @@ export function CopilotWorkspace() {
    * connect, then enable / disable).
    *
    * Auto-approve may arm only when this is `ok`. A client-side cap is not a
-   * policy — calling the API directly would bypass it.
+   * policy - calling the API directly would bypass it.
    *
    * `unbound` is a third answer, not a flavour of `unavailable`. "The Sign Service
    * refused our credential" is our fault and the user can do nothing about it;
@@ -1931,6 +2032,7 @@ export function CopilotWorkspace() {
         const data = (await res.json()) as ChatResponse;
         if (cancelled || seq !== signReadSeq.current) return;
         const next = signServiceFromSessionRead(data);
+        setMcpDefaultCaps(defaultTestnetBudget(data.data ?? {}));
         // An unavailable/transient read is not proof that a previously conclusive
         // wallet-global session was revoked. Keep the last server-confirmed state.
         setSignServiceState((current) => {
@@ -1941,7 +2043,10 @@ export function CopilotWorkspace() {
           const stable = preserveLastConclusiveSignState(currentForWallet, next);
           return { address, ...stable };
         });
-        if (next.status === "unavailable") return;
+        if (next.status === "unavailable") {
+          if (next.authoritative && address) setAutoApprove(address, false);
+          return;
+        }
         if (address) {
           setAutoApprove(address, next.status === "ok");
         }
@@ -1950,8 +2055,8 @@ export function CopilotWorkspace() {
             localStorage.setItem(
               AUTO_CAPS_KEY,
               JSON.stringify({
-                max_per_tx_usd: next.caps.tx,
-                max_per_day_usd: next.caps.day,
+                max_per_tx_tokens: next.caps.tx,
+                max_per_day_tokens: next.caps.day,
               }),
             );
           } catch {
@@ -1961,7 +2066,7 @@ export function CopilotWorkspace() {
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
-        // A failed read is not evidence the Sign Service is down — leave unknown
+        // A failed read is not evidence the Sign Service is down - leave unknown
         // so the enable path still works.
       }
     };
@@ -1972,19 +2077,31 @@ export function CopilotWorkspace() {
      * A browser allows ~6 connections per origin, and this page already holds several
      * slow ones: the investigation stream for the whole of a run, and account snapshot
      * reads that take 6-10s each. A 15s poll per open tab on top of that exhausts the
-     * pool, and the request that loses the race never leaves the browser at all — the
+     * pool, and the request that loses the race never leaves the browser at all - the
      * user sees "Sending your request" counting up against a server that logged nothing
      * (17 Sep: three swap tests stalled this way, minutes each, nothing server-side to
      * show for them; §9 of the 16 Sep handover records the same symptom).
      *
      * Nothing is lost by waiting: the session state this reads changes when the user
      * enables or disables auto-sign, and both of those already write it directly. The
-     * poll only catches a change made elsewhere — another tab, or MCP — which no one is
+     * poll only catches a change made elsewhere - another tab, or MCP - which no one is
      * watching the rail for in a hidden tab. Becoming visible reads immediately, so the
      * rail is never stale by the time it is looked at.
      */
     const visible = () => document.visibilityState === "visible";
-    const runIfVisible = () => { if (visible()) void run(); };
+    /**
+     * Focus and visibility fire together, and on every return to the window - switching to a
+     * terminal or taking a screenshot. Each fired a status read, and each read spends the MCP
+     * rate-limit budget the investigation needs: 25 Sep, live, a burst of ~20 status reads in
+     * 20s left `aquarius_pool_reserves` failing with rate_limited. One read per
+     * AUTO_SIGN_STATUS_MIN_GAP_MS is plenty; enable and disable write the state directly.
+     */
+    let lastRead = Date.now();
+    const runIfVisible = () => {
+      if (!visible() || Date.now() - lastRead < AUTO_SIGN_STATUS_MIN_GAP_MS) return;
+      lastRead = Date.now();
+      void run();
+    };
     const poll = window.setInterval(runIfVisible, 45_000);
     const onFocus = () => runIfVisible();
     window.addEventListener("focus", onFocus);
@@ -2050,17 +2167,17 @@ export function CopilotWorkspace() {
   const healthFactor = derivedHealth.avgHealthFactor;
   const collateralValue = effCollateral;
   const borrowedValue = effBorrowed;
-  // "net value" = equity (collateral minus debt), NOT `totalValue` — that field is
+  // "net value" = equity (collateral minus debt), NOT `totalValue` - that field is
   // `netAvailableCollateral + totalBorrowedValue`, which algebraically always
   // collapses back to gross collateral (adding debt back cancels the subtraction
   const liveHf = effHasAccount && healthFactor ? healthFactor : null;
 
   /**
-   * Open positions for the rail — same rules as the Margin positions table.
+   * Open positions for the rail - same rules as the Margin positions table.
    *
    * Source: `/api/account` snapshot (fallback: store). Farm/LP receipt symbols
    * (`BLEND_*`, `AQ_*`, `SS_*`) live in collateralBalances for HF math but are
-   * not margin positions — skip them via `isTrackingSymbol`. Same-token debt is
+   * not margin positions - skip them via `isTrackingSymbol`. Same-token debt is
    * netted out of deposited collateral so borrowed proceeds do not look like a
    * supply. Venue is always `margin` here; Earn/Farm holdings stay on those pages.
    */
@@ -2141,7 +2258,7 @@ export function CopilotWorkspace() {
     /**
      * `after` is a settled transaction hash. The snapshot route is cached for 15s on
      * TIME, so a refresh fired the instant a write landed was answered from the body
-     * taken before it — which is why the rail held the old health factor until the user
+     * taken before it - which is why the rail held the old health factor until the user
      * reloaded the page. Passing the hash makes the read go past that cache, so the event
      * that changed the account is what invalidates it.
      */
@@ -2159,7 +2276,7 @@ export function CopilotWorkspace() {
         }
         await refreshSnapshot(opts?.after ?? null);
       } catch {
-        // Rail refresh is best-effort — never block the agent turn.
+        // Rail refresh is best-effort - never block the agent turn.
       }
     },
     [address, smartAccount, snapshot?.marginAccountAddress, refreshSnapshot],
@@ -2176,13 +2293,9 @@ export function CopilotWorkspace() {
     };
   }, []);
 
-  // Initial + wallet-change paint of the right rail. Intentionally keyed on `address`
-  // only — including refreshRailStats would re-run this on every render it changes on.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (!address) return;
-    void refreshRailStats({ force: true });
-  }, [address]);
+  // useAccountSnapshot already reads on connect and wallet changes. A second
+  // forced browser scan here duplicated the same RPC work on every mount.
+  // Keep refreshRailStats for explicit mutation-driven refreshes only.
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2242,7 +2355,7 @@ export function CopilotWorkspace() {
       // Parent multi-leg strategy response from server
       if (multi && multiSteps?.length) {
         // Reuse the strategy's own id across chained hops. Keying on data.request_id
-        // meant every continuation — a fresh POST with a fresh request_id — produced
+        // meant every continuation - a fresh POST with a fresh request_id - produced
         // another "Approved plan" row, so one four-leg strategy filled the log with five
         // near-identical entries that each told a partial story.
         const id =
@@ -2275,7 +2388,7 @@ export function CopilotWorkspace() {
           for (const leg of legs) {
             const k = legKey(leg.label);
             let at = merged.findIndex((m) => legKey(m.label) === k);
-            // Same USDC→variant reconcile as absorbStrategySteps — otherwise the session
+            // Same USDC→variant reconcile as absorbStrategySteps - otherwise the session
             // log kept "Lend 125 USDC" on clarification and appended "Lend 125 AQUSDC" done.
             if (at < 0) {
               at = merged.findIndex((m) => isUsdcVariantResolution(m.label, leg.label));
@@ -2319,7 +2432,7 @@ export function CopilotWorkspace() {
         return;
       }
 
-      // Client next_step / wallet-sign hop — fold into parent strategy if any
+      // Client next_step / wallet-sign hop - fold into parent strategy if any
       if (opts?.chainHop && strategyParentRef.current) {
         const parentId = strategyParentRef.current.id;
         const hopLabel = opts.hopLabel || prompt;
@@ -2350,8 +2463,8 @@ export function CopilotWorkspace() {
           const copy = [...prev];
           const parent = { ...copy[idx] };
           const legs = [...(parent.legs || [])];
-          // Same identity rule as the strategy branch. This used a looser match — equal
-          // labels, or equal tool, or either string containing the other — which is why a
+          // Same identity rule as the strategy branch. This used a looser match - equal
+          // labels, or equal tool, or either string containing the other - which is why a
           // leg could stay frozen at needs_sign while a near-identically worded duplicate
           // was appended reporting done. `l.tool === tool` was the worst of it: with two
           // deposit legs it matched whichever came first, regardless of amount or asset.
@@ -2394,7 +2507,7 @@ export function CopilotWorkspace() {
         return;
       }
 
-      // First response that will continue via next_step — open a strategy parent row
+      // First response that will continue via next_step - open a strategy parent row
       if (data.next_step && !opts?.chainHop) {
         const id = data.request_id || `strat-${Date.now()}`;
         strategyParentRef.current = { id, prompt };
@@ -2496,11 +2609,11 @@ export function CopilotWorkspace() {
       opts?: { chainHop?: boolean; background?: boolean; signal?: AbortSignal },
     ) => {
       const silent = !!opts?.background;
-      /** Header auto-approve on/off: toast only — do not steal the turn card or abort a run. */
+      /** Header auto-approve on/off: toast only - do not steal the turn card or abort a run. */
       const quiet = silent && !opts?.chainHop && !body.summarize_execution;
       /**
        * A fresh typed turn is allowed even if the previous one was cancelled.
-       * `cancelledRef` is a latch for chain hops / background work after Cancel —
+       * `cancelledRef` is a latch for chain hops / background work after Cancel -
        * without clearing it here, every later prompt still POSTed, then threw the
        * JSON away, so the server looked idle and the thread kept the last error.
        */
@@ -2511,7 +2624,7 @@ export function CopilotWorkspace() {
       }
       const ac = new AbortController();
       if (!quiet) {
-        abortRef.current?.abort();
+        abortRef.current?.abort("workspace superseded");
         abortRef.current = ac;
       }
 
@@ -2559,7 +2672,7 @@ export function CopilotWorkspace() {
         const d = (data.data ?? null) as Record<string, unknown> | null;
 
         /**
-         * MCP reports the Sign Service's real active cap on ANY auto-sign-related turn —
+         * MCP reports the Sign Service's real active cap on ANY auto-sign-related turn -
          * "enable auto-approve", or a plain sentence a keyword match mistook for a cap
          * change (the injection this closes: "auto-approve a 100 BLUSDC borrow" set the
          * cap to 100 server-side without ever calling `applyAutoSignOutcome`, which only
@@ -2568,19 +2681,19 @@ export function CopilotWorkspace() {
          * account's real limit until the user happened to click Edit. Synced here, once,
          * off whatever MCP actually reports, so the chip can never drift from it.
          */
-        const reportedTx = Number((d as { max_per_tx_usd?: unknown } | null)?.max_per_tx_usd);
-        const reportedDay = Number((d as { max_per_day_usd?: unknown } | null)?.max_per_day_usd);
+        const reportedTx = Number((d as { max_per_tx_tokens?: unknown } | null)?.max_per_tx_tokens);
+        const reportedDay = Number((d as { max_per_day_tokens?: unknown } | null)?.max_per_day_tokens);
         if (Number.isFinite(reportedTx) && reportedTx > 0) {
           const caps = {
-            max_per_tx_usd: reportedTx,
-            max_per_day_usd: Number.isFinite(reportedDay) && reportedDay > 0 ? reportedDay : reportedTx,
+            max_per_tx_tokens: reportedTx,
+            max_per_day_tokens: Number.isFinite(reportedDay) && reportedDay > 0 ? reportedDay : reportedTx,
           };
           try {
             localStorage.setItem(AUTO_CAPS_KEY, JSON.stringify(caps));
           } catch {
             /* ignore */
           }
-          setSavedCaps({ tx: caps.max_per_tx_usd, day: caps.max_per_day_usd });
+          setSavedCaps({ tx: caps.max_per_tx_tokens, day: caps.max_per_day_tokens });
         }
 
         /**
@@ -2588,8 +2701,8 @@ export function CopilotWorkspace() {
          * message revokes the Sign Service session server-side (S-06 reports "Auto-sign
          * disabled... 0 session(s) revoked" correctly) but never called `setAutoApprove`,
          * which only runs from the dedicated enable/disable buttons. The client's OWN
-         * local auto-approve flag — which is what actually lets `promoteSignableAutoSignResponse`
-         * sign a `needs_wallet_sign` with the embedded Privy session key — stayed on, so
+         * local auto-approve flag - which is what actually lets `promoteSignableAutoSignResponse`
+         * sign a `needs_wallet_sign` with the embedded Privy session key - stayed on, so
          * every write after "disable auto-sign" kept auto-signing anyway (S-07 failure).
          * Synced generically off the same message text MCP already returns, in both
          * directions, so this can't drift from whichever path changed it.
@@ -2620,7 +2733,7 @@ export function CopilotWorkspace() {
           };
         }
 
-        // Summarize round-trip has answer only — keep strategy meta for the card.
+        // Summarize round-trip has answer only - keep strategy meta for the card.
         // Strip resume queue fields so the receipt cannot re-arm auto-chain.
         if (body.summarize_execution && strategyStepsRef.current.length) {
           strategyCompleteRef.current = true;
@@ -2657,11 +2770,11 @@ export function CopilotWorkspace() {
             };
           });
         } else if (!quiet || data.kind === "needs_wallet_bind") {
-          setResponse(data);
+          setResponse((previous) => preserveWalletBindPanelResponse(previous, data));
         }
         // Agent-chain hops (pending_write / explicit chain) fold into the parent log row.
         // Full multi_leg payloads create/refresh the parent strategy row.
-        // Do not log pure summarize receipts as a new turn noise — still fold if multi.
+        // Do not log pure summarize receipts as a new turn noise - still fold if multi.
         if (!quiet && !body.summarize_execution) {
           pushLog(promptLabel, data, {
             chainHop: !!(opts?.chainHop || body.pending_write || body.resume_multi_leg),
@@ -2695,7 +2808,7 @@ export function CopilotWorkspace() {
          * This catch replaced every reply with one sentence, so a session-append
          * rejected by Google (`invalid_grant` / `invalid_rapt`, in the same minute as
          * the reported turn), a network drop and a JSON parse error were all "Copilot
-         * request failed." — and the actual reason was only ever in the console. The
+         * request failed." - and the actual reason was only ever in the console. The
          * thrown value already carries it; nothing needed to be invented, only kept.
          */
         const detail = e instanceof Error ? e.message.trim() : String(e ?? "").trim();
@@ -2722,7 +2835,7 @@ export function CopilotWorkspace() {
    * Write an outcome into the conversation, not just a toast.
    *
    * Cancel flipped `cancelledRef` and raised a toast; nothing reached the thread, so a
-   * stopped run left the last thing the copilot said standing as if it were still true —
+   * stopped run left the last thing the copilot said standing as if it were still true -
    * a staged panel asking for a signature the user had just refused. A toast is gone in
    * three seconds and is not a record.
    *
@@ -2743,48 +2856,60 @@ export function CopilotWorkspace() {
 
   const cancelInFlight = useCallback(() => {
     cancelledRef.current = true;
-    abortRef.current?.abort();
+    abortRef.current?.abort("cancel pressed");
     abortRef.current = null;
     setLoading(false);
     setSigning(false);
     // Drop the queued legs. cancelledRef already stops the chain, but leaving a
     // tail behind means a later hop could find it and resume a run the user
-    // explicitly stopped — these legs move funds, so they die with the cancel.
+    // explicitly stopped - these legs move funds, so they die with the cancel.
     // Settled legs stay on screen; only the unsent queue is discarded.
     strategyTailRef.current = [];
     setHfPaused(false);
     if (originalIntentRef.current) setIntentText(originalIntentRef.current);
-    toast("Request cancelled — completed steps stay in the log. Nothing further will be submitted.", {
+    toast("Request cancelled - completed steps stay in the log. Nothing further will be submitted.", {
       duration: 3500,
     });
     noteOutcome(
-      "Cancelled. Nothing was submitted — any step that had already settled stays on-chain.",
+      "Cancelled. Nothing was submitted - any step that had already settled stays on-chain.",
     );
   }, [noteOutcome]);
 
   const { run: investigate } = investigation;
   const resetWorkflow = workflow.reset;
   const runInvestigation = useCallback(async (text: string, signal?: AbortSignal) => {
-    const continuing = shouldContinueInvestigation(text, investigation.result);
-    if (shouldReplacePlan(text, investigation.result)) {
+    /**
+     * Whether this message continues the last plan is the server's reading, not ours: the old plan stays until the reply says
+     * it has its own plan or write to put in its place. An answer or a question leaves the plan standing.
+     */
+    if (!investigation.result?.question) setResponse(null);
+    /**
+     * A run that has already finished has nothing left to protect, so it is cleared now, before the request goes out - the new
+     * plan's automatic preparation waits for the old workflow to be gone, and clearing it only when the reply arrives raced with
+     * that (7 Oct, live: a second action after a settled one sat on "Preparing the plan" and was never prepared). An unfinished
+     * run is only replaced once the reply says it brings a plan of its own.
+     */
+    if (workflow.view && finishedWorkflow(workflow.view)) {
       setSigningJournal(false);
       resetWorkflow();
       resetStrategyAccumulator();
-      setResponse(null);
-    } else if (!(continuing && investigation.result?.question)) {
-      setResponse(null);
     }
     setSubmitted(text);
     setIntentText("");
-    await investigate(text, signal);
-  }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result]);
-  const runDirect = useCallback(async (text: string, signal: AbortSignal) => {
-    const continuing = shouldContinueInvestigation(text, investigation.result);
-    if (shouldReplacePlan(text, investigation.result)) {
+    await investigate(text, signal, undefined, (reply) => {
+      if (!bringsItsOwnPlan(reply)) return;
       setSigningJournal(false);
       resetWorkflow();
       resetStrategyAccumulator();
-    } else if (!(continuing && investigation.result?.question)) {
+      setResponse(null);
+    });
+  }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result, workflow.view]);
+  const runDirect = useCallback(async (text: string, signal: AbortSignal) => {
+    // A direct write is a new action of its own, so it takes the old plan's place; an open question is answered in place.
+    if (!investigation.result?.question) {
+      setSigningJournal(false);
+      resetWorkflow();
+      resetStrategyAccumulator();
       setResponse(null);
     }
     setSubmitted(text);
@@ -2793,8 +2918,8 @@ export function CopilotWorkspace() {
     /**
      * A write's turn is what it is about to do, not the signing boilerplate.
      *
-     * `message` on a staged write is `readyToSignMessage` — "Built and ready — approve to
-     * sign it with your wallet." — which is chrome for a card, and it was what the
+     * `message` on a staged write is `readyToSignMessage` - "Built and ready - approve to
+     * sign it with your wallet." - which is chrome for a card, and it was what the
      * conversation kept as the record of the turn. `human_summary` is the sentence the
      * write actually names ("Supply 50 XLM to Blend"), and it is replaced by the receipt
      * once the transaction settles.
@@ -2828,6 +2953,15 @@ export function CopilotWorkspace() {
    */
   const proposePlan = workflow.propose;
   const confirmWorkflow = workflow.confirm;
+  /** Set when a prepared plan should be approved as soon as it arrives (see approveCandidate). */
+  const approveWhenProposedRef = useRef(false);
+  /** The plan this page is approving on the user's behalf right now (a stated action, or a plan they pressed Approve on). */
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  /** Which candidate the running plan came from, so the finished reply can quote its rate and health. */
+  const approvedCandidateRef = useRef<string | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<{ id: string; continuation: string } | null>(null);
+  /** The reply (its continuation) whose plan the current workflow was prepared for. */
+  const preparedForRef = useRef<string | null>(null);
   const updateExecutionReceipt = investigation.updateExecutionReceipt;
   useEffect(() => {
     const view = workflow.view;
@@ -2837,7 +2971,7 @@ export function CopilotWorkspace() {
      * A receipt records what HAPPENED to a run, so there is nothing to record until one
      * starts.
      *
-     * This fired on any workflow view, including `proposed` — the state a plan sits in while
+     * This fired on any workflow view, including `proposed` - the state a plan sits in while
      * it waits for Approve. The turn therefore grew an EXECUTION PROGRESS card whose only leg
      * read "Queued", and because the turn renders above the investigation card, that card sat
      * ABOVE the approval it had not been given yet. Reported 23 Sep on "lend 50 xlm".
@@ -2861,7 +2995,7 @@ export function CopilotWorkspace() {
     if (view.status !== "researched" || view.question) return;
     /**
      * Only what the server NOMINATED is prepared without a click. It nominates a candidate
-     * only when there is exactly one — several competing strategies are the user's choice
+     * only when there is exactly one - several competing strategies are the user's choice
      * to make, and this effect feeds the auto-approve effect below, which with session
      * signing on signs and broadcasts (15 Sep, S4: the first of two options was executed
      * before it could be read). The `?? feasible[0]` fallback that used to sit here
@@ -2870,12 +3004,20 @@ export function CopilotWorkspace() {
      */
     const candidateId = view.proposalCandidateId;
     if (view.pendingWrite?.op || !candidateId || !view.continuation) return;
-    if (workflow.view || workflow.loading) return;
+    if (workflow.loading) return;
+    /**
+     * A run that has already finished is no obstacle to preparing the next plan: it is cleared here, and this effect runs again
+     * once it is gone. Waiting for something else to have cleared it left a second action sitting unprepared (7 Oct, live).
+     */
+    if (workflow.view) {
+      if (isStaleFinishedRun(workflow.view, preparedForRef.current, view.continuation)) { setSigningJournal(false); resetWorkflow(); resetStrategyAccumulator(); }
+      return;
+    }
     /**
      * A failed propose waits for the user; it does not try again by itself.
      *
      * A failure releases the dispatch claim (so the same plan CAN be retried) and resets
-     * `workflow.view`/`workflow.loading` — which are this effect's own dependencies. So the
+     * `workflow.view`/`workflow.loading` - which are this effect's own dependencies. So the
      * effect re-ran at once, found the claim free and proposed again, forever: live 23 Sep, a
      * broken route answered 404 and the terminal filled with `POST /workflow/propose 404`
      * several times a second. The error is already on screen saying "please try again"; a
@@ -2884,16 +3026,34 @@ export function CopilotWorkspace() {
     if (workflow.error) return;
     /**
      * A turn this page ran carries on by itself; a turn read back from the thread does not.
-     * Both arrive in the same `result`, so the two are told apart by where it came from —
+     * Both arrive in the same `result`, so the two are told apart by where it came from -
      * and the claim makes the dispatch survive a remount, which the old ref could not.
      */
     if (investigation.resultOrigin !== "live") return;
     const proposeKey = `propose:${view.continuation}:${candidateId}`;
     if (!claimDispatch(address, proposeKey)) return;
+    /**
+     * Owner rule (24 Sep, via Sanujit): an action the user STATED (single or multi-leg) gets
+     * no plan card. It is prepared and approved here, and the execution card shows it running.
+     * With auto-approve ON the session signer submits each leg; with it OFF every leg still
+     * waits for the user's own wallet signature, so nothing is signed without them. A strategy
+     * the model chose is nominated by its own candidate id, never REQUESTED_ACTIONS_ID, and
+     * keeps its plan card. A swap still stops at its review card (the approve effect below).
+     */
+    const direct = candidateId === REQUESTED_ACTIONS_ID;
+    approveWhenProposedRef.current = direct;
+    approvedCandidateRef.current = candidateId;
+    setSelectedPlan({ id: candidateId, continuation: view.continuation });
+    preparedForRef.current = view.continuation;
     void proposePlan(view.continuation, candidateId).then((prepared) => {
-      if (!prepared) releaseDispatch(address, proposeKey);
+      if (!prepared) {
+        approveWhenProposedRef.current = false;
+        releaseDispatch(address, proposeKey);
+      }
     });
-  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, workflow.error, address]);
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, workflow.error, address, resetWorkflow, resetStrategyAccumulator]);
+  const lifecycleTurnRef = useRef<string | null>(null);
+  lifecycleTurnRef.current = investigation.result ? `${address}:${investigation.result.continuation}` : null;
   useEffect(() => {
     const view = investigation.result;
     if (!view || investigation.loading || investigation.error) return;
@@ -2902,38 +3062,57 @@ export function CopilotWorkspace() {
     if (investigation.resultOrigin !== "live") return;
     const key = `write:${view.continuation}:${op}`;
     if (!claimDispatch(address, key)) return;
+    const turn = `${address}:${view.continuation}`;
     void postCopilot({ pending_write: { op }, message: view.originalRequest }, view.originalRequest).then((sent) => {
       if (!sent) releaseDispatch(address, key);
+      else if (lifecycleTurnRef.current === turn && (sent.kind === "error" || sent.kind === "blocked")) {
+        void investigation.updateLastAssistantText(sent.message);
+      }
     });
-  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, postCopilot, address]);
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, investigation.updateLastAssistantText, postCopilot, address]);
 
   const signJournalXdr = useCallback(async (auto = false) => {
     const view = workflow.view;
     if (!view || workflow.loading || signingJournal) return;
     const step = view.steps.find((entry) => entry.status === "awaiting_signature" && entry.unsignedXdr);
     if (!step?.unsignedXdr) return;
+    // The Sign Service refused this step under auto-approve (a cap, a lapsed session). Silent
+    // client signing would walk around that refusal, so it waits for an explicit click.
+    if (auto && !mayAutoSignJournalStep(step)) return;
     const signKey = `sign:${view.id}:${step.id}`;
     if (auto && !claimDispatch(address, signKey)) return;
     setSigningJournal(true);
+    const attempt = {}; signAttemptRef.current = attempt;
     try {
-      const result = await signWorkflowTransaction(step.unsignedXdr, { networkPassphrase: "Test SDF Network ; September 2015", address: address ?? undefined });
+      const refreshed = await prepareWorkflowSign();
+      if (signAttemptRef.current !== attempt || useUserStore.getState().address !== address) return;
+      const freshStep = refreshed?.steps.find(entry => entry.id === step.id && entry.status === "awaiting_signature");
+      if (!freshStep?.unsignedXdr) {
+        if (auto) releaseDispatch(address, signKey);
+        // A click that ends in nothing reads as a dead button. No view back means the refresh
+        // itself failed (a token that did not arrive, a request that did not answer).
+        else if (!refreshed) toast.error("The transaction could not be refreshed for signing. Press Sign in wallet again.");
+        return;
+      }
+      const result = await signWorkflowTransaction(freshStep.unsignedXdr, { networkPassphrase: "Test SDF Network ; September 2015", address: address ?? undefined });
+      if (signAttemptRef.current !== attempt || useUserStore.getState().address !== address) return;
       if (result.error || !result.signedTxXdr || result.signerAddress && result.signerAddress !== address) {
         toast.error("The approved transaction could not be signed by the connected wallet.");
         if (auto) releaseDispatch(address, signKey);
         return;
       }
-      await confirmWorkflow(result.signedTxXdr);
+      await confirmWorkflow(result.signedTxXdr, view.id);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "The transaction could not be signed.");
       if (auto) releaseDispatch(address, signKey);
     } finally {
-      setSigningJournal(false);
+      if (signAttemptRef.current === attempt) { signAttemptRef.current = null; setSigningJournal(false); }
     }
-  }, [workflow.view, workflow.loading, signingJournal, address, confirmWorkflow]);
+  }, [workflow.view, workflow.loading, prepareWorkflowSign, signingJournal, address, confirmWorkflow]);
 
   /**
    * Auto-approve ON means the journal should not wait for a second click.
-   * Propose no longer does the live price/balance pass — Approve does. The Sign
+   * Propose no longer does the live price/balance pass - Approve does. The Sign
    * Service still enforces caps; this only presses Approve the way the user already armed.
    * A transient risk miss leaves the journal `proposed`; the one-shot claim stops a loop.
    *
@@ -2962,13 +3141,51 @@ export function CopilotWorkspace() {
     });
   }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.restored, workflow.stale, workflow.approve, address]);
 
+  /**
+   * A plan card's Approve (owner layout, 23 Sep): one click prepares the plan and, once it
+   * is prepared, approves it. The server still re-checks funds, prices and health at
+   * Approve, exactly as a second click would have. A swap is the exception: it keeps its
+   * own review card and Confirm (another developer's design), so it stops at prepared.
+   */
+  const approveCandidate = useCallback((candidateId: string) => {
+    const continuation = investigation.result?.continuation;
+    if (!continuation) return;
+    const proposeKey = `propose:${continuation}:${candidateId}`;
+    if (!claimDispatch(address, proposeKey)) return;
+    approveWhenProposedRef.current = true;
+    approvedCandidateRef.current = candidateId;
+    setSelectedPlan({ id: candidateId, continuation });
+    void proposePlan(continuation, candidateId).then((prepared) => {
+      if (!prepared) {
+        approveWhenProposedRef.current = false;
+        releaseDispatch(address, proposeKey);
+      }
+    });
+  }, [investigation.result?.continuation, proposePlan, address]);
+  useEffect(() => {
+    if (!approveWhenProposedRef.current) return;
+    const view = workflow.view;
+    if (!view || workflow.loading) return;
+    approveWhenProposedRef.current = false;
+    if (workflow.error || workflow.stale || view.status !== "proposed") return;
+    if (view.swap || view.steps.some((step) => step.op === "swap")) return;
+    const approveKey = `approve:${view.id}:${view.revision}`;
+    if (!claimDispatch(address, approveKey)) return;
+    setApprovingId(view.id);
+    void workflow.approve().then((approved) => {
+      if (!approved) { releaseDispatch(address, approveKey); setApprovingId(null); }
+    });
+  }, [workflow.view, workflow.loading, workflow.error, workflow.stale, workflow.approve, address]);
+
   useEffect(() => {
     if (!sessionSigning) return;
     const view = workflow.view;
-    if (!view || workflow.loading || signingJournal || workflow.restored) return;
-    if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr)) return;
+    // A failed refresh sets `error`. Without this guard the effect re-fires at once and loops;
+    // a manual click still retries, because prepareSign clears the error.
+    if (!view || workflow.loading || workflow.error || signingJournal || workflow.restored) return;
+    if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr && mayAutoSignJournalStep(step))) return;
     void signJournalXdr(true);
-  }, [sessionSigning, workflow.view, workflow.loading, workflow.restored, signingJournal, signJournalXdr]);
+  }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.restored, signingJournal, signJournalXdr]);
 
   const run = useCallback(async (text: string) => {
     if (signing) return;
@@ -2978,7 +3195,7 @@ export function CopilotWorkspace() {
      */
     cancelledRef.current = false;
     if (loading) {
-      abortRef.current?.abort();
+      abortRef.current?.abort("superseded by a new send");
       abortRef.current = null;
       setLoading(false);
     }
@@ -2989,7 +3206,7 @@ export function CopilotWorkspace() {
   /**
    * Send an approved plan back for execution.
    *
-   * Posts the plan verbatim — same plan_id, same created_at, same steps. The server
+   * Posts the plan verbatim - same plan_id, same created_at, same steps. The server
    * re-hashes the steps and refuses anything that no longer matches what was shown, so
    * this must not normalise, reorder or "tidy" the payload on the way out.
    */
@@ -3059,7 +3276,7 @@ export function CopilotWorkspace() {
 
       // The wallet is connected here but Vanna holds no signing authority for it.
       // Distinct from "the Sign Service rejected our token" (a fault on our side the
-      // user cannot act on) and from success — this one has a specific user action.
+      // user cannot act on) and from success - this one has a specific user action.
       if (data.kind === "needs_wallet_bind") {
         signReadSeq.current += 1;
         if (action === "disable") setAutoApprove(address, false);
@@ -3069,38 +3286,43 @@ export function CopilotWorkspace() {
 
       if (action === "disable") {
         signReadSeq.current += 1;
+        // The switch reads Off only once the signer answered. An unanswered or failed
+        // revoke leaves the session possibly live, so the switch stays On and says so.
+        if (disableVerdict(data) === "unconfirmed") {
+          toast.error("The signer did not confirm turning auto-approve off. It may still be active; try again.");
+          return;
+        }
         setAutoApprove(address, false);
         setSignServiceState({ address, status: "unknown", reason: null });
+        toast.success("Auto-approve off");
         return;
       }
       if (data.kind === "needs_auto_sign") return;
 
-      const facts = (data.data ?? {}) as {
-        default_cap_usd?: number;
-        error?: string;
-        detail?: { detail?: string };
-      };
-      const mcpEnabled = data.kind !== "error" && !facts.error;
+      const facts = data.data ?? {};
+      const accepted = acceptedTestnetBudget(facts);
+      const mcpEnabled = data.kind !== "error" && !facts.error && accepted != null;
       const reason =
-        facts.detail?.detail ||
-        facts.error ||
+        (typeof facts.error === "string" ? facts.error : null) ||
         (data.kind === "error" ? data.message : null) ||
-        null;
+        "The signer did not confirm an enforced testnet amount limits.";
       signReadSeq.current += 1;
       setSignServiceState({
         address,
         ...(mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason }),
       });
 
-      const fromMcp = Number(facts.default_cap_usd);
-      if (Number.isFinite(fromMcp) && fromMcp > 0) setMcpDefaultCap(fromMcp);
-      const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : mcpDefaultCap ?? 1000;
-      const txCap = action === "custom" ? Number(customTx) || mcpDef : mcpDef;
-      const dayCap = action === "custom" ? Number(customDay || customTx) || txCap : mcpDef;
+      setMcpDefaultCaps(defaultTestnetBudget(facts));
+      if (!accepted) {
+        setAutoApprove(address, false);
+        toast.error(reason);
+        return;
+      }
+      const { tx: txCap, day: dayCap } = accepted;
       try {
         localStorage.setItem(
           AUTO_CAPS_KEY,
-          JSON.stringify({ max_per_tx_usd: txCap, max_per_day_usd: dayCap }),
+          JSON.stringify({ max_per_tx_tokens: txCap, max_per_day_tokens: dayCap }),
         );
       } catch {
         /* ignore */
@@ -3112,16 +3334,16 @@ export function CopilotWorkspace() {
         setAutoApprove(address, false);
         toast.error(
           arm.reason === "sign_service_not_enforcing"
-            ? "Auto-approve refused — the Sign Service is not enforcing spend caps. " +
+            ? "Auto-approve refused - the Sign Service is not enforcing spend caps. " +
               "A limit that only lives in this browser can be bypassed."
-            : "Auto-approve unavailable for this wallet — every write still needs a signature.",
+            : "Auto-approve unavailable for this wallet - every write still needs a signature.",
         );
         return;
       }
       setAutoApprove(address, true);
-      toast.success(`Auto-approve on · $${txCap}/tx · $${dayCap}/day`);
+      toast.success(`Auto-approve on · ${txCap} units/tx · ${dayCap} units/day`);
     },
-    [address, customTx, customDay, sessionSigningAvailable, mcpDefaultCap],
+    [address, sessionSigningAvailable],
   );
 
   /**
@@ -3131,11 +3353,11 @@ export function CopilotWorkspace() {
    *
    * Turning auto-sign on IS the user's consent to the thing being asked for. Bouncing
    * them to an external page to click "authorize", then back to click "I've approved
-   * it", is a second quest for a decision they already made — and it reads as broken
+   * it", is a second quest for a decision they already made - and it reads as broken
    * next to a switch they just flipped. Everything needed is already in this tab: they
    * are authenticated with Privy, and Privy's own SDK is the only thing that CAN grant
    * the consent. So the only step this page cannot do is the register callback, which
-   * is cross-origin — and the server does that (see lib/copilot/wallet-bind.ts).
+   * is cross-origin - and the server does that (see lib/copilot/wallet-bind.ts).
    *
    * Nothing here is trusted. `addSigners` succeeding is not what makes the binding
    * real: register makes the Sign Service re-verify quorum-is-signer against Privy,
@@ -3143,7 +3365,7 @@ export function CopilotWorkspace() {
    *
    * Returns false when the silent path cannot run or did not complete, and the caller
    * then leaves the fallback panel on screen. Any `false` here is a real fallback, not
-   * a swallowed failure — the reason is surfaced as a toast.
+   * a swallowed failure - the reason is surfaced as a toast.
    */
   const completeWalletBindInApp = useCallback(
     async (wb: NonNullable<ChatResponse["wallet_bind"]>): Promise<boolean> => {
@@ -3164,7 +3386,7 @@ export function CopilotWorkspace() {
         authorized = await controls.authorizeVannaSigner(wb.signer_id);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        // Includes the user dismissing Privy's own sheet — a legitimate "no", so this
+        // Includes the user dismissing Privy's own sheet - a legitimate "no", so this
         // is not an error state, just the end of the silent path.
         toast.error(`Could not authorize Vanna as a signer (${msg}).`);
         return false;
@@ -3185,8 +3407,8 @@ export function CopilotWorkspace() {
             request_id: wb.request_id,
             wallet_address: authorized.address,
             ...(wb.retry_action ? { retry_action: wb.retry_action } : {}),
-            ...(wb.max_per_tx_usd != null ? { max_per_tx_usd: wb.max_per_tx_usd } : {}),
-            ...(wb.max_per_day_usd != null ? { max_per_day_usd: wb.max_per_day_usd } : {}),
+            ...(wb.max_per_tx_tokens != null ? { max_per_tx_tokens: wb.max_per_tx_tokens } : {}),
+            ...(wb.max_per_day_tokens != null ? { max_per_day_tokens: wb.max_per_day_tokens } : {}),
           },
         },
         "Authorize Vanna as an additional signer",
@@ -3213,7 +3435,7 @@ export function CopilotWorkspace() {
           : action === "use_defaults"
             ? "Enable auto-sign (MCP defaults)"
             : action === "custom"
-              ? `Enable auto-sign ($${customTx}/$${customDay || customTx})`
+              ? `Enable auto-sign (${customTx}/${customDay || customTx} units)`
               : "Enable auto-sign";
       if (!opts?.quiet) setSubmitted(submitted ?? label);
       const data = await postCopilot(
@@ -3229,7 +3451,7 @@ export function CopilotWorkspace() {
           auto_sign: {
             action,
             ...(action === "custom"
-              ? { max_per_tx_usd: customTx, max_per_day_usd: customDay || customTx }
+              ? { max_per_tx_tokens: customTx, max_per_day_tokens: customDay || customTx }
               : {}),
           },
           pending_write: response?.auto_sign?.pending_write
@@ -3241,10 +3463,12 @@ export function CopilotWorkspace() {
             : null,
         },
         label,
-        opts?.quiet ? { background: true } : undefined,
+        // A background switch gets a deadline, so a request that never answers releases the
+        // toggle instead of holding `autoApprovePending` forever.
+        opts?.quiet ? { background: true, signal: AbortSignal.timeout(AUTO_SIGN_SWITCH_TIMEOUT_MS) } : undefined,
       );
       // Sync local auto-approve with the Sign Service session. Caps that only
-      // live in this browser are not a policy — applyAutoSignOutcome refuses to
+      // live in this browser are not a policy - applyAutoSignOutcome refuses to
       // arm unless MCP actually enabled a server-side session.
       if (data?.kind === "needs_wallet_bind" && data.wallet_bind) {
         if (opts?.quiet) setSubmitted(label);
@@ -3257,6 +3481,11 @@ export function CopilotWorkspace() {
         applyAutoSignOutcome(action, data);
       } else if (address && !data && action !== "disable") {
         setAutoApprove(address, false);
+      }
+      // No answer at all (the deadline passed, or the request failed): say so, rather than
+      // leaving the toggle looking switched while nothing changed on the server.
+      if (!data && opts?.quiet) {
+        toast.error(action === "disable" ? "Auto-approve did not switch off. Try again." : "Auto-approve did not switch on. Try again.");
       }
     },
     [
@@ -3272,29 +3501,38 @@ export function CopilotWorkspace() {
   );
 
   const handleAutoApproveToggle = useCallback(() => {
-    if (loading || autoApprovePending) return;
-    if (!address) {
-      toast.error("Connect a wallet first.");
+    /**
+     * A click while the previous switch is still in flight used to vanish without a word,
+     * and that request had no deadline - one that hung left the toggle dead until a server
+     * restart (24 Sep, live: turned off, could not turn back on). Say why nothing happened.
+     */
+    const blocked = autoApproveToggleBlock({
+      switching: autoApprovePending,
+      replyRunning: loading,
+      hasWallet: Boolean(address),
+    });
+    if (blocked || !address) {
+      if (blocked?.tone === "error") toast.error(blocked.message);
+      else toast(blocked?.message ?? "Connect a wallet first.");
       return;
     }
     if (walletKind === "freighter") {
       const next = !freighterAutoApprove;
       setAutoApprove(address, next);
       if (next) {
-        toast.success("Auto-dispatch on — transactions will open directly in Freighter");
+        toast.success("Auto-dispatch on - transactions will open directly in Freighter");
       } else {
         toast.success("Auto-dispatch off");
       }
       return;
     }
     if (autoApproveUiOn) {
-      setAutoApprove(address, false);
-      setSignServiceState((prev) => ({ ...prev, status: "unknown" }));
+      // Not switched Off here: the confirmation (applyAutoSignOutcome) decides what the
+      // switch says, and the button shows busy until it arrives.
       setAutoApprovePending(true);
       void enableAutoSign("disable", { quiet: true }).finally(() => {
         setAutoApprovePending(false);
       });
-      toast.success("Auto-approve off");
       return;
     }
     if (!sessionSigningAvailable) {
@@ -3304,15 +3542,18 @@ export function CopilotWorkspace() {
     if (capsEnforced) {
       setAutoApprove(address, true);
       toast.success(
-        savedCaps ? `Auto-approve on · $${savedCaps.tx}/tx · $${savedCaps.day}/day` : "Auto-approve on",
+        savedCaps ? `Auto-approve on · ${savedCaps.tx} units/tx · ${savedCaps.day} units/day` : "Auto-approve on",
       );
       return;
     }
-    if (railCapsMode === "custom" && Number(customTx) <= 0) {
-      toast.error("Enter a per-tx cap above 0.");
-      return;
+    if (railCapsMode === "custom") {
+      const tx = Number(customTx);
+      const day = customDay.trim() ? Number(customDay) : tx;
+      if (!customTx.trim() || !Number.isFinite(tx) || !Number.isFinite(day) || tx <= 0 || day < tx) {
+        toast.error("Enter a positive per-transaction limit and a daily limit at least as large.");
+        return;
+      }
     }
-    setAutoApprove(address, true);
     setAutoApprovePending(true);
     void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults", { quiet: true }).finally(() => {
       setAutoApprovePending(false);
@@ -3329,6 +3570,7 @@ export function CopilotWorkspace() {
     savedCaps,
     railCapsMode,
     customTx,
+    customDay,
     enableAutoSign,
   ]);
 
@@ -3337,7 +3579,7 @@ export function CopilotWorkspace() {
    *
    * `retry_action` travels with the poll so the enable the user originally asked for is
    * re-run server-side the instant the binding lands. Without it the happy path ends at
-   * "authorized" — true, but one silent step short of the toggle they were trying to
+   * "authorized" - true, but one silent step short of the toggle they were trying to
    * flip, which reads as the same failure they started with.
    */
   const checkWalletBind = useCallback(
@@ -3350,8 +3592,8 @@ export function CopilotWorkspace() {
             action: "bind_status",
             request_id: wb.request_id,
             ...(wb.retry_action ? { retry_action: wb.retry_action } : {}),
-            ...(wb.max_per_tx_usd != null ? { max_per_tx_usd: wb.max_per_tx_usd } : {}),
-            ...(wb.max_per_day_usd != null ? { max_per_day_usd: wb.max_per_day_usd } : {}),
+            ...(wb.max_per_tx_tokens != null ? { max_per_tx_tokens: wb.max_per_tx_tokens } : {}),
+            ...(wb.max_per_day_tokens != null ? { max_per_day_tokens: wb.max_per_day_tokens } : {}),
           },
         },
         "Check signing authority",
@@ -3417,7 +3659,7 @@ export function CopilotWorkspace() {
    * Resume a write after the user picks a USDC variant (BLUSDC / AQUSDC / SOUSDC).
    * Server stored the pending op+amount; we inject the chosen asset and re-run.
    *
-   * Mid multi-leg this must resume the paused leg + every still-outstanding leg — the
+   * Mid multi-leg this must resume the paused leg + every still-outstanding leg - the
    * same pattern as submitLegAmount. A bare pending_write alone ran the op as a new hop
    * ("lend 125 AQUSDC"), left the clarifying "Lend 125 USDC on Earn" stuck forever, and
    * orphaned every skipped leg behind it.
@@ -3465,11 +3707,11 @@ export function CopilotWorkspace() {
       if (!pw?.op) {
         /**
          * "Which USDC do you mean?" can originate from a READ (`can_borrow`/
-         * `can_withdraw`), not just a write — there is no `pending_write` to resume
+         * `can_withdraw`), not just a write - there is no `pending_write` to resume
          * here at all, so this must never fall into the pending-write resumption
          * path below. Substitute the chosen variant into the ORIGINAL message text
          * ("Can i borrow 20 USDC?" → "Can i borrow 20 AQUSDC?") and resubmit it as a
-         * fresh message, through the exact same routing a typed message gets — a
+         * fresh message, through the exact same routing a typed message gets - a
          * bare `run(opt.id)` used to submit just the ticker alone, losing the amount
          * and the verb, and answering something unrelated.
          */
@@ -3551,7 +3793,7 @@ export function CopilotWorkspace() {
    * Service auto-sign has no bound user identity).
    *
    * Order matters. If MCP handed back an `unsigned_xdr`, that envelope is already
-   * simulated and resource-assembled for this exact call — we sign and submit it
+   * simulated and resource-assembled for this exact call - we sign and submit it
    * as-is. Rebuilding the same operation locally would re-run the app's Registry
    * and collateral pre-flight, which is what produced the misleading "XLM not set
    * in the Registry" and "Failed to get user address" toasts even though MCP's own
@@ -3559,7 +3801,7 @@ export function CopilotWorkspace() {
    * fallback for turns where no XDR came back.
    */
   const signWithWallet = useCallback(async () => {
-    // Prefer live response — after multi-leg hop advance a closed-over `response`
+    // Prefer live response - after multi-leg hop advance a closed-over `response`
     // can still be the previous leg (no borrow XDR), which auto-blocked the spinner.
     const response = responseRef.current;
     const hopKey = response
@@ -3581,7 +3823,7 @@ export function CopilotWorkspace() {
     // erroring at the sign step (see `isSignableXdr`).
     const xdr = isSignableXdr(response?.unsigned_xdr) ? response!.unsigned_xdr! : null;
     if (!xdr && (!action || !isExecutable(action))) {
-      toast.error("Nothing to sign — re-run the request.");
+      toast.error("Nothing to sign - re-run the request.");
       markHopAutoFailed();
       return;
     }
@@ -3604,7 +3846,7 @@ export function CopilotWorkspace() {
             // Submitted, not yet confirmed. Stamp the hash on the leg that is
             // awaiting signature so the card shows something checkable during
             // the 30–60s ledger wait instead of a bare spinner. Status stays
-            // pre-terminal, so toRunLegStatus keeps rendering it as running —
+            // pre-terminal, so toRunLegStatus keeps rendering it as running -
             // this must NOT mark the leg ok, the ledger has not answered yet.
             const { steps: withHash, claimed: stamped } = claimFirstAwaitingLeg(
               strategyStepsRef.current,
@@ -3628,7 +3870,7 @@ export function CopilotWorkspace() {
         return;
       }
       if (result.ok) {
-        // This hop signed — only THIS key was blocked, if any.
+        // This hop signed - only THIS key was blocked, if any.
         badSeqRebuildRef.current = false;
         if (hopKey) {
           setAutoSubmitBlockedKey((k) => (k === hopKey ? null : k));
@@ -3673,7 +3915,7 @@ export function CopilotWorkspace() {
           /**
            * The turn becomes the receipt, not the request.
            *
-           * `response.message` is the sentence written before the signature — it describes
+           * `response.message` is the sentence written before the signature - it describes
            * a signature still being waited for. It was kept as the turn text unless it
            * contained one of two exact phrases, so every other pre-signature wording
            * survived as the record of a settled transaction. Built from what happened
@@ -3707,8 +3949,8 @@ export function CopilotWorkspace() {
         //
         // Both field names carry the same thing: `remaining_legs` is the older next_step
         // chain, `resume_legs` (with `can_resume`) is what the plan / MultiLegAgent path
-        // returns. The `executed` chain effect below was fixed to read both; THIS path —
-        // the one taken after a client wallet signature — still read only the first. So an
+        // returns. The `executed` chain effect below was fixed to read both; THIS path -
+        // the one taken after a client wallet signature - still read only the first. So an
         // approved plan signed in the wallet found `remainingFromData` null, skipped the
         // resume, and fell through to the "final leg" branch, which announced the strategy
         // was live after a single leg had settled.
@@ -3737,7 +3979,7 @@ export function CopilotWorkspace() {
             : null;
         // Exactly ONE leg is settled by one signature: the one that was awaiting it.
         // Including "pending" here, and stamping every match with this hash, made a single
-        // signature mark legs 3 and 4 as "DONE tx c7ec9aa…" — leg 2's hash — while only
+        // signature mark legs 3 and 4 as "DONE tx c7ec9aa…" - leg 2's hash - while only
         // two transactions existed on-chain. Claiming a transaction that never happened is
         // the worst thing this UI can do, so pending legs are never touched and only the
         // first awaiting leg takes the hash.
@@ -3745,7 +3987,7 @@ export function CopilotWorkspace() {
           ...s,
           status: "ok",
           tx_hash: result.hash ?? s.tx_hash ?? null,
-          // Drop the "confirming on ledger" line the submit-time stamp left —
+          // Drop the "confirming on ledger" line the submit-time stamp left -
           // the ledger has answered, so it is no longer true.
           message: undefined,
         })).steps;
@@ -3804,7 +4046,7 @@ export function CopilotWorkspace() {
             kind: "executed",
             message:
               `HF ≈ ${hf.toFixed(2)} is below your floor of ${floor.toFixed(2)}. ` +
-              `Further collateral/debt steps are paused — continue or stop here.`,
+              `Further collateral/debt steps are paused - continue or stop here.`,
             answer: localExecutionAnswer({
               intent: originalIntentRef.current || submitted,
               legs: strategyStepsRef.current,
@@ -3819,7 +4061,7 @@ export function CopilotWorkspace() {
               ...(response?.data || {}),
               multi_leg: true,
               multi_leg_steps: strategyStepsRef.current,
-              headline: `Paused — HF ${hf.toFixed(2)} below floor ${floor.toFixed(2)}`,
+              headline: `Paused - HF ${hf.toFixed(2)} below floor ${floor.toFixed(2)}`,
               strategy_complete: false,
               hf_paused: true,
               can_resume: true,
@@ -3890,7 +4132,7 @@ export function CopilotWorkspace() {
             remainingFromData.length > 0);
 
         // Done only when the full card is terminal AND nothing is queued.
-        // Do not use `!preferResume` here — with a false complete that would
+        // Do not use `!preferResume` here - with a false complete that would
         // clear the tail while borrow/supply were still pending.
         const done = complete && remainingFromData.length === 0;
         if (done) {
@@ -3910,7 +4152,7 @@ export function CopilotWorkspace() {
               multi_leg_steps: strategyStepsRef.current.length
                 ? strategyStepsRef.current
                 : patched,
-              headline: done ? "All steps completed — strategy is live." : undefined,
+              headline: done ? "All steps completed - strategy is live." : undefined,
               can_resume: done ? false : d.can_resume,
               prefer_resume_multi_leg: done ? false : d.prefer_resume_multi_leg,
               remaining_legs: done ? null : d.remaining_legs,
@@ -3939,7 +4181,7 @@ export function CopilotWorkspace() {
             };
           }
           // ONE leg per hop. Do NOT drop `head` from the queue until the hop
-          // actually returns — advancing early + an aborted fetch lost borrow and
+          // actually returns - advancing early + an aborted fetch lost borrow and
           // the run summarized after deposit alone.
           const { head, tail } = splitResumeBatch(remainingFromData);
           if (!head.length) return;
@@ -3948,7 +4190,7 @@ export function CopilotWorkspace() {
           // Keep the full remaining list until postCopilot succeeds.
           strategyTailRef.current = remainingFromData;
           toast.success(
-            `Step confirmed — running ${head[0]?.label || head[0]?.op || "next leg"}` +
+            `Step confirmed - running ${head[0]?.label || head[0]?.op || "next leg"}` +
               (tail.length ? ` (${tail.length} more after this)…` : "…"),
             { duration: 3500 },
           );
@@ -3969,7 +4211,7 @@ export function CopilotWorkspace() {
           );
           // Only drop the head from the client queue after the hop returns a
           // usable next response (staged / executed / auto-sign / bind). error,
-          // blocked, or null means this leg never advanced — keep the full tail
+          // blocked, or null means this leg never advanced - keep the full tail
           // so the user can retry without losing supply after a failed borrow POST.
           if (!hop || !isChainableHopResponse(hop)) {
             strategyTailRef.current = remainingFromData;
@@ -3980,13 +4222,13 @@ export function CopilotWorkspace() {
           return;
         }
 
-        // Legacy 2-hop next_step chain (deposit→borrow only) — never after hard-stop.
+        // Legacy 2-hop next_step chain (deposit→borrow only) - never after hard-stop.
         if (!done && nextStep?.op && nextStep.amount != null && nextStep.amount > 0) {
           if (cancelledRef.current) return;
           const label =
             nextStep.label ||
             `Auto step ${nextStep.step ?? 2}: ${nextStep.op} ${nextStep.amount} ${nextStep.asset || ""}`.trim();
-          toast.success("Step confirmed — running next step automatically…", { duration: 4000 });
+          toast.success("Step confirmed - running next step automatically…", { duration: 4000 });
           if (!strategyParentRef.current) {
             strategyParentRef.current = {
               id: response?.request_id || `strat-${Date.now()}`,
@@ -4033,7 +4275,7 @@ export function CopilotWorkspace() {
         }
 
         // Final client-signed leg: request a model receipt (server only summarizes when
-        // it runs the last leg itself). Legs + hashes only — never invent HF/balances.
+        // it runs the last leg itself). Legs + hashes only - never invent HF/balances.
         const finalLegs = strategyStepsRef.current;
         const hasStrategy = finalLegs.length > 0;
         const ranLegs = finalLegs
@@ -4110,8 +4352,8 @@ export function CopilotWorkspace() {
               multi_leg: true,
               multi_leg_steps: strategyStepsRef.current,
               headline: unfinished.length || stillQueued
-                ? `${strategyStepsRef.current.length - unfinished.length} of ${strategyStepsRef.current.length} steps settled — ${unfinished.length || "more"} still to run.`
-                : "All steps completed — strategy is live.",
+                ? `${strategyStepsRef.current.length - unfinished.length} of ${strategyStepsRef.current.length} steps settled - ${unfinished.length || "more"} still to run.`
+                : "All steps completed - strategy is live.",
               ...(settled && !stillQueued
                 ? {
                     strategy_complete: true,
@@ -4127,7 +4369,7 @@ export function CopilotWorkspace() {
             setIntentText(originalIntentRef.current);
           }
           // Receipt is already on screen. Vertex may enrich the headline in the
-          // background — do not keep the run in "Running…" while it thinks.
+          // background - do not keep the run in "Running…" while it thinks.
           if (!cancelledRef.current && settled && !stillQueued) {
             const stratId = strategyParentRef.current?.id || response?.request_id || "exec";
             const sumKey = `${stratId}:summarize:${finalLegs.length}`;
@@ -4177,12 +4419,12 @@ export function CopilotWorkspace() {
           ("code" in result && result.code === "ALREADY_SUBMITTED") ||
           isBadSequenceError(errText);
 
-        // Stale sequence: never re-sign the same XDR — rebuild one hop and try once.
+        // Stale sequence: never re-sign the same XDR - rebuild one hop and try once.
         // One rebuild only (flag stays true until a hop succeeds). Re-signing the
-        // same XDR after txBadSeq always fails — sequence is already past it.
+        // same XDR after txBadSeq always fails - sequence is already past it.
         if (badSeq && action?.op && !badSeqRebuildRef.current) {
           badSeqRebuildRef.current = true;
-          toast("Sequence outdated — rebuilding a fresh transaction…", { duration: 4000 });
+          toast("Sequence outdated - rebuilding a fresh transaction…", { duration: 4000 });
           try {
             const parentPrompt =
               strategyParentRef.current?.prompt ||
@@ -4217,7 +4459,7 @@ export function CopilotWorkspace() {
               (rebuilt.kind === "needs_wallet_sign" ||
                 (rebuilt.kind === "needs_auto_sign" && isSignableXdr(rebuilt.unsigned_xdr)))
             ) {
-              toast.success("Transaction rebuilt — signing…", { duration: 2500 });
+              toast.success("Transaction rebuilt - signing…", { duration: 2500 });
               // Direct re-sign (flag still true → no second rebuild loop if this fails).
               if (sessionSigning) {
                 await new Promise((r) => setTimeout(r, 50));
@@ -4228,7 +4470,7 @@ export function CopilotWorkspace() {
             toast.error(
               rebuilt?.kind === "error"
                 ? rebuilt.message || errText
-                : `${errText} Rebuild did not return a new envelope — try the step again.`,
+                : `${errText} Rebuild did not return a new envelope - try the step again.`,
             );
             markHopAutoFailed();
             return;
@@ -4240,11 +4482,11 @@ export function CopilotWorkspace() {
         }
 
         toast.error(errText);
-        // The refusal belongs in the thread, not only in a toast — see noteOutcome.
+        // The refusal belongs in the thread, not only in a toast - see noteOutcome.
         // A rejected signature that leaves no record reads, on the next scroll, like a
         // request that is still waiting.
         if (!("hash" in result && result.hash)) {
-          noteOutcome(`The signature was not completed — nothing was submitted. ${errText}`);
+          noteOutcome(`The signature was not completed - nothing was submitted. ${errText}`);
         }
         // Sign/submit failed: stay on needs_wallet_sign (same staged panel) but stop
         // the auto-submit spinner for THIS hop so Approve & sign is available.
@@ -4281,7 +4523,7 @@ export function CopilotWorkspace() {
   /**
    * Session signing: submit a staged write without the manual approve click.
    *
-   * Client Privy silent-sign of MCP XDR — every hop, including multi-leg borrow after
+   * Client Privy silent-sign of MCP XDR - every hop, including multi-leg borrow after
    * deposit. risk "needs_confirmation" is normal staged policy copy, NOT a click gate.
    * Only risk "block" skips auto-submit.
    *
@@ -4309,7 +4551,7 @@ export function CopilotWorkspace() {
     });
   }, [response]);
 
-  // Blocked only when THIS hop's key failed — not a sticky boolean across legs.
+  // Blocked only when THIS hop's key failed - not a sticky boolean across legs.
   const autoSubmitBlocked =
     !!sessionAutoSignKey && autoSubmitBlockedKey === sessionAutoSignKey;
 
@@ -4324,6 +4566,8 @@ export function CopilotWorkspace() {
         autoSubmitBlocked,
         hasSignableXdr: isSignableXdr(response.unsigned_xdr),
         allowSessionSign: response.preview?.allow_session_sign,
+        walletSigningRequired: walletKind === "freighter",
+        allowWalletDispatch: response.preview?.allow_wallet_dispatch,
       })
     ) {
       return;
@@ -4349,6 +4593,7 @@ export function CopilotWorkspace() {
   }, [
     response,
     sessionAutoSignKey,
+    walletKind,
     sessionSigning,
     signing,
     signWithWallet,
@@ -4369,7 +4614,7 @@ export function CopilotWorkspace() {
     // next_step chain; the plan/MultiLegAgent path returns `resume_legs` with
     // `can_resume`, which is what powers the manual "Continue remaining" button. Only
     // the first was checked here, so an approved plan executed one leg, offered a button,
-    // and waited — even with auto-approve on, which is exactly what it is meant to avoid.
+    // and waited - even with auto-approve on, which is exactly what it is meant to avoid.
     const legsFrom = (key: string) =>
       Array.isArray((response.data as any)?.[key])
         ? ((response.data as any)[key] as Array<{
@@ -4382,7 +4627,7 @@ export function CopilotWorkspace() {
         : null;
     // Same authority rule as the wallet-sign path: the server stops reporting
     // later legs once it is only handed one, so the client's queue takes over.
-    // Card unsettled rows are only a fallback while the strategy is incomplete —
+    // Card unsettled rows are only a fallback while the strategy is incomplete -
     // never after 4/4 terminal (orphans from a prior STAGED plan must not rebuild).
     //
     // Do NOT trust hop `execution.status === "completed"` or hop `strategy_complete`.
@@ -4433,7 +4678,7 @@ export function CopilotWorkspace() {
             ...prev,
             message:
               hf != null && floor != null
-                ? `HF ≈ ${hf.toFixed(2)} is below your floor of ${floor.toFixed(2)}. Further collateral/debt steps are paused — continue or stop here.`
+                ? `HF ≈ ${hf.toFixed(2)} is below your floor of ${floor.toFixed(2)}. Further collateral/debt steps are paused - continue or stop here.`
                 : prev.message,
             answer: localExecutionAnswer({
               intent: originalIntentRef.current || submitted,
@@ -4562,7 +4807,7 @@ export function CopilotWorkspace() {
           prompt: parentPrompt,
         };
       }
-      // ONE leg per hop — see splitResumeBatch. Hold the full remaining list until
+      // ONE leg per hop - see splitResumeBatch. Hold the full remaining list until
       // the hop returns so an aborted fetch cannot drop the head leg.
       const { head, tail } = splitResumeBatch(remaining);
       if (!head.length) return;
@@ -4586,7 +4831,7 @@ export function CopilotWorkspace() {
           parentPrompt,
           { chainHop: true },
         );
-        // Wait for the hop response before advancing the queue — never drop
+        // Wait for the hop response before advancing the queue - never drop
         // borrow/supply because a POST failed or returned blocked mid-chain.
         if (!hop || !isChainableHopResponse(hop)) {
           strategyTailRef.current = remaining;
@@ -4680,7 +4925,7 @@ export function CopilotWorkspace() {
     const label =
       next.label ||
       `Auto step ${next.step ?? 2}: ${next.op} ${next.amount} ${next.asset || ""}`.trim();
-    toast.success("Step confirmed — next leg in ~2s…", { duration: 3000 });
+    toast.success("Step confirmed - next leg in ~2s…", { duration: 3000 });
     void (async () => {
       setLoading(true);
       await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
@@ -4750,7 +4995,7 @@ export function CopilotWorkspace() {
       let bestAsset = "USDC";
       let bestAmt = 0;
       for (const [sym, row] of Object.entries(debts)) {
-        // BorrowedBalance.amount is a decimal string from the store — always Number().
+        // BorrowedBalance.amount is a decimal string from the store - always Number().
         const amt = Number(row?.amount ?? 0);
         if (Number.isFinite(amt) && amt > bestAmt) {
           bestAmt = amt;
@@ -4765,7 +5010,7 @@ export function CopilotWorkspace() {
       // Repay ~20% of that debt line (min 1) to lift HF without wiping the book.
       const repayAmt = Math.max(1, Math.min(bestAmt, bestAmt * 0.2));
       const label = `Guardian: repay ${repayAmt.toFixed(4)} ${bestAsset} (HF ${hf.toFixed(2)} < ${floor})`;
-      toast.error(`Health factor ${hf.toFixed(2)} below floor ${floor} — auto-repaying…`, {
+      toast.error(`Health factor ${hf.toFixed(2)} below floor ${floor} - auto-repaying…`, {
         duration: 6000,
       });
       setSubmitted(label);
@@ -4825,7 +5070,7 @@ export function CopilotWorkspace() {
   /** Clear current answer / staged action but keep session log. */
   const reset = () => {
     cancelledRef.current = true;
-    abortRef.current?.abort();
+    abortRef.current?.abort("composer reset");
     abortRef.current = null;
     setLoading(false);
     setSigning(false);
@@ -4846,7 +5091,7 @@ export function CopilotWorkspace() {
 
   const stopRemainingLegs = useCallback(() => {
     cancelledRef.current = true;
-    abortRef.current?.abort();
+    abortRef.current?.abort("remaining legs stopped");
     abortRef.current = null;
     setLoading(false);
     setSigning(false);
@@ -4911,7 +5156,7 @@ export function CopilotWorkspace() {
       ? strategySteps
       : (response?.data as any)?.multi_leg_steps,
   };
-  // Multi-leg uses a structured card — don't paint the whole turn imperial red.
+  // Multi-leg uses a structured card - don't paint the whole turn imperial red.
   const isError =
     !multiLeg && (response?.kind === "error" || response?.kind === "blocked");
   /**
@@ -4926,15 +5171,15 @@ export function CopilotWorkspace() {
   /**
    * A signature that has already been given is not a signature still being waited on.
    *
-   * The staged panel — "Approve & sign", the impact projection, the Step-by-Step Approval
-   * header — is derived from `response.kind`, and the kind stays `needs_wallet_sign` on
+   * The staged panel - "Approve & sign", the impact projection, the Step-by-Step Approval
+   * header - is derived from `response.kind`, and the kind stays `needs_wallet_sign` on
    * any path that stamps the hash without rewriting it. So a plain "Deposit 5 AQUSDC" left
    * its approval card on screen after the transaction had settled, asking for a signature
    * the chain already had, while the receipt sat in the turn above it.
    *
    * Derived from the one fact that settles it: a transaction hash exists for this
-   * response. That holds for every path that can produce one — wallet signature, session
-   * auto-sign, a resumed leg — rather than for the kinds we happened to think of.
+   * response. That holds for every path that can produce one - wallet signature, session
+   * auto-sign, a resumed leg - rather than for the kinds we happened to think of.
    */
   const responseSubmitted = Boolean(
     response?.execution?.tx_hash ||
@@ -4967,8 +5212,8 @@ export function CopilotWorkspace() {
    *
    * `/api/copilot` streams no progress, so the only truthful things to show while it runs
    * are that it is running and for how long. The three-row pipeline that used to render
-   * here — "Parsing intent" active, "MCP tool call" pending, "Composing response" pending
-   * — was hardcoded and never advanced, so it still read "MCP tool call pending" long
+   * here - "Parsing intent" active, "MCP tool call" pending, "Composing response" pending
+   * - was hardcoded and never advanced, so it still read "MCP tool call pending" long
    * after the server had finished that stage and moved on to composing. A stage marker
    * that cannot move is worse than a clock: it looks stalled precisely when work is
    * happening. Showing a fabricated sequence instead would break the surface's own rule
@@ -4998,8 +5243,8 @@ export function CopilotWorkspace() {
       ];
     }
     if (!response) return [];
-    const template = response.intent?.template_id || response.preview?.template_id || "—";
-    const tool = response.mcp?.tool || "—";
+    const template = response.intent?.template_id || response.preview?.template_id || "-";
+    const tool = response.mcp?.tool || "-";
     // Multi-leg strategy: show accumulated legs (not just the current hop).
     const mlSteps =
       strategySteps.length > 0
@@ -5024,7 +5269,7 @@ export function CopilotWorkspace() {
                 : "done";
         return {
           label: s.label || (s as { op?: string }).op || "step",
-          detail: st === "ok" || st === "done" ? "done" : st || "—",
+          detail: st === "ok" || st === "done" ? "done" : st || "-",
           state,
         };
       });
@@ -5063,11 +5308,11 @@ export function CopilotWorkspace() {
    * The same legs the agent-run list shows, in the shape the run card renders.
    *
    * Two things are derived here rather than sent by the server:
-   *   - `running`. The server has no such status — a leg is either not started or it has
+   *   - `running`. The server has no such status - a leg is either not started or it has
    *     a result. But while a request is on the wire, exactly one leg is in flight: the
    *     first one without a terminal result. Marking it lets the card show a spinner and
    *     an elapsed time instead of calling a live leg "pending".
-   *   - the venue, from VENUE_BY_OP — the same table the plan card badges with.
+   *   - the venue, from VENUE_BY_OP - the same table the plan card badges with.
    */
   const TERMINAL_LEG = useMemo(
     () =>
@@ -5141,7 +5386,7 @@ export function CopilotWorkspace() {
             : null;
       return {
         // Position, not the server's index. A resumed run restarts its step counter, so a
-        // returned index can collide with one already on screen — which showed two
+        // returned index can collide with one already on screen - which showed two
         // different legs both numbered "1". Order is what the accumulator maintains; the
         // number the user reads is that order.
         n: i + 1,
@@ -5200,7 +5445,7 @@ export function CopilotWorkspace() {
 
   /**
    * Resume from a paused leg once the user supplies the amount the plan never carried.
-   * The leg goes first with its new amount, then every leg still unstarted after it —
+   * The leg goes first with its new amount, then every leg still unstarted after it -
    * the server runs them in order, so the rest of the strategy continues untouched.
    */
   const submitLegAmount = useCallback(
@@ -5208,13 +5453,13 @@ export function CopilotWorkspace() {
       /**
        * Everything still outstanding, not just the leg being answered.
        *
-       * A leg the run never reached is marked `skipped` — "skipped because an earlier leg
-       * needs an amount" — so `skipped` means *not yet attempted*, not *abandoned*, and it
+       * A leg the run never reached is marked `skipped` - "skipped because an earlier leg
+       * needs an amount" - so `skipped` means *not yet attempted*, not *abandoned*, and it
        * has to travel with the resume or it never runs. Only settled legs are excluded;
        * replaying one of those would deposit or borrow a second time.
        *
        * `leverage` rides along on every leg. Without it a levered farm resumed as a plain
-       * supply — the same class of failure as an approved 2× plan replaying unlevered, and
+       * supply - the same class of failure as an approved 2× plan replaying unlevered, and
        * just as invisible, because the amount looks right.
        */
       const carry = (l: RunLeg, overrideAmount?: number, overrideAsset?: string) => {
@@ -5259,15 +5504,15 @@ export function CopilotWorkspace() {
   );
 
   /**
-   * Resume from a paused SWAP leg once the user names a corrected destination token —
-   * e.g. answering "BLUSDC is Blend USDC — swap to AQUSDC or SOUSDC instead" with just
+   * Resume from a paused SWAP leg once the user names a corrected destination token -
+   * e.g. answering "BLUSDC is Blend USDC - swap to AQUSDC or SOUSDC instead" with just
    * "SOUSDC". Same pattern as submitLegAmount: the leg goes first with its corrected
    * `token_out`, then every leg still unstarted after it.
    *
    * Reported live: typing the answer into the main composer fired a brand-new, context-
-   * free message ("SOUSDC" alone), which the router could not understand on its own — the
+   * free message ("SOUSDC" alone), which the router could not understand on its own - the
    * paused strategy was silently abandoned rather than resumed with the correction. The
-   * label is rebuilt too ("Swap 10 XLM → SOUSDC"), not just the underlying token_out — a
+   * label is rebuilt too ("Swap 10 XLM → SOUSDC"), not just the underlying token_out - a
    * stale label showing the OLD (refused) destination while the corrected one executes
    * would be its own, quieter version of the same lie.
    */
@@ -5325,7 +5570,7 @@ export function CopilotWorkspace() {
   }, [execLegs, resumeMultiLeg, submitted]);
 
   /**
-   * Best-effort match of a free-text answer against a known asset symbol — "SOUSDC",
+   * Best-effort match of a free-text answer against a known asset symbol - "SOUSDC",
    * "swap to SOUSDC", "use soroswap (SOUSDC)" all resolve the same way. Longest-first so
    * "BLUSDC" cannot match as a substring of a longer, hypothetical symbol.
    */
@@ -5352,7 +5597,7 @@ export function CopilotWorkspace() {
    *
    * `OP_FLOW` (lib/copilot/workflow/types.ts) declares it per op and `evaluateWriteRisk`
    * passes the answer through as `margin_applicable`, so the card no longer names ops.
-   * The list it replaces — swap, add_liquidity, remove_liquidity — had to be extended by
+   * The list it replaces - swap, add_liquidity, remove_liquidity - had to be extended by
    * hand for every health-neutral op added, and Blend supply and Blend withdraw were
    * never added: both drew a full "projected impact" card reading 59.40 → 59.40 over a
    * write that cannot change a health factor, and did it while covering the thread.
@@ -5363,7 +5608,7 @@ export function CopilotWorkspace() {
   const action = response?.preview?.action;
   const followUp = followUpFor(response?.answer, response?.intent);
   /** Same conditions the auto-submit effect uses, so the notice can't disagree with it. */
-  // Multi-leg: every hop with XDR auto-submits when session signing is on — including
+  // Multi-leg: every hop with XDR auto-submits when session signing is on - including
   // responses that older servers labeled needs_auto_sign.
   /**
    * The SAME question the auto-submit effect asks, with the same inputs.
@@ -5372,7 +5617,7 @@ export function CopilotWorkspace() {
    * exactly when the server withheld session-signing (`forbid_session_sign`, or a
    * high-impact swap): the effect declined to sign, while this said it would and
    * rendered the "no click needed" spinner INSTEAD of the Approve button. Nothing
-   * signed and nothing could be clicked — the run just span. Live, 21 Sep, on a
+   * signed and nothing could be clicked - the run just span. Live, 21 Sep, on a
    * staged deposit showing "risk gate · confirm".
    */
   const willAutoSubmit = shouldSessionAutoSubmit({
@@ -5382,6 +5627,8 @@ export function CopilotWorkspace() {
     autoSubmitBlocked,
     hasSignableXdr: isSignableXdr(response?.unsigned_xdr),
     allowSessionSign: response?.preview?.allow_session_sign,
+    walletSigningRequired: walletKind === "freighter",
+    allowWalletDispatch: response?.preview?.allow_wallet_dispatch,
   });
   const txHash =
     response?.execution?.tx_hash ??
@@ -5401,16 +5648,119 @@ export function CopilotWorkspace() {
   const lastUserTurn = [...investigation.turns].reverse().find((turn) => turn.role === "user")?.text ?? null;
   const pendingUser = submitted && submitted !== lastUserTurn ? submitted : null;
   const submittedRecorded = !!submitted && investigation.turns.some((turn) => turn.role === "user" && turn.text === submitted);
-  const isStaleInvestigation = Boolean(
-    investigation.result &&
-    !investigation.loading &&
-    !workflow.view &&
-    !workflow.loading &&
-    !signingJournal &&
-    lastUserTurn &&
-    investigation.prompt &&
-    lastUserTurn !== investigation.prompt
-  );
+  const isStaleInvestigation = isInvestigationStale({
+    hasResult: Boolean(investigation.result), loading: investigation.loading, hasError: Boolean(investigation.error),
+    hasWorkflow: Boolean(workflow.view), workflowLoading: workflow.loading, signing: signingJournal,
+    lastUserTurn, prompt: investigation.prompt,
+  });
+  /**
+   * Owner layout (23 Sep): the plan card becomes the execution card in the same place. While
+   * the investigation card draws this run, the thread leaves the run's receipt out, so one
+   * run is one card. Once the user moves on, the card stops drawing it and the thread's
+   * receipt keeps the run's final state on the past turn.
+   */
+  /**
+   * The questionnaire docks where the chat box is (owner, 24 Sep; mockup boards 10–16), for
+   * the reply that issued it and only while that reply is the latest, live one. Closing it
+   * brings the chat box back for that reply; a new reply can issue a new one.
+   */
+  const [closedQuestionnaire, setClosedQuestionnaire] = useState<QuestionnaireDismissal | null>(null);
+  const questionnaireReply = {
+    conversationId: investigation.conversationId,
+    turnIndex: investigation.turns.length - 1,
+  };
+  const openQuestionnaire = liveQuestionnaire({
+    ...questionnaireReply,
+    loading: investigation.loading,
+    resultOrigin: investigation.resultOrigin,
+    latestRole: investigation.turns[questionnaireReply.turnIndex]?.role,
+    questionnaire: investigation.result?.questionnaire,
+    closed: closedQuestionnaire,
+  });
+  /** The run finished on an earlier reply: it is history, drawn by the thread on its own turn. */
+  const runIsPast = runIsOnEarlierTurn(investigation.turns, workflow.view ? { id: workflow.view.id, finished: finishedWorkflow(workflow.view) } : null);
+  const completionSummaryReady = investigation.turns.some((turn) => turn.executionReceipt?.workflowId === workflow.view?.id && completionMatches(turn.executionReceipt, turn.completion));
+  const cardDrawsRun = !completionSummaryReady && !isStaleInvestigation && !!workflow.view && !runIsPast &&
+    workflow.view.status !== "proposed" && workflow.view.status !== "validating" &&
+    investigation.turns[investigation.turns.length - 1]?.role !== "user";
+  /**
+   * "Once tx is settled, the same response shows the completed response" (owner layout).
+   * The reply written before approval ended in an instruction to approve; once the run has
+   * finished, that turn's text is replaced with what happened, built from the legs
+   * themselves (localExecutionAnswer), not from any wording in the old reply.
+   */
+  const completedTextRef = useRef<string | null>(null);
+  const completionContextRef = useRef<string | null>(null);
+  completionContextRef.current = `${address}:${investigation.conversationId}:${investigation.turns.length}:${workflow.view?.id}`;
+  const updateLastAssistantText = investigation.updateLastAssistantText;
+  const updateWorkflowCompletion = investigation.updateWorkflowCompletion;
+  useEffect(() => {
+    const view = workflow.view;
+    if (!view || completionSummaryReady) return;
+    const conversationId = investigation.conversationId;
+    const receipt = investigation.turns.find((turn) => turn.executionReceipt?.workflowId === view.id)?.executionReceipt;
+    if (view.status === "completed") {
+      const network = investigation.result?.scope.network;
+      const step = completionStep(view, receipt, () => (network ? executionReceiptFromWorkflowView(view, network) : null));
+      if (!conversationId || step.kind === "wait") return;
+      if (step.kind === "attach") {
+        // The turn has no receipt yet (the save-and-attach path has not run, or failed): give it one from the run itself. The turns
+        // change, and this effect runs again and composes.
+        const attachKey = `${address}:${conversationId}:${view.id}:attach`;
+        if (completedTextRef.current !== attachKey) { completedTextRef.current = attachKey; void updateExecutionReceipt(step.receipt); }
+        return;
+      }
+      const key = `${address}:${conversationId}:${view.id}:completed`;
+      if (completedTextRef.current === key) return;
+      completedTextRef.current = key;
+      const controller = new AbortController();
+      const owner = address;
+      // The finished execution card stays on screen until the model-worded summary arrives: showing a short sentence first and
+      // replacing it a few seconds later put two different replies in front of the user (7 Oct). The receipt-only sentence is the
+      // fallback, drawn only if the summary never comes.
+      const immediate = immediateCompletion(step.receipt);
+      // Presentation retries cannot resubmit or sign transactions. The server persists first.
+      void (async () => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const composed = await fetchComposedCompletion(view.id, null, controller.signal, conversationId);
+          if (composed?.completion && composed.receipt) {
+            updateWorkflowCompletion(composed as WorkflowCompletionReply, conversationId, owner);
+            return;
+          }
+          if (controller.signal.aborted) return;
+          if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+        if (!controller.signal.aborted && immediate) updateWorkflowCompletion(immediate, conversationId, owner);
+      })();
+      // Wallet/conversation isolation is checked by the hook at delivery. Poll renders do not abort composition.
+      return;
+    }
+    if (!cardDrawsRun) return;
+    const settledCount = view.steps.filter((step) => step.status === "settled").length;
+    const finished = (view.status === "blocked" || view.status === "cancelled") && settledCount > 0;
+    if (!finished) return;
+    const key = `${view.id}:${view.status}:${settledCount}`;
+    if (completedTextRef.current === key) return;
+    completedTextRef.current = key;
+    const result = investigation.result;
+    const candidate = result?.candidates?.feasible.find((entry) => entry.id === approvedCandidateRef.current);
+    const reply = completionReply(view, {
+      title: candidate?.label ?? null,
+      comparisons: result?.rateComparisons ?? [],
+      // A planned health factor is a projection, never the observed post-run ratio.
+      healthFactorAfter: null,
+      repaysAllDebt: !!candidate?.repaysAllDebt,
+    });
+    if (!reply) return;
+    void updateLastAssistantText(reply);
+    const context = completionContextRef.current;
+    // Then the same reply in the model's words, around the run's own server-side facts; the
+    // "Done." above stays if that does not arrive, and a newer finish supersedes it (the key).
+    // Not aborted on cleanup: this effect re-runs on every poll, which would cancel it.
+    void fetchComposedCompletion(view.id, result?.continuation ?? null, new AbortController().signal).then((composed) => {
+      if (composed && completedTextRef.current === key && completionContextRef.current === context) void updateLastAssistantText(composed.message, composed.replyBlocks);
+    });
+  }, [workflow.view, cardDrawsRun, completionSummaryReady, investigation.turns, investigation.conversationId, address, updateWorkflowCompletion, updateLastAssistantText, investigation.result]);
   const liveWriteUi =
     multiLeg ||
     phase === "plan" ||
@@ -5421,7 +5771,7 @@ export function CopilotWorkspace() {
   /**
    * Live `/api/copilot` reply, painted before (or if) it is mirrored into the session.
    *
-   * `response.message` — never `answer.headline`. For a structured answer the message IS
+   * `response.message` - never `answer.headline`. For a structured answer the message IS
    * the headline plus the figures, flattened by `answerToText`, and `ChatTurns` renders
    * that whole document (chat-message.tsx). Taking the headline alone dropped the
    * holdings the read had already fetched, and did it only for the live turn, so the
@@ -5433,7 +5783,7 @@ export function CopilotWorkspace() {
   const liveAssistant = liveReply && !submittedRecorded ? liveReply : null;
   /**
    * The rail's flat position list, from the same `positionRows` the page already built.
-   * One state, two views — the rail must never compute its own figures.
+   * One state, two views - the rail must never compute its own figures.
    */
   const railPositions = useMemo(() => {
     const usd = (n: number) =>
@@ -5455,6 +5805,7 @@ export function CopilotWorkspace() {
         collapsed={railCollapsed}
         onToggleCollapsed={() => setRailCollapsed((v) => !v)}
         empty={stageEmpty}
+        conversationId={investigation.conversationId}
         justSubmitted={Boolean(pendingUser && loading)}
         scrollKey={`${investigation.turns.length}-${pendingUser}-${liveReply}-${loading}-${response?.request_id}`}
         railTop={
@@ -5466,8 +5817,9 @@ export function CopilotWorkspace() {
               capsMode: railCapsMode,
               customTx,
               customDay,
-              defaultTx: mcpDefaultCap ?? 1000,
-              defaultDay: mcpDefaultCap ?? 1000,
+              walletSigningRequired: walletKind === "freighter",
+              defaultTx: mcpDefaultCaps?.tx ?? null,
+              defaultDay: mcpDefaultCaps?.day ?? null,
               onToggle: handleAutoApproveToggle,
               onCapsMode: setRailCapsMode,
               onCustomTx: setCustomTx,
@@ -5480,6 +5832,9 @@ export function CopilotWorkspace() {
             hasWallet={Boolean(address)}
             healthFactor={liveHf}
             positions={railPositions}
+            accountLoading={Boolean(address) && !snapshot && snapshotLoading}
+            accountError={Boolean(address) && Boolean(snapshotError)}
+            onRetryAccount={() => { void refreshSnapshot(); }}
             conversations={investigation.conversations}
             activeId={investigation.conversationId}
             onOpen={openConversation}
@@ -5497,8 +5852,9 @@ export function CopilotWorkspace() {
               capsMode: railCapsMode,
               customTx,
               customDay,
-              defaultTx: mcpDefaultCap ?? 1000,
-              defaultDay: mcpDefaultCap ?? 1000,
+              walletSigningRequired: walletKind === "freighter",
+              defaultTx: mcpDefaultCaps?.tx ?? null,
+              defaultDay: mcpDefaultCaps?.day ?? null,
               onToggle: handleAutoApproveToggle,
               onCapsMode: setRailCapsMode,
               onCustomTx: setCustomTx,
@@ -5518,7 +5874,7 @@ export function CopilotWorkspace() {
             {/* Thread content is a conversation, not one giant console card. Individual
                 decision and execution components keep their own boundaries. */}
             {(investigation.turns.length > 0 || pendingUser || investigation.loading || investigation.result || investigation.error || phase !== "idle") && (
-            <section aria-label="Copilot conversation" className="min-w-0">
+            <section aria-label="Copilot conversation" className="min-w-0 flex flex-col" style={{ gap: REPLY_CARD_GAP_PX }}>
             <ChatTurns
               turns={investigation.turns}
               pendingUser={pendingUser}
@@ -5527,6 +5883,17 @@ export function CopilotWorkspace() {
               liveNote={!isError ? response?.answer?.note : null}
               liveTone={isError ? "error" : "default"}
               sessionSigning={sessionSigning}
+              hideReceiptFor={cardDrawsRun ? workflow.view?.id ?? null : null}
+              runningPlanText={(() => {
+                if (!cardDrawsRun) return null;
+                const running = runningPlan({
+                  status: workflow.view?.status,
+                  workflowCandidateId: workflow.view?.candidateId,
+                  candidateId: selectedPlan?.continuation === investigation.result?.continuation ? selectedPlan?.id : null,
+                  feasible: investigation.result?.candidates?.feasible,
+                });
+                return running ? runningPlanText(running, workflow.view?.status === "completed") : null;
+              })()}
             />
             {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
               <div className="flex items-start gap-2.5 max-w-[85%]">
@@ -5562,7 +5929,7 @@ export function CopilotWorkspace() {
                       void workflow.propose(continuation, candidateId);
                     }
                   : undefined}
-                workflow={workflow.view}
+                workflow={runIsPast ? null : workflow.view}
                 planWithdrawn={workflow.stale}
                 planLiveFloor={workflow.quote}
                 workflowError={workflow.error}
@@ -5573,6 +5940,16 @@ export function CopilotWorkspace() {
                 onSign={() => { void signJournalXdr(false); }}
                 wallet={address}
                 autoSign={sessionSigning}
+                onApproveCandidate={investigation.result?.continuation ? approveCandidate : undefined}
+                onReply={(text) => { void run(text); }}
+                onWrite={(op) => {
+                  const request = investigation.result?.originalRequest ?? "";
+                  // Only this click opens an account; the server never creates one unasked.
+                  void postCopilot({ pending_write: { op }, message: request }, request);
+                }}
+                threadDefersReceipt={cardDrawsRun}
+                approvalQueued={approveWhenProposedRef.current}
+                approvingId={approvingId}
               />
             )}
             <div
@@ -5584,7 +5961,7 @@ export function CopilotWorkspace() {
             >
               {/*
                 The idle capability grid is gone. It listed four example prompts in big
-                tappable cards, which is exactly what the Prompts button already opens — the
+                tappable cards, which is exactly what the Prompts button already opens - the
                 same suggestions twice, with the duplicate occupying the space the actual
                 work needs. An empty console now shows nothing rather than filler.
               */}
@@ -5601,7 +5978,7 @@ export function CopilotWorkspace() {
                     <p role="status" aria-live="polite" className="text-[13px] leading-[20px] text-violet-500">Working…</p>
                   ) : null}
 
-                  {/* A multi-leg run gets the live execution card — one card that advances
+                  {/* A multi-leg run gets the live execution card - one card that advances
                       in place, narrating each leg as it settles. The plain step list stays
                       for single-turn work, where there is no chain to narrate. */}
                   {multiLeg && execLegs.length > 0 && (phase !== "done" || strategyOpen) ? (
@@ -5741,7 +6118,7 @@ export function CopilotWorkspace() {
                              * Loads the composer; it does not run.
                              *
                              * This suggestion is now a WRITE carrying the amount the user asked
-                             * about, and with auto-approve on a write leaves no gate — one click
+                             * about, and with auto-approve on a write leaves no gate - one click
                              * here used to be one borrow, at whatever size the label said. Filling
                              * the box puts the amount in front of the user with Run one deliberate
                              * press away, which is also what makes the carried-through amount safe
@@ -5764,7 +6141,7 @@ export function CopilotWorkspace() {
                     </div>
                   )}
 
-                  {/* Multi-leg plan awaiting approval. Nothing has executed yet — the
+                  {/* Multi-leg plan awaiting approval. Nothing has executed yet - the
                       server froze these steps and will only run them if we post the same
                       plan back, fingerprint intact. */}
                   {phase === "plan" && response?.plan && (
@@ -5775,7 +6152,7 @@ export function CopilotWorkspace() {
                       onApprove={approvePlan}
                       onModify={() => {
                         // Put the original wording back in the composer so it can be
-                        // edited — v1 "modify" is re-prompting, not inline step editing.
+                        // edited - v1 "modify" is re-prompting, not inline step editing.
                         setIntentText(submitted || "");
                         setResponse(null);
                       }}
@@ -5783,7 +6160,7 @@ export function CopilotWorkspace() {
                     />
                   )}
 
-                  {/* Staged write — execution progress stepper inside the thread */}
+                  {/* Staged write - execution progress stepper inside the thread */}
                   {phase === "staged" && response && !txHash && (
                     <div
                       ref={stagedSectionRef}
@@ -5811,10 +6188,10 @@ export function CopilotWorkspace() {
                         <p className="flex items-start gap-1.5 font-mono text-[11px]" style={{ color: WARN_INK }}>
                           <CircleAlert size={13} className="mt-px shrink-0" />
                           {decision === "block"
-                            ? "Auto-approve is on, but the risk gate blocked this write — manual approval required."
+                            ? "Auto-approve is on, but the risk gate blocked this write - manual approval required."
                             : autoSubmitBlocked
-                              ? "Auto-sign failed for this step — click Approve & sign to retry."
-                              : "Auto-approve is on — click Approve & sign if auto-sign did not start."}
+                              ? "Auto-sign failed for this step - click Approve & sign to retry."
+                              : "Auto-approve is on - click Approve & sign if auto-sign did not start."}
                         </p>
                       )}
 
@@ -5822,7 +6199,7 @@ export function CopilotWorkspace() {
                         <div className="flex flex-wrap items-center gap-2.5">
                           <div className="flex flex-1 items-center gap-2.5 rounded-lg border border-violet-100 bg-violet-50/60 px-4 py-3 font-mono text-[12px] font-semibold text-violet-600">
                             <Loader2 size={14} className="animate-spin" />
-                            Auto-approving — signing and submitting for you…
+                            Auto-approving - signing and submitting for you…
                           </div>
                           <button
                             type="button"
@@ -5876,7 +6253,7 @@ export function CopilotWorkspace() {
                   {/* Signing-authority consent gate.
                       Separate from the auto-sign gate on purpose: this one is not about
                       spend limits, it is the permission that has to exist before any
-                      limit can be enforced. Wording never says "connect your wallet" —
+                      limit can be enforced. Wording never says "connect your wallet" -
                       the wallet IS connected, and telling the user to reconnect is the
                       dead end this panel exists to end. */}
                   {phase === "bind" && response && bindGate && (
@@ -5908,7 +6285,7 @@ export function CopilotWorkspace() {
                         </div>
                       </div>
 
-                      {/* In-app consent in flight — Privy may be showing its own sheet.
+                      {/* In-app consent in flight - Privy may be showing its own sheet.
                           Deliberately renders INSTEAD of the fallback buttons so the
                           external link never flashes up during the path that replaces it. */}
                       {bindingInApp ? (
@@ -5925,7 +6302,7 @@ export function CopilotWorkspace() {
                           </p>
                           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                             {/* Retrying in-app is the primary action whenever a signer id
-                                exists — the same one gesture, not a trip to another tab. */}
+                                exists - the same one gesture, not a trip to another tab. */}
                             {bindGate.signer_id && (
                               <button
                                 type="button"
@@ -5946,7 +6323,7 @@ export function CopilotWorkspace() {
                             </button>
                           </div>
                           <p className="mt-3 text-body-2 text-vgray-500">
-                            Vanna is added <em>alongside</em> your own key — it never replaces it,
+                            Vanna is added <em>alongside</em> your own key - it never replaces it,
                             and you can revoke it in Privy whenever you want.
                           </p>
                           {/* Last resort, and framed as one. Reaching for this means the
@@ -6021,12 +6398,9 @@ export function CopilotWorkspace() {
                           >
                             {(() => {
                               try {
-                                const raw = response?.auto_sign?.raw as
-                                  | { default_cap_usd?: number }
-                                  | null
-                                  | undefined;
-                                const d = Number(raw?.default_cap_usd);
-                                if (Number.isFinite(d) && d > 0) return `Defaults ($${d} / $${d})`;
+                                const raw = response?.auto_sign?.raw as Record<string, unknown> | null;
+                                const defaults = raw ? defaultTestnetBudget(raw) : null;
+                                if (defaults) return `Defaults (${defaults.tx} units / ${defaults.day} units)`;
                               } catch {
                                 /* ignore */
                               }
@@ -6046,7 +6420,7 @@ export function CopilotWorkspace() {
                         {showCustom && (
                           <div className="mt-4 grid gap-3 sm:grid-cols-2">
                             <label className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">
-                              max per tx USD
+                              max per tx token units
                               <input
                                 value={customTx}
                                 onChange={(e) => setCustomTx(e.target.value)}
@@ -6054,7 +6428,7 @@ export function CopilotWorkspace() {
                               />
                             </label>
                             <label className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">
-                              max per day USD
+                              max per day token units
                               <input
                                 value={customDay}
                                 onChange={(e) => setCustomDay(e.target.value)}
@@ -6092,10 +6466,10 @@ export function CopilotWorkspace() {
         }
         composer={
           <>
-            {/* Hero — only while the stage is empty. It shares the composer's block so
+            {/* Hero - only while the stage is empty. It shares the composer's block so
                 the two move together as the grid recentres them. */}
             {stageEmpty && (
-              <div style={{ textAlign: "center", marginBottom: 16 }}>
+              <div className="cp-hero" style={{ textAlign: "center", marginBottom: 16 }}>
                 <div className="text-[28px] leading-[42px] font-semibold text-vgray-900">
                   What&apos;s the next move?
                 </div>
@@ -6104,10 +6478,28 @@ export function CopilotWorkspace() {
                 </div>
               </div>
             )}
+            {openQuestionnaire && (
+              /* Docked where the chat box is, so it must not grow over the thread: capped, with its own scroll. */
+              <div className="cp-questionnaire-dock" style={{ borderRadius: 16 }}>
+              <ClarifyQuestionnaire
+                questionnaire={openQuestionnaire}
+                busy={investigation.loading}
+                onSubmit={(answers) => {
+                  setClosedQuestionnaire({ id: openQuestionnaire.id, ...questionnaireReply });
+                  // The answer is this turn's user message; left on the earlier prompt, the thread
+                  // redrew that prompt as a pending bubble under the answer.
+                  setSubmitted(answers.summary);
+                  void investigation.run(answers.summary, undefined, answers);
+                }}
+                onCancel={() => setClosedQuestionnaire({ id: openQuestionnaire.id, ...questionnaireReply })}
+              />
+              </div>
+            )}
             {/* The pill is styled inline for the reason recorded in globals.css: a custom
                 class declared there did not survive into the served stylesheet, and the
                 composer must never render as an unstyled row. */}
             <div
+              hidden={!!openQuestionnaire}
               className="cp-composer"
               style={{
                 minWidth: 0,
@@ -6118,7 +6510,7 @@ export function CopilotWorkspace() {
               }}
             >
           {/* One surface, one Run. Which engine handles a turn is the server's decision from
-              the request itself, never a mode the user has to pick — a person asking for a
+              the request itself, never a mode the user has to pick - a person asking for a
               strategy should not have to know that research and execution are different code
               paths, and a mode switch made "deposit 5 XLM" silently non-executable. */}
           <form
@@ -6127,7 +6519,7 @@ export function CopilotWorkspace() {
               if (signing) return;
               /**
                * A paused swap answered with just the corrected token ("SOUSDC") used to fire
-               * a brand-new, context-free message through `run()` — the router cannot infer
+               * a brand-new, context-free message through `run()` - the router cannot infer
                * a whole trade from one word, so the paused strategy was silently abandoned
                * instead of resumed. When the composer is currently showing a swap leg
                * waiting on exactly this kind of answer, and the typed text resolves to a
@@ -6148,7 +6540,7 @@ export function CopilotWorkspace() {
               {/*
                 A textarea that grows with the text, not a single-line input.
                 A long intent scrolled sideways out of view, so the beginning of your own
-                instruction — usually the objective, with the constraint at the end — was
+                instruction - usually the objective, with the constraint at the end - was
                 hidden exactly when you wanted to re-read it before running. It grows to six
                 rows and then scrolls, so it can never push Run off the screen.
 
@@ -6193,19 +6585,15 @@ export function CopilotWorkspace() {
                     : undefined
                 }
                 aria-label={loading || signing || investigation.loading || entry.loading ? "Cancel" : "Send"}
-                className={
-                  loading || signing || investigation.loading || entry.loading
-                    ? `shrink-0 rounded-full px-4 py-2 text-[13px] ${BTN_QUIET}`
-                    : "flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-100"
-                }
-                style={
-                  loading || signing || investigation.loading || entry.loading
-                    ? undefined
-                    : { background: "var(--gradient, linear-gradient(135deg, #FC5457 10%, #703AE6 80%))" }
-                }
+                // One round button in the pill: Send, or while a reply runs, Stop (the square).
+                className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-100"
+                style={{ background: "var(--gradient, linear-gradient(135deg, #FC5457 10%, #703AE6 80%))" }}
+                title={loading || signing || investigation.loading || entry.loading ? "Stop" : "Send"}
               >
                 {loading || signing || investigation.loading || entry.loading ? (
-                  "Cancel"
+                  <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden>
+                    <rect x="5" y="5" width="14" height="14" rx="2.5" fill="currentColor" />
+                  </svg>
                 ) : (
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <path d="M12 19V5" /><path d="m5 12 7-7 7 7" />
@@ -6218,25 +6606,25 @@ export function CopilotWorkspace() {
           {entry.error && <p role="alert" className="mt-3 text-[13px] text-imperial-500">{entry.error}</p>}
 
         </div>
-            <p className="mt-1.5 text-center text-[11px] leading-[17px] text-vgray-400">
-              {autoApproveUiOn
-                ? "Auto-approve on · writes inside the limits run without a prompt"
-                : "Auto-approve off · every write asks for a signature"}
-            </p>
             {/* Starter prompts, shown only on an empty stage. They run through the same
                 composer path a typed prompt does, so nothing here is a shortcut past the
                 classifier, the reads or any gate. */}
             {stageEmpty && (
               <div style={{ paddingTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
-                {["Price of XLM", "What's my health factor?", "Deposit 5 XLM"].map((text) => (
+                {[
+                  { text: "Price of XLM", needsWallet: false },
+                  { text: "What's my health factor?", needsWallet: false },
+                  { text: "Deposit 5 XLM", needsWallet: true },
+                ].map(({ text, needsWallet }) => (
                   <button
                     key={text}
                     type="button"
                     disabled={loading || signing || investigation.loading || entry.loading}
                     onClick={() => { void run(text); }}
-                    className="w-full cursor-pointer rounded-r2 px-1.5 py-2.5 text-left text-[14px] leading-[21px] text-vgray-500 transition-colors hover:bg-vgray-50 hover:text-vgray-900 disabled:cursor-not-allowed disabled:opacity-50"
+                    className={`flex w-full cursor-pointer items-center justify-between gap-3 rounded-r2 px-1.5 py-2.5 text-left text-[14px] leading-[21px] transition-colors hover:bg-vgray-50 hover:text-vgray-900 disabled:cursor-not-allowed disabled:opacity-50 ${needsWallet && !address ? "text-vgray-300" : "text-vgray-500"}`}
                   >
                     {text}
+                    {needsWallet && !address && <span className="text-[12px] text-vgray-400">Needs a wallet</span>}
                   </button>
                 ))}
               </div>

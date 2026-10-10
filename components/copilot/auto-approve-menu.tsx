@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HEADER_CONTROL } from "./conversation-menu";
+import { CopilotRailPresentation } from "./copilot-shell";
 
 export interface AutoApproveMenuProps {
   on: boolean;
@@ -10,8 +11,9 @@ export interface AutoApproveMenuProps {
   capsMode: "defaults" | "custom";
   customTx: string;
   customDay: string;
-  defaultTx: number;
-  defaultDay: number;
+  defaultTx: number | null;
+  defaultDay: number | null;
+  walletSigningRequired?: boolean;
   onToggle: () => void;
   onCapsMode: (mode: "defaults" | "custom") => void;
   onCustomTx: (value: string) => void;
@@ -20,7 +22,7 @@ export interface AutoApproveMenuProps {
    * Where this control is mounted, which is the only thing that differs between the two
    * call sites: `pill` is the header chip, `rail` is a full-width row in the left panel
    * whose panel flies out to the right instead of dropping down. The toggle, the caps
-   * mode and the two limit fields are the same control in both — duplicating this
+   * mode and the two limit fields are the same control in both - duplicating this
    * component to move it would have duplicated all of that with it.
    */
   variant?: "pill" | "rail" | "mini";
@@ -51,9 +53,10 @@ function CapField({
             : "border-vgray-100 focus-within:border-violet-400"
         }`}
       >
-        <span className="text-[12.5px] text-vgray-400">$</span>
+        <span className="shrink-0 whitespace-nowrap text-[12.5px] text-vgray-400">units</span>
         <input
-          type="number"
+          type={locked ? "text" : "number"}
+          step="any"
           inputMode="decimal"
           min="0"
           value={value}
@@ -64,7 +67,7 @@ function CapField({
           placeholder={label === "per tx" ? "500" : "2000"}
           aria-label={aria}
           aria-readonly={locked || undefined}
-          className={`w-full min-w-0 border-0 bg-transparent py-1.5 text-[13px] tabular-nums outline-none ${
+          className={`w-0 min-w-0 flex-1 border-0 bg-transparent py-1.5 text-[13px] tabular-nums outline-none ${
             locked ? "pointer-events-none cursor-not-allowed text-vgray-400" : "text-vgray-900"
           }`}
         />
@@ -85,6 +88,7 @@ export function AutoApproveMenu({
   capsMode,
   customTx,
   customDay,
+  walletSigningRequired = false,
   defaultTx,
   defaultDay,
   onToggle,
@@ -98,10 +102,26 @@ export function AutoApproveMenu({
   const container = useRef<HTMLDivElement | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const compact = useContext(CopilotRailPresentation);
+  const pinned = useRef(false);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverMode = variant === "mini" || (variant === "rail" && compact);
+  const clearHover = () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); };
+  const place = () => {
+    const rect = trigger.current?.getBoundingClientRect();
+    if (rect) setFlyoutPos({ top: Math.max(8, Math.min(rect.top, window.innerHeight - 300)), left: Math.max(8, Math.min(rect.right + 10, window.innerWidth - 256)) });
+  };
+  const preview = () => { if (!hoverMode) return; clearHover(); place(); setOpen(true); };
+  const leave = () => {
+    if (!hoverMode) return;
+    clearHover();
+    hoverTimer.current = setTimeout(() => { if (!pinned.current && !panelRef.current?.contains(document.activeElement)) setOpen(false); }, 160);
+  };
+  useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
 
   useEffect(() => {
     if (!open) return;
-    const close = () => setOpen(false);
+    const close = () => { pinned.current = false; setOpen(false); };
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (container.current?.contains(target) || panelRef.current?.contains(target)) return;
@@ -114,16 +134,25 @@ export function AutoApproveMenu({
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", close);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", close);
     };
   }, [open]);
 
   const rail = variant === "rail";
   const mini = variant === "mini";
+  const controlLabel = walletSigningRequired ? "Auto-continue" : "Auto-approve";
 
   const toggle = () => {
+    if (hoverMode) {
+      clearHover();
+      pinned.current = !pinned.current;
+      if (pinned.current) { place(); setOpen(true); } else setOpen(false);
+      return;
+    }
     if (!open) {
       const rect = trigger.current?.getBoundingClientRect();
       if (rect) {
@@ -141,16 +170,21 @@ export function AutoApproveMenu({
     <div
       ref={panelRef}
       role="dialog"
-      aria-label="Auto-approve"
+      aria-label={controlLabel}
+      data-cp-rail-popup
+      onMouseEnter={clearHover}
+      onMouseLeave={leave}
+      onFocus={clearHover}
+      onBlur={leave}
       className={
         rail || mini
           ? "cp-root fixed z-[100] w-[248px] rounded-r2 border border-vgray-100 bg-surface p-3 shadow-lg"
           : "absolute right-0 z-30 mt-2 w-[min(18rem,calc(100vw-2rem))] rounded-r2 border border-vgray-100 bg-surface p-3 shadow-lg"
       }
-      style={rail || mini ? flyoutPos : undefined}
+      style={rail || mini ? { ...flyoutPos, maxHeight: `calc(100dvh - ${flyoutPos.top + 8}px)`, overflowY: "auto", scrollbarWidth: "none" } : undefined}
     >
           <div className="flex items-center justify-between gap-3 px-1 py-1">
-            <span className="text-[13px] font-semibold text-vgray-900">Auto-approve</span>
+            <span className="text-[13px] font-semibold text-vgray-900">{controlLabel}</span>
             <button
               type="button"
               role="switch"
@@ -170,7 +204,9 @@ export function AutoApproveMenu({
             </button>
           </div>
 
-          <div className="mt-3 flex gap-1.5">
+          {walletSigningRequired && <p className="mt-2 text-[12px] leading-[18px] text-vgray-500">Continue approved steps automatically. Freighter still asks you to sign each transaction; this does not enable offline execution.</p>}
+          {!walletSigningRequired && <p className="mt-2 text-[12px] leading-[18px] text-vgray-500">Each transaction has a limit. The daily budget covers their combined value.</p>}
+          <div hidden={walletSigningRequired} className={walletSigningRequired ? "hidden" : "mt-3 flex gap-1.5"}>
             <button
               type="button"
               aria-pressed={capsMode === "defaults"}
@@ -197,24 +233,25 @@ export function AutoApproveMenu({
             </button>
           </div>
 
-          {capsMode === "defaults" && (
+          {!walletSigningRequired && <p className="mt-2 text-xs text-vgray-500">Testnet amount limits, not dollar values. Different assets count by quantity.</p>}
+          {!walletSigningRequired && capsMode === "defaults" && (
             <div className="mt-2.5 grid grid-cols-2 gap-2">
-              <CapField label="per tx" aria="Default per transaction cap in USD" value={String(defaultTx)} />
-              <CapField label="per day" aria="Default per day cap in USD" value={String(defaultDay)} />
+              <CapField label="per tx" aria="Default per transaction cap in token units" value={defaultTx == null ? "-" : String(defaultTx)} />
+              <CapField label="per day" aria="Default per day cap in token units" value={defaultDay == null ? "-" : String(defaultDay)} />
             </div>
           )}
 
-          {capsMode === "custom" && (
+          {!walletSigningRequired && capsMode === "custom" && (
             <div className="mt-2.5 grid grid-cols-2 gap-2">
               <CapField
                 label="per tx"
-                aria="Per transaction cap in USD"
+                aria="Per transaction cap in token units"
                 value={customTx}
                 onChange={onCustomTx}
               />
               <CapField
                 label="per day"
-                aria="Per day cap in USD"
+                aria="Per day cap in token units"
                 value={customDay}
                 onChange={onCustomDay}
               />
@@ -224,18 +261,22 @@ export function AutoApproveMenu({
   );
 
   return (
-    <div ref={container} className="relative">
+    <div ref={container} className="relative" onMouseEnter={preview} onMouseLeave={leave}>
       {rail ? (
         <button
           ref={trigger}
           type="button"
           onClick={toggle}
+          onFocus={preview}
+          onBlur={leave}
           aria-expanded={open}
           aria-haspopup="dialog"
-          className="flex w-full cursor-pointer items-center justify-between gap-2 py-1.5"
+          aria-label={compact ? `${controlLabel} ${on ? "on" : "off"}` : undefined}
+          className={`cp-rail-row cp-icon-button flex w-full cursor-pointer items-center justify-between gap-2 py-1.5 ${compact ? "cp-auto-mix" : ""}`}
         >
-          <span className="text-[14px] leading-[21px] font-semibold text-vgray-900">Auto-approve</span>
-          <span className="flex items-center gap-1.5 text-[12px] leading-[18px] text-vgray-400">
+          <ZapMark on={on} />
+          <span className="cp-auto-label flex-1 text-left text-[14px] leading-[21px] font-semibold text-vgray-900">{controlLabel}</span>
+          <span className="cp-auto-label flex items-center gap-1.5 text-[12px] leading-[18px] text-vgray-400">
             {on ? "On" : "Off"}
             <span aria-hidden className="inline-flex flex-none">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M9 6l6 6-6 6" /></svg>
@@ -247,13 +288,15 @@ export function AutoApproveMenu({
           ref={trigger}
           type="button"
           onClick={toggle}
+          onFocus={preview}
+          onBlur={leave}
           aria-expanded={open}
           aria-haspopup="dialog"
-          aria-label={`Auto-approve ${on ? "on" : "off"}`}
-          title={`Auto-approve ${on ? "on" : "off"}`}
-          className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-r2 text-[12px] leading-[18px] text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
+          aria-label={`${controlLabel} ${on ? "on" : "off"}`}
+          title={`${controlLabel} ${on ? "on" : "off"}`}
+          className="cp-rail-mix cp-icon-button flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-r2 text-[12px] leading-[18px] text-vgray-500 transition-colors"
         >
-          {on ? "On" : "Off"}
+          <ZapMark on={on} />
         </button>
       ) : (
         <button
@@ -264,11 +307,15 @@ export function AutoApproveMenu({
           aria-haspopup="dialog"
           className={HEADER_CONTROL}
         >
-          Auto-approve
+          {controlLabel}
           <span className="tabular-nums text-vgray-400">{on ? "on" : "off"}</span>
         </button>
       )}
       {open && (rail || mini) && typeof document !== "undefined" ? createPortal(panel, document.body) : open ? panel : null}
     </div>
   );
+}
+
+function ZapMark({ on }: { on: boolean }) {
+  return <span className="cp-zap-mark" aria-hidden><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path className="cp-zap-path" d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" /></svg><span className={`cp-zap-dot ${on ? "cp-zap-dot-on" : ""}`} /></span>;
 }

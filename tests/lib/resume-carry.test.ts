@@ -16,7 +16,7 @@ const afterAnsweringLegTwo = [
   { index: 1, op: "deposit_collateral", label: "Deposit 10 BLUSDC as collateral", asset: "BLUSDC", amount: 10, status: "ok" as const, message: "settled" },
   { index: 2, op: "borrow", label: "Borrow 15 XLM", asset: "XLM", amount: 15, status: "ok" as const, message: "settled" },
   { index: 3, op: "lend", label: "Lend XLM on Earn", asset: "XLM", amount: null, status: "clarification" as const, message: "How much?" },
-  { index: 4, op: "lend", label: "Lend 20 XLM on Earn", asset: "XLM", amount: 20, status: "skipped" as const, message: "Skipped — earlier leg needs amount" },
+  { index: 4, op: "lend", label: "Lend 20 XLM on Earn", asset: "XLM", amount: 20, status: "skipped" as const, message: "Skipped - earlier leg needs amount" },
 ];
 
 describe("a skipped leg is outstanding, not abandoned", () => {

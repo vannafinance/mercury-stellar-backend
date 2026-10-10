@@ -7,7 +7,7 @@ import { MCP_CALL_TIMEOUT_MS } from "./mcp-client";
  * sum of unbounded calls. Two properties it must have and did not:
  *
  *   1. Concurrency. The wall clock is the slowest row, not the total.
- *   2. A shared deadline. One stuck RPC cannot hold the whole answer hostage —
+ *   2. A shared deadline. One stuck RPC cannot hold the whole answer hostage -
  *      it becomes a failed row, which every caller here already renders.
  *
  * The budget is NOT a number chosen here. It is the client's own single-call timeout:

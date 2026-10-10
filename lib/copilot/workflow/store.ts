@@ -11,8 +11,8 @@ export interface RecordStore<T> {
 }
 /**
  * What a document id may look like. Records keyed by a UUID (the workflow journal, one
- * conversation) use the default; a store keyed by something else — a subject index, keyed
- * by the hash of the subject — passes its own rule. Anything unchecked would reach a file
+ * conversation) use the default; a store keyed by something else - a subject index, keyed
+ * by the hash of the subject - passes its own rule. Anything unchecked would reach a file
  * path and a URL.
  */
 export type IdRule = RegExp;
@@ -51,7 +51,11 @@ function encryption(secret: string) {
 export class LocalRecordStore<T> implements RecordStore<T> {
   private readonly directory: string;
   private readonly codec: ReturnType<typeof encryption>;
-  constructor(directory: string, secret: string, private readonly idRule: IdRule = UUID_ID) { this.directory = resolve(directory); this.codec = encryption(secret); }
+  constructor(directory: string, secret: string, private readonly idRule: IdRule = UUID_ID) {
+    // Development records are runtime data, never inputs to the standalone bundle.
+    this.directory = resolve(/* turbopackIgnore: true */ directory);
+    this.codec = encryption(secret);
+  }
   async read(id: string): Promise<Stored<T> | null> {
     check(this.idRule, id);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
@@ -132,7 +136,7 @@ export class FirestoreRecordStore<T> implements RecordStore<T> {
  * production rather than a silent fall back to a container filesystem that redeploys wipe
  * and sibling instances cannot see.
  *
- * One project configures them all — a second collection is not a second deployment
+ * One project configures them all - a second collection is not a second deployment
  * decision, so nothing new has to be set to make conversations durable.
  */
 export function durableStore<T>(collection: string, localDirectory: string, secret: string, idRule: IdRule = UUID_ID): RecordStore<T> {
@@ -141,7 +145,7 @@ export function durableStore<T>(collection: string, localDirectory: string, secr
    *
    * 3e0587d widened this to fall back on GOOGLE_CLOUD_PROJECT so conversations would be
    * durable in production without new configuration. That variable is also set in every
-   * local .env.local, because Vertex needs it — so the widening silently moved the WORKFLOW
+   * local .env.local, because Vertex needs it - so the widening silently moved the WORKFLOW
    * store off local files and onto a Firestore database in Vertex's project. There is no
    * Firestore database in that project, so every propose 404s and surfaces as a 409
    * "A plan could not be prepared". `.local/copilot-workflows` stops at 20 Sep, the day it
@@ -161,7 +165,7 @@ export function durableStore<T>(collection: string, localDirectory: string, secr
     return new FirestoreRecordStore(project, process.env.COPILOT_WORKFLOW_FIRESTORE_DATABASE || "(default)", secret, undefined, undefined, collection, idRule);
   }
   if (runningDeployed) throw new Error("durable_workflow_store_not_configured");
-  return new LocalRecordStore(resolve(process.cwd(), localDirectory), secret, idRule);
+  return new LocalRecordStore(resolve(/* turbopackIgnore: true */ process.cwd(), localDirectory), secret, idRule);
 }
 
 export function workflowStore<T>(secret: string): RecordStore<T> {

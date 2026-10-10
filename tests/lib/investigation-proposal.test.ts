@@ -8,6 +8,10 @@ import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { candidateId, REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { researchCodec } from "@/lib/copilot/investigation/continuation";
 import type { Observation } from "@/lib/copilot/investigation/types";
+import { planCandidateId, resolvePlans } from "@/lib/copilot/investigation/plan";
+import { readsForPlans } from "@/lib/copilot/investigation/strategy-reads";
+import { compareObservedRates } from "@/lib/copilot/investigation/rate-comparison";
+import type { ProposedPlan } from "@/lib/copilot/investigation/types";
 
 /**
  * Propose must compile from sealed investigation evidence when that bundle is
@@ -93,7 +97,6 @@ function evidenceObservations(): Observation[] {
       id: "e3", capability: "asset_price", args: { asset: "BLUSDC" },
       data: { price_usd: "1" },
     }),
-    // AQUSDC has no Blend reserve, so idle AQUSDC can only go to Earn.
     observation({
       id: "e5", capability: "earn_market", args: { asset: "AQUSDC" },
       data: { supply_apr_pct: "25.41", borrow_apr_pct: "30", utilization_pct: "90" },
@@ -108,7 +111,7 @@ function evidenceObservations(): Observation[] {
 function continuation(capturedAt = NOW) {
   const codec = researchCodec(SECRET, SERVER, () => NOW);
   const evidence = compactResearchEvidence(evidenceObservations(), CAPACITY, capturedAt);
-  evidence.allowedCandidateIds = [candidateId("borrow_supply", "BLUSDC"), candidateId("lend_idle", "AQUSDC")];
+  evidence.allowedCandidateIds = [candidateId("borrow_supply", "BLUSDC")];
   return codec.seal(SCOPE, ["Keep HF above 1.3. You can take new loans."], null, evidence);
 }
 
@@ -123,6 +126,60 @@ beforeEach(() => {
 });
 
 describe("proposeWorkflow evidence reuse", () => {
+  it("preserves the researched protocol-limited borrow through sealing without another read", async () => {
+    const message = "build a leveraged blend strategy with my XLM, health factor no lower than 1.3";
+    const plan: ProposedPlan = { title: "Leveraged Blend", rationale: "Observed positive carry", evidenceIds: ["blend"], legs: [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
+      { op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+    ] };
+    const observations = [
+      observation({ id: "wallet", capability: "wallet_balances", data: { assets: [
+        { symbol: "XLM", balance: "10000", status: "ok" },
+        { symbol: "XLM_SAC", balance: "10000", decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" } }),
+      observation({ id: "price", capability: "asset_price", args: { asset: "XLM" }, data: { price_usd: "0.2" } }),
+      observation({ id: "earn", capability: "earn_market", args: { asset: "XLM" }, data: { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "60" } }),
+      observation({ id: "blend", capability: "blend_markets", data: { reserves: [{ symbol: "XLM", venue: "blend", supply_apr_pct: "168", borrow_apr_pct: "208", utilization_pct: "90" }] } }),
+      observation({ id: "cap", capability: "max_borrow", args: { asset: "XLM" }, data: { max_borrow_human: "10" } }),
+    ];
+    const position = { grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, floor: "1.3", issue: null };
+    const researched = resolvePlans([plan], { scope: SCOPE, observations, now: NOW, messages: [message], capacity: position,
+      borrowing: "allowed", strategyGoal: true, comparisons: compareObservedRates(observations, NOW) });
+    expect(researched.rejected).toEqual([]);
+    expect(researched.candidates[0].steps?.[1].amount).toBe("9.99");
+    const evidence = compactResearchEvidence(observations, null, NOW, readsForPlans([plan], [], NOW));
+    Object.assign(evidence, { plans: [plan], floor: "1.3", position, strategyGoal: true, allowedCandidateIds: [planCandidateId(plan)] });
+    const mcp = { call: vi.fn() };
+    const view = await proposeWorkflow({
+      continuation: researchCodec(SECRET, SERVER, () => NOW).seal(SCOPE, [message], null, evidence),
+      candidateId: planCandidateId(plan), subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp, signal: new AbortController().signal, now: NOW,
+    });
+    expect(view.steps.map(s => [s.op, s.asset, s.amount])).toEqual(researched.candidates[0].steps?.map(s => [s.op, s.asset, s.amount]));
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
+  it("keeps a composed plan's risk floor even when public capacity is withheld", async () => {
+    const plan: ProposedPlan = { title: "Borrow and supply", rationale: "Supply at the observed Blend rate", evidenceIds: ["e2"], legs: [
+      { op: "borrow", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "borrow 1 BLUSDC" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+    ] };
+    const evidence = compactResearchEvidence(evidenceObservations(), null, NOW);
+    evidence.plans = [plan];
+    evidence.floor = "1.7";
+    evidence.walletReserves = [{ asset: "XLM", amount: "17.25" }];
+    evidence.position = { grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, floor: "1.7", issue: null };
+    evidence.allowedCandidateIds = [planCandidateId(plan)];
+    const view = await proposeWorkflow({
+      continuation: researchCodec(SECRET, SERVER, () => NOW).seal(SCOPE, ["borrow 1 BLUSDC and supply it to Blend, keep HF above 1.7"], null, evidence),
+      candidateId: planCandidateId(plan), subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp: { call: vi.fn() }, signal: new AbortController().signal, now: NOW,
+    });
+    expect(view.steps.map(step => [step.op, step.asset, step.amount])).toEqual([["borrow", "BLUSDC", "1"], ["supply_blend", "BLUSDC", "1"]]);
+    expect((await harness.store.read(""))?.value.proposal.floor).toBe("1.7");
+    expect((await harness.store.read(""))?.value.proposal.walletReserves).toEqual(evidence.walletReserves);
+    expect(view.constraints).toContain("Keep at least 17.25 XLM spendable in the wallet after transaction fees.");
+  });
   it("compiles from sealed evidence without a second market or snapshot read", async () => {
     const mcp = { call: vi.fn(async () => { throw new Error("MCP should not be called when evidence is fresh"); }) };
     const view = await proposeWorkflow({
@@ -133,21 +190,11 @@ describe("proposeWorkflow evidence reuse", () => {
     expect(mcp.call).not.toHaveBeenCalled();
     expect(harness.computeBorrowCapacity).not.toHaveBeenCalled();
     expect(validateWorkflowRisk).not.toHaveBeenCalled();
+    expect(view.candidateId).toBe(candidateId("borrow_supply", "BLUSDC"));
+    expect((await harness.store.read(""))?.value.proposal.candidateId).toBe(view.candidateId);
     expect(view.status).toBe("proposed");
     expect(view.steps.map((step) => step.op)).toEqual(["borrow", "supply_blend"]);
     expect(view.steps[0].amount).toBe(view.steps[1].amount);
-  });
-
-  it("prepares an Earn idle plan from the same sealed bundle", async () => {
-    const mcp = { call: vi.fn(async () => { throw new Error("MCP should not be called when evidence is fresh"); }) };
-    const view = await proposeWorkflow({
-      continuation: continuation(), candidateId: candidateId("lend_idle", "AQUSDC"),
-      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
-      mcp, signal: new AbortController().signal, now: NOW,
-    });
-    expect(mcp.call).not.toHaveBeenCalled();
-    expect(view.steps).toHaveLength(1);
-    expect(view.steps[0]).toMatchObject({ op: "lend", amount: "680", asset: "AQUSDC" });
   });
 
   it("falls back to live reads when the sealed bundle is older than a minute", async () => {
@@ -181,7 +228,7 @@ describe("proposeWorkflow evidence reuse", () => {
 
   /**
    * The world-read and the app snapshot are independent MCP round trips. Running them one
-   * after another stacked their bounds — up to 15s each — on top of scope resolution, which
+   * after another stacked their bounds - up to 15s each - on top of scope resolution, which
    * on a cold cache pushed a stale propose past the browser's 90s budget (15 Sep, D4). A
    * timing assertion is the only proof that they now overlap rather than merely that the
    * result is unchanged: both are delayed by the same amount, and the whole call must still
@@ -224,7 +271,7 @@ describe("proposeWorkflow evidence reuse", () => {
   });
 });
 
-/** A stated exact-output swap — the shape the copilot proposes for "swap XLM so i get 1 AQUSDC". */
+/** A stated exact-output swap - the shape the copilot proposes for "swap XLM so i get 1 AQUSDC". */
 const SWAP_STEP = {
   id: "requested-0",
   op: "swap" as const,
@@ -241,6 +288,78 @@ const SWAP_STEP = {
 };
 
 describe("proposeWorkflow requested_actions", () => {
+  it.each(["1.100000000000000001", "1.7"])("preserves sealed HF floor %s when display capacity is withheld", async (floor) => {
+    const codec = researchCodec(SECRET, SERVER, () => NOW);
+    const evidence = compactResearchEvidence([], null, NOW);
+    evidence.floor = floor;
+    evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
+    evidence.requestedSteps = [{
+      id: "requested-0", op: "borrow", asset: "XLM", amount: "50",
+      label: "borrow 50 XLM", tool: "vanna_borrow", sizing: { basis: "stated" },
+      args: { symbol: "XLM", amount: "50", trader: SCOPE.trader, smart_account: SCOPE.smartAccount },
+    }];
+    await proposeWorkflow({
+      continuation: codec.seal(SCOPE, ["borrow the maximum XLM"], null, evidence),
+      candidateId: REQUESTED_ACTIONS_ID,
+      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp: { call: vi.fn() }, signal: new AbortController().signal, now: NOW,
+    });
+    expect((await harness.store.read(""))?.value.proposal.floor).toBe(floor);
+  });
+  it("asks when the investigation and routeMessage disagree about creating new debt", async () => {
+    const codec = researchCodec(SECRET, SERVER, () => NOW);
+    const evidence = compactResearchEvidence([], null, NOW);
+    evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
+    evidence.requestedSteps = [{
+      id: "requested-0",
+      op: "borrow",
+      asset: "XLM",
+      amount: "50",
+      label: "borrow 50 XLM",
+      tool: "vanna_borrow",
+      sizing: { basis: "stated" },
+      args: { symbol: "XLM", amount: "50", trader: SCOPE.trader, smart_account: SCOPE.smartAccount },
+    }];
+
+    await expect(proposeWorkflow({
+      continuation: codec.seal(SCOPE, ["lend me 50xlm"], null, evidence),
+      candidateId: REQUESTED_ACTIONS_ID,
+      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp: { call: vi.fn() }, signal: new AbortController().signal, now: NOW,
+    })).rejects.toMatchObject({ code: "debt_reading_ambiguous", status: 409 });
+    expect(await harness.store.read("")).toBeNull();
+  });
+
+  it.each([
+    ["lend 50 XLM", "lend"],
+    ["borrow 50 XLM", "borrow"],
+  ] as const)("keeps matching %s intent executable", async (message, op) => {
+    const codec = researchCodec(SECRET, SERVER, () => NOW);
+    const evidence = compactResearchEvidence([], null, NOW);
+    evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
+    evidence.requestedSteps = [{
+      id: "requested-0",
+      op,
+      asset: "XLM",
+      amount: "50",
+      label: `${op} 50 XLM`,
+      tool: op === "borrow" ? "vanna_borrow" : "vanna_lend",
+      sizing: { basis: "stated" },
+      args: op === "lend"
+        ? { symbol: "XLM", amount: "50", lender: SCOPE.trader }
+        : { symbol: "XLM", amount: "50", trader: SCOPE.trader, smart_account: SCOPE.smartAccount },
+    }];
+
+    const view = await proposeWorkflow({
+      continuation: codec.seal(SCOPE, [message], null, evidence),
+      candidateId: REQUESTED_ACTIONS_ID,
+      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp: { call: vi.fn() }, signal: new AbortController().signal, now: NOW,
+    });
+    expect(view.status).toBe("proposed");
+    expect(view.steps[0].op).toBe(op);
+  });
+
   it("creates the journal from sealed steps without MCP or risk validation", async () => {
     const codec = researchCodec(SECRET, SERVER, () => NOW);
     const evidence = compactResearchEvidence([], null, NOW);
@@ -272,7 +391,7 @@ describe("proposeWorkflow requested_actions", () => {
 
   /**
    * A stated swap is proposed through THIS branch, and the acceptance the user stated in
-   * their own words has to reach the stored proposal — it is what the pre-write re-quote
+   * their own words has to reach the stored proposal - it is what the pre-write re-quote
    * and the MCP's impact gate both read at execution time. Sealed on the research and
    * dropped here, the card appears and the swap is then withheld twice over for a price
    * the user had already agreed to, with nothing left for them to say.
@@ -282,6 +401,7 @@ describe("proposeWorkflow requested_actions", () => {
     const evidence = compactResearchEvidence([], null, NOW);
     evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
     evidence.slippageAccepted = true;
+    evidence.walletReserves = [{ asset: "XLM", amount: "100" }];
     evidence.requestedSteps = [SWAP_STEP];
     const view = await proposeWorkflow({
       continuation: codec.seal(SCOPE, ["swap xlm so i get 1 AQUSDC, i accept the loss"], null, evidence),
@@ -291,9 +411,11 @@ describe("proposeWorkflow requested_actions", () => {
     });
     expect(view.status).toBe("proposed");
     expect((await harness.store.read(""))?.value.proposal.slippageAccepted).toBe(true);
+    expect((await harness.store.read(""))?.value.proposal.walletReserves).toEqual(evidence.walletReserves);
+    expect(view.constraints).toContain("Keep at least 100 XLM spendable in the wallet after transaction fees.");
   });
 
-  it("leaves it false when the user never accepted — the refusal is the default", async () => {
+  it("leaves it false when the user never accepted - the refusal is the default", async () => {
     const codec = researchCodec(SECRET, SERVER, () => NOW);
     const evidence = compactResearchEvidence([], null, NOW);
     evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { humanizeStroopCounts, fmtLpAmt, farmAddedLine, farmRemovedLine, shortWriteLabel } from "@/lib/copilot/execution-copy";
 import { routeMessage } from "@/lib/copilot/router";
 
-describe("shortWriteLabel — one sentence on every staged write", () => {
+describe("shortWriteLabel - one sentence on every staged write", () => {
   it("lend is Deposit N ASSET in Lending Pool", () => {
     expect(shortWriteLabel({ op: "lend", amount: 100, asset: "AQUSDC" })).toBe(
       "Deposit 100 AQUSDC in Lending Pool",
@@ -23,7 +23,7 @@ describe("shortWriteLabel — one sentence on every staged write", () => {
   });
 });
 
-describe("fmtLpAmt — pair titles stay one line", () => {
+describe("fmtLpAmt - pair titles stay one line", () => {
   it("rounds the derived XLM side and keeps a whole 10 as 10", () => {
     expect(fmtLpAmt(719.0883528077677)).toBe("719.0884");
     expect(fmtLpAmt(10)).toBe("10");
@@ -66,7 +66,7 @@ describe("add liquidity in Blend is a Blend supply write, not pool stats", () =>
   });
 });
 
-describe("humanizeStroopCounts — Sign Service errors in tokens, not stroops", () => {
+describe("humanizeStroopCounts - Sign Service errors in tokens, not stroops", () => {
   it("rewrites spent_today / amount / max_per_day as XLM", () => {
     const raw =
       "spent_today 752883225 + amount 10000000000 > max_per_day 10000000000";

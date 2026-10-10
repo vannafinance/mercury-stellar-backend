@@ -7,7 +7,7 @@ import { humanizeLegError } from "./multi-leg-agent";
  * A serialized payload is a diagnostic, never user copy.
  *
  * `MCPCallError` carries the response body so the server log has it, and that whole
- * string was interpolated into the turn — a rate-limited Blend withdraw showed the user
+ * string was interpolated into the turn - a rate-limited Blend withdraw showed the user
  * `MCP call 'vanna_blend_withdraw' failed (429): {"error":"rate_limited",...}`. Dropping
  * a trailing JSON object here removes every such body at once, whatever tool produced it,
  * instead of each one being noticed and stripped after it ships.
@@ -24,18 +24,18 @@ function copilotErrorMessage(raw: string): string {
 
 /**
  * What an HTTP status means for the person who asked, when the body says nothing they can
- * act on. Read off the status itself — the transport's own contract — so a tool that has
+ * act on. Read off the status itself - the transport's own contract - so a tool that has
  * never been rate-limited before still gets the right sentence the first time it is.
  */
 function transportMessage(status: number | null): string | null {
   if (status === 429) {
-    return "Vanna's tools are rate-limiting requests right now, so this one was refused before it ran. Nothing was submitted — send it again in a moment.";
+    return "Vanna's tools are rate-limiting requests right now, so this one was refused before it ran. Nothing was submitted - send it again in a moment.";
   }
   if (status === 408 || status === 504) {
-    return "That request timed out before the tools answered. Nothing was submitted — try it again.";
+    return "That request timed out before the tools answered. Nothing was submitted - try it again.";
   }
   if (status != null && status >= 500) {
-    return "Vanna's tools are not responding right now. Nothing was submitted — try again in a moment.";
+    return "Vanna's tools are not responding right now. Nothing was submitted - try again in a moment.";
   }
   return null;
 }

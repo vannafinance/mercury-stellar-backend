@@ -3,19 +3,19 @@
  * write step with a missing amount, instead of being answered.
  *
  *   - "can you tell me one thing supply to blend go through margin wallet or normal
- *     wallet" — contains "supply". The card asked "How much XLM do you want to supply
+ *     wallet" - contains "supply". The card asked "How much XLM do you want to supply
  *     to Blend?" for a question that named no amount at all.
- *   - "what is the best place to supply my USDC, earn or blend" — a comparison
+ *   - "what is the best place to supply my USDC, earn or blend" - a comparison
  *     question. The clause splitter cut it on the comma into "what is the best place
  *     to supply my USDC" (mined for a write, again with "supply") and "earn or blend"
  *     (leftover residue). The card ended up paused mid-plan on "How much BLUSDC to
- *     deploy to blend?" with a fabricated default of 51 — for a question, not an
+ *     deploy to blend?" with a fabricated default of 51 - for a question, not an
  *     instruction, that named no asset amount and no Blend venue at all.
  *
  * `clauseToStepSpannedRaw` matched on write-verb presence alone, with no regard for
  * whether the clause was phrased as a question. The fix: a clause opening with an
  * interrogative and naming no literal `amount asset` pair is never mined for a write,
- * whatever verb it also contains — see `QUESTION_OPENER` in step-extractor.ts. A
+ * whatever verb it also contains - see `QUESTION_OPENER` in step-extractor.ts. A
  * literal write ("supply 25 AQUSDC to earn") is untouched, since it always carries
  * the amount the guard checks for.
  */
@@ -37,7 +37,7 @@ describe("a question is never mined for a write with a missing amount", () => {
     // The clause splitter cuts this on the comma into two clauses. This pins the
     // first: "what is the best place to supply my USDC" no longer produces a false
     // `lend`/`deploy_to_blend` write. The second clause, "earn or blend", still
-    // reaches a write through a DIFFERENT mechanism — unnamed-intent.ts's multi-goal
+    // reaches a write through a DIFFERENT mechanism - unnamed-intent.ts's multi-goal
     // fallback re-routes the full original message through `routeMessage`, whose
     // Blend-deploy branch fires on "supply" appearing anywhere in that full text.
     // Closing that is a separate fix; this test only pins what THIS one covers.
@@ -56,7 +56,7 @@ describe("a question is never mined for a write with a missing amount", () => {
     }
   });
 
-  it("a literal write is untouched — it always carries the amount the guard checks for", () => {
+  it("a literal write is untouched - it always carries the amount the guard checks for", () => {
     for (const [ask, op] of [
       ["deposit 100 XLM as collateral", "deposit_collateral"],
       ["supply 20 BLUSDC to blend", "deploy_to_blend"],
@@ -73,7 +73,7 @@ describe("a question is never mined for a write with a missing amount", () => {
 
   it("a sizing phrase with no wh-opener is untouched", () => {
     // "borrow the maximum I can safely" has a write verb and no amount, same as the
-    // bug shape — but it opens with the verb, not a question word, so it must still
+    // bug shape - but it opens with the verb, not a question word, so it must still
     // extract as a write for the deterministic multi-leg path to size it.
     const step = clauseToStep("borrow the maximum I can safely", NO_GLOBAL);
     expect(step?.op).toBe("borrow");

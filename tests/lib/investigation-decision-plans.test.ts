@@ -1,13 +1,14 @@
 /**
  * The model's plan contract at the parse boundary: shapes and sizing words only.
  * A number anywhere but inside `literal`, an op or asset outside the vocabulary, or an
- * unknown sizing word drops THAT plan (counted, so the card can say so) — never the
+ * unknown sizing word drops THAT plan (counted, so the card can say so) - never the
  * research it rides on, and never a number into the sizer.
  */
 
 import { describe, expect, it } from "vitest";
 import { parseDecision } from "@/lib/copilot/investigation/decision";
 import { decisionFromFunctionCalls } from "@/lib/copilot/investigation/decls";
+import { MAX_WORKFLOW_STEPS } from "@/lib/copilot/workflow/types";
 
 const base = {
   kind: "research_complete",
@@ -15,7 +16,7 @@ const base = {
   findings: [{ summary: "s", evidenceIds: ["e1"] }],
   openQuestions: [],
 };
-const leg = (op: string, asset = "XLM", sizing: unknown = { kind: "all_idle" }) => ({ op, asset, sizing });
+const leg = (op: string, asset = "XLM", sizing: unknown = { kind: "all_wallet" }) => ({ op, asset, sizing });
 const plan = (legs: unknown[], over: Record<string, unknown> = {}) => ({ title: "t", rationale: "r", evidenceIds: ["e1"], legs, ...over });
 
 describe("research_complete plans", () => {
@@ -28,15 +29,15 @@ describe("research_complete plans", () => {
     if (decision?.kind !== "research_complete") return;
     expect(decision.plans).toHaveLength(1);
     expect(decision.plans![0].legs.map((l) => l.sizing)).toEqual([
-      { kind: "all_idle" }, { kind: "previous_leg" }, { kind: "to_floor" }, { kind: "literal", amount: "50", sourceQuote: "lend 50 BLUSDC" },
+      { kind: "all_wallet" }, { kind: "previous_leg" }, { kind: "to_floor" }, { kind: "literal", amount: "50", sourceQuote: "lend 50 BLUSDC" },
     ]);
     expect(decision.droppedPlans).toBeUndefined();
   });
 
   /**
    * 15 Sep, live: "deposit 100 xlm and add it with AQUSDC to the aquarius pool" came back
-   * "1 proposed strategy shape could not be read and was not sized" — the whole plan
-   * dropped — because this parser's `assetOut`/`venue` allowlist only recognized a leg
+   * "1 proposed strategy shape could not be read and was not sized" - the whole plan
+   * dropped - because this parser's `assetOut`/`venue` allowlist only recognized a leg
    * named "swap", and an add_liquidity leg (which must carry `assetOut` too, or `plan.ts`
    * refuses it for not naming a paired token) had one key more than that allowed.
    */
@@ -52,8 +53,8 @@ describe("research_complete plans", () => {
   });
 
   it("accepts a bare sizing word, as a model without schema enforcement would send it", () => {
-    const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", "all_idle")])] });
-    expect(decision?.kind === "research_complete" && decision.plans?.[0].legs[0].sizing).toEqual({ kind: "all_idle" });
+    const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", "all_wallet")])] });
+    expect(decision?.kind === "research_complete" && decision.plans?.[0].legs[0].sizing).toEqual({ kind: "all_wallet" });
   });
 
   it.each([
@@ -71,7 +72,8 @@ describe("research_complete plans", () => {
     ["an add_liquidity leg with no assetOut", [leg("add_liquidity")]],
     ["an add_liquidity leg paired with the asset it spends", [{ ...leg("add_liquidity"), assetOut: "XLM" }]],
     ["an asset outside the registry", [leg("lend", "DOGE")]],
-    ["seven legs", Array.from({ length: 7 }, () => leg("lend"))],
+    // One past what a single approval can run (was a stricter 6 until 23 Sep, XS5).
+    ["more legs than one approval runs", Array.from({ length: MAX_WORKFLOW_STEPS + 1 }, () => leg("lend"))],
     ["no legs", []],
     ["an extra key", [{ ...leg("lend"), amount: "1" }]],
   ])("drops a plan with %s and keeps the research", (_name, legs) => {
@@ -108,7 +110,7 @@ describe("a swap leg", () => {
   it("parses with the asset it buys, and with a venue only when the user named one", () => {
     const bare = parseDecision({ ...base, plans: [plan([{ ...leg("swap"), assetOut: "BLUSDC" }])] });
     expect(bare?.kind === "research_complete" && bare.plans?.[0]?.legs[0]).toEqual({
-      op: "swap", asset: "XLM", sizing: { kind: "all_idle" }, assetOut: "BLUSDC",
+      op: "swap", asset: "XLM", sizing: { kind: "all_wallet" }, assetOut: "BLUSDC",
     });
     const routed = parseDecision({ ...base, plans: [plan([{ ...leg("swap"), assetOut: "BLUSDC", venue: "aquarius" }])] });
     expect(routed?.kind === "research_complete" && routed.plans?.[0]?.legs[0]).toMatchObject({ venue: "aquarius" });
@@ -120,10 +122,34 @@ describe("a fraction sizing", () => {
     const ok = parseDecision({ ...base, plans: [plan([leg("repay", "XLM", { kind: "fraction", percent: "25", of: "position", sourceQuote: "repay 25% of xlm debt" })])] });
     expect(ok?.kind === "research_complete" && ok.plans?.[0]?.legs[0]?.sizing).toEqual({ kind: "fraction", percent: "25", of: "position", sourceQuote: "repay 25% of xlm debt" });
     for (const bad of [
-      { kind: "fraction", percent: "0", of: "idle", sourceQuote: "q" },
-      { kind: "fraction", percent: "150", of: "idle", sourceQuote: "q" },
+      { kind: "fraction", percent: "0", of: "wallet", sourceQuote: "q" },
+      { kind: "fraction", percent: "150", of: "wallet", sourceQuote: "q" },
       { kind: "fraction", percent: "25", of: "debt", sourceQuote: "q" },
-      { kind: "fraction", percent: "25", of: "idle" },
+      { kind: "fraction", percent: "25", of: "wallet" },
+    ]) {
+      const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", bad as never)])] });
+      expect(decision?.kind === "research_complete" && decision.plans).toBeFalsy();
+      expect(decision?.kind === "research_complete" && decision.droppedPlans).toBe(1);
+    }
+  });
+});
+
+describe("a share sizing - the model's own split of one idle balance", () => {
+  it("needs no user quote: it arrives as a fraction of idle that carries the model's reason", () => {
+    const ok = parseDecision({ ...base, plans: [plan([leg("lend", "AQUSDC", { kind: "share", percent: "60", of: "wallet", reason: "keep the rest for collateral" })])] });
+    expect(ok?.kind === "research_complete" && ok.plans?.[0]?.legs[0]?.sizing).toEqual({
+      kind: "fraction", percent: "60", of: "wallet", sourceQuote: "", allocation: { reason: "keep the rest for collateral" },
+    });
+  });
+
+  it("is dropped, and counted, when malformed", () => {
+    for (const bad of [
+      { kind: "share", percent: "0", of: "wallet", reason: "r" },
+      { kind: "share", percent: "150", of: "wallet", reason: "r" },
+      { kind: "share", percent: "25", of: "position", reason: "r" },
+      { kind: "share", percent: "25", of: "wallet" },
+      { kind: "share", percent: "25", of: "wallet", reason: "   " },
+      { kind: "share", percent: "25", of: "wallet", reason: "r", sourceQuote: "q" },
     ]) {
       const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", bad as never)])] });
       expect(decision?.kind === "research_complete" && decision.plans).toBeFalsy();
@@ -173,10 +199,10 @@ describe("a malformed literal action", () => {
 describe("a finding with nothing to cite", () => {
   /**
    * 13 Sep, "put my XLM and USDC into the Aquarius XLM/USDC LP": the model wrote the
-   * limitation the prompt asks for — prose, no observation behind it — and the parser
+   * limitation the prompt asks for - prose, no observation behind it - and the parser
    * refused the whole decision for the missing evidence id. The card said "invalid decision".
    */
-  it("is kept when it states no figure — a limitation is prose, not a claim about the position", () => {
+  it("is kept when it states no figure - a limitation is prose, not a claim about the position", () => {
     const decision = parseDecision({ ...base, findings: [
       { summary: "Adding liquidity to the Aquarius XLM/USDC pool is not an operation this copilot can execute; LP receipts are not valued by the risk engine.", evidenceIds: [] },
       ...base.findings,
@@ -187,7 +213,7 @@ describe("a finding with nothing to cite", () => {
     expect(decision.droppedFindings).toBeUndefined();
   });
 
-  it("is dropped and counted when it states a figure — a number needs a read behind it", () => {
+  it("is dropped and counted when it states a figure - a number needs a read behind it", () => {
     const decision = parseDecision({ ...base, findings: [
       { summary: "The pool holds 136024 XLM and 1546 AQUSDC.", evidenceIds: [] },
       ...base.findings,

@@ -23,8 +23,8 @@ const INVESTIGATE_FIRST: boolean = true;
  * Derived from resolvability rather than phrasing lists:
  * - A prompt is "direct" if routeMessage fully resolves it into an executable
  *   action with every required slot satisfied, or into a read, client action, or fully sized plan.
- * - Anything routeMessage cannot resolve — an open-ended goal (prefer_max_yield),
- *   an unsized write (missing required amount/fraction), a comparison, or a clarify response —
+ * - Anything routeMessage cannot resolve - an open-ended goal (prefer_max_yield),
+ *   an unsized write (missing required amount/fraction), a comparison, or a clarify response -
  *   belongs to "strategy" (the investigation loop).
  * - Swap and lifecycle account creation retain their dedicated review flows on "strategy".
  */
@@ -53,7 +53,7 @@ export function classifyCopilotEntry(message: string): CopilotEntryLane {
    * `restricted` is the router having DECIDED, and it already carries the sentence that says
    * so. Sending it to investigation instead produced, live on 23 Sep: "send my funds to
    * GXXXX" answered "I couldn't complete this investigation with the available capabilities
-   * and information" on one run and the correct refusal on the next — a deterministic
+   * and information" on one run and the correct refusal on the next - a deterministic
    * refusal riding a non-deterministic path. `settle my account`, a terminal action that must
    * ask for confirmation, did the same.
    *
@@ -76,7 +76,7 @@ export function classifyCopilotEntry(message: string): CopilotEntryLane {
    * A stated health-factor floor makes any action a sizing problem.
    *
    * A floor is not a property of one leg; it is a property of the account AFTER the legs
-   * run. Honouring it means sizing against live collateral, debt and prices — which is
+   * run. Honouring it means sizing against live collateral, debt and prices - which is
    * what investigation does and what the deterministic path has no step for. The
    * deterministic path does not merely size it badly, it loses the clause: routed
    * "deploy my idle funds into blend keeping HF above 1.4" comes back as
@@ -86,10 +86,10 @@ export function classifyCopilotEntry(message: string): CopilotEntryLane {
    *
    * Observed live on 22 Sep from two accounts. The one with auto-approve ON executed:
    * it deposited the entire idle XLM balance, borrowed against it, and reported a
-   * resulting health factor of 1.30 — against a prompt that said 1.4.
+   * resulting health factor of 1.30 - against a prompt that said 1.4.
    *
    * So this is tested before the resolvability gates rather than inside them. Those gates
-   * ask "is every slot filled?", and the answer here is yes — the intent is fully formed,
+   * ask "is every slot filled?", and the answer here is yes - the intent is fully formed,
    * it is just not the request. This asks the prior question: is there a constraint whose
    * satisfaction nothing downstream is going to check?
    *
@@ -107,7 +107,7 @@ export function classifyCopilotEntry(message: string): CopilotEntryLane {
    * `restricted` is the router having DECIDED: this is outside what Copilot does, and
    * it already carries the sentence that says so. Falling through to the strategy
    * default at the bottom sent it to investigation instead, which cannot do it either
-   * and says so in vaguer words — live, 22 Sep, "send my funds to G…" answered "I
+   * and says so in vaguer words - live, 22 Sep, "send my funds to G…" answered "I
    * couldn't complete this investigation with the available capabilities and
    * information" while the router's own plain refusal sat unused one branch away.
    *

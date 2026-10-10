@@ -1,6 +1,6 @@
 /**
  * "borrow the max I can safely" named no asset word at all, yet the borrow branch
- * defaulted `asset ?? "USDC"` — which then hit the bare-USDC ambiguity gate and asked
+ * defaulted `asset ?? "USDC"` - which then hit the bare-USDC ambiguity gate and asked
  * which USDC variant *before* ever asking a size. See docs/copilot/TEST-RUN-FINDINGS.md
  * §1 item 2.
  */

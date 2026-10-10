@@ -4,7 +4,7 @@
  * ## The live failure this pins
  *
  * "show me the protocol contract addresses" returns fifteen addresses. The answer model is
- * told "at most 6 facts", obeyed it, and the card rendered six — while the other nine fell
+ * told "at most 6 facts", obeyed it, and the card rendered six - while the other nine fell
  * through to the generic key/value facts grid below it. One answer, two presentations, and
  * the half in the nicely designed card was indistinguishable from the whole set unless you
  * happened to know there were fifteen.
@@ -12,7 +12,7 @@
  * Loosening the prompt is not enough on its own: asking a model for the complete set is a
  * request, and a partial list of contract addresses is the one case where partial reads as
  * authoritative. So the set is completed deterministically from DATA, and these tests pin
- * the narrowness of that completion — it must not turn a figure answer into a contract dump.
+ * the narrowness of that completion - it must not turn a figure answer into a contract dump.
  */
 
 import { describe, expect, it } from "vitest";
@@ -74,11 +74,11 @@ describe("completeIdentifierFacts", () => {
     expect(out.facts[0].label).toBe("the registry contract");
   });
 
-  it("stops at 16 facts — the count the card was designed for", () => {
+  it("stops at 16 facts - the count the card was designed for", () => {
     const data: Record<string, string> = { first: A };
     for (let i = 0; i < 30; i++) {
       // Distinct, valid 56-char C-addresses. Base32 here is [A-Z2-7], so the varying part
-      // has to be letters — digits 0, 1, 8 and 9 are not in the alphabet and would make
+      // has to be letters - digits 0, 1, 8 and 9 are not in the alphabet and would make
       // these fail `isIdentifierValue`, quietly turning the cap under test into a no-op.
       const a = String.fromCharCode(65 + (i % 26));
       const b = String.fromCharCode(65 + Math.floor(i / 26));
@@ -175,7 +175,7 @@ describe("dedupeInlineIdentifiers", () => {
     expect(dedupeInlineIdentifiers(original)).toEqual(original);
   });
 
-  it("leaves a figure headline alone — no identifier value to match", () => {
+  it("leaves a figure headline alone - no identifier value to match", () => {
     const original: StructuredAnswer = {
       headline: "Your health factor is 2.89.",
       facts: [{ label: "health factor", value: "2.89", tone: "good" }],
@@ -188,7 +188,7 @@ describe("normalizeAnswer does not truncate an enumeration", () => {
   /**
    * This is where the addresses were actually being lost.
    *
-   * The card is designed for sixteen facts, but the normaliser sliced every answer to six —
+   * The card is designed for sixteen facts, but the normaliser sliced every answer to six -
    * so even a model that returned all fifteen had nine of them dropped before the UI saw
    * them, and they reappeared in the generic facts grid below the card. The prompt was
    * rewritten twice chasing this; the prompt was never the ceiling.

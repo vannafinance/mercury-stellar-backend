@@ -2,19 +2,21 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ChatTurns } from "@/components/copilot/chat-message";
+import { VANNA_ICON_SRC } from "@/components/copilot/vanna-icon-data";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
+import { receiptKey } from "@/lib/copilot/workflow-completion";
 
 /**
  * Live, 21 Sep, Freighter, auto-approve on: a turn's execution card read
- * "Step-by-Step Approval" while a leg directly below it had already settled by
- * auto-dispatch, and a toast on the same screen read "Auto-dispatch on — transactions
+ * "Nothing is sent without your signature." while a leg directly below it had already settled by
+ * auto-dispatch, and a toast on the same screen read "Auto-dispatch on - transactions
  * will open directly in Freighter". Three signals about the same run, disagreeing.
  *
- * The label was not wrong about the run — it was wrong unconditionally. No caller of
+ * The label was not wrong about the run - it was wrong unconditionally. No caller of
  * `ExecutionStepper` ever passed `autoApprove`, so it defaulted to `false` and read
- * "Step-by-Step Approval" for every session, Privy or Freighter, armed or not. This
- * pins `ChatTurns` — the component that actually rendered the card in the screenshot,
- * via a stored turn's `executionReceipt` — threading `sessionSigning` all the way down
+ * "Nothing is sent without your signature." for every session, Privy or Freighter, armed or not. This
+ * pins `ChatTurns` - the component that actually rendered the card in the screenshot,
+ * via a stored turn's `executionReceipt` - threading `sessionSigning` all the way down
  * to the label that names it.
  */
 
@@ -29,32 +31,79 @@ const receipt: ThreadTurn["executionReceipt"] = {
 
 const turns: ThreadTurn[] = [
   { role: "user", text: "deposit 100 XLM, borrow 20 BLUSDC and supply it to blend" },
-  { role: "assistant", text: "Paused for signature — finish signing to continue.", executionReceipt: receipt },
+  { role: "assistant", text: "Paused for signature - finish signing to continue.", executionReceipt: receipt },
 ];
 
-describe("ChatTurns — the execution card's label reflects the real signing state", () => {
-  it("says Autonomous when the session is armed to sign without a click", () => {
-    render(<ChatTurns turns={turns} sessionSigning={true} />);
-    expect(screen.getByText("Autonomous")).toBeTruthy();
-    expect(screen.queryByText("Step-by-Step Approval")).toBeNull();
+describe("ChatTurns - the execution card makes no signing claim of its own", () => {
+  // The footer line that used to name the signing state ("Nothing is sent without your signature."
+  // / "Signed within your auto-approve limits.") was removed by design: the header, the wallet mark
+  // and the Sign button already say who acts next. What must never come back is the 21 Sep bug,
+  // where that line contradicted the run beneath it. With no line, there is nothing to contradict.
+  it.each([
+    ["armed", true],
+    ["not armed", false],
+    ["unspecified", undefined],
+  ])("shows neither signing claim when the session is %s", (_name, sessionSigning) => {
+    render(<ChatTurns turns={turns} sessionSigning={sessionSigning} />);
+    expect(screen.queryByText("Signed within your auto-approve limits.")).toBeNull();
+    expect(screen.queryByText("Nothing is sent without your signature.")).toBeNull();
+    expect(screen.getByLabelText("Settled")).toBeTruthy();
   });
 
-  it("says Step-by-Step Approval when it genuinely is not armed", () => {
-    render(<ChatTurns turns={turns} sessionSigning={false} />);
-    expect(screen.getByText("Step-by-Step Approval")).toBeTruthy();
-    expect(screen.queryByText("Autonomous")).toBeNull();
+  // 7 Oct: a questionnaire is the whole reply; a sentence above it that repeats its question is noise.
+  it("draws no sentence for a reply that was only a form", () => {
+    render(<ChatTurns turns={[{ role: "user", text: "deposit XLM" }, { role: "assistant", text: "Before a plan can be prepared, this is unresolved: How much?", quiet: true }]} />);
+    expect(screen.queryByText(/Before a plan can be prepared/)).toBeNull();
+    expect(screen.getByText("deposit XLM")).toBeTruthy();
   });
 
-  it("defaults to Step-by-Step Approval rather than silently claiming autonomy", () => {
-    // No sessionSigning passed at all — the safe default is the honest one.
-    render(<ChatTurns turns={turns} />);
-    expect(screen.getByText("Step-by-Step Approval")).toBeTruthy();
-  });
-
-  it("renders Vanna icon on the left of assistant replies", () => {
+  // One user turn and one assistant turn: the mark belongs to the reply only, never to the prompt.
+  // It is inlined (no request), because a fetched avatar sat in the browser queue behind slow API
+  // calls and a finished answer rendered without it.
+  it("renders the inline Vanna icon on assistant replies only", () => {
     render(<ChatTurns turns={turns} />);
     const icons = screen.getAllByAltText("Vanna");
-    expect(icons.length).toBeGreaterThanOrEqual(1);
-    expect(icons[0].getAttribute("src")).toBe("/logos/vanna-icon.png");
+    expect(icons).toHaveLength(1);
+    expect(icons[0].getAttribute("src")).toBe(VANNA_ICON_SRC);
+    expect(VANNA_ICON_SRC.startsWith("data:image/png;base64,")).toBe(true);
+    expect(icons[0].closest("[data-cp-user-bubble]")).toBeNull();
+  });
+});
+
+/** 7 Oct: the reply's own bullets and the receipt's bullets said the same thing twice; one list carries both now. */
+describe("ChatTurns - a finished run's hash and ledger sit with the reply's bullets", () => {
+  const hashA = "a".repeat(64);
+  const hashB = "b".repeat(64);
+  const done = (steps: Array<{ op: "deposit_collateral" | "supply_blend"; amount: string; hash: string; ledger: number }>) => ({
+    workflowId: "wf-2", status: "completed" as const, network: "testnet",
+    steps: steps.map((s) => ({ operation: s.op, asset: "XLM", amount: s.amount, status: "settled" as const, txHash: s.hash, settledLedger: s.ledger })),
+  });
+  const turnWith = (receipt: ReturnType<typeof done>, items: string[]): ThreadTurn[] => [
+    { role: "user", text: "deposit 5 XLM and supply 5 XLM to Blend" },
+    { role: "assistant", text: "Done", executionReceipt: receipt,
+      blocks: [{ type: "paragraph", segments: [{ text: "Both settled." }] }, { type: "bullets", items: items.map((text) => [{ text }]) }],
+      completion: { workflowId: receipt.workflowId, receiptKey: receiptKey(receipt), generatedAt: 1, source: "model" } },
+  ];
+  const receipt = done([
+    { op: "deposit_collateral", amount: "5", hash: hashA, ledger: 10 },
+    { op: "supply_blend", amount: "5", hash: hashB, ledger: 12 },
+  ]);
+
+  it("puts each transaction's hash and ledger at the end of its own bullet, and draws no second list", () => {
+    render(<ChatTurns turns={turnWith(receipt, ["Deposited as collateral", "Supplied to Blend"])} />);
+    expect(screen.queryByLabelText("Settled transactions")).toBeNull();
+    const items = screen.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toMatch(/Deposited as collateral.*Ledger 10/);
+    expect(items[1].textContent).toMatch(/Supplied to Blend.*Ledger 12/);
+    expect(screen.getByLabelText(`Transaction ${hashA}`)).toBeTruthy();
+    expect(screen.getByLabelText(`Transaction ${hashB}`)).toBeTruthy();
+  });
+
+  it("keeps the verified list when the reply's list does not match the transactions one for one", () => {
+    render(<ChatTurns turns={turnWith(receipt, ["Only one point"])} />);
+    expect(screen.getByLabelText("Settled transactions")).toBeTruthy();
+    expect(screen.getByLabelText(`Transaction ${hashA}`)).toBeTruthy();
+    expect(screen.getByLabelText(`Transaction ${hashB}`)).toBeTruthy();
   });
 });

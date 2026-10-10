@@ -3,7 +3,7 @@
  *
  * "hi" was running the full loop: scope resolution, several model turns and five MCP reads,
  * then a card explaining what it had checked. There is nothing to check. A greeting is not
- * a financial request, so reading an account to answer it is not caution — it is half a
+ * a financial request, so reading an account to answer it is not caution - it is half a
  * minute of latency and a paid model turn spent on a question nobody asked.
  *
  * This is NOT the investigate/action router that was removed. That router tried to guess
@@ -23,6 +23,7 @@ import { abuseTripwire, evaluateDomainFirewall, guardUserPrompt } from "../domai
 import { lpPairs } from "../registry/assets";
 import { WORKFLOW_OPS } from "../workflow/types";
 import { classifySocialLane, isGreetingOrIdentityLeftover, isProductInvestigationTurn } from "./social-lane";
+import { unsupportedOnlyReply } from "./unsupported-asset";
 
 export interface ImmediateReply {
   kind: "greeting" | "capability" | "off_domain";
@@ -49,12 +50,15 @@ export async function immediateReply(
   const abuse = abuseTripwire(text);
   if (abuse && !abuse.allow) return { kind: "off_domain", message: abuse.message };
 
+  const unsupported = unsupportedOnlyReply(text);
+  if (unsupported) return { kind: "capability", message: unsupported };
+
   if (SWAP_CAPABILITY_QUESTION.test(text) && !/\d/.test(text) && WORKFLOW_OPS.includes("swap")) {
     const pairs = lpPairs().map((pair) => `${pair.venue}: ${pair.tokens.join("/ ")}`).join("; ");
     return { kind: "capability", message: `Yes. I can prepare a swap on ${pairs}. Tell me the amount and which token you want to spend or receive. I’ll show a live quote for you to confirm before anything is signed.` };
   }
 
-  // Product turns skip the greeting model entirely — same path as before this lane.
+  // Product turns skip the greeting model entirely - same path as before this lane.
   if (isProductInvestigationTurn(text)) {
     if (opts?.subject && opts.signal) {
       const verdict = await guardUserPrompt(text, {

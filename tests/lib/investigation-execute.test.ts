@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RecordStore } from "@/lib/copilot/workflow/store";
 import type { WorkflowRecord } from "@/lib/copilot/workflow/types";
+import { writeArgsFor } from "@/lib/copilot/workflow/allowlist";
 
 /**
  * Drive an approved journal through MCP writes without touching live RPC or disk.
  *
  * `ready` and `lookupTx` are injected. The store is the same in-memory CAS the journal
- * tests use — `workflowJournal()` would otherwise write under `.local`.
+ * tests use - `workflowJournal()` would otherwise write under `.local`.
  */
 
 const harness = vi.hoisted(() => {
@@ -81,6 +82,54 @@ beforeEach(() => {
 });
 
 describe("advanceWorkflow", () => {
+  it.each(["109.96", "110.04", "110.2", "99", "unread", "no_baseline"])("funds LP only from the measured swap delta at balance %s and preserves both approval caps", async afterBalance => {
+    const journal = new WorkflowJournal(harness.store);
+    const producer = { id: "swap-output", op: "swap" as const, asset: "XLM", amount: "50", label: "Swap",
+      tool: "vanna_swap", args: writeArgsFor("swap", "XLM", "50", SCOPE, { tokenOut: "AQUSDC", venue: "aquarius", minOut: "9.95" }) };
+    const consumer = { id: "lp-output", op: "add_liquidity" as const, asset: "AQUSDC", amount: "10", label: "Add liquidity",
+      tool: "vanna_add_liquidity", args: writeArgsFor("add_liquidity", "AQUSDC", "10", SCOPE,
+        { tokenOut: "XLM", venue: "aquarius", amountB: "56", minOut: "5" }),
+      sizing: { basis: "settled_payout" as const, fromStep: producer.id, asset: "AQUSDC" } };
+    const created = await journal.create({ scope: SCOPE, server: SERVER, objective: "Swap and LP", messages: [], assumptions: [], constraints: [], floor: null,
+      steps: [producer, consumer] });
+    const id = created.proposal.id; const identity = { scope: SCOPE, server: SERVER };
+    await journal.approve(id, identity, 1, created.proposal.digest, async () => null);
+    await journal.claimNext(id, identity);
+    if (afterBalance !== "no_baseline") await journal.noteBalancesBefore(id, identity, producer.id, { AQUSDC: "100" });
+    await journal.invocationResult(id, identity, producer.id, { kind: "submitted", txHash: HASH });
+    await journal.settled(id, identity, producer.id, HASH, 40, true);
+    const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const mcp: McpCall = { call: async (tool, args) => {
+      seen.push({ tool, args: args as Record<string, unknown> });
+      if (tool === "vanna_get_collateral") {
+        if (afterBalance === "unread") throw new Error("read unavailable");
+        return { collateral: [{ symbol: "AQUSDC", balance: afterBalance }] };
+      }
+      if (tool === "vanna_get_aquarius_pool_stats") return { found: true, pool: { available: true,
+        reserves: { XLM: "1050", AQUSDC: "190" }, total_share: "100", fee: "0.003" } };
+      return { status: "signed_and_submitted", tx_hash: "b".repeat(64) };
+    } };
+    const view = await advance(id, mcp);
+    if (!["109.96", "110.04"].includes(afterBalance)) {
+      expect(view.status).toBe("blocked");
+      expect(seen.some(call => call.tool === "vanna_add_liquidity")).toBe(false);
+      expect(seen.some(call => call.tool === "vanna_get_aquarius_pool_stats")).toBe(false);
+      expect((await journal.read(id, identity)).value.proposal.digest).toBe(created.proposal.digest);
+      return;
+    }
+    expect(view.status).toBe("completed");
+    expect(seen.map(call => call.tool)).toEqual(["vanna_get_collateral", "vanna_get_aquarius_pool_stats", "vanna_add_liquidity"]);
+    const sent = seen[2].args;
+    const used = afterBalance === "109.96" ? 9.96 : 10;
+    expect(Number(sent.amount_a)).toBeCloseTo(used, 7);
+    expect(Number(sent.amount_b)).toBeCloseTo(used * 1050 / 190, 6);
+    expect(Number(sent.amount_a)).toBeLessThanOrEqual(10);
+    expect(Number(sent.amount_b)).toBeLessThanOrEqual(56);
+    expect(Number(sent.min_liquidity_out)).toBeGreaterThan(0);
+    const stored = (await journal.read(id, identity)).value;
+    expect(stored.proposal.digest).toBe(created.proposal.digest);
+    expect(stored.proposal.steps[1].amount).toBe("10");
+  });
   it("settles a signed_and_submitted write from the recorded hash", async () => {
     const id = await approvedBorrow();
     const seen: unknown[] = [];
@@ -108,6 +157,39 @@ describe("advanceWorkflow", () => {
     expect(view.status).toBe("awaiting_signature");
     expect(view.steps[0]).toMatchObject({ status: "awaiting_signature", unsignedXdr: xdr });
     expect(view.steps[0].txHash).toBeUndefined();
+  });
+
+  it("records the signer's structured reason, never its agent-directed message, on a step it handed back", async () => {
+    const id = await approvedBorrow();
+    const xdr = "A".repeat(80);
+    const mcp: McpCall = { call: async () => ({ status: "needs_wallet_sign", unsigned_xdr: xdr, auto_sign: "rejected", reason: "over_per_tx_cap",
+      message: "FULL unsigned envelope is in tool result field unsigned_xdr. Re-run vanna_enable_auto_sign." }) };
+    const view = await advance(id, mcp);
+    expect(view.status).toBe("awaiting_signature");
+    expect(view.steps[0]).toMatchObject({ status: "awaiting_signature", unsignedXdr: xdr, signRefusal: "over_per_tx_cap" });
+    expect(JSON.stringify(view.steps[0])).not.toMatch(/vanna_enable_auto_sign|FULL unsigned envelope|do not invent/i);
+  });
+
+  it("records no refusal when the user's own auto-approve switch is off (nothing was refused)", async () => {
+    const id = await approvedBorrow();
+    const mcp: McpCall = { call: async () => ({ status: "needs_wallet_sign", unsigned_xdr: "A".repeat(80), auto_sign: "disabled", message: "Auto-sign is off for this wallet." }) };
+    const view = await advance(id, mcp);
+    expect(view.steps[0].signRefusal).toBeUndefined();
+  });
+
+  it("treats an unreachable signer as a refusal, because it cannot be taken as permission", async () => {
+    const id = await approvedBorrow();
+    const mcp: McpCall = { call: async () => ({ status: "needs_wallet_sign", unsigned_xdr: "A".repeat(80), auto_sign: "unavailable" }) };
+    const view = await advance(id, mcp);
+    expect(view.steps[0].signRefusal).toBe("unavailable");
+  });
+
+  it("marks no refusal when the signer never refused (auto-sign was not armed)", async () => {
+    const id = await approvedBorrow();
+    const xdr = "A".repeat(80);
+    const mcp: McpCall = { call: async () => ({ status: "needs_wallet_sign", unsigned_xdr: xdr }) };
+    const view = await advance(id, mcp);
+    expect(view.steps[0].signRefusal).toBeUndefined();
   });
 
   it("blocks a simulation error without recording a hash", async () => {
@@ -154,19 +236,19 @@ describe("advanceWorkflow", () => {
 
 /**
  * 15 Sep, live, twice over. First: the identical swap was refused by the DEX (HostError
- * #2006) at approve time and filled fine minutes later — a moved price alone, wrongly
+ * #2006) at approve time and filled fine minutes later - a moved price alone, wrongly
  * treated as fatal. Then, once fixed to re-quote instead of refusing outright: "it is not
- * mandatory [that the exact number holds] — whatever price is available after the plan
- * executes, it should execute, with a clear message of what price it swapped at — don't
+ * mandatory [that the exact number holds] - whatever price is available after the plan
+ * executes, it should execute, with a clear message of what price it swapped at - don't
  * fail it unless it's actually dangerous." So a moved price adjusts the floor down and
  * proceeds, with a note recording what actually happened; only a fill that would itself be
  * a bad trade (the same oracle price-impact threshold the propose-time card refuses on)
  * stops the write.
  */
-describe("advanceWorkflow — a swap's floor is re-checked against the pool before it is sent", () => {
+describe("advanceWorkflow - a swap's floor is re-checked against the pool before it is sent", () => {
   const POOL = "vanna_get_aquarius_pool_stats";
   const PRICE = "vanna_get_price";
-  // Reserves 100,000 XLM / 17,730 AQUSDC quote ~175.0231 for 1,000 XLM — a normal spread
+  // Reserves 100,000 XLM / 17,730 AQUSDC quote ~175.0231 for 1,000 XLM - a normal spread
   // under oracle parity ($180 at $0.18/XLM), floored 0.5% down to 174.148 at approve time.
   const swapStep = {
     id: "one", op: "swap" as const, asset: "XLM", amount: "1000",
@@ -234,20 +316,20 @@ describe("advanceWorkflow — a swap's floor is re-checked against the pool befo
     };
   }
 
-  it("sends the approved floor unchanged when the pool still pays it — no oracle call needed", async () => {
+  it("sends the approved floor unchanged when the pool still pays it - no oracle call needed", async () => {
     const id = await approvedSwap();
     const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
     const mcp: McpCall = {
       call: async (tool, args) => {
         seen.push({ tool, args: args as Record<string, unknown> });
-        // 100,000 XLM / 17,750 AQUSDC quotes ~175.22 — above the 174.148 approved.
+        // 100,000 XLM / 17,750 AQUSDC quotes ~175.22 - above the 174.148 approved.
         if (tool === POOL) return poolPaying("100000", "17750");
         return { status: "signed_and_submitted", tx_hash: HASH };
       },
     };
     const view = await advance(id, mcp);
     expect(seen.map((s) => s.tool)).toEqual([POOL, "vanna_swap"]);
-    // The floor the user approved is the floor that gets signed — never re-derived upward,
+    // The floor the user approved is the floor that gets signed - never re-derived upward,
     // and never needs an oracle round-trip when the approved floor is already met.
     expect(seen[1].args.min_out).toBe("174.148");
     expect(view.status).toBe("completed");
@@ -257,7 +339,7 @@ describe("advanceWorkflow — a swap's floor is re-checked against the pool befo
     const id = await approvedSwap();
     const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
     const mcp = withPrices(seen, (tool) =>
-      // 100,000 XLM / 17,600 AQUSDC quotes ~173.74 — below the 174.148 approved, but only
+      // 100,000 XLM / 17,600 AQUSDC quotes ~173.74 - below the 174.148 approved, but only
       // 3.48% under the $180 oracle value of the XLM spent: an ordinary spread, not a red flag.
       tool === POOL ? poolPaying("100000", "17600") : { status: "signed_and_submitted", tx_hash: HASH });
     const view = await advance(id, mcp);
@@ -278,7 +360,7 @@ describe("advanceWorkflow — a swap's floor is re-checked against the pool befo
     const id = await approvedSwap();
     const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
     const mcp = withPrices(seen, (tool) =>
-      // 100,000 XLM / 14,000 AQUSDC quotes ~138.2 — 23.2% below the $180 oracle value of
+      // 100,000 XLM / 14,000 AQUSDC quotes ~138.2 - 23.2% below the $180 oracle value of
       // the XLM spent, well past the 5% threshold the propose-time card itself refuses on.
       tool === POOL ? poolPaying("100000", "14000") : { status: "signed_and_submitted", tx_hash: HASH });
     const view = await advance(id, mcp);
@@ -323,7 +405,7 @@ describe("advanceWorkflow — a swap's floor is re-checked against the pool befo
     expect(view.status).toBe("completed");
   });
 
-  it("leaves every non-swap write alone — no extra pool round-trip", async () => {
+  it("leaves every non-swap write alone - no extra pool round-trip", async () => {
     const id = await approvedBorrow();
     const seen: string[] = [];
     const mcp: McpCall = {
@@ -334,7 +416,7 @@ describe("advanceWorkflow — a swap's floor is re-checked against the pool befo
   });
 });
 
-describe("advanceWorkflow — LP amounts are refreshed against the pool before they are sent", () => {
+describe("advanceWorkflow - LP amounts are refreshed against the pool before they are sent", () => {
   const lpStep = {
     id: "one", op: "add_liquidity" as const, asset: "XLM", amount: "100",
     label: "Add 100 XLM + 20 AQUSDC to the Aquarius pool",
@@ -444,7 +526,7 @@ describe("advanceWorkflow — LP amounts are refreshed against the pool before t
  * "All of it" is a reading, and a reading goes stale while the plan waits for a click.
  *
  * A Blend supply accrues through its b-rate with nobody touching anything, so the
- * underlying the plan named stops being the underlying the position holds — between
+ * underlying the plan named stops being the underlying the position holds - between
  * sizing and approval, and again between approval and a signature when auto-sign is off.
  * Sending the frozen figure leaves dust behind, or reverts on chain when the balance
  * moved the other way, which is the worst moment to find out.
@@ -452,7 +534,7 @@ describe("advanceWorkflow — LP amounts are refreshed against the pool before t
  * The distinction pinned below is intent, not arithmetic: a number the user SAID is never
  * re-derived, and only a step whose sizing recorded `whole_position` is re-read.
  */
-describe("advanceWorkflow — an amount that was the whole position is re-read before it is sent", () => {
+describe("advanceWorkflow - an amount that was the whole position is re-read before it is sent", () => {
   const BLEND = "vanna_get_blend_position";
   const signal = () => new AbortController().signal;
 
@@ -492,7 +574,7 @@ describe("advanceWorkflow — an amount that was the whole position is re-read b
     expect(seen).toEqual([]);
   });
 
-  it("leaves a step with no sizing recorded alone — nothing claims it was the whole position", async () => {
+  it("leaves a step with no sizing recorded alone - nothing claims it was the whole position", async () => {
     const seen: string[] = [];
     const mcp: McpCall = { call: async (tool) => { seen.push(tool); return holding("880.12"); } };
     const { sizing: _sizing, ...bare } = wholeStep;
@@ -594,5 +676,139 @@ describe("advanceWorkflow — an amount that was the whole position is re-read b
     expect(seen).toEqual([BLEND]);
     expect(view.steps[0].status).toBe("failed");
     expect(String(view.steps[0].message)).toContain("no BLUSDC left in that position");
+  });
+});
+
+/**
+ * A removal's next leg spends the measured account-balance change, not the
+ * pool-read estimate, and only inside SWAP_SLIPPAGE_BPS of that estimate.
+ * The proposal amount is the estimate and is not rewritten.
+ */
+describe("advanceWorkflow - a removal's payout is measured when the next leg is sent", () => {
+  const COLLATERAL = "vanna_get_collateral";
+  const REMOVE = "vanna_remove_liquidity";
+  const SUPPLY = "vanna_blend_supply";
+  const HASH2 = "b".repeat(64);
+  const exitStep = {
+    id: "exit", op: "remove_liquidity" as const, asset: "AQUSDC", amount: "10",
+    label: "Remove 10 XLM/AQUSDC LP shares on Aquarius",
+    tool: REMOVE,
+    args: {
+      smart_account: SCOPE.smartAccount, token_a: "XLM", token_b: "AQUSDC",
+      liquidity: "10", trader: SCOPE.trader, venue: "aquarius",
+    },
+    sizing: { basis: "stated" as const },
+  };
+  const supplyStep = (amount: string) => ({
+    id: "supply", op: "supply_blend" as const, asset: "XLM", amount,
+    label: `Supply an estimated ${amount} XLM to Blend, the removal's payout`,
+    tool: SUPPLY,
+    args: { symbol: "XLM", amount, trader: SCOPE.trader, smart_account: SCOPE.smartAccount },
+    sizing: { basis: "settled_payout" as const, fromStep: "exit", asset: "XLM" },
+  });
+
+  async function approved(amount = "100") {
+    const journal = new WorkflowJournal(harness.store);
+    const created = await journal.create({
+      scope: SCOPE, server: SERVER, objective: "Remove LP and supply the XLM",
+      messages: ["remove AQUSDC liquidity and supply the XLM"], assumptions: [], constraints: [],
+      floor: null,
+      steps: [exitStep, supplyStep(amount)],
+    });
+    await journal.approve(created.proposal.id, { scope: SCOPE, server: SERVER }, 1, created.proposal.digest, async () => null);
+    return { id: created.proposal.id, digest: created.proposal.digest };
+  }
+
+  function scripted(balances: Array<string | "fail">, hashes: string[]) {
+    const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    let balance = 0;
+    let write = 0;
+    const mcp: McpCall = {
+      call: async (tool, args) => {
+        seen.push({ tool, args: args as Record<string, unknown> });
+        if (tool === COLLATERAL) {
+          const next = balances[balance++];
+          if (next === "fail" || next === undefined) throw new Error("upstream credentials leaked");
+          return { collateral: [{ symbol: "XLM", balance: next }] };
+        }
+        return { status: "signed_and_submitted", tx_hash: hashes[write++] ?? HASH };
+      },
+    };
+    return { seen, mcp };
+  }
+
+  async function stored(id: string) {
+    return new WorkflowJournal(harness.store).read(id, { scope: SCOPE, server: SERVER });
+  }
+
+  it("sends the measured payout and leaves the approved estimate on the proposal", async () => {
+    const { id, digest } = await approved("100");
+    const first = scripted(["0"], [HASH]);
+    const opened = await advance(id, first.mcp);
+    expect(opened.status).toBe("running");
+    expect(first.seen.map((call) => call.tool)).toEqual([COLLATERAL, REMOVE]);
+    const mid = await stored(id);
+    expect(mid.value.proposal.digest).toBe(digest);
+    expect(mid.value.proposal.steps[1].amount).toBe("100");
+    expect(mid.value.steps[0].balancesBefore).toEqual({ XLM: "0" });
+
+    const second = scripted(["100.4"], [HASH2]);
+    const view = await advance(id, second.mcp);
+    expect(second.seen.map((call) => call.tool)).toEqual([COLLATERAL, SUPPLY]);
+    expect(second.seen[1].args.amount).toBe("100.4");
+    expect(view.status).toBe("completed");
+    expect(view.message).toContain("measured payout");
+    const done = await stored(id);
+    expect(done.value.proposal.digest).toBe(digest);
+    expect(done.value.proposal.steps[1].amount).toBe("100");
+  });
+
+  it("does not read a balance before a removal that nothing later spends", async () => {
+    const journal = new WorkflowJournal(harness.store);
+    const created = await journal.create({
+      scope: SCOPE, server: SERVER, objective: "Remove LP",
+      messages: ["remove AQUSDC liquidity"], assumptions: [], constraints: [],
+      floor: null, steps: [exitStep],
+    });
+    await journal.approve(created.proposal.id, { scope: SCOPE, server: SERVER }, 1, created.proposal.digest, async () => null);
+    const run = scripted([], [HASH]);
+    const view = await advance(created.proposal.id, run.mcp);
+    expect(run.seen.map((call) => call.tool)).toEqual([REMOVE]);
+    expect(view.status).toBe("completed");
+  });
+
+  it("pauses without submitting when the payout is outside the approved band", async () => {
+    const { id } = await approved("100");
+    await advance(id, scripted(["0"], [HASH]).mcp);
+    const second = scripted(["101"], [HASH2]);
+    const view = await advance(id, second.mcp);
+    expect(second.seen.map((call) => call.tool)).toEqual([COLLATERAL]);
+    expect(view.status).toBe("blocked");
+    expect(view.steps[1].status).toBe("pending");
+    expect(view.message).toContain("outside the approved estimate of 100 XLM");
+    expect(view.message).not.toMatch(/upstream|credentials|Error/);
+  });
+
+  it("pauses without submitting the removal when the before-balance read fails", async () => {
+    const { id } = await approved();
+    const run = scripted(["fail"], [HASH]);
+    const view = await advance(id, run.mcp);
+    expect(run.seen.map((call) => call.tool)).toEqual([COLLATERAL]);
+    expect(view.status).toBe("blocked");
+    expect(view.steps[0].status).toBe("pending");
+    expect(view.message).toContain("could not be read before removing liquidity");
+    expect(view.message).not.toMatch(/upstream|credentials|Error/);
+  });
+
+  it("pauses without submitting the next leg when the after-balance read fails", async () => {
+    const { id } = await approved();
+    await advance(id, scripted(["0"], [HASH]).mcp);
+    const second = scripted(["fail"], [HASH2]);
+    const view = await advance(id, second.mcp);
+    expect(second.seen.map((call) => call.tool)).toEqual([COLLATERAL]);
+    expect(view.status).toBe("blocked");
+    expect(view.steps[1].status).toBe("pending");
+    expect(view.message).toContain("could not be read after the removal settled");
+    expect(view.message).not.toMatch(/upstream|credentials|Error/);
   });
 });

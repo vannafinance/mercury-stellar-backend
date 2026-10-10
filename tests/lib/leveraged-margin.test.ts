@@ -10,11 +10,11 @@
  * Every input needed was in the sentence. The site computes this on every render; the
  * copilot asked for it back. Three separate defects, each general:
  *
- *   A  borrow SIZE was never computed from leverage across two different assets — the
+ *   A  borrow SIZE was never computed from leverage across two different assets - the
  *      split assumed borrow units are deposit units, so a cross-asset ask had nothing
  *      to show and fell through to "how much?"
  *   B  borrow ASSET did not exist as a slot. One `asset` answered both legs, so a
- *      stated XLM borrow was overwritten by the collateral — or by the default "USDC"
+ *      stated XLM borrow was overwritten by the collateral - or by the default "USDC"
  *   C  the variant chips fired on `action.asset` alone, an action with two asset slots
  *
  * So these tests are written as CLASSES, not as that sentence. If a future prompt
@@ -55,7 +55,7 @@ function plan(slots: Parameters<typeof planLeverage>[0]) {
 // ── A. leverage → borrow size ───────────────────────────────────────────────
 
 describe("a stated leverage always produces a borrow size", () => {
-  it("case 1 — cross-asset: 500 AQUSDC at 3× borrowing XLM", () => {
+  it("case 1 - cross-asset: 500 AQUSDC at 3× borrowing XLM", () => {
     const p = plan({
       collateralAsset: "AQUSDC",
       collateralAmount: 500,
@@ -70,14 +70,14 @@ describe("a stated leverage always produces a borrow size", () => {
     expect(p.crossAsset).toBe(true);
   });
 
-  it("case 2 — same asset: 20 XLM at 2× borrows 20 XLM", () => {
+  it("case 2 - same asset: 20 XLM at 2× borrows 20 XLM", () => {
     const p = plan({ collateralAsset: "XLM", collateralAmount: 20, leverage: 2 });
     expect(p.borrowAmount).toBe(20);
     expect(p.borrowAsset).toBe("XLM");
     expect(p.crossAsset).toBe(false);
   });
 
-  it("case 3 — cross stable: 100 BLUSDC at 5× borrowing AQUSDC goes through USD", () => {
+  it("case 3 - cross stable: 100 BLUSDC at 5× borrowing AQUSDC goes through USD", () => {
     const p = plan({
       collateralAsset: "BLUSDC",
       collateralAmount: 100,
@@ -87,7 +87,7 @@ describe("a stated leverage always produces a borrow size", () => {
     expect(p.collateralUsd).toBe(100);
     expect(p.borrowUsd).toBe(400);
     expect(p.borrowAmount).toBe(400);
-    // Distinct TOKENS, one PRICE — the conversion is real even though the rate is 1.
+    // Distinct TOKENS, one PRICE - the conversion is real even though the rate is 1.
     expect(p.crossAsset).toBe(true);
     expect(sameAsset("BLUSDC", "AQUSDC")).toBe(false);
   });
@@ -122,17 +122,17 @@ describe("a stated leverage always produces a borrow size", () => {
   it("does not invent a second asset when only one is named, or the 'second' is the collateral", () => {
     expect(findSecondBorrowAsset("Deposit 50 XLM and Borrow 3x BLUSDC", "BLUSDC", "XLM")).toBeNull();
     // "Borrow BLUSDC and XLM" naming the collateral asset back is not a genuine second
-    // borrow target — it is XLM's own deposit leg restated, not a new leg to split with.
+    // borrow target - it is XLM's own deposit leg restated, not a new leg to split with.
     expect(findSecondBorrowAsset("Deposit 50 XLM and Borrow 3x BLUSDC and XLM", "BLUSDC", "XLM")).toBeNull();
   });
 
   it(
     "splitting Nx evenly across two borrow assets sums to the SAME total as one asset " +
-      "(handle.ts's dual-borrow-asset leverage split — 1 + (L-1)/2 per asset)",
+      "(handle.ts's dual-borrow-asset leverage split - 1 + (L-1)/2 per asset)",
     () => {
       // Reported live: "Deposit 50 XLM and Borrow 3x BLUSDC and AqUSDC" borrowed the
       // FULL 3x amount in BLUSDC alone, then asked for AQUSDC on top with no leverage
-      // context — a user answering with a similar number silently doubled the
+      // context - a user answering with a similar number silently doubled the
       // account's real leverage. The real Margin page's own Dual Borrow control splits
       // the SAME total instead (confirmed live: 50 XLM at 3x -> ~7.82 BLUSDC + ~7.82
       // AqUSDC, summing to the single-asset 15.64 total, not 15.64 each).
@@ -234,7 +234,7 @@ describe("collateral and borrow are independent slots, for any phrasing", () => 
 
   /**
    * 15 Sep, findings C1/B1: the amount slot never learned the shorthand the deposit slot
-   * already knew, and never knew a health-factor floor is not a size at all — "borrow
+   * already knew, and never knew a health-factor floor is not a size at all - "borrow
    * BLUSDC to HF floor 1.40" read 1.40 as the borrow amount, live, and was checked against
    * a price that was never the amount the user stated.
    */
@@ -254,7 +254,7 @@ describe("collateral and borrow are independent slots, for any phrasing", () => 
 // ── C. variant chips only when actually ambiguous ───────────────────────────
 
 describe("the USDC variant question is asked only about a bare-USDC slot", () => {
-  it("case 5 — a named borrow asset never triggers chips", () => {
+  it("case 5 - a named borrow asset never triggers chips", () => {
     expect(ambiguousUsdcSlot({ asset: "AQUSDC", borrow_asset: "XLM" })).toBeNull();
     expect(ambiguousUsdcSlot({ asset: "AQUSDC", borrow_asset: "AQUSDC" })).toBeNull();
     expect(ambiguousUsdcSlot({ asset: "XLM", borrow_asset: "BLUSDC" })).toBeNull();
@@ -262,7 +262,7 @@ describe("the USDC variant question is asked only about a bare-USDC slot", () =>
     expect(ambiguousUsdcSlot({ asset: "XLM", borrow_asset: "AQUA" })).toBeNull();
   });
 
-  it("case 4 — bare USDC still asks, and says which slot it is asking about", () => {
+  it("case 4 - bare USDC still asks, and says which slot it is asking about", () => {
     expect(ambiguousUsdcSlot({ asset: "USDC" })).toBe("collateral");
     expect(ambiguousUsdcSlot({ asset: "XLM", borrow_asset: "USDC" })).toBe("borrow");
   });
@@ -279,7 +279,7 @@ describe("the USDC variant question is asked only about a bare-USDC slot", () =>
 // ── D. the second leg is fully determined ───────────────────────────────────
 
 describe("leg 2 needs nothing more from the user", () => {
-  it("case 6 — the borrow leg carries both the computed size and the right asset", () => {
+  it("case 6 - the borrow leg carries both the computed size and the right asset", () => {
     const legs = leverageLegs(
       plan({ collateralAsset: "AQUSDC", collateralAmount: 500, leverage: 3, borrowAsset: "XLM" }),
     );
@@ -288,7 +288,7 @@ describe("leg 2 needs nothing more from the user", () => {
     expect(legs.borrow.asset).toBe("XLM");
     expect(legs.borrow.amount).toBeGreaterThan(0);
     // Resuming this leg re-enters the write path with a concrete asset, so the chip
-    // gate has nothing to ask about — which is what kept re-opening the question.
+    // gate has nothing to ask about - which is what kept re-opening the question.
     expect(ambiguousUsdcSlot({ asset: legs.borrow.asset })).toBeNull();
   });
 
@@ -356,7 +356,7 @@ describe("bare 'borrow N' next to a deposit is Nx leverage, site math", () => {
   /**
    * Live bug: "Deposit 20 SOUSDC and borrow 3" became plan
    *   deposit 20 SOUSDC → borrow USDC (amount null)
-   * then after deposit: "How much USDC to borrow?" + variant chips —
+   * then after deposit: "How much USDC to borrow?" + variant chips -
    * even though SOUSDC and 3× were already known. Margin UI: borrow = 20*(3-1)=40.
    */
   const bare = [

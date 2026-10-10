@@ -1,9 +1,9 @@
 /**
  * Session rows that used to move as one switch. They move independently:
  *
- *   Transcript  — what's on screen. Never reset on a new goal.
- *   Evidence    — facts read from chain. Carry across runs, with staleness.
- *   Commitment  — the open question, the proposal, the approval fingerprint.
+ *   Transcript  - what's on screen. Never reset on a new goal.
+ *   Evidence    - facts read from chain. Carry across runs, with staleness.
+ *   Commitment  - the open question, the proposal, the approval fingerprint.
  *
  * "Start fresh" means only the third row. Independent-vs-continuation is a
  * heuristic and will misfire; keeping transcript and evidence makes a wrong
@@ -17,8 +17,17 @@ export type ThreadTurn = {
   role: "user" | "assistant";
   text: string;
   question?: string | null;
+  /**
+   * The reply was a form (a questionnaire) and nothing else: the form is the answer, so the thread draws no sentence above it.
+   * The text stays for history and for the model's context.
+   */
+  quiet?: boolean;
   /** Structured workflow facts, when this assistant turn has an execution receipt. */
   executionReceipt?: ExecutionReceiptSnapshot | null;
+  /** The composed reply (compose.ts); `text` stays its plain form for history and older views. */
+  blocks?: import("./view").ReplyBlock[];
+  /** Server-owned completion presentation, bound to this exact workflow receipt. */
+  completion?: import("../workflow-completion").WorkflowCompletion;
 };
 
 export type LastInvestigation = {
@@ -27,60 +36,33 @@ export type LastInvestigation = {
   understanding?: { intent?: string } | null;
 };
 
-export function isRefinement(message: string): boolean {
-  const text = message.trim();
-  if (!text) return false;
-  if (isIndependentGoal(text) && !/instead|make it|change (the )?(floor|budget)|also use|use \S+ too/i.test(text)) {
-    return false;
-  }
-  return /instead|make it|change (the )?(floor|budget|hf|health)|use \S+ too|also use|don'?t borrow|no (new )?borrow|you can borrow|may borrow|switch|higher floor|lower floor|\b1\.\d\b/i.test(text);
-}
-
-/** Health / price / "am I safe" — a new objective that must not inherit the last plan. */
-export function isFactualIndependent(message: string): boolean {
-  return /^(what'?s|whats|wats|how much is|price of|am i|is my)\b/i.test(message.trim());
-}
-
-/** Health / repay / price questions that must not inherit a prior strategy objective. */
-export function isIndependentGoal(message: string): boolean {
-  return isFactualIndependent(message)
-    || /^(repay|lend|deposit|withdraw|borrow)\s+\d/i.test(message.trim());
-}
-
 /**
- * Inherit the sealed objective (messages + lastQuestion). Only an answer to an
- * open question, or a refinement of the current plan. Independent goals start a
- * new objective; they still carry transcript and evidence on other channels.
+ * Whether a reply brings plans or a write of its own, and so replaces the plan that was on screen.
+ *
+ * Whether a message continues the earlier thread is the model's reading (`relation` on the goal), made on the server with the
+ * plans on screen in front of it; the client no longer guesses from the wording before sending. What the client still has to
+ * decide is what to draw: a reply that carries its own plans, a staged write or a form takes the place of the old plan, and
+ * an answer or a question leaves it where it is.
  */
-export function shouldContinueInvestigation(
-  message: string,
-  last: LastInvestigation | null,
-): boolean {
-  if (!last) return false;
-  if (isIndependentGoal(message)) return false;
-  if (last.question) return true;
-  if (last.understanding?.intent === "strategy" || last.status === "researched") {
-    return isRefinement(message);
-  }
-  return false;
+/**
+ * A finished run that belongs to an EARLIER reply and so stands in the way of preparing this reply's plan.
+ *
+ * The run this reply's own plan started is finished too once it settles, and clearing it then would throw away the run whose summary is
+ * about to be written (7 Oct, live: the run was cleared the moment it completed and no summary was ever composed). What tells the two
+ * apart is which reply the run was prepared for, so that is what is compared.
+ */
+export function isStaleFinishedRun(run: { status: string } | null | undefined, preparedFor: string | null, continuation: string | null): boolean {
+  return !!run && (run.status === "completed" || run.status === "cancelled" || run.status === "blocked") && preparedFor !== continuation;
 }
 
-/**
- * Kill the awaiting proposal / approval fingerprint. Factual side-questions keep
- * a plan that is already on screen; a new write, a new strategy, or a floor
- * refinement replaces it because the fingerprint is bound to one specific plan.
- */
-export function shouldReplacePlan(message: string, last: LastInvestigation | null): boolean {
-  if (shouldContinueInvestigation(message, last)) {
-    return Boolean(last && !last.question && isRefinement(message));
-  }
-  if (isFactualIndependent(message)) return false;
-  return true;
+export function bringsItsOwnPlan(result: Pick<ResearchView, "candidates" | "pendingWrite" | "questionnaire" | "directAction" | "proposalCandidateId"> | null | undefined): boolean {
+  // A stated action ("deposit 5 XLM and supply 5 XLM to Blend") carries no candidate list: its plan is named by `proposalCandidateId`.
+  return Boolean(result?.candidates?.feasible.length || result?.proposalCandidateId || result?.pendingWrite || result?.questionnaire || result?.directAction);
 }
 
 const STORAGE_PREFIX = "vanna.copilot.thread.";
 const LIST_PREFIX = "vanna.copilot.conversations.";
-/** On-screen chat that the server has not recorded yet — never sent as conversationId. */
+/** On-screen chat that the server has not recorded yet - never sent as conversationId. */
 export const LIVE_CONVERSATION_ID = "local:current";
 const TITLE_LIMIT = 80;
 
@@ -104,7 +86,7 @@ export function conversationsStorageKey(wallet: string): string {
   return `${LIST_PREFIX}${wallet}`;
 }
 
-/** First user prompt, cut to a line — same rule the server uses to title a conversation. */
+/** First user prompt, cut to a line - same rule the server uses to title a conversation. */
 export function titleForConversation(firstPrompt: string): string {
   const line = firstPrompt.replace(/\s+/g, " ").trim();
   return line.length > TITLE_LIMIT ? `${line.slice(0, TITLE_LIMIT - 1).trimEnd()}…` : line || "New chat";
@@ -141,7 +123,7 @@ export function writeStoredConversations(wallet: string | null, items: readonly 
   if (!wallet || typeof sessionStorage === "undefined") return;
   try {
     sessionStorage.setItem(conversationsStorageKey(wallet), JSON.stringify(items.slice(0, 30)));
-  } catch { /* quota — the live thread still works */ }
+  } catch { /* quota - the live thread still works */ }
 }
 
 /** Newest first. Replaces an existing row with the same id rather than duplicating it. */
@@ -175,7 +157,7 @@ export function writeStoredThread(wallet: string | null, value: StoredThread): v
       result: value.result,
       conversationId: value.conversationId ?? null,
     }));
-  } catch { /* quota — the live thread still works until reload */ }
+  } catch { /* quota - the live thread still works until reload */ }
 }
 
 export function clearStoredThread(wallet: string | null): void {
@@ -214,7 +196,7 @@ export function writeStoredLocalThread(wallet: string | null, localId: string, v
       }),
     );
   } catch {
-    /* quota — the live thread still works */
+    /* quota - the live thread still works */
   }
 }
 
@@ -225,4 +207,26 @@ export function clearStoredLocalThread(wallet: string | null, localId: string): 
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * A finished run that belongs to an EARLIER reply than the newest one.
+ *
+ * The receipt is attached to the assistant turn that ran it (session-store keeps that
+ * invariant). While that turn is the newest reply, the live card draws the run and the thread
+ * leaves the receipt out, so one run is one card. Once a newer reply exists, the run is
+ * history: the thread must draw it on its own turn, and the live card must let it go. Before
+ * this, a new question in the same chat kept the old run on the live card, the thread kept
+ * hiding its receipt, and the execution card vanished from the conversation (owner, 25 Sep).
+ * A run still in progress is never treated as past.
+ */
+export function runIsOnEarlierTurn(
+  turns: readonly Pick<ThreadTurn, "role" | "executionReceipt">[],
+  run: { id: string; finished: boolean } | null,
+): boolean {
+  if (!run || !run.finished) return false;
+  const owner = turns.findIndex((turn) => turn.role === "assistant" && turn.executionReceipt?.workflowId === run.id);
+  if (owner === -1) return false;
+  const newest = turns.map((turn) => turn.role).lastIndexOf("assistant");
+  return owner < newest;
 }

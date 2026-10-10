@@ -14,7 +14,7 @@ import { logUnexpected } from "@/lib/copilot/log";
  * A proposal is sized from reads taken at one moment and then waits for a person. While it
  * waits the world moves: the price the amount was converted at drops, the funds it spends
  * are spent elsewhere, the health projection stops clearing the floor. Approve already
- * re-checks all of that — but only at the click, which is too late to be information. This
+ * re-checks all of that - but only at the click, which is too late to be information. This
  * route runs the same check while the card waits, so a plan that no longer holds can be
  * withdrawn with the reason instead of sitting there looking executable.
  *
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       /**
        * A swap's floor is the number that goes stale fastest, and the pool is what decides
        * it. `staleSwapFloor` is the same read-only re-quote the write itself runs moments
-       * before signing — asking it here means the waiting card shows the figure the write
+       * before signing - asking it here means the waiting card shows the figure the write
        * would use, instead of the one the pool offered when the plan was built. A price
        * that moved far enough that the write would refuse is reported as not fresh, so the
        * user learns it while reading rather than after clicking Approve.

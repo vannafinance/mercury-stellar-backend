@@ -1,5 +1,5 @@
 /**
- * Propose-time simulation — `simulate.ts`. The protocol's preview is asked about every
+ * Propose-time simulation - `simulate.ts`. The protocol's preview is asked about every
  * step that can be asked about; a "no" removes the option with the protocol's sentence;
  * silence never counts as "yes"; a step that follows from an earlier one is projected,
  * not simulated, and the card says so.
@@ -17,7 +17,7 @@ const step = (id: string, op: ProposalStep["op"], amount: string, symbol = "XLM"
 });
 const signal = () => new AbortController().signal;
 
-describe("dependsOnEarlier — from the op-flow table", () => {
+describe("dependsOnEarlier - from the op-flow table", () => {
   it("a step fed by the one before it, or a margin step after one that moves health, cannot be previewed ahead", () => {
     const deposit = step("s0", "deposit_collateral", "100"), supply = step("s1", "supply_blend", "100"), borrow = step("s2", "borrow", "50");
     expect(dependsOnEarlier([deposit, supply, borrow], 0)).toBe(false);
@@ -52,7 +52,7 @@ describe("simulateSteps", () => {
     expect(result.summary).toBe('The protocol refuses "borrow 5000 XLM": Your collateral supports borrowing 5000 XLM, but pool limit (available_liquidity) is exceeded. Max borrow right now is 1200 XLM.');
   });
 
-  it("an older server without the action, a timeout or a thrown call never blocks — the option stays, labelled not simulated", async () => {
+  it("an older server without the action, a timeout or a thrown call never blocks - the option stays, labelled not simulated", async () => {
     const older = { call: vi.fn(async () => ({ error: "invalid_input", message: "Unknown action 'preview' for vanna_margin_status. Allowed: collateral, debt, health." })) };
     const result = await simulateSteps([step("s0", "deposit_collateral", "100")], SCOPE, older, signal());
     expect(result.verdict).toBe("unavailable");
@@ -134,5 +134,18 @@ describe("simulateCandidates", () => {
       { label: "x", reason: "earlier", asset: "XLM" },
       { label: "a", asset: "XLM", reason: 'The protocol refuses "withdraw_collateral 900 XLM": Withdrawing 900 XLM ($162 USD) is NOT permitted: it would leave the account below the 1.1x health threshold against outstanding debt.' },
     ]);
+  });
+
+  it("marks a borrow refused on a POOL limit, by the protocol's structured limiting factor, so a smaller amount can be tried", async () => {
+    const mcp = { call: vi.fn(async () => ({ allowed: false, reason: "pool limit exceeded", limiting_factor: "pool_utilization_cap" })) };
+    const set = await simulateCandidates({ feasible: [candidate("a", [step("s0", "borrow", "5000")])], rejected: [] }, SCOPE, mcp, signal());
+    expect(set.feasible).toEqual([]);
+    expect(set.rejected[0]).toMatchObject({ label: "a", poolLimited: { asset: "XLM" } });
+  });
+
+  it("does not mark a borrow refused on the account's own health, which no smaller pool amount would fix", async () => {
+    const mcp = { call: vi.fn(async () => ({ allowed: false, reason: "not permitted", limiting_factor: "collateral_health" })) };
+    const set = await simulateCandidates({ feasible: [candidate("a", [step("s0", "borrow", "5000")])], rejected: [] }, SCOPE, mcp, signal());
+    expect(set.rejected[0]).not.toHaveProperty("poolLimited");
   });
 });

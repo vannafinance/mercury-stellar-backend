@@ -5,7 +5,7 @@ import { slotsToAction } from "@/lib/copilot/registry/intent";
 
 const CTX = { smartAccount: null, trader: null };
 
-describe("findBalanceFraction — a share of a balance is a size", () => {
+describe("findBalanceFraction - a share of a balance is a size", () => {
   it("reads an explicit percentage", () => {
     expect(findBalanceFraction("deposit 50% of the XLM in my wallet")).toBe(0.5);
     expect(findBalanceFraction("supply 10% of my BLUSDC")).toBe(0.1);
@@ -47,7 +47,7 @@ describe("findBalanceFraction — a share of a balance is a size", () => {
   });
 });
 
-describe("applyFraction — floors to Stellar's 7dp, never rounds up past the balance", () => {
+describe("applyFraction - floors to Stellar's 7dp, never rounds up past the balance", () => {
   it("floors rather than rounding", () => {
     // 9850.8085671 / 3 would round up at 7dp; the chip must never exceed the balance.
     expect(applyFraction(9850.8085671, 0.5)).toBe(4925.4042835);
@@ -66,7 +66,7 @@ describe("applyFraction — floors to Stellar's 7dp, never rounds up past the ba
   });
 });
 
-describe("routeMessage — a stated share survives as a fraction slot", () => {
+describe("routeMessage - a stated share survives as a fraction slot", () => {
   /** The owner's reported failure: answered with "How much XLM do you want to supply?" */
   it("deposit XLM 50% of XLM in my wallet into the XLM pool → lend, fraction 0.5, no amount ask", () => {
     const r = routeMessage("deposit XLM 50% of XLM in my wallet into the XLM pool");
@@ -136,8 +136,8 @@ describe("routeMessage — a stated share survives as a fraction slot", () => {
   });
 });
 
-describe("swap — the Trade/Spot 25/50/75/Max meter, in language", () => {
-  // A concrete destination (BLUSDC), not bare "USDC" — these three test fraction/amount
+describe("swap - the Trade/Spot 25/50/75/Max meter, in language", () => {
+  // A concrete destination (BLUSDC), not bare "USDC" - these three test fraction/amount
   // parsing, which is orthogonal to which USDC variant was named. Bare "USDC" is covered
   // separately below, where it must clarify rather than parse into a write at all.
   it("swap half my XLM to BLUSDC → fraction 0.5, no amount ask", () => {
@@ -168,7 +168,7 @@ describe("swap — the Trade/Spot 25/50/75/Max meter, in language", () => {
   /**
    * THE LIVE BUG: "swap 10 XLM to USDC" executed a real swap with no variant ever asked.
    *
-   * `usdcOps` — the shared bare-USDC gate every other write goes through in handle.ts —
+   * `usdcOps` - the shared bare-USDC gate every other write goes through in handle.ts -
    * only ever checks `action.asset` / `action.borrow_asset`. A swap's destination lives in
    * `token_b`, a field that gate has never looked at, and swap is deliberately excluded
    * from `usdcOps` besides (so a swap that already names AQUSDC/BLUSDC/SOUSDC is never
@@ -190,7 +190,7 @@ describe("swap — the Trade/Spot 25/50/75/Max meter, in language", () => {
   });
 });
 
-describe("slotsToAction — a fraction counts as a size for balance-sized ops", () => {
+describe("slotsToAction - a fraction counts as a size for balance-sized ops", () => {
   for (const op of ["lend", "deposit_collateral", "withdraw_collateral", "repay", "remove_liquidity"]) {
     it(`${op} with a fraction needs no amount`, () => {
       expect(slotsToAction(op, { asset: "XLM", fraction: 0.5 }, CTX).requires_amount).toBe(false);

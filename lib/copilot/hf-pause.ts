@@ -1,7 +1,7 @@
 /**
  * When a multi-leg run should pause for a Continue / Stop decision.
  *
- * Continue/Stop used to appear between every hop — including swap → LP — because
+ * Continue/Stop used to appear between every hop - including swap → LP - because
  * the run card treated "leg 1 settled, not busy" as a user choice. The only case
  * that needs a decision is a stated health-factor floor being breached on a
  * strategy that actually moves margin collateral or debt.
@@ -24,7 +24,7 @@ export function shouldPauseForHealthFloor(opts: {
   floor: number | null | undefined;
   hf: number | null | undefined;
   remainingOps: ReadonlyArray<string | null | undefined>;
-  /** Already-settled ops — a borrow that dropped HF, with only farm left, still pauses. */
+  /** Already-settled ops - a borrow that dropped HF, with only farm left, still pauses. */
   settledOps?: ReadonlyArray<string | null | undefined>;
 }): boolean {
   if (opts.floor == null || opts.hf == null) return false;

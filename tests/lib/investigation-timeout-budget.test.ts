@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
  * Four independent timers govern one investigation: the loop's own deadline, the bound on
  * scope resolution (which runs BEFORE the loop, so it is not covered by that deadline),
  * the route's reply guarantee, and the browser's backstop. The client's was once the
- * tightest of the four, so it fired first — the user saw "the investigation timed out"
+ * tightest of the four, so it fired first - the user saw "the investigation timed out"
  * and every read already completed was thrown away, instead of the partial result the
  * server was about to send.
  *
@@ -47,7 +47,7 @@ describe("investigation timeout budgets", () => {
   );
   const clientMs = onlyNumber(
     read("hooks/use-investigation.ts"),
-    /setTimeout\(\(\) => \{ timedOut = true; controller\.abort\(\); \},\s*([\d_]+)\)/,
+    /setTimeout\(\(\) => \{ timedOut = true; controller\.abort\([^)]*\); \},\s*([\d_]+)\)/,
     "client backstop",
   );
 
@@ -56,6 +56,23 @@ describe("investigation timeout budgets", () => {
     // route's single reply guarantee. Counting only two of the three is what let 83s of
     // work sit behind a 75s promise.
     expect(scopeMs + positionMs + runtimeMs).toBeLessThanOrEqual(routeMs);
+  });
+
+  it("lets the plan repair start only while it can still finish, with room left to answer", () => {
+    // The repair runs after the loop, so it spends the route's time: the latest it may start plus
+    // its own budget must leave at least 10s of the route for sizing the retry and composing the reply.
+    const service = read("lib/copilot/investigation/service.ts");
+    const startByMs = onlyNumber(service, /REPAIR_START_BY_MS\s*=\s*([\d_]+)/, "repair start bound");
+    const budgetMs = onlyNumber(service, /REPAIR_BUDGET_MS\s*=\s*([\d_]+)/, "repair budget");
+    expect(startByMs + budgetMs + 10_000).toBeLessThanOrEqual(routeMs);
+  });
+
+  it("lets the pool-limit resize start only early enough to finish and still compose the reply", () => {
+    // It runs at the very end of the turn: its read, one more sizing and one more preview, then the reply (~10s).
+    const service = read("lib/copilot/investigation/service.ts");
+    const startByMs = onlyNumber(service, /RESIZE_START_BY_MS\s*=\s*([\d_]+)/, "resize start bound");
+    const budgetMs = onlyNumber(service, /RESIZE_BUDGET_MS\s*=\s*([\d_]+)/, "resize budget");
+    expect(startByMs + budgetMs + 20_000).toBeLessThanOrEqual(routeMs);
   });
 
   it("bounds the position read, since an unbounded one can spend the whole route", () => {

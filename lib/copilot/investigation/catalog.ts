@@ -1,9 +1,9 @@
-import { allAssets, resolveAssetDef } from "../registry/assets";
+import { allAssets, isSupportedAsset, resolveAssetDef } from "../registry/assets";
 import type { InvestigationScope, ReadCapability, ReadCost } from "./types";
 
 /**
  * Model-selected arguments only. Identity (trader, smart account, holder, G-address)
- * is bound in `bind()`, never declared here — a model that invents `g_address` is
+ * is bound in `bind()`, never declared here - a model that invents `g_address` is
  * rejected as unexpected arguments.
  */
 export type ArgSpec =
@@ -25,7 +25,8 @@ export interface CatalogEntry {
 
 const assets = allAssets();
 const earnAssets = assets.filter((asset) => asset.earnSymbol).map((asset) => asset.id);
-const priceAssets = assets.map((asset) => asset.id);
+// Only assets Vanna supports can be priced: offering the rest invited reads that fail and a menu that called them supported.
+const priceAssets = assets.filter(isSupportedAsset).map((asset) => asset.id);
 const marginAssets = assets.filter((asset) => asset.marginSymbol).map((asset) => asset.id);
 const blendAssets = assets.filter((asset) => asset.blendReserve).map((asset) => asset.id);
 const lpAssets = assets.filter((asset) => asset.lpVenue).map((asset) => asset.id);
@@ -131,12 +132,12 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "account_collateral", tool: "vanna_get_collateral", scope: "account", cost: "expensive",
-    description: "Read posted margin collateral; do not count it as spendable wallet balance.",
+    description: "Read gross posted storage and tracking collateral. Plain balances can include borrowed proceeds; they are not net deposited collateral or the Margin page's composite valuation. Do not count them as spendable wallet balance or silently mix this basis with website balances.",
     modelArgs: {}, bind: (_, scope) => ({ smart_account: scope.smartAccount }),
   },
   {
     name: "liquidation_snapshot", tool: "vanna_get_liquidation_snapshot", scope: "account", cost: "expensive",
-    description: "The RiskEngine function that decides liquidation. Posted collateral and debt in USD, plus unpriceable_plain — true means AccountManager will refuse liquidation even if HF looks low. Not a liquidatable verdict and not the Margin page snapshot.",
+    description: "The RiskEngine function that decides liquidation. Posted collateral and debt in USD, plus unpriceable_plain - true means AccountManager will refuse liquidation even if HF looks low. Not a liquidatable verdict and not the Margin page snapshot.",
     modelArgs: {}, bind: (_, scope) => ({ smart_account: scope.smartAccount }),
   },
   {
@@ -168,13 +169,13 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "max_borrow", tool: "vanna_get_max_borrow", scope: "account", cost: "moderate",
-    description: "Largest amount of one margin asset the account could borrow now. A READ — it does not borrow. Use can_borrow when the user named a specific amount. Bare USDC is ambiguous; pick a variant.",
+    description: "Largest amount of one margin asset the account could borrow now. A READ - it does not borrow. Use can_borrow when the user named a specific amount. Bare USDC is ambiguous; pick a variant.",
     modelArgs: { asset: { type: "enum", values: marginAssets } },
     bind: (args, scope) => ({ smart_account: scope.smartAccount, symbol: symbolFor(args, "marginSymbol") }),
   },
   {
     name: "can_borrow", tool: "vanna_can_borrow", scope: "account", cost: "moderate",
-    description: "Whether a specific borrow amount is allowed on the margin account. A READ — it checks, it does not borrow. Amount must be the user's stated figure, never invented.",
+    description: "Whether a specific borrow amount is allowed on the margin account. A READ - it checks, it does not borrow. Amount must be the user's stated figure, never invented.",
     modelArgs: {
       asset: { type: "enum", values: marginAssets },
       amount: { type: "decimal" },
@@ -185,7 +186,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "can_withdraw", tool: "vanna_can_withdraw", scope: "account", cost: "moderate",
-    description: "Whether a specific collateral withdrawal is allowed without breaching health. A READ — it checks, it does not withdraw. Amount must be the user's stated figure, never invented. Live MCP serves this as vanna_margin_trade action=can_withdraw; mcp-client remaps the catalogue name so the model cannot aim at a write dispatcher.",
+    description: "Whether a specific collateral withdrawal is allowed without breaching health. A READ - it checks, it does not withdraw. Amount must be the user's stated figure, never invented. Live MCP serves this as vanna_margin_trade action=can_withdraw; mcp-client remaps the catalogue name so the model cannot aim at a write dispatcher.",
     modelArgs: {
       asset: { type: "enum", values: marginAssets },
       amount: { type: "decimal" },
@@ -223,7 +224,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "soroswap_pool_reserves", tool: "vanna_get_soroswap_pool_stats", scope: "public", cost: "cheap",
-    description: "Live pair reserves, fee and total LP shares for one Soroswap pair, named by the token XLM is paired with. Use to size a Soroswap swap or exact-output — the oracle says what the pair is WORTH, not what this pool will PAY, and sizing a floor from it proposes amounts the pool cannot fill.",
+    description: "Live pair reserves, fee and total LP shares for one Soroswap pair, named by the token XLM is paired with. Use to size a Soroswap swap or exact-output - the oracle says what the pair is WORTH, not what this pool will PAY, and sizing a floor from it proposes amounts the pool cannot fill.",
     modelArgs: { asset: { type: "enum", values: soroswapLpAssets } },
     bind: (args) => {
       const def = resolveAssetDef(String(args.asset ?? ""));
@@ -232,7 +233,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "aquarius_pool_reserves", tool: "vanna_get_aquarius_pool_stats", scope: "public", cost: "cheap",
-    description: "Live pool reserves and total LP shares for one Aquarius pair, named by the token XLM is paired with. Use to size add_liquidity's paired amount or an exact-output swap on Aquarius — never guess a ratio from oracle prices when this is available.",
+    description: "Live pool reserves and total LP shares for one Aquarius pair, named by the token XLM is paired with. Use to size add_liquidity's paired amount or an exact-output swap on Aquarius - never guess a ratio from oracle prices when this is available.",
     modelArgs: { asset: { type: "enum", values: aquariusLpAssets } },
     bind: (args) => {
       const def = resolveAssetDef(String(args.asset ?? ""));

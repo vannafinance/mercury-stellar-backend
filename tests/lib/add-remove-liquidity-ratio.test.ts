@@ -2,7 +2,7 @@
  * Reported live, three related LP bugs:
  *
  * 9.  "Can you add 10 XLM and 10 AqUSDC in Aquarius Pool in farm" staged the two amounts
- *     verbatim with no regard for the pool's live reserve ratio — a real AMM add only
+ *     verbatim with no regard for the pool's live reserve ratio - a real AMM add only
  *     works at the current ratio, and the site's own add-liquidity form never lets a user
  *     set both sides independently for exactly this reason (one side is always derived
  *     from the other via the pool's live spot price).
@@ -65,7 +65,7 @@ vi.mock("@/lib/aquarius-utils", async (importOriginal) => {
   };
 });
 // "add 10 XLM and 10 AqUSDC in Aquarius Pool" isn't on handleChat's "keywordConfident"
-// allowlist, so a real run also asks Vertex to independently confirm the route — a live
+// allowlist, so a real run also asks Vertex to independently confirm the route - a live
 // network call this test environment can't make (and which flaked under full-suite load,
 // timing out instead of failing fast). Rejecting it exercises the documented fallback.
 vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
@@ -102,7 +102,7 @@ describe("THE LIVE BUG: add_liquidity sizes to the pool's live ratio, not the st
   it("corrects a mismatched AQUSDC amount to match live Aquarius reserves", async () => {
     process.env.MCP_MODE = "mock";
     resetMcpClient();
-    // Pool is 1000 XLM : 14 AQUSDC (a 1:0.014 ratio) — 10 XLM should pair with ~0.14
+    // Pool is 1000 XLM : 14 AQUSDC (a 1:0.014 ratio) - 10 XLM should pair with ~0.14
     // AQUSDC, nowhere near the stated 10 AQUSDC.
     mocks.getAquariusPoolStats.mockResolvedValue({
       reserveA: "1000",
@@ -115,7 +115,7 @@ describe("THE LIVE BUG: add_liquidity sizes to the pool's live ratio, not the st
         message: "Can you add 10 XLM and 10 AqUSDC in Aquarius Pool in farm",
       });
       const text = JSON.stringify(res);
-      // The corrected pairing shows up somewhere in the response (note or step label) —
+      // The corrected pairing shows up somewhere in the response (note or step label) -
       // never the untouched, ratio-blind "10 AQUSDC".
       expect(text).toMatch(/0\.14/);
       expect(text).not.toMatch(/"amount_b":10\b/);

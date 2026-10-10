@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from "vitest";
  *
  * `evaluateWriteRisk` dynamically imports `computeMarginSnapshot` and prefers it over the
  * MCP read. That made BRAIN-002 pass only when the live Soroban read FAILED and it fell
- * back to the mocked MCP figures — so a risk-math assertion was decided by network luck,
+ * back to the mocked MCP figures - so a risk-math assertion was decided by network luck,
  * and it flaked across full-suite runs. Mocked to the same $1,000 / no-debt base the MCP
  * mock below sets up, so the arithmetic under test is what is actually asserted.
  */

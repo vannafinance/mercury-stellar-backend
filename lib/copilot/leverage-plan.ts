@@ -1,5 +1,5 @@
 /**
- * Leverage sizing — one engine for every "collateral + Nx + borrow asset" ask.
+ * Leverage sizing - one engine for every "collateral + Nx + borrow asset" ask.
  *
  * ## Why this is a module and not four copies
  *
@@ -7,7 +7,7 @@
  * and mcp-write.ts, and every copy made the same two assumptions: that a borrow is
  * denominated in the collateral's units, and that the borrow asset IS the collateral
  * asset. Both are false the moment someone says "deposit 500 AQUSDC at 3x and borrow
- * XLM" — a sentence the margin UI handles without asking anything. The copilot asked
+ * XLM" - a sentence the margin UI handles without asking anything. The copilot asked
  * for a borrow size it had every input to compute, and then asked which USDC the user
  * meant when the user had said XLM.
  *
@@ -22,7 +22,7 @@
  *     borrowAmountTokens = borrowAmountUsd / borrowTokenPrice
  *
  * Same-asset is the special case where the two prices cancel and it degenerates to
- * `deposit * (L - 1)` — which is why the old code looked correct for years.
+ * `deposit * (L - 1)` - which is why the old code looked correct for years.
  *
  * "Nx" means TOTAL POSITION is N times equity, so borrow is (N−1)× equity. 3× on 500
  * is borrow 1000, total 1500. It is not borrow = 3 × 500.
@@ -40,7 +40,7 @@ import { resolveAssetDef } from "./registry/assets";
 import type { MCPClient } from "./mcp-client";
 
 /**
- * Assets the oracle quotes. The three USDC SACs are distinct TOKENS but one PRICE —
+ * Assets the oracle quotes. The three USDC SACs are distinct TOKENS but one PRICE -
  * they are all dollar stablecoins, and the oracle carries a single USDC feed. Keeping
  * the token identity separate from the price identity is what lets "deposit AQUSDC,
  * borrow BLUSDC" price correctly without pretending the two tokens are the same.
@@ -49,7 +49,7 @@ export function oraclePriceSymbol(asset?: string | null): string {
   const def = resolveAssetDef(asset);
   if (def) return def.oracleSymbol;
   // Unknown or ambiguous input falls back to the dollar feed, as it always has. This
-  // is wrong for an unsupported ticker — it prices DOGE at $1 — but changing it here
+  // is wrong for an unsupported ticker - it prices DOGE at $1 - but changing it here
   // would be a behaviour change inside a refactor. Tracked separately.
   return "USDC";
 }
@@ -69,7 +69,7 @@ export interface LeverageSlots {
   collateralAsset?: string | null;
   collateralAmount?: number | null;
   leverage?: number | null;
-  /** Absent means "borrow the same asset" — the common single-asset case. */
+  /** Absent means "borrow the same asset" - the common single-asset case. */
   borrowAsset?: string | null;
   /** An explicit figure from the user always wins over the leverage multiple. */
   borrowAmount?: number | null;
@@ -89,7 +89,7 @@ export interface LeveragePlan {
 }
 
 /**
- * Why sizing could not be computed. Each maps to a DIFFERENT thing to say — which is
+ * Why sizing could not be computed. Each maps to a DIFFERENT thing to say - which is
  * the point: "how much do you want to borrow?" was being used for all of them, and it
  * is the right question for none.
  */
@@ -106,7 +106,7 @@ function roundUnits(n: number): number {
 /**
  * Which oracle symbols must be read before {@link planLeverage} can size this.
  *
- * Empty when both sides are dollar stables — a stable-to-stable 3× needs no network
+ * Empty when both sides are dollar stables - a stable-to-stable 3× needs no network
  * call at all, so the common case stays as fast as the arithmetic it replaced.
  */
 export function leveragePriceSymbols(slots: LeverageSlots): string[] {
@@ -129,7 +129,7 @@ export function priceOf(asset: string, prices: Record<string, number>): number |
  * Size a leveraged position, or say precisely what is missing.
  *
  * Never guesses a price. A missing oracle read returns `missing_price` so the caller
- * can say the oracle is unavailable — inventing 1.0 for XLM would size a borrow ~11×
+ * can say the oracle is unavailable - inventing 1.0 for XLM would size a borrow ~11×
  * too large and hand it to a signature prompt.
  */
 export function planLeverage(
@@ -149,7 +149,7 @@ export function planLeverage(
   const borrowPrice = priceOf(borrowAsset, prices);
   const collateralUsd = collateralPrice != null ? collateralAmount * collateralPrice : null;
 
-  // An explicit figure is the user's own answer — never overwrite it with leverage.
+  // An explicit figure is the user's own answer - never overwrite it with leverage.
   if (slots.borrowAmount != null && slots.borrowAmount > 0) {
     const borrowAmount = roundUnits(slots.borrowAmount);
     const borrowUsd = borrowPrice != null ? borrowAmount * borrowPrice : null;
@@ -218,7 +218,7 @@ export function planLeverage(
 }
 
 /**
- * A second, distinct borrow asset named alongside the primary one — "borrow 3x BLUSDC
+ * A second, distinct borrow asset named alongside the primary one - "borrow 3x BLUSDC
  * and AqUSDC" / "borrow BLUSDC and AqUSDC at 3x leverage". Returns null when the
  * message names only one borrow asset, or when the second token it finds turns out to
  * be the primary borrow asset or the collateral asset again (not a genuine second
@@ -240,7 +240,7 @@ export function findSecondBorrowAsset(
   return other && other !== primary && other !== collateralAsset.toUpperCase() ? other : null;
 }
 
-/** Compact number for prose — no trailing zeros, no scientific notation. */
+/** Compact number for prose - no trailing zeros, no scientific notation. */
 function num(n: number): string {
   if (!Number.isFinite(n)) return "0";
   const fixed = Math.abs(n) >= 1 ? n.toFixed(Math.abs(n) >= 100 ? 2 : 4) : n.toFixed(7);
@@ -252,7 +252,7 @@ function usd(n: number | null): string {
 }
 
 /**
- * The plan line shown before signing — with USD equivalents, like the site.
+ * The plan line shown before signing - with USD equivalents, like the site.
  *
  * Cross-asset gets an explicit conversion sentence because "borrow 11,000 XLM against
  * 500 AQUSDC" looks like a mistake until you see the two dollar figures next to it.
@@ -279,7 +279,7 @@ export function describeLeveragePlan(plan: LeveragePlan, labels?: {
 
   return (
     `${plan.leverage}× on ${num(plan.collateralAmount)} ${c}${usd(plan.collateralUsd)} means borrowing ` +
-    `${usd(plan.borrowUsd).trim().replace(/[()≈]/g, "")} of ${b} — ${num(plan.borrowAmount)} ${b} at the current oracle price.`
+    `${usd(plan.borrowUsd).trim().replace(/[()≈]/g, "")} of ${b} - ${num(plan.borrowAmount)} ${b} at the current oracle price.`
   );
 }
 
@@ -287,11 +287,11 @@ export function describeLeveragePlan(plan: LeveragePlan, labels?: {
  * The two signed legs a leveraged position becomes.
  *
  * MCP's combined `deposit_and_borrow` runs `is_borrow_allowed` against CURRENT
- * collateral, so the deposit must land before the borrow is even checked — hence two
+ * collateral, so the deposit must land before the borrow is even checked - hence two
  * legs rather than one atomic call.
  *
  * Both legs are FULLY determined here, size and asset. That is the whole of product
- * rule D: whatever runs leg 2 — a next_step hop, a resume, a plan replay — needs no
+ * rule D: whatever runs leg 2 - a next_step hop, a resume, a plan replay - needs no
  * further input from the user, so it cannot reopen a question they already answered.
  */
 export function leverageLegs(plan: LeveragePlan): {

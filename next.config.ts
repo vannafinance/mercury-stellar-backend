@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  experimental: {
+    // Avoid restoring stale route artifacts between local verification runs.
+    turbopackFileSystemCacheForDev: false,
+  },
   serverExternalPackages: [
     "@opentelemetry/sdk-node",
     "@opentelemetry/resources",

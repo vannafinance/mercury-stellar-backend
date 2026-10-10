@@ -15,7 +15,7 @@
  * user pressed Approve.
  *
  * A slot added to one of those five is dropped by the other four, silently, with no type
- * error — because "I forgot a line" and "this field is genuinely absent" are the same
+ * error - because "I forgot a line" and "this field is genuinely absent" are the same
  * `null` to every consumer. That is not a hypothetical:
  *
  *   leverage      dropped on approve replay → an approved "deploy 10 BLUSDC at 2×" ran
@@ -45,7 +45,7 @@
  * ## Where validation happens
  *
  * At the two boundaries the plan names: model output, and a resume payload. Not on
- * internal hops — re-validating a value we produced ourselves only adds places to
+ * internal hops - re-validating a value we produced ourselves only adds places to
  * disagree. `parseIntent` refuses an unresolvable asset where it ENTERS rather than
  * three hops later, and reports a bare "USDC" as its own outcome (`ambiguous`) rather
  * than as an error, because the product answer to that is a variant chip, not a failure.
@@ -74,7 +74,7 @@ export type VenueId = (typeof VENUE_IDS)[number];
  *
  *   asset..venue          reach `mapOpToMcpStep` and become MCP call arguments
  *   borrow_asset          decides whether `planLeverage` sizes cross-asset, which
- *                         decides borrow_amount — so it changes the trade without ever
+ *                         decides borrow_amount - so it changes the trade without ever
  *                         being an argument itself. This is exactly the slot whose
  *                         "it's only for display" appearance let it be dropped.
  *   min_hf                the risk gate's block threshold
@@ -82,7 +82,7 @@ export type VenueId = (typeof VENUE_IDS)[number];
  *
  * Deliberately NOT here: `explain` (presentation), `requires_amount` /
  * `requires_account` / `multi_leg` (derived from op + amount), and `smart_account` /
- * `trader` (request context, not intent — they come from the session, and hashing them
+ * `trader` (request context, not intent - they come from the session, and hashing them
  * would make a plan un-replayable from a different tab).
  */
 export const EXECUTABLE_SLOTS = {
@@ -116,7 +116,7 @@ export type SlotValue = string | number | boolean | null;
  */
 export type IntentSlots = Partial<Record<SlotName, SlotValue>>;
 
-/** Grouped view of the same slots — what callers read and write. */
+/** Grouped view of the same slots - what callers read and write. */
 export interface Intent {
   op: string;
   collateral: { asset: AssetId | null; amount: number | null };
@@ -126,8 +126,8 @@ export interface Intent {
   venue: VenueId | null;
   minHf: number | null;
   /**
-   * LP pair legs, and — because `mapOpToMcpStep` reads the same two fields for a DEX
-   * swap — the swap's token_in / token_out. One pair of slots, two products; keeping
+   * LP pair legs, and - because `mapOpToMcpStep` reads the same two fields for a DEX
+   * swap - the swap's token_in / token_out. One pair of slots, two products; keeping
    * them as one pair is what stops a swap's token_out being a fourth thing to forget.
    */
   pair: {
@@ -197,8 +197,8 @@ export function resolveAssetSlot(v: unknown): AssetSlot {
 /**
  * Read an arbitrary producer's object into canonical slots.
  *
- * Accepts BOTH spellings for every slot that has ever had two — `args.leverage` and
- * `leverage`, `args.borrow_asset` and `borrow_asset`, `symbol` and `asset` — because
+ * Accepts BOTH spellings for every slot that has ever had two - `args.leverage` and
+ * `leverage`, `args.borrow_asset` and `borrow_asset`, `symbol` and `asset` - because
  * different producers spell them differently and picking one would drop the other. That
  * tolerance is precisely why reading has to be centralised: each of the five sites had
  * its own subset of the spellings.
@@ -211,7 +211,7 @@ export function toSlots(raw: unknown): IntentSlots {
   /**
    * Alternative spellings of the SAME slot, by producer.
    *
-   * A swap's `token_in`/`token_out` are `token_a`/`token_b` — `mapOpToMcpStep` reads one
+   * A swap's `token_in`/`token_out` are `token_a`/`token_b` - `mapOpToMcpStep` reads one
    * pair of fields for both products. Not knowing that is exactly why token_out was the
    * next slot in line to be dropped: it never matched a slot name, so it was invisible
    * to anything iterating the list. `symbol` is mapOpToMcpStep's spelling of `asset`.
@@ -347,7 +347,7 @@ export function intentToSlots(intent: Intent): IntentSlots {
  * Each one has exactly one pot the share is taken from, which is what makes the
  * fraction resolvable: repay → live debt, lend / deposit_collateral → wallet balance,
  * withdraw_collateral → posted collateral, remove_liquidity → the LP position.
- * An op with no single obvious pot is deliberately absent — it would have to guess.
+ * An op with no single obvious pot is deliberately absent - it would have to guess.
  */
 const FRACTION_SIZED_OPS = new Set([
   "repay",
@@ -404,7 +404,7 @@ export function slotsToAction(op: string, slots: IntentSlots, ctx: ActionCtx): C
     // carries the floor that was approved, not whatever the current message parses to.
     min_hf: num(s.min_hf) ?? ctx.minHf ?? null,
     prefer_max_yield: bool(s.prefer_max_yield),
-    // Derived, never carried — see EXECUTABLE_SLOTS.
+    // Derived, never carried - see EXECUTABLE_SLOTS.
     requires_amount:
       !AMOUNT_OPTIONAL.has(op) &&
       amount == null &&
@@ -433,7 +433,7 @@ export function actionFrom(raw: unknown, ctx: ActionCtx): CopilotAction {
 export type IntentInvalid =
   | { reason: "missing_op" }
   | { reason: "unknown_asset"; slot: SlotName; value: string }
-  /** A bare "USDC" — ask which variant, do not fail. */
+  /** A bare "USDC" - ask which variant, do not fail. */
   | { reason: "ambiguous_asset"; slot: SlotName; options: AssetDef[] }
   | { reason: "bad_amount"; slot: SlotName; value: string }
   | { reason: "bad_leverage"; value: string };
@@ -444,7 +444,7 @@ export type IntentParse = { intent: Intent; slots: IntentSlots } | { invalid: In
 const ASSET_SLOTS: SlotName[] = SLOT_NAMES.filter((n) => EXECUTABLE_SLOTS[n] === "asset");
 
 /**
- * Validate what arrives from outside — model output, or a resume payload.
+ * Validate what arrives from outside - model output, or a resume payload.
  *
  * Refuses at the boundary, which is the whole point: an unresolvable asset that gets in
  * here surfaces three hops later as a confusing question about a token nobody named.
@@ -486,7 +486,7 @@ export function parseIntent(raw: unknown): IntentParse {
 
   const lev = num(pick("leverage"));
   if (lev != null && !(lev > 1)) {
-    // 1× is not leverage, and 0 or a negative is meaningless — both would silently
+    // 1× is not leverage, and 0 or a negative is meaningless - both would silently
     // produce a borrow leg of zero or a negative size.
     return { invalid: { reason: "bad_leverage", value: String(pick("leverage")) } };
   }
@@ -503,7 +503,7 @@ function resolveUsdcOptions(): AssetDef[] {
 /**
  * Lenient normalization for values WE produced.
  *
- * Internal hops do not re-validate — see the file header. This canonicalises spelling
+ * Internal hops do not re-validate - see the file header. This canonicalises spelling
  * and drops empties so a hash taken on either side of a hop matches.
  */
 export function normalizeIntent(raw: unknown): { op: string; slots: IntentSlots } {

@@ -6,9 +6,9 @@
  */
 
 import type { MCPClient } from "../mcp-client";
-import { allAssets, ASSET_SYMBOL_PATTERN, poolVenueFor } from "../registry/assets";
+import { allAssets, ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor } from "../registry/assets";
 import { resolveRead } from "./capabilities";
-import { interruptible } from "./runtime";
+import { interruptible, readFailureText } from "./runtime";
 import { isRecord } from "./decision";
 import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { InvestigationScope, Observation, ProposedPlan } from "./types";
@@ -16,7 +16,7 @@ import { ASSET_OUT_OPS, OP_FLOW } from "../workflow/types";
 
 export interface StrategyRead { capability: string; args: Record<string, unknown> }
 
-/** Every asset with an Earn pool, from the registry — no separate list of "strategy assets". */
+/** Every asset with an Earn pool, from the registry - no separate list of "strategy assets". */
 const EARN_ASSETS = allAssets().filter((asset) => asset.earnSymbol).map((asset) => asset.id);
 
 export const STRATEGY_READS: readonly StrategyRead[] = [
@@ -55,16 +55,20 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       // A swap is valued on both sides: the asset it spends AND the one it buys.
       if (leg.assetOut) want("asset_price", leg.assetOut);
       const flow = OP_FLOW[leg.op];
+      // A borrow is limited by more than the health factor: the pool's free liquidity and its utilization
+      // cap bind too, and only the protocol knows all three. Its own "most you can borrow now" is read so the
+      // sized amount never exceeds it (7 Oct, live: a borrow sized to HF 1.5 was refused by the pool cap).
+      if (flow.from === "debt") want("max_borrow", leg.asset);
       // A leg that carries a rate needs its rate row: the Earn market, and the Blend reserves for a Blend rate.
       if (flow.rate !== null) want("earn_market", leg.asset);
       if (flow.rate === "blend_supply") want("blend_markets");
-      const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
+      const ofIdle = leg.sizing.kind === "all_wallet" || (leg.sizing.kind === "fraction" && leg.sizing.of === "wallet");
       const ofPosition = leg.sizing.kind === "all_position" || (leg.sizing.kind === "fraction" && leg.sizing.of === "position");
       if (ofIdle) want("wallet_balances");
       // Every declared position read is required for deterministic sizing, including literal
       // exits such as "withdraw 26000 XLM from Blend". The sizer checks literal amounts against
       // the source position too; skipping this read made valid Blend withdrawals look empty.
-      // earn_position and farm_lp_position are read per asset — one pair or one pool per call,
+      // earn_position and farm_lp_position are read per asset - one pair or one pool per call,
       // not a shared table.
       if (flow.positionRead) {
         want(flow.positionRead, flow.positionRead === "earn_position" || flow.positionRead === "farm_lp_position" ? leg.asset : undefined);
@@ -75,7 +79,7 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
        * Anything that touches an Aquarius pool needs the pool's live reserves: entering it
        * sizes the paired amount against the real ratio (the model's own number is never
        * trusted for it), and a swap quotes its floor against the curve it actually settles
-       * on rather than at oracle parity — the gap between the two is what the DEX refused
+       * on rather than at oracle parity - the gap between the two is what the DEX refused
        * outright on 15 Sep. Soroswap needs no read to ENTER (its contract corrects an
        * imperfect ratio itself), but it does to SWAP: falling back to the oracle quote
        * there proposed "100 XLM for at least 17.4469985 SOUSDC" against a pool paying
@@ -87,6 +91,12 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
           legVenue === "soroswap" ? "soroswap_pool_reserves" : "aquarius_pool_reserves",
           leg.asset === "XLM" ? leg.assetOut : leg.asset,
         );
+      }
+      // Leaving an LP position is valued from the same pool read (plan.ts `lpExitUsd`): the
+      // shares' slice of each reserve. Keyed off the op's source pocket, not a list of ops.
+      if (flow.from === "lp") {
+        const pools = lpPairs().filter(({ tokens }) => tokens.includes(leg.asset as never));
+        if (pools.length === 1) want(pools[0].venue === "soroswap" ? "soroswap_pool_reserves" : "aquarius_pool_reserves", pools[0].tokens[1]);
       }
       // A lend is funded from the wallet; the account read is how a wrong-pocket
       // sibling becomes a withdraw-then-lend offer instead of a silent skip.
@@ -126,10 +136,11 @@ export async function collectStrategyReads(
   }));
   await Promise.all(prepared.map(async (entry, offset) => {
     const observation = observations[offset];
+    const readTimeout = AbortSignal.timeout(15_000);
     try {
       const response = await interruptible(
         () => mcp.call(entry.read.tool, entry.read.args, scope.trader ?? undefined),
-        AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+        AbortSignal.any([signal, readTimeout]),
       );
       if (!isRecord(response) || response.error || response.isError === true || response.ok === false) {
         observation.error = "MCP returned unavailable or failed data; do not use it as a financial fact.";
@@ -137,8 +148,8 @@ export async function collectStrategyReads(
       }
       observation.data = response;
       observation.status = "ok";
-    } catch {
-      observation.error = "MCP read failed. No value was inferred.";
+    } catch (error) {
+      observation.error = readFailureText(error, readTimeout.aborted && !signal.aborted);
     }
   }));
   return observations;

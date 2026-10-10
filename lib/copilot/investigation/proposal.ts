@@ -1,7 +1,7 @@
 /**
  * Rebuild a candidate from investigation evidence and hold it as a journal proposal.
  *
- * The browser may name a candidate by id. It may not supply amounts, tools or args —
+ * The browser may name a candidate by id. It may not supply amounts, tools or args -
  * those are compiled here from sealed investigation evidence when that bundle is still
  * fresh, otherwise from a new world-read, then the same generator that produced the card.
  * A compiled step list that `create()` would refuse never reaches the user.
@@ -12,12 +12,14 @@ import { capacityFromBasis, computeSizingBasis, type SizingBasis } from "./capac
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { interruptible } from "./runtime";
 import {
-  generateCandidates, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, idleWalletUsdFrom, requestedBorrowFrom,
+  generateCandidates, spendableWalletAfterReserves, requestedBorrowFrom,
 } from "./candidates";
 import { collectStrategyReads, readsForPlans, STRATEGY_READS } from "./strategy-reads";
 import { parseCandidateId, requiresMarginAccount, REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { statedFloorFrom } from "./floor";
 import { planCandidateId, resolvePlans } from "./plan";
+import { enforcePortfolioExit, portfolioExitCoverage } from "./portfolio-exit";
+import { missingPositionReads } from "./position-coverage";
 import { compareObservedRates } from "./rate-comparison";
 import { compileProposal } from "./compile";
 import { researchCodec } from "./continuation";
@@ -26,7 +28,7 @@ import { resolveInvestigationScope, ResearchError } from "./scope";
 import { WorkflowJournal, WorkflowConflict } from "../workflow/journal";
 import { workflowStore } from "../workflow/store";
 import { disagreesOnNewDebt, drawsNewDebt } from "../leg-direction";
-import { clauseToStep } from "../step-extractor";
+import { routeMessage } from "../router";
 import { workflowView, type WorkflowProposal, type WorkflowRecord, type WorkflowView } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
 import { validateWorkflowRisk } from "../workflow/risk";
@@ -35,6 +37,38 @@ import { appendAudit } from "../audit-log";
 
 export function workflowJournal(secret: string): WorkflowJournal {
   return new WorkflowJournal(workflowStore<WorkflowRecord>(secret));
+}
+
+/**
+ * Stop a proposal when the deterministic router and the investigation chose opposite
+ * answers on whether the action creates new debt. The router is only consulted here,
+ * during investigation proposal preparation; its normal routing behavior is unchanged.
+ */
+function assertDebtIntentAgrees(message: string, chosenOps: string[]): void {
+  if (chosenOps.length !== 1) return;
+
+  const routed = routeMessage(message);
+  const routedOps = routed.kind === "write"
+    ? [routed.op]
+    : routed.kind === "plan"
+      ? routed.steps.flatMap((step) => step.kind === "write" && step.op ? [step.op] : [])
+      : [];
+  if (routedOps.length !== 1) return;
+
+  const spokenOp = routedOps[0];
+  const chosenOp = chosenOps[0];
+  if (!disagreesOnNewDebt(spokenOp, chosenOp)) return;
+
+  const borrowing = drawsNewDebt(chosenOp) ? chosenOp : spokenOp;
+  const funded = drawsNewDebt(chosenOp) ? spokenOp : chosenOp;
+  throw new ResearchError(
+    "debt_reading_ambiguous",
+    `I read two different things in that, and they disagree about borrowing: one is ` +
+      `${String(funded).replace(/_/g, " ")} using funds you already hold, the other is ` +
+      `${String(borrowing).replace(/_/g, " ")}, which takes on new debt. Say which you meant ` +
+      `and I will prepare it.`,
+    409,
+  );
 }
 
 export async function proposeWorkflow(input: {
@@ -72,18 +106,20 @@ export async function proposeWorkflow(input: {
   if (parsed.kind === REQUESTED_ACTIONS_ID) {
     const steps = prior.evidence?.requestedSteps;
     if (!steps?.length) throw new ResearchError("candidate_unavailable", "The requested actions are unavailable. Investigate again.");
+    assertDebtIntentAgrees(prior.messages[prior.messages.length - 1] ?? "", steps.map((step) => step.op));
     for (const step of steps) allowedInvocation(step, scope);
-    const floor = prior.evidence?.capacity?.floor ?? null;
+    const floor = prior.evidence?.floor ?? prior.evidence?.capacity?.floor ?? null;
     /**
      * The acceptance travels with the steps. A stated swap is proposed through THIS branch,
-     * not the composed one below — so leaving it off here dropped the user's own words at
+     * not the composed one below - so leaving it off here dropped the user's own words at
      * the last hop: the plan gate lifted and the card appeared, then the pre-write re-quote
      * and the MCP's impact gate both still saw an unaccepted fill and withheld the swap the
      * user had already agreed to. The same field the composed path seals, sealed here.
      */
-    const draft = { scope, server: input.server, objective: prior.messages[0], messages: prior.messages,
+    const draft = { scope, candidateId: input.candidateId, server: input.server, objective: prior.messages[0], messages: prior.messages,
       assumptions: ["Amounts are the literal token amounts in your request. No automatic resizing is allowed."],
-      constraints: floor ? [`Health factor at or above ${floor}`] : [], floor, steps,
+      constraints: [...(floor ? [`Health factor at or above ${floor}`] : []), ...reserveConstraints(prior.evidence?.walletReserves)], floor, steps,
+      walletReserves: prior.evidence?.walletReserves,
       slippageAccepted: prior.evidence?.slippageAccepted === true };
     /**
      * Propose holds the compiled plan for the card. Live prices and balances are
@@ -124,31 +160,35 @@ export async function proposeWorkflow(input: {
   const now = wallNow;
   /**
    * A stale bundle is re-read. The market set alone is not enough for a composed plan: a
-   * repay needs the debt, a withdraw the posted collateral, a redeem the Earn position —
+   * repay needs the debt, a withdraw the posted collateral, a redeem the Earn position -
    * without them the plan re-resolves as "no XLM debt was read" and the card says the
    * option "is no longer available" (13 Sep, one minute after it was offered).
    */
   /**
-   * The world-read and the app snapshot are independent MCP round trips — neither's result
-   * feeds the other — so a stale propose ran them one after another for no reason: up to
+   * The world-read and the app snapshot are independent MCP round trips - neither's result
+   * feeds the other - so a stale propose ran them one after another for no reason: up to
    * 15s for the reads, THEN up to another 15s for the snapshot, on top of whatever the
    * scope re-resolution above already cost. On a cold cache (five minutes of reading the
-   * card is all it takes — the scope cache and the evidence freshness window both lapse
+   * card is all it takes - the scope cache and the evidence freshness window both lapse
    * together) that sequential stack was most of what pushed a propose past the browser's
    * 90s budget (15 Sep, D4). Running them together does not change what either reads.
    */
+  const exitReads = prior.evidence?.portfolioExit ? missingPositionReads([], undefined, [], true) : [];
+  const sealedReads = sealedPlan ? [...readsForPlans([sealedPlan], [], now), ...exitReads] : exitReads;
+  const requiredReads = [...STRATEGY_READS, ...sealedReads.filter((r, index) => !STRATEGY_READS.some(s => s.capability === r.capability && JSON.stringify(s.args) === JSON.stringify(r.args))
+    && sealedReads.findIndex(s => s.capability === r.capability && JSON.stringify(s.args) === JSON.stringify(r.args)) === index)];
   const observationsTask = reused
     ? Promise.resolve(prior.evidence!.observations)
     : collectStrategyReads(scope, input.mcp, input.signal, now,
-        sealedPlan ? [...STRATEGY_READS, ...readsForPlans([sealedPlan], [], now).filter((r) => !STRATEGY_READS.some((s) => s.capability === r.capability && JSON.stringify(s.args) === JSON.stringify(r.args)))] : STRATEGY_READS);
+        requiredReads);
   /**
    * On a stale bundle the floor is the one sealed at investigation (model-anchored to the
-   * user's words), not a fresh regex pass over the messages — the regex missed "stays
+   * user's words), not a fresh regex pass over the messages - the regex missed "stays
    * above 1.14" and a 409 followed (13 Sep).
    */
   /**
-   * Stale path: the app snapshot is attempted ONCE, bounded — it is the slow, uncancellable
-   * read — and the basis is computed from that single attempt. Headroom for the fixed
+   * Stale path: the app snapshot is attempted ONCE, bounded - it is the slow, uncancellable
+   * read - and the basis is computed from that single attempt. Headroom for the fixed
    * shapes and the position for a composed plan both derive from it; nothing is read twice.
    * Reading it twice, unbounded, took a propose past the browser's 90s (13 Sep).
    */
@@ -175,30 +215,30 @@ export async function proposeWorkflow(input: {
   const capacity = reused
     ? prior.evidence!.capacity
     : liveBasis && liveFloor ? capacityFromBasis(liveBasis, liveFloor) : null;
-  const requestedBorrow = requestedBorrowFrom(prior.messages, observations, now);
+  const requestedBorrow = requestedBorrowFrom(prior.evidence?.statedBorrow, observations, now);
   const comparisons = compareObservedRates(observations, now);
-  const idleWalletUsd = idleWalletUsdFrom(observations, now);
-  const idleWalletByAssetUsd = idleWalletByAssetUsdFrom(observations, now);
-  const idleWalletByAssetTokens = idleWalletByAssetTokensFrom(observations, now);
-  const idleOnly = sealedPlan ? !sealedPlan.legs.some((leg) => leg.op === "borrow") : !parsed.traits.borrows;
+  // The reserves sealed with the research; the same subtraction the investigation sized with.
+  const walletReserves = prior.evidence?.walletReserves;
+  const { spendableWalletUsd, spendableWalletByAssetUsd, spendableWalletByAssetTokens } = spendableWalletAfterReserves(observations, now, walletReserves);
+  const spendableOnly = sealedPlan ? !sealedPlan.legs.some((leg) => leg.op === "borrow") : !parsed.traits.borrows;
   /**
    * Same gates as `researchTurn`: an unvalued stated amount must not fall through to
    * sizing-to-the-floor, and a borrow shape still needs the user's floor. Idle supply
-   * does not, but it still needs a comparison row — that is how the generator keys assets.
+   * does not, but it still needs a comparison row - that is how the generator keys assets.
    */
-  const candidates = idleOnly
+  const candidates = spendableOnly
     ? generateCandidates({
         grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
         debtUsd: capacity?.debtUsd ?? "0",
         floor: capacity?.floor ?? null,
-          idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens, borrowingAllowed: false, comparisons,
+          spendableWalletUsd, spendableWalletByAssetUsd, spendableWalletByAssetTokens, borrowingAllowed: false, comparisons,
       })
     : capacity && comparisons.length && requestedBorrow?.usd !== null
       ? generateCandidates({
           grossCollateralUsd: capacity.grossCollateralUsd,
           debtUsd: capacity.debtUsd,
           floor: capacity.floor,
-          idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens,
+          spendableWalletUsd, spendableWalletByAssetUsd, spendableWalletByAssetTokens,
           borrowingAllowed: true,
           requestedBorrowUsd: requestedBorrow?.usd ?? null,
           comparisons,
@@ -210,23 +250,27 @@ export async function proposeWorkflow(input: {
     : liveBasis
       ? { grossCollateralUsd: liveBasis.grossCollateralUsd, debtUsd: liveBasis.debtUsd, floor: liveFloor, issue: liveBasis.issue ? { reason: liveBasis.issue, app: liveBasis.app, contract: liveBasis.contract } : null }
       : null;
-  const resolved = sealedPlan
+  let resolved = sealedPlan
     ? resolvePlans([sealedPlan], {
         scope, observations, now, messages: prior.messages,
         capacity: planPosition,
         // Only shapes that sized under the user's real permission were sealed as proposable.
         borrowing: "allowed", comparisons,
         /**
-         * The re-propose here has no fresh model turn — the acceptance was already
+         * The re-propose here has no fresh model turn - the acceptance was already
          * anchored to the user's own words when the investigation sealed it (service.ts),
          * and compacted onto `evidence.slippageAccepted`. Omitting it here (as before) left
          * `ctx.goal` undefined on every composed-plan approval, so `resolvePlans` refused
          * the exact-output AQUSDC swap a second time even after the user said "I accept
-         * the loss" — the sizer and the card never saw the word.
+         * the loss" - the sizer and the card never saw the word.
          */
         goal: prior.evidence?.slippageAccepted ? { slippageAccepted: { accepted: true, sourceQuote: "" } } : undefined,
+        walletReserves,
+        // Sized under the same reading it was shown under: a goal, not an instruction (see `evidence.strategyGoal`).
+        ...(prior.evidence?.strategyGoal ? { strategyGoal: true } : {}),
       })
     : null;
+  if (resolved && sealedPlan && prior.evidence?.portfolioExit) resolved = enforcePortfolioExit(resolved, [sealedPlan], portfolioExitCoverage(observations, now, planPosition));
   const candidate = resolved
     ? resolved.candidates.find((entry) => entry.id === input.candidateId)
     : candidates?.feasible.find((entry) => entry.id === input.candidateId);
@@ -235,33 +279,20 @@ export async function proposeWorkflow(input: {
     const why = resolved?.rejected.map((r) => `${r.leg}: ${r.reason}`).join("; ");
     console.warn("[copilot] proposal candidate no longer resolves", { candidateId: input.candidateId, reused, why: why ?? null });
     throw new ResearchError("candidate_unavailable", why
-      ? `That option no longer sizes on the current reads — ${why}. Start a new investigation.`
+      ? `That option no longer sizes on the current reads - ${why}. Start a new investigation.`
       : "That option is no longer available at the current rates and position. Start a new investigation.");
   }
 
+  const proposalFloor = liveFloor ?? capacity?.floor ?? null;
   const compiled = compileProposal({
-    candidate, scope, observations, floor: capacity?.floor ?? null, now,
+    candidate, scope, observations, floor: proposalFloor, now,
   });
   if (!compiled.ok) {
     throw new ResearchError("compile_failed", compileMessage(compiled.reason));
   }
 
 
-  /**
-   * Two readings of one sentence that disagree about creating debt stop here.
-   *
-   * The investigation's reading and the deterministic extractor's reading of the SAME words
-   * are compared on one axis — does this draw new debt — taken from `OP_FLOW` rather than
-   * from any verb list. Live, 23 Sep: "lend me 50xlm" compiled a `borrow`, while the
-   * extractor read `lend`. Auto-approve was on and the card offered "Approve and run".
-   *
-   * It stops at propose rather than during research so a wrong reading is never the thing
-   * a click executes, while answers, comparisons and refusals are untouched. Both readings
-   * are defensible English, so neither is chosen here: the disagreement is handed back.
-   */
   const spoken = prior.messages[prior.messages.length - 1] ?? "";
-  const extracted = clauseToStep(spoken, { leverage: null, minHf: null });
-  const spokenOp = extracted?.kind === "write" ? extracted.op : null;
   /**
    * Only a SINGLE-action reading can disagree with itself.
    *
@@ -272,22 +303,7 @@ export async function proposeWorkflow(input: {
    * one-step plan is this sentence read back, and only there does "the other reading" mean
    * anything.
    */
-  const soleStep = compiled.steps.length === 1 ? compiled.steps[0] : null;
-  if (spokenOp && soleStep) {
-    const conflicting = disagreesOnNewDebt(spokenOp, soleStep.op) ? soleStep : null;
-    if (conflicting) {
-      const borrowing = drawsNewDebt(conflicting.op) ? conflicting.op : spokenOp;
-      const funded = drawsNewDebt(conflicting.op) ? spokenOp : conflicting.op;
-      throw new ResearchError(
-        "debt_reading_ambiguous",
-        `I read two different things in that, and they disagree about borrowing: one is ` +
-          `${String(funded).replace(/_/g, " ")} using funds you already hold, the other is ` +
-          `${String(borrowing).replace(/_/g, " ")}, which takes on new debt. Say which you meant ` +
-          `and I will prepare it.`,
-        409,
-      );
-    }
-  }
+  assertDebtIntentAgrees(spoken, compiled.steps.map((step) => step.op));
   const derived = compiled.steps.find((step) => step.sizing?.basis === "derived_max_at_floor");
   const assumptions = [
     "Token amounts use the oracle price read for this proposal, not a ticker peg.",
@@ -304,15 +320,16 @@ export async function proposeWorkflow(input: {
    */
   try {
     const record = await journal.create({
-      scope, server: input.server, objective: candidate.label, messages: prior.messages,
-      assumptions, constraints: capacity ? [`Health factor at or above ${capacity.floor}`] : [],
-      floor: capacity?.floor ?? null, steps: compiled.steps,
+      scope, candidateId: input.candidateId, server: input.server, objective: candidate.label, messages: prior.messages,
+      assumptions, constraints: [...(proposalFloor ? [`Health factor at or above ${proposalFloor}`] : []), ...reserveConstraints(walletReserves)],
+      walletReserves,
+      floor: proposalFloor, steps: compiled.steps,
       slippageAccepted: prior.evidence?.slippageAccepted === true,
     });
     void appendAudit({
       at: now, subject: input.subject, action: "proposed",
       workflowId: record.proposal.id, digest: record.proposal.digest,
-      floor: capacity?.floor ?? null,
+      floor: proposalFloor,
     });
     return workflowView(record);
   } catch (error) {
@@ -325,6 +342,10 @@ export async function proposeWorkflow(input: {
 
 export async function validateProposal(proposal: WorkflowProposal): Promise<string | null> {
   return validateWorkflowRisk(proposal, getMcpClient(), AbortSignal.timeout(60_000));
+}
+
+function reserveConstraints(reserves: WorkflowProposal["walletReserves"]): string[] {
+  return (reserves ?? []).map(({ asset, amount }) => `Keep at least ${amount} ${asset} spendable in the wallet after transaction fees.`);
 }
 
 function compileMessage(reason: string): string {

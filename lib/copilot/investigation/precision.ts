@@ -1,12 +1,12 @@
 /**
- * Token precision, as the protocol reports it — never assumed.
+ * Token precision, as the protocol reports it - never assumed.
  *
  * Every SAC line in `vanna_get_wallet_balance`, the vToken line in
  * `vanna_get_vtoken_balance`, and `vanna_get_token_balance` carry `decimals` straight from
  * the contract. A transaction amount with more places than that is refused at simulation,
  * so the resolver cuts every amount it emits to the read's figure. When no read this
  * investigation stated a token's precision, the caller asks for the wallet read (it lists
- * every protocol SAC) rather than guessing — the Notion reference, for instance, lists the
+ * every protocol SAC) rather than guessing - the Notion reference, for instance, lists the
  * USDC family at 6 places while the deployed SACs report 7.
  */
 
@@ -16,8 +16,8 @@ import type { Observation } from "./types";
 export type DecimalsMap = ReadonlyMap<string, number>;
 
 /**
- * A row whose `decimals` describes its token is one that states an amount OF that token —
- * a balance, a raw or human figure, a supply, a redeemable amount — by the MCP's own field
+ * A row whose `decimals` describes its token is one that states an amount OF that token -
+ * a balance, a raw or human figure, a supply, a redeemable amount - by the MCP's own field
  * conventions (`balance*`, `raw*`, `*_raw`, `human`, `*_human`, `total_*`, `redeemable*`).
  * A price row states a price, and its `decimals` is the price's.
  */
@@ -25,8 +25,8 @@ const AMOUNT_FIELD = /^(balance|raw|human|redeemable|total_supply|total_borrow|t
 
 /**
  * `symbol → decimals` from every row of every successful read that states a token amount
- * beside its `decimals`. `XLM_SAC` speaks for `XLM`. A price row also says `decimals` —
- * the PRICE's precision (the oracle reports XLM at 14) — and must not be mistaken for the
+ * beside its `decimals`. `XLM_SAC` speaks for `XLM`. A price row also says `decimals` -
+ * the PRICE's precision (the oracle reports XLM at 14) - and must not be mistaken for the
  * token's: 13 Sep, an XLM repay was cut to 14 places, which the SAC would refuse. When
  * reads disagree the coarsest wins: cutting to fewer places never breaks a contract.
  */

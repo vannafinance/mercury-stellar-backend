@@ -2,13 +2,13 @@
  * The trusted simulator `validateHealthPath` requires.
  *
  * `health-path.ts` validates `ContractHealthState`s and explicitly refuses to accept them
- * from model JSON — but nothing produced them, so the floor check had no source. This is
+ * from model JSON - but nothing produced them, so the floor check had no source. This is
  * that source: it resolves the RiskEngine from the on-chain registry, reads the account's
  * contract-side balance and debt, and asks the contract itself for the verdict.
  *
  * Why the contract and not the app's own figure: four collateral numbers are in
  * circulation (UI store, MCP `account_health`, MCP `account_collateral`, and the contract)
- * and they disagree materially — measured 2026-09-08, the app reported gross collateral
+ * and they disagree materially - measured 2026-09-08, the app reported gross collateral
  * 2858.90 while the contract reported 3201.70 for the same account. Only the contract's
  * number decides liquidation, so a health floor sized against any other one is sized
  * against a number that cannot liquidate anybody.
@@ -81,7 +81,7 @@ function u256(value: unknown, method: string): string {
  *
  * `leg` names the step this state belongs to, so a caller projecting a sequence can label
  * which leg breached. `get_current_total_balance` and `get_current_total_borrows` must land
- * on the SAME ledger — `validateHealthPath` rejects mixed ledgers because a numerator and
+ * on the SAME ledger - `validateHealthPath` rejects mixed ledgers because a numerator and
  * denominator from different ledgers are not a health factor. One retry covers a ledger
  * closing between the two reads.
  */
@@ -137,7 +137,7 @@ export async function readContractHealthState(
   const observedAt = now();
 
   // Ask the contract for the verdict rather than re-deriving it. The boundary is exclusive
-  // — measured against testnet, exactly 1.100000 is unhealthy and 1.100001 is healthy — so
+  // - measured against testnet, exactly 1.100000 is unhealthy and 1.100001 is healthy - so
   // a locally recomputed comparison would disagree with the chain at the boundary.
   const verdict = await simulate(rpc, engine, "is_account_healthy", [
     StellarSdk.nativeToScVal(BigInt(balanceWad), { type: "u256" }),
@@ -169,7 +169,7 @@ function wadUsd(wad: string, method: string): number {
 }
 
 /**
- * RiskEngine.liquidation_snapshot — the function that decides liquidation.
+ * RiskEngine.liquidation_snapshot - the function that decides liquidation.
  *
  * Used as a sizing fallback when the live MCP dispatcher does not yet expose
  * the audited read. Same simulate path as `readContractHealthState`; never a write.

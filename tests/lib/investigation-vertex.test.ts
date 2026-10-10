@@ -6,7 +6,7 @@ vi.mock("google-auth-library", () => ({
   },
 }));
 
-import { generateInvestigationJson } from "@/lib/copilot/vertex";
+import { generateInvestigationJson, INVESTIGATION_MAX_OUTPUT_TOKENS } from "@/lib/copilot/vertex";
 
 beforeEach(() => {
   vi.stubEnv("GOOGLE_WORKLOAD_IDENTITY_AUDIENCE", "");
@@ -35,8 +35,11 @@ describe("Vertex investigation transport", () => {
     expect(init.signal).toBe(signal);
     const body = JSON.parse(String(init.body));
     expect(body.generationConfig).toEqual({
-      responseMimeType: "application/json", maxOutputTokens: 4096, thinkingConfig: { thinkingLevel: "MEDIUM" },
+      responseMimeType: "application/json", maxOutputTokens: INVESTIGATION_MAX_OUTPUT_TOKENS, thinkingConfig: { thinkingLevel: "MEDIUM" },
     });
+    // Thinking is spent from this same budget on Gemini 3, so it must leave room for it: at 4096 a
+    // MEDIUM turn stopped near 3.9k thinking tokens with MAX_TOKENS and lost its decision.
+    expect(INVESTIGATION_MAX_OUTPUT_TOKENS).toBeGreaterThanOrEqual(16_384);
     expect(body).not.toHaveProperty("tools");
   });
 

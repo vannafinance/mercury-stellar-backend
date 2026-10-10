@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Health-factor dial — the single most important number on this page, as a gauge.
+ * Health-factor dial - the single most important number on this page, as a gauge.
  *
  * Ported from the Claude Design `Copilot.dc.html` "Your account" tile. A ratio in a table
  * says nothing about proximity: 1.35 and 3.40 are both just numbers until you can see that
@@ -16,7 +16,7 @@
  *   - No debt is not the same as a high ratio. With nothing borrowed the health factor is
  *     mathematically infinite; the needle parks at the top of the scale and the figure reads
  *     "∞", rather than showing some large number that invites comparison.
- *   - An unavailable reading is drawn as unavailable — grey, no needle, no arc highlight.
+ *   - An unavailable reading is drawn as unavailable - grey, no needle, no arc highlight.
  *     A gauge that defaults to full-green when the read failed is worse than no gauge, and
  *     that failure has happened on this surface before.
  *
@@ -73,7 +73,7 @@ export function healthDialHfSub(opts: {
   basis: "posted" | "page";
 }): string {
   if (opts.unknown) return "position read unavailable";
-  if (opts.noDebt) return "no debt — nothing to liquidate";
+  if (opts.noDebt) return "no debt - nothing to liquidate";
   if (opts.basis === "posted") return "posted collateral · unsafe at 1.10 or below";
   return "includes unposted · risk engine uses posted (unsafe at 1.10)";
 }
@@ -104,7 +104,7 @@ const SEGMENTS: Array<{ z: Exclude<HealthZone, "unknown">; a: number; b: number 
 ];
 
 export interface HealthDialProps {
-  /** Live health factor. null when the position read failed — drawn as unavailable. */
+  /** Live health factor. null when the position read failed - drawn as unavailable. */
   hf: number | null;
   /**
    * What `hf` measures. The 1.10 danger arc is the RiskEngine posted-collateral line.
@@ -114,7 +114,7 @@ export interface HealthDialProps {
   basis?: "posted" | "page";
   /** The user's own floor, or the policy default. Marked as a violet tick. */
   floor?: number;
-  /** Where it would land if the pending plan ran — drawn as a hollow "from" marker. */
+  /** Where it would land if the pending plan ran - drawn as a hollow "from" marker. */
   hfBefore?: number | null;
   collateralUsd?: number | null;
   debtUsd?: number | null;
@@ -154,7 +154,7 @@ export function HealthDial({
   const floorIn = dialPoint(dialT(floor), 57);
   const floorOut = dialPoint(dialT(floor), 75);
 
-  const hfText = unknown ? "—" : noDebt ? "∞" : (hf as number).toFixed(2);
+  const hfText = unknown ? "-" : noDebt ? "∞" : (hf as number).toFixed(2);
   /**
    * "liquidates at 1.10" read as though 1.10 itself were survivable. It is not: the
    * deployed RiskEngine's `is_account_healthy` returns false at exactly 1.100000 and true
@@ -257,7 +257,7 @@ export function HealthDial({
             strokeLinecap="round"
           />
 
-          {/* No needle when the reading is unavailable — pointing at a zone we did not
+          {/* No needle when the reading is unavailable - pointing at a zone we did not
               measure would assert something we do not know. */}
           {needleValue != null ? (
             <>
@@ -352,7 +352,7 @@ export function HealthDial({
                     color: "var(--g900)",
                   }}
                 >
-                  {row.value == null ? "—" : money(row.value)}
+                  {row.value == null ? "-" : money(row.value)}
                 </span>
               </div>
               <div

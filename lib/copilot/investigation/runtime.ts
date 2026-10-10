@@ -1,7 +1,8 @@
 import { MCPError, type MCPClient } from "../mcp-client";
 import { withInvestigationTurn } from "../telemetry";
 import { readCapabilities, resolveRead } from "./capabilities";
-import { isRecord, lastDecisionRefusal, parseDecision } from "./decision";
+import { catalogEntry } from "./catalog";
+import { isRecord, lastDecisionRefusal, lastDecisionRepair, parseDecision } from "./decision";
 import { annotateVenueAssets } from "./facts-by-shape";
 import { boundOnChainStrings } from "./onchain-strings";
 import type {
@@ -26,7 +27,7 @@ const CEILINGS: Readonly<InvestigationLimits> = Object.freeze({
   /**
    * 45s, down from 55s. The loop is not the only thing inside the route's 75s promise:
    * scope resolution (20s) and the authoritative position read (8s) both block it, and
-   * 20 + 8 + 55 came to 83s — past the deadline, which the user saw as "the connection
+   * 20 + 8 + 55 came to 83s - past the deadline, which the user saw as "the connection
    * closed before the investigation finished". The loop needs less than it did anyway: the
    * position is now seeded as evidence, so three reads and a turn or two came out of every
    * account question, and each remaining read is capped at 15s of its own.
@@ -44,7 +45,36 @@ const CEILINGS: Readonly<InvestigationLimits> = Object.freeze({
   maxObservationBytes: 16_384,
 });
 
-function boundedLimits(overrides: Partial<InvestigationLimits> = {}): InvestigationLimits {
+/**
+ * How long one read may take: the base limit times the catalogue's own cost class for it. A "moderate" read
+ * (max_borrow, can_borrow) searches the chain with a round of concurrent probes, about 5 s alone and 19 s when
+ * four assets are searched at once against the public RPC (8 Oct, "borrow the maximum I can safely": the fourth
+ * read hit the flat 15 s limit and the whole answer lost its figures). The run's own deadline still bounds the
+ * whole loop, so a longer read allowance cannot extend a run.
+ */
+const READ_COST_FACTOR: Record<string, number> = { cheap: 1, moderate: 2, expensive: 3 };
+export function readDeadlineMs(baseMs: number, cost: string | undefined): number {
+  return baseMs * (READ_COST_FACTOR[cost ?? "cheap"] ?? 1);
+}
+
+/**
+ * A failed read, described by facts that cannot carry a secret: whether it ran out of time,
+ * the error class, and the MCP code and HTTP status. Never the exception message, which can
+ * hold upstream credentials. 23 Sep: every failure read "MCP read failed. No value was
+ * inferred.", so a timeout, a 5xx and a refused call looked identical and could not be told
+ * apart from the diagnostics.
+ */
+export function readFailureText(error: unknown, timedOut: boolean): string {
+  if (timedOut) return "MCP read exceeded its time limit. No value was inferred.";
+  const parts = [
+    error instanceof Error ? error.name : "unknown",
+    error instanceof MCPError && error.code ? `code ${error.code}` : null,
+    error instanceof MCPError && error.httpStatus ? `HTTP ${error.httpStatus}` : null,
+  ].filter(Boolean);
+  return `MCP read failed (${parts.join(", ")}). No value was inferred.`;
+}
+
+export function boundedLimits(overrides: Partial<InvestigationLimits> = {}): InvestigationLimits {
   const limits = { ...CEILINGS };
   for (const key of Object.keys(CEILINGS) as Array<keyof InvestigationLimits>) {
     const value = overrides[key] ?? CEILINGS[key];
@@ -90,7 +120,6 @@ function clientSafeReadError(error: unknown): string {
     : "The read was requested with invalid arguments.";
 }
 
-const RATE_READS = new Set(["earn_market", "blend_markets", "blend_reserve", "aquarius_markets"]);
 
 const SNAPSHOT_BACKED = new Set(["account_health", "account_debt", "account_collateral"]);
 
@@ -208,14 +237,16 @@ export async function runInvestigation(
     const copy = structuredClone(seed);
     return { ...copy, data: annotateVenueAssets(copy) };
   });
+  // Gathered while the first model turn runs; taken the moment that turn answers (see `seedLater`).
+  let pendingSeed: Promise<readonly Observation[]> | null = request.seedLater ?? null;
   let modelTurns = 0;
   let toolCalls = 0;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort("deadline"), limits.maxDurationMs);
   const signal = dependencies.signal
     ? AbortSignal.any([controller.signal, dependencies.signal]) : controller.signal;
-  const finish = (outcome: InvestigationOutcome): InvestigationResult => ({
-    outcome, observations,
+  const finish = (outcome: InvestigationOutcome, stopDetail?: string): InvestigationResult => ({
+    outcome, observations, ...(stopDetail ? { stopDetail } : {}),
     usage: { modelTurns, toolCalls, elapsedMs: Math.max(0, now() - startedAt) },
     executionAllowed: false,
   });
@@ -234,47 +265,28 @@ export async function runInvestigation(
     role: entry.role, text: entry.text.slice(0, 1200),
   }));
   let decisionFeedback: string | undefined;
+  // The model is told once, not stopped, when it asks again for reads it already holds.
+  let repeatNudged = false;
+  let shapeRepairRequested = false;
+  // Run-local labels distinguish identical resolved reads without exposing payloads or addresses.
+  const readTraceKeys = new Map<string, number>();
+  const readTraceKey = (key: string) => {
+    const existing = readTraceKeys.get(key);
+    if (existing !== undefined) return existing;
+    const next = readTraceKeys.size + 1;
+    readTraceKeys.set(key, next);
+    return next;
+  };
   const progress = (event: InvestigationProgress) => {
     // UI delivery failures must not alter the research decision or create retries.
     try { dependencies.onProgress?.(event); } catch { /* client may have disconnected */ }
   };
-  /**
-   * A deadline with usable evidence is still a research handoff. Labelling it `stopped`
-   * dropped candidate generation (`service.ts` requires `research_complete`) and turned
-   * a timed-out investigation into an empty result.
-   */
-  const finishStop = (reason: Extract<InvestigationOutcome, { kind: "stopped" }>["reason"]): InvestigationResult => {
-    if (reason !== "deadline") return finish({ kind: "stopped", reason });
-    const usable = observations.filter((observation) => observation.status === "ok");
-    if (!usable.length) return finish({ kind: "stopped", reason: "deadline" });
-    const missed = [...new Set(observations.filter((observation) => observation.status === "error")
-      .map((observation) => observation.capability.replaceAll("_", " ")))];
-    const established = [...new Set(usable.map((observation) => observation.capability.replaceAll("_", " ")))];
-    const establishedText = established.length === 1
-      ? `Recorded ${established[0]}.`
-      : established.length === 2
-        ? `Recorded ${established[0]} and ${established[1]}.`
-        : `Recorded ${established.slice(0, -1).join(", ")}, and ${established[established.length - 1]}.`;
-    const missingText = missed.length ? ` Still missing: ${missed.join(", ")}.` : "";
-    return finish({
-      kind: "research_complete",
-      partial: true,
-      goal: {
-        intent: usable.some((observation) => RATE_READS.has(observation.capability)) ? "strategy" : "answer",
-        relation: "new",
-        objective: request.message,
-        constraints: missed.length
-          ? [`Partial research: the time budget ran out before ${missed.join(", ")}`]
-          : ["Partial research: the time budget ran out"],
-        borrowing: "unspecified",
-      },
-      findings: [{
-        summary: `${establishedText}${missingText}`.trim(),
-        evidenceIds: usable.map((observation) => observation.id),
-      }],
-      openQuestions: [],
-    });
-  };
+  // Reads stop before the run deadline so the model can interpret the evidence
+  // against the user's request. Observed capabilities never determine intent.
+  const conclusionReserveMs = Math.min(limits.maxReadDurationMs, Math.floor(limits.maxDurationMs / 3));
+  const readBudgetLeft = () => Math.max(0, limits.maxDurationMs - conclusionReserveMs - (now() - startedAt));
+  const finishStop = (reason: Extract<InvestigationOutcome, { kind: "stopped" }>["reason"]): InvestigationResult =>
+    finish({ kind: "stopped", reason });
 
   try {
     while (modelTurns < limits.maxTurns) {
@@ -290,7 +302,7 @@ export async function runInvestigation(
           message: request.message, history: structuredClone(history), context: { ...context },
           ...(decisionFeedback ? { decisionFeedback } : {}),
           capabilities: readCapabilities(scope), observations: structuredClone(observations),
-          remaining: { turns: limits.maxTurns - modelTurns, toolCalls: limits.maxToolCalls - toolCalls },
+          remaining: { turns: limits.maxTurns - modelTurns, toolCalls: readBudgetLeft() > 0 ? limits.maxToolCalls - toolCalls : 0 },
           ...(request.task ? { task: structuredClone(request.task) } : {}),
         }, signal), signal);
         logPhase("model", { turn: modelTurns, ms: now() - modelStarted });
@@ -303,29 +315,51 @@ export async function runInvestigation(
         }
         return halted ? finishStop(halted) : finish({ kind: "stopped", reason: "model_unavailable" });
       }
+      if (pendingSeed) {
+        const late = await interruptible(() => pendingSeed!, signal).catch(() => [] as readonly Observation[]);
+        pendingSeed = null;
+        for (const entry of late) {
+          const copy = structuredClone(entry);
+          observations.push({ ...copy, data: annotateVenueAssets(copy) });
+        }
+      }
       const afterModel = stopReason();
       if (afterModel) return finishStop(afterModel);
       let decision;
+      let repair: ReturnType<typeof lastDecisionRepair> = null;
       try {
         const encoded = JSON.stringify(raw);
-        decision = typeof encoded === "string" && Buffer.byteLength(encoded, "utf8") <= 16_384
-          ? parseDecision(raw) : null;
+        if (typeof encoded === "string" && Buffer.byteLength(encoded, "utf8") <= 16_384) {
+          decision = parseDecision(raw);
+          repair = lastDecisionRepair();
+        } else decision = null;
       } catch {
         decision = null;
+        repair = null;
       }
       if (!decision) {
         // Say which check the model failed; the card only says "invalid decision".
         const refusal = lastDecisionRefusal() || "unparseable";
-        if (!decisionFeedback && refusal === "findings: every finding stated a figure with no evidence (1)") {
-          decisionFeedback = "Your last completion was rejected because its numeric finding had no evidenceIds. Return the same completion with every live numeric finding citing an existing successful observation id, or omit that finding. Do not invent an id.";
+        if (!decisionFeedback && repair) {
+          decisionFeedback = repair === "empty_findings"
+            ? "Your last completion had no findings. Return a valid completion that answers the user's request using the observations already present, with at least one meaningful finding and valid evidence references. Preserve the requested actions and scope. Do not invent data or repeat reads merely to repair this completion. If evidence is missing, request only the missing read."
+            : "Your last completion was rejected because its numeric finding had no evidenceIds. Return the same completion with every live numeric finding citing an existing successful observation id, or omit that finding. Do not invent an id or repeat reads merely to repair the completion.";
           console.warn("[copilot] investigation decision repair requested", { turn: modelTurns, reason: refusal });
           return null;
         }
         console.warn("[copilot] investigation decision refused", { turn: modelTurns, reason: refusal, keys: isRecord(raw) ? Object.keys(raw) : typeof raw });
-        return finish({ kind: "stopped", reason: "invalid_decision" });
+        return finish({ kind: "stopped", reason: "invalid_decision" }, refusal);
       }
       span.setAttribute("vanna.investigation.decision", decision.kind);
       if (decision.kind === "research_complete") {
+        if (decision.goal.intent === "strategy" && decision.droppedPlans && !decision.plans?.length && !decision.goal.actions?.length) {
+          const reasons = decision.droppedPlanReasons?.join("; ") || "No valid action or plan survived structural validation";
+          if (shapeRepairRequested) return finish({ kind: "stopped", reason: "invalid_decision" }, reasons);
+          shapeRepairRequested = true;
+          decisionFeedback = `Your requested action shapes were rejected: ${reasons}. Return research_complete with structurally valid actions or plans using the declared leg and sizing schema. Preserve the user's scope and sizing. Do not invent inputs, omit requested actions or read observations again just to repair the shape.`;
+          console.warn("[copilot] investigation shape repair requested", { turn: modelTurns, reasons: decision.droppedPlanReasons });
+          return null;
+        }
         const evidence = new Map(observations.map((observation) => [observation.id, observation]));
         /**
          * Which id failed and why. The sibling `invalid_decision` path has said so since it
@@ -345,10 +379,10 @@ export async function runInvestigation(
         }
         if (!rejects.length) return finish(decision);
         console.warn("[copilot] investigation evidence refused", { turn: modelTurns, rejects: rejects.slice(0, 8) });
-        return finish({ kind: "stopped", reason: "invalid_evidence" });
+        return finish({ kind: "stopped", reason: "invalid_evidence" }, rejects.slice(0, 8).join("; "));
       }
       if (decision.kind !== "inspect") return finish(decision);
-      if (toolCalls >= limits.maxToolCalls) return finish({ kind: "stopped", reason: "tool_budget" });
+      if (toolCalls >= limits.maxToolCalls || readBudgetLeft() <= 0) return finish({ kind: "stopped", reason: "tool_budget" });
 
       // Resolve each read independently. A single bad argument used to abort the whole
       // investigation as `invalid_decision`; it is now one failed observation so the loop
@@ -379,18 +413,35 @@ export async function runInvestigation(
       if (toolCalls + resolved.length > limits.maxToolCalls) {
         return finish({ kind: "stopped", reason: "tool_budget" });
       }
-      // Every read in the batch must be new. Re-asking for fresh evidence already held is
-      // the signal the loop is not progressing, exactly as in the single-read case.
-      for (const { key } of resolved) {
+      /**
+       * A read the investigation already holds is not read again: it is left out of the batch, and
+       * the rest of the batch runs. A model that asks again for something it has is not stuck, it
+       * is not looking at what it holds, and ending the whole run for it (7 Oct, live: a strategy
+       * prompt died on "repeated read" with eight good reads in hand) threw away work that only
+       * needed one more sentence. When NOTHING in the batch is new, the model is told once what it
+       * already has and asked to conclude or request something else; a second time is the loop not
+       * progressing, and that stops it as before.
+       */
+      const repeated = new Set(resolved.filter(({ key }) => {
         const prior = seen.get(key);
-        if (prior && ((prior.status === "ok" && now() - prior.at <= limits.maxEvidenceAgeMs) || prior.attempts >= 2)) {
-          return finish({ kind: "stopped", reason: "repeated_read" });
+        return !!prior && ((prior.status === "ok" && now() - prior.at <= limits.maxEvidenceAgeMs) || prior.attempts >= 2);
+      }).map(({ key }) => key));
+      if (repeated.size) {
+        const rest = resolved.filter(({ key }) => !repeated.has(key));
+        if (!rest.length) {
+          if (repeatNudged) return finish({ kind: "stopped", reason: "repeated_read" });
+          repeatNudged = true;
+          const asked = [...new Set(resolved.map(({ request }) => request.capability))].join(", ");
+          decisionFeedback = `You asked again for ${asked}, which your observations already hold. Do not read them again: conclude with research_complete from the observations you have, or request only a read that is not there yet.`;
+          console.warn("[copilot] investigation repeated read, model told to conclude", { turn: modelTurns, capabilities: asked });
+          return null;
         }
+        resolved.splice(0, resolved.length, ...rest);
       }
 
       /**
-       * Run the batch CONCURRENTLY. These reads are independent by construction — that is
-       * the precondition for batching them — and MCP latency, not model latency, is what
+       * Run the batch CONCURRENTLY. These reads are independent by construction - that is
+       * the precondition for batching them - and MCP latency, not model latency, is what
        * pushed a four-read turn past the client's timeout. Ids are assigned before dispatch
        * and results appended in request order, so evidence numbering stays deterministic
        * regardless of which read returns first.
@@ -405,8 +456,16 @@ export async function runInvestigation(
           observedAt: now(), status: "error",
         };
         const startedAt = observation.observedAt;
+        const traceKey = readTraceKey(key);
+        logPhase("read_start", {
+          turn: modelTurns, read_key: traceKey, capability: request.capability,
+          tool: read?.tool ?? null,
+          asset: read?.args.symbol ?? null,
+          venue: read?.args.venue ?? null,
+        });
         const finishRead = (source: "mcp" | "snapshot" | "invalid") => {
           logPhase("read", {
+            turn: modelTurns, read_key: traceKey,
             capability: request.capability, ms: now() - startedAt,
             status: observation.status, source,
           });
@@ -435,7 +494,7 @@ export async function runInvestigation(
          * meant one stalled call held the entire concurrent batch until the run expired,
          * which is how a real turn produced no evidence at all.
          */
-        const readSignal = AbortSignal.any([signal, AbortSignal.timeout(limits.maxReadDurationMs)]);
+        const readSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min(readBudgetLeft(), readDeadlineMs(limits.maxReadDurationMs, catalogEntry(request.capability)?.cost))))]);
         const settled = interruptible(
           () => dependencies.mcp.call(read.tool, read.args, scope.trader ?? undefined), readSignal,
         ).then((response) => {
@@ -477,9 +536,7 @@ export async function runInvestigation(
             code: error instanceof MCPError ? error.code : undefined,
             httpStatus: error instanceof MCPError ? error.httpStatus : undefined,
           });
-          observation.error = timeout
-            ? "MCP read exceeded its time limit. No value was inferred."
-            : "MCP read failed. No value was inferred.";
+          observation.error = readFailureText(error, timeout);
         }).finally(() => {
           finishRead("mcp");
         });
@@ -495,7 +552,7 @@ export async function runInvestigation(
       /**
        * On a DEADLINE, record the batch before stopping. Returning early discarded every
        * read that had already completed in the same batch, so the run reported "0 reads"
-       * while holding real evidence it had paid for — the user waited a minute and got
+       * while holding real evidence it had paid for - the user waited a minute and got
        * nothing back. Running out of time is a reason to stop reading, not to throw away
        * what came back.
        *

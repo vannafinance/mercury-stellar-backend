@@ -8,8 +8,8 @@
  *
  *   { error: "wallet_not_bound", http_status: 403 }
  *
- * The operator did the only thing the UI suggested — disconnected and reconnected
- * the wallet through the Privy modal, while signed in — and got the same 403. That
+ * The operator did the only thing the UI suggested - disconnected and reconnected
+ * the wallet through the Privy modal, while signed in - and got the same 403. That
  * is not a flaky reconnect: the two facts are stored in different systems.
  *
  *   Privy "Connect Wallet"  → a browser wallet session.
@@ -20,13 +20,13 @@
  *                             signer on their own wallet.
  *
  * Nothing a wallet-connect modal does writes that row. And nothing in this app ever
- * called connect_start — grepping it found no caller at all — so the binding could
+ * called connect_start - grepping it found no caller at all - so the binding could
  * never come into existence, and the 403 was permanent by construction.
  *
  * These tests drive the REAL POST /api/copilot handler (network + Privy verifier
  * faked) because the thing that must hold is end-to-end: the 403 has to turn into a
  * connect_start call that CARRIES THE ASSERTION. A connect_start without it still
- * returns a working link, still connects the wallet, and still writes no binding —
+ * returns a working link, still connects the wallet, and still writes no binding -
  * a flow that looks like it worked and fixes nothing.
  */
 
@@ -70,10 +70,11 @@ let realFetch: typeof fetch;
 /** What the fake Sign Service (behind MCP) should answer for enable_auto_sign. */
 let bound = false;
 
-/** Non-MCP HTTP the copilot server made: the gateway page read + register forward. */
+/** Non-MCP HTTP: signer-page read plus register only when the MCP action is absent. */
 let gatewayCalls: Array<{ url: string; method: string; body: string; origin: string | null }> = [];
-/** Status the fake gateway's register proxy returns. */
+/** Status the fake MCP register action returns. */
 let registerStatus = 200;
+let registerActionAvailable = true;
 
 function structured(payload: unknown) {
   return new Response(
@@ -174,12 +175,15 @@ function installFakeNetwork() {
       }
       return structured({
         status: "enabled",
+        cap_unit: "token_units", network: "testnet",
+        token_caps_enforced: true,
         created: true,
         session_id: "sess_1",
         wallet_address: TRADER,
-        default_cap_usd: 1000,
-        max_per_tx_usd: 1000,
-        max_per_day_usd: 1000,
+        default_per_tx_tokens: 1000,
+        default_per_day_tokens: 5000,
+        max_per_tx_tokens: 1000,
+        max_per_day_tokens: 5000,
         summary: "Auto-sign enabled for wallet GBC2B7N2...",
       });
     }
@@ -204,12 +208,14 @@ function installFakeNetwork() {
       }
       return structured({
         status: "enabled",
+        cap_unit: "token_units", network: "testnet",
+        token_caps_enforced: true,
         enabled: true,
         wallet_address: TRADER,
         session_id: "sess_1",
-        max_per_tx_usd: 1000,
-        max_per_day_usd: 1000,
-        summary: "Auto-sign is on for GBC2B7N2... Spend caps ≈ $1000.00/tx and $1000.00/day (Sign Service).",
+        max_per_tx_tokens: 1000,
+        max_per_day_tokens: 5000,
+        summary: "Auto-sign is on for GBC2B7N2... Spend caps ≈ $1000.00/tx and $5000.00/day (Sign Service).",
       });
     }
     if (name === "vanna_wallet" && action === "connect_start") {
@@ -219,6 +225,31 @@ function installFakeNetwork() {
         expires_in: 900,
         does_not_enable_auto_sign: true,
         poll_schedule_seconds: [2, 4, 8, 16, 32],
+      });
+    }
+    if (name === "vanna_wallet" && action === "connect_register") {
+      if (!registerActionAvailable) {
+        return structured({
+          error: "invalid_input",
+          code: "unknown_action",
+          message: "The older dispatcher does not expose this action.",
+        });
+      }
+      if (parsed.params?.arguments?.kwargs?.request_id === "req_never_started_by_us") {
+        return structured({ status: "error", error: "unknown_request" });
+      }
+      if (registerStatus === 200) {
+        bound = true;
+        return structured({
+          status: "ok",
+          connected: true,
+          identity_binding_written: true,
+        });
+      }
+      return structured({
+        status: "error",
+        error: registerStatus === 410 ? "expired" : "quorum_not_signer",
+        http_status: registerStatus,
       });
     }
     if (name === "vanna_wallet" && action === "connect_status") {
@@ -255,8 +286,8 @@ async function postCopilot(
       enabled?: boolean;
       status?: string;
       error?: string | null;
-      max_per_tx_usd?: number | null;
-      max_per_day_usd?: number | null;
+      max_per_tx_tokens?: number | null;
+      max_per_day_tokens?: number | null;
     } | null;
     wallet_bind?: {
       status?: string;
@@ -264,8 +295,8 @@ async function postCopilot(
       signer_id?: string | null;
       request_id?: string | null;
       retry_action?: string | null;
-      max_per_tx_usd?: number | string | null;
-      max_per_day_usd?: number | string | null;
+      max_per_tx_tokens?: number | string | null;
+      max_per_day_tokens?: number | string | null;
       poll_schedule_seconds?: number[] | null;
     } | null;
   };
@@ -288,7 +319,7 @@ function setEnv() {
 // real /api/copilot route, which pulls in the whole copilot brain; that load is over five
 // seconds while the full suite keeps every worker busy, and charged to a 5s test timeout it
 // made the first test in this file fail with "Test timed out in 5000ms" on about every
-// other full-suite run while passing alone every time (measured: 5277ms — marginally over,
+// other full-suite run while passing alone every time (measured: 5277ms - marginally over,
 // not hanging). Env first, because the graph reads MCP_MODE and the WorkOS settings as it
 // loads. See the longer note in assertion-end-to-end.test.ts.
 beforeAll(async () => {
@@ -303,6 +334,7 @@ beforeEach(async () => {
   gatewayCalls = [];
   bound = false;
   registerStatus = 200;
+  registerActionAvailable = true;
   installFakeNetwork();
   const { resetMcpClient } = await import("@/lib/copilot/mcp-client");
   resetMcpClient();
@@ -326,7 +358,7 @@ describe("wallet_not_bound starts the additional-signer consent", () => {
     expect(data.wallet_bind?.status).toBe("needs_consent");
   });
 
-  it("connect_start carries the user assertion — without it no binding is written", async () => {
+  it("connect_start carries the user assertion - without it no binding is written", async () => {
     await postCopilot({ action: "use_defaults" });
 
     const [connect] = callsTo("vanna_wallet", "connect_start");
@@ -365,13 +397,13 @@ describe("wallet_not_bound starts the additional-signer consent", () => {
   it("carries custom caps through the detour so the user re-enters nothing", async () => {
     const data = await postCopilot({
       action: "custom",
-      max_per_tx_usd: 250,
-      max_per_day_usd: 900,
+      max_per_tx_tokens: 250,
+      max_per_day_tokens: 900,
     });
     expect(data.kind).toBe("needs_wallet_bind");
     expect(data.wallet_bind?.retry_action).toBe("custom");
-    expect(data.wallet_bind?.max_per_tx_usd).toBe(250);
-    expect(data.wallet_bind?.max_per_day_usd).toBe(900);
+    expect(data.wallet_bind?.max_per_tx_tokens).toBe(250);
+    expect(data.wallet_bind?.max_per_day_tokens).toBe(900);
   });
 
   it("disable also hits the bind gate and says so instead of reporting success", async () => {
@@ -384,7 +416,7 @@ describe("wallet_not_bound starts the additional-signer consent", () => {
     for (const action of ["start", "use_defaults", "custom", "disable"]) {
       toolCalls = [];
       const data = await postCopilot(
-        action === "custom" ? { action, max_per_tx_usd: 100 } : { action },
+        action === "custom" ? { action, max_per_tx_tokens: 100 } : { action },
       );
       expect(data.kind).toBe("needs_wallet_bind");
       // No session was created, and nothing in the copy pretends one was.
@@ -392,10 +424,10 @@ describe("wallet_not_bound starts the additional-signer consent", () => {
     }
   });
 
-  it("never instructs the user to reconnect — it says why that cannot work", async () => {
+  it("never instructs the user to reconnect - it says why that cannot work", async () => {
     const data = await postCopilot({ action: "use_defaults" });
-    // The dead end the operator actually walked into. The copy is allowed — required,
-    // even — to mention reconnecting, but only to rule it out; never as the next step.
+    // The dead end the operator actually walked into. The copy is allowed - required,
+    // even - to mention reconnecting, but only to rule it out; never as the next step.
     expect(data.message).not.toMatch(
       /(please |try |now )?(re-?connect|connect) your wallet( again)?[.,]/i,
     );
@@ -448,7 +480,7 @@ describe("after the consent completes, the original request finishes", () => {
   });
 
   it("a still-unbound wallet after a completed consent is reported as a server fault", async () => {
-    // connect_status says connected, but the bind never landed — the one case that is
+    // connect_status says connected, but the bind never landed - the one case that is
     // a real bug rather than a missing user action. It must not loop on another link.
     const prev = globalThis.fetch;
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -482,7 +514,7 @@ describe("after the consent completes, the original request finishes", () => {
  *
  * Sending the user to an external page to click "authorize", then back to click "I've
  * approved it", is a second quest for a decision they already made by flipping the
- * switch — and it reads as broken. Everything needed is in the page already: Privy's
+ * switch - and it reads as broken. Everything needed is in the page already: Privy's
  * SDK holds their session and is the only thing that CAN grant the consent, so the one
  * step the browser cannot make is the cross-origin register callback. The server makes
  * that, which is what these tests pin.
@@ -512,15 +544,11 @@ describe("the in-app silent bind is the primary path", () => {
       retry_action: "use_defaults",
     });
 
-    const register = gatewayCalls.filter(
-      (c) => c.url === `${GATEWAY}/wallets/connect/register` && c.method === "POST",
-    );
-    expect(register).toHaveLength(1);
-    // Only public data crosses — the same body the connect page sends.
-    expect(JSON.parse(register[0].body)).toEqual({
-      request_id: REQUEST_ID,
-      walletAddress: TRADER,
-    });
+    const [register] = callsTo("vanna_wallet", "connect_register");
+    expect(register).toBeDefined();
+    expect(register.kwargs).toEqual({ request_id: REQUEST_ID, wallet_address: TRADER });
+    expect(register.assertion).toBe(PRIVY_TOKEN);
+    expect(gatewayCalls.some((c) => c.url === `${GATEWAY}/wallets/connect/register`)).toBe(false);
 
     expect(done.kind).toBe("answer");
     expect(done.message).toMatch(/auto-sign/i);
@@ -528,7 +556,7 @@ describe("the in-app silent bind is the primary path", () => {
     expect(callsTo("vanna_sign", "enable_auto_sign").length).toBeGreaterThan(0);
   });
 
-  it("register failing keeps the wallet unbound — addSigners is not taken on trust", async () => {
+  it("register failing keeps the wallet unbound - addSigners is not taken on trust", async () => {
     registerStatus = 403; // main service: quorum is not actually a signer
     const started = await postCopilot({ action: "use_defaults" });
     const out = await postCopilot({
@@ -543,6 +571,28 @@ describe("the in-app silent bind is the primary path", () => {
     // Fails CLOSED: never reached the enable, so no session exists.
     expect(callsTo("vanna_sign", "enable_auto_sign")).toHaveLength(1); // only the first probe
     expect(callsTo("vanna_wallet", "connect_status")).toHaveLength(0);
+    expect(gatewayCalls.some((c) => c.url === `${GATEWAY}/wallets/connect/register`)).toBe(false);
+  });
+
+  it("falls back to the gateway only when the MCP register action is absent", async () => {
+    registerActionAvailable = false;
+    const started = await postCopilot({ action: "use_defaults" });
+    const out = await postCopilot({
+      action: "bind_register",
+      request_id: started.wallet_bind?.request_id,
+      wallet_address: TRADER,
+      retry_action: "use_defaults",
+    });
+
+    const gatewayRegister = gatewayCalls.filter(
+      (c) => c.url === `${GATEWAY}/wallets/connect/register` && c.method === "POST",
+    );
+    expect(gatewayRegister).toHaveLength(1);
+    expect(JSON.parse(gatewayRegister[0].body)).toEqual({
+      request_id: REQUEST_ID,
+      walletAddress: TRADER,
+    });
+    expect(out.kind).toBe("answer");
   });
 
   it("an expired request is reported as expired, not as a generic failure", async () => {
@@ -559,7 +609,7 @@ describe("the in-app silent bind is the primary path", () => {
 
   it("bind_register never forwards to a target the browser chose", async () => {
     // The request body carries no origin/url field at all, and an unknown request_id
-    // resolves to no origin rather than being guessed — so there is nothing an
+    // resolves to no origin rather than being guessed - so there is nothing an
     // attacker could point the server's fetch at.
     const out = await postCopilot({
       action: "bind_register",
@@ -576,8 +626,8 @@ describe("the in-app silent bind is the primary path", () => {
   it("caps survive the silent path too", async () => {
     const started = await postCopilot({
       action: "custom",
-      max_per_tx_usd: 250,
-      max_per_day_usd: 900,
+      max_per_tx_tokens: 250,
+      max_per_day_tokens: 900,
     });
     expect(started.wallet_bind?.retry_action).toBe("custom");
 
@@ -586,19 +636,19 @@ describe("the in-app silent bind is the primary path", () => {
       request_id: started.wallet_bind?.request_id,
       wallet_address: TRADER,
       retry_action: "custom",
-      max_per_tx_usd: 250,
-      max_per_day_usd: 900,
+      max_per_tx_tokens: 250,
+      max_per_day_tokens: 900,
     });
     expect(done.kind).toBe("answer");
     const enables = callsTo("vanna_sign", "enable_auto_sign");
     const last = enables[enables.length - 1];
-    expect(last.kwargs.max_per_tx_usd).toBe(250);
-    expect(last.kwargs.max_per_day_usd).toBe(900);
+    expect(last.kwargs.max_per_tx_tokens).toBe(250);
+    expect(last.kwargs.max_per_day_tokens).toBe(900);
   });
 });
 
 describe("the identity-scoped binding read must carry the identity", () => {
-  it("list_bindings sends the assertion — on M2M alone it would answer 'no bindings'", async () => {
+  it("list_bindings sends the assertion - on M2M alone it would answer 'no bindings'", async () => {
     const { callNeedsUserToken } = await import("@/lib/copilot/user-context");
     // It reads no chain state; it answers "which wallets has THIS PERSON bound", and
     // the Sign Service keys that solely on the verified assertion sub. Treated as a
@@ -610,6 +660,7 @@ describe("the identity-scoped binding read must carry the identity", () => {
   it("connect_start is never treated as an anonymous read", async () => {
     const { callNeedsUserToken } = await import("@/lib/copilot/user-context");
     expect(callNeedsUserToken("vanna_connect_wallet_start")).toBe(true);
+    expect(callNeedsUserToken("vanna_connect_wallet_register")).toBe(true);
   });
 
   it("plain chain reads still stay on the shared M2M credential", async () => {
@@ -620,7 +671,7 @@ describe("the identity-scoped binding read must carry the identity", () => {
 });
 
 describe("the transport maps the connect tools onto the consolidated API", () => {
-  it("connect_start / connect_status become vanna_wallet actions", async () => {
+  it("connect tools become vanna_wallet actions with their exact arguments", async () => {
     const { toServerCall } = await import("@/lib/copilot/mcp-client");
     expect(toServerCall("vanna_connect_wallet_start", {})).toEqual({
       name: "vanna_wallet",
@@ -629,6 +680,16 @@ describe("the transport maps the connect tools onto the consolidated API", () =>
     expect(toServerCall("vanna_connect_wallet_status", { request_id: REQUEST_ID })).toEqual({
       name: "vanna_wallet",
       arguments: { action: "connect_status", kwargs: { request_id: REQUEST_ID } },
+    });
+    expect(toServerCall("vanna_connect_wallet_register", {
+      request_id: REQUEST_ID,
+      wallet_address: TRADER,
+    })).toEqual({
+      name: "vanna_wallet",
+      arguments: {
+        action: "connect_register",
+        kwargs: { request_id: REQUEST_ID, wallet_address: TRADER },
+      },
     });
   });
 });
@@ -654,8 +715,8 @@ describe("auto_sign status reads GET /sessions without starting a bind", () => {
     expect(data.kind).toBe("answer");
     expect(data.data?.enabled).toBe(true);
     expect(data.data?.status).toBe("enabled");
-    expect(data.data?.max_per_tx_usd).toBe(1000);
-    expect(data.data?.max_per_day_usd).toBe(1000);
+    expect(data.data?.max_per_tx_tokens).toBe(1000);
+    expect(data.data?.max_per_day_tokens).toBe(5000);
     expect(data.message).toMatch(/auto-sign is on/i);
   });
 });
