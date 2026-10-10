@@ -1687,6 +1687,23 @@ describe("a plan whose return cannot be read is not called a loss", () => {
     expect(rejected[0]?.reason ?? "").not.toMatch(/loses money by construction/);
   });
 
+  it("does not label an LP and Blend allocation with only Blend's APY", () => {
+    const reserves = obs("e7", "aquarius_pool_reserves", { found: true, pool: { available: true,
+      reserves: { XLM: "1000", AQUSDC: "200" }, total_share: "100", fee: "0.0030" } }, { asset: "AQUSDC" });
+    const result = resolvePlans([plan("Blend and LP", [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "200", sourceQuote: "deposit 200 XLM" } },
+      { op: "add_liquidity", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "literal", amount: "100", sourceQuote: "100 XLM into LP" } },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "100 XLM into Blend" } },
+    ])], ctx({ messages: ["deposit 200 XLM, put 100 XLM into LP and 100 XLM into Blend"], observations: [...OBSERVATIONS, reserves,
+      obs("e8", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })] }));
+    expect(result.rejected).toEqual([]);
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0].supplyAprPct).toBeNull();
+    expect(result.candidates[0].supplyApyPct).toBeNull();
+    // $18 into Blend plus $18 XLM and $20 AQUSDC into LP, not just the Blend leg.
+    expect(Number(result.candidates[0].amountUsd)).toBeCloseTo(56, 6);
+  });
+
   it("still rules out a borrow deployed entirely into a readable rate that cannot cover it", () => {
     // Every leg's return IS readable here - Blend supply at 0.9% against an Earn borrow
     // at 32.47% - so the guard must keep refusing exactly as it did.

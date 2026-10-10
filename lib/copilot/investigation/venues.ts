@@ -1,5 +1,30 @@
 import { WORKFLOW_OPS, type ProposalStep, type WorkflowOp } from "../workflow/types";
 import type { GoalUnderstanding } from "./types";
+import type { ResolvedPlans } from "./plan";
+
+/** Mandatory operations are distinct from venues the user merely permits. */
+export function requestedOperations(goal: GoalUnderstanding | null | undefined, messages: readonly string[]): WorkflowOp[] {
+  if (goal?.intent !== "strategy") return [];
+  return [...new Set([
+    ...(goal.namedOps ?? []),
+    ...anchoredVenueRows(goal, messages).filter(row => row.asked),
+  ].filter(row => row.sourceQuote.trim() && messages.some(message => message.includes(row.sourceQuote))).map(row => row.op))];
+}
+
+/** Each alternative must fulfill the request; separate incomplete alternatives do not add up to it. */
+export function enforceRequestedOperations(resolved: ResolvedPlans, required: readonly WorkflowOp[]): ResolvedPlans {
+  if (!required.length) return resolved;
+  const rejected = [...resolved.rejected];
+  const candidates = resolved.candidates.filter(candidate => {
+    const missing = required.filter(op => !candidate.steps?.some(step => step.op === op));
+    if (!missing.length) return true;
+    rejected.push({ title: candidate.label, leg: null,
+      reason: `This plan leaves out requested operations: ${missing.map(opWords).join(", ")}`,
+      repairable: true });
+    return false;
+  });
+  return { candidates, rejected };
+}
 
 /**
  * Operations the user said the copilot may use ("you can use spots and farm markets yourself").

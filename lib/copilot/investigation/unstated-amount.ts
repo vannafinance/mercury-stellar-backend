@@ -43,6 +43,9 @@ function userSizedWallet(sizing: PlanLeg["sizing"], messages: readonly string[])
 export function askForUnstatedPlanAmounts<T extends { kind: string }>(input: T, messages: readonly string[]): T {
   if (input.kind !== "research_complete") return input;
   const outcome = input as unknown as Extract<ResearchDecision, { kind: "research_complete" }>;
+  const allocationQuote = outcome.goal.allocationRequest?.sourceQuote;
+  if (outcome.goal.intent === "strategy" && allocationQuote?.trim()
+    && messages.some(message => message.includes(allocationQuote))) return input;
   const named = (outcome.goal.namedOps ?? []).filter((row) => messages.some((message) => message.includes(row.sourceQuote)));
   if (!named.length || !outcome.plans?.length) return input;
   const chosenByCopilot = (leg: PlanLeg) => named.some((row) => row.op === leg.op)

@@ -15,7 +15,7 @@ import { normalizeResearchFacts } from "./normalize";
 import { accountDisplayObservations } from "./account-display";
 import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis, PROTOCOL_MAX_BORROW_FLOOR, type SizingBasis } from "./capacity";
-import { anchoredVenueOps, anchoredVenueRows, opWords, unusedVenueOps } from "./venues";
+import { anchoredVenueOps, anchoredVenueRows, enforceRequestedOperations, requestedOperations, opWords, unusedVenueOps } from "./venues";
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, spendableWalletAfterReserves, onlyNamedAssets, spendableWalletUsdFrom, spendableWalletByAssetUsdFrom, spendableWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
@@ -1257,6 +1257,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   let planComparisons = rateComparisons;
   if (modelPlans.length) {
+    const mandatoryOps = requestedOperations(outcome.kind === "research_complete" ? outcome.goal : null, messages);
+    logPhase("requested_operations", { required: mandatoryOps });
     /**
      * Code fetches what code needs. The loop may not have read a price, a wallet balance
      * or a market the plans depend on - a phrase list used to decide whether the market
@@ -1308,7 +1310,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
     // A plan sized past one approval is refused with the count, not failed later at propose.
     if (fullPortfolioExit) resolved = enforcePortfolioExit(resolved, modelPlans, portfolioExitCoverage(result.observations, observedNow, planPosition));
-    resolved = capToOneApproval(resolved, MAX_WORKFLOW_STEPS);
+    resolved = capToOneApproval(enforceRequestedOperations(resolved, mandatoryOps), MAX_WORKFLOW_STEPS);
     /**
      * Plans the sizer refused for how they were built, not for the facts: the model is told which
      * and why and gets one more try, bounded in time. Refusals that are facts (a balance that is not
@@ -1363,7 +1365,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           planComparisons = analyseObservedRates(result.observations, observedNow).comparisons;
           let retry = resolvePlans(repairedPlans, { ...planContext, observations: result.observations, now: observedNow, comparisons: planComparisons });
           if (fullPortfolioExit) retry = enforcePortfolioExit(retry, repairedPlans, portfolioExitCoverage(result.observations, observedNow, planPosition));
-          retry = capToOneApproval(retry, MAX_WORKFLOW_STEPS);
+          retry = capToOneApproval(enforceRequestedOperations(retry, mandatoryOps), MAX_WORKFLOW_STEPS);
           const known = new Set(resolved.candidates.map((candidate) => candidate.id));
           const gained = retry.candidates.filter((candidate) => !known.has(candidate.id));
           if (gained.length) {
@@ -1390,7 +1392,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, shapes: resolved.candidates.map((candidate) => candidate.id), rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     // Fixed options only for the assets the user named; the model's composed plans are untouched.
     const fixedShapes = fullPortfolioExit ? null : onlyNamedAssets(candidates, messages);
-    candidates = mergeCandidateSets(fixedShapes, resolved, borrowing);
+    const scopedFixed = fixedShapes ? { ...fixedShapes, feasible: enforceRequestedOperations({ candidates: fixedShapes.feasible, rejected: [] }, mandatoryOps).candidates } : null;
+    candidates = mergeCandidateSets(scopedFixed, resolved, borrowing);
     /**
      * The sizer said what fits the facts it read; the protocol's preview says what the
      * contract will accept. An option the preview refuses is never shown; one it cannot
@@ -1415,7 +1418,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             result.observations.push(...ceilings);
             observedNow = Date.now();
             const again = capToOneApproval(resolvePlans(modelPlans, { ...planContext, observations: result.observations, now: observedNow }), MAX_WORKFLOW_STEPS);
-            candidates = await simulateCandidates(mergeCandidateSets(fixedShapes, again, borrowing), scope, scopedMcp, resizeSignal);
+            candidates = await simulateCandidates(mergeCandidateSets(scopedFixed, enforceRequestedOperations(again, mandatoryOps), borrowing), scope, scopedMcp, resizeSignal);
             logPhase("pool_resize", { assets: poolLimited, offered: candidates.feasible.length, ms: Date.now() - resizeStarted });
           } else {
             logPhase("pool_resize", { assets: poolLimited, offered: 0, failed: "ceiling_unavailable", ms: Date.now() - resizeStarted });

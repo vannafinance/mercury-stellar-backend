@@ -17,10 +17,10 @@ export function runningPlan(opts: {
   const candidateId = opts.workflowCandidateId ?? opts.candidateId;
   if (!opts.status || !RUNNING.has(opts.status) || !candidateId || !feasible.length) return null;
   const index = feasible.findIndex((candidate) => candidate.id === candidateId);
-  return index < 0 ? null : { letter: String.fromCharCode(65 + index), title: feasible[index].label };
+  return index < 0 ? null : { letter: feasible.length === 1 ? "" : String.fromCharCode(65 + index), title: feasible[index].label };
 }
 
 export function runningPlanText(plan: { letter: string; title: string }, completed = false): string {
   const title = plan.title.trim().replace(/\.$/, "");
-  return `${completed ? "Completed" : "Running"} Plan ${plan.letter}: ${title}.`;
+  return `${completed ? "Completed" : "Running"} ${plan.letter ? `Plan ${plan.letter}: ` : ""}${title}.`;
 }

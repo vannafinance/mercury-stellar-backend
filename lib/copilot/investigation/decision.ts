@@ -100,7 +100,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return refuse(`unknown kind or keys: kind=${String(raw.kind)} keys=${Object.keys(raw).join(",")}`);
   }
   const goal = raw.goal;
-  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "portfolioExit") ? ["portfolioExit"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "venuesAllowed") ? ["venuesAllowed"] : []), ...(Object.hasOwn(goal, "reading") ? ["reading"] : []), ...(Object.hasOwn(goal, "namedOps") ? ["namedOps"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
+  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "portfolioExit") ? ["portfolioExit"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "venuesAllowed") ? ["venuesAllowed"] : []), ...(Object.hasOwn(goal, "reading") ? ["reading"] : []), ...(Object.hasOwn(goal, "namedOps") ? ["namedOps"] : []), ...(Object.hasOwn(goal, "allocationRequest") ? ["allocationRequest"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
     (goal.relation !== undefined && !["new", "refine", "side"].includes(String(goal.relation))) ||
     (goal.intent !== undefined && !["answer", "strategy"].includes(String(goal.intent))) ||
     !text(goal.objective) || !texts(goal.constraints) ||
@@ -117,6 +117,10 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     || !exactKeys(goal.portfolioExit, ["destination", "sourceQuote"])
     || goal.portfolioExit.destination !== "wallet" || !text(goal.portfolioExit.sourceQuote))) {
     return refuse("portfolioExit: invalid terminal scope");
+  }
+  if (goal.allocationRequest !== undefined && (!isRecord(goal.allocationRequest)
+    || !exactKeys(goal.allocationRequest, ["sourceQuote"]) || !text(goal.allocationRequest.sourceQuote, 1600))) {
+    return refuse("allocationRequest: invalid sizing delegation");
   }
   const actionRows = goal.actions === undefined ? [] : Array.isArray(goal.actions) ? goal.actions.slice(0, 8) : [];
   /**
@@ -241,6 +245,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       ...(reserves.length ? { walletReserves: reserves } : {}),
       ...(venues.length ? { venuesAllowed: venues } : {}),
       ...(namedOps.length ? { namedOps } : {}),
+      ...(isRecord(goal.allocationRequest) ? { allocationRequest: { sourceQuote: String(goal.allocationRequest.sourceQuote) } } : {}),
       ...(text(goal.reading, 200) ? { reading: String(goal.reading).trim() } : {}),
       ...(relation ? { planRelation: relation } : {}),
       ...(trigger ? { trigger } : {}),

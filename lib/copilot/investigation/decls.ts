@@ -150,8 +150,13 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         },
         namedOps: {
           type: "array",
-          description: "Operations the user themselves named as something to do (\"deposit XLM\", \"lend 20 USDC\", \"add liquidity with my XLM\"). One row per operation: op is the operation, sourceQuote is the exact substring of their message that names it. List only what they named; an operation you chose yourself, or one they merely allowed, is not named.",
+          description: "Mandatory operations the user themselves named as something to do (\"deposit XLM\", \"lend 20 USDC\", \"add liquidity with my XLM\"). One row per operation: op is the operation, sourceQuote is the exact substring of their message that names it. Each alternative must include these operations. List only what they require; an operation you chose yourself, one they merely allowed, or a venue offered as an either/or choice is not mandatory.",
           items: { type: "object", properties: { op: { type: "string", enum: [...WORKFLOW_OPS] }, sourceQuote: { type: "string" } }, required: ["op", "sourceQuote"] },
+        },
+        allocationRequest: {
+          type: "object",
+          description: "Only when the user asks you to choose allocation amounts for a strategy. Quote their exact delegation. Requiring named venues does not remove this sizing delegation. Do not set for a bare operation with an unstated amount or for a read-only recommendation. Return proposed plans for this goal, never auto-executable goal.actions.",
+          properties: { sourceQuote: { type: "string" } }, required: ["sourceQuote"],
         },
         reading: { type: "string", description: "Only when the latest message was misspelled, abbreviated, in mixed languages or could mean more than one thing: how you read it, in a few plain words, written in English (for example: adding a swap between tokens to the plan). Omit it when the message was plain." },
         venuesAllowed: {
@@ -336,6 +341,7 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.venuesAllowed !== undefined) goal.venuesAllowed = source.venuesAllowed;
   if (source.reading !== undefined) goal.reading = source.reading;
   if (source.namedOps !== undefined) goal.namedOps = source.namedOps;
+  if (source.allocationRequest !== undefined) goal.allocationRequest = source.allocationRequest;
   if (source.planRelation !== undefined) goal.planRelation = source.planRelation;
   if (source.trigger !== undefined) goal.trigger = source.trigger;
   // Copied by name, like every field above it. A field the model answers and this does not

@@ -107,6 +107,8 @@ export interface GoalUnderstanding {
    * An extraction, not a classification: code uses it to tell an amount the user gave from one the copilot would be choosing.
    */
   namedOps?: { op: WorkflowOp; sourceQuote: string }[];
+  /** The user delegates allocation amounts to the copilot; proposed plans still require approval. */
+  allocationRequest?: { sourceQuote: string };
   /**
    * The user accepting a bad price, in their own words - "i dont care if i lose",
    * "swap anyway". Structural, because the model already understood it: on 16 Sep it

@@ -1983,8 +1983,23 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     : null;
   if (remainingDebt && remainingDebt.length === 0) finalHealthFactor = null;
   // What the plan places: the supplied total, else the value its legs move, counted once.
-  const deployed = supplied > ZERO ? supplied
+  let deployed = supplied > ZERO ? supplied
     : valueMovedWad(drafts.map((d) => ({ op: d.leg.op, asset: d.leg.asset, assetOut: d.leg.assetOut, usd: d.usd as string })));
+  // A rated supply is only one part of a mixed deployment. Include both LP
+  // axes, while counting its funding deposit only once through the LP leg.
+  if (supplied > ZERO && returnUnreadable) {
+    for (let index = 0; index < drafts.length; index++) {
+      const draft = drafts[index];
+      if (!deploysIntoPosition(draft.leg.op) || OP_FLOW[draft.leg.op].rate !== null) continue;
+      deployed += decimalWad(draft.usd as string);
+      const pairedAmount = steps[index]?.args.amount_b;
+      if (draft.leg.assetOut && typeof pairedAmount === "string") {
+        const pairedPrice = priceFor(draft.leg.assetOut, ctx.observations, ctx.now);
+        if (!pairedPrice.ok) throw new Reject(draft.name, `no ${draft.leg.assetOut} price was read, so the full mixed allocation value cannot be verified`);
+        deployed += mulDown(decimalWad(pairedAmount), pairedPrice.price, WAD);
+      }
+    }
+  }
   const netApr = deployed > ZERO ? (returnWad * WAD) / deployed : ZERO;
   const borrows = borrowed > ZERO;
   const lastSupply = [...drafts].reverse().find((d) => suppliesAtRate(d.leg.op));
@@ -2009,12 +2024,12 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     // Null when part of the return could not be read: a figure that leaves out the LP's
     // income is not this plan's net APR, and the card already renders null as "not read".
     netAprPct: borrows && supplied > ZERO && !returnUnreadable ? formatWad(netApr) : null,
-    supplyAprPct: rateUnknown || supplied === ZERO ? null : formatWad(grossSupplyApr(drafts, ctx.comparisons, supplied)),
+    supplyAprPct: rateUnknown || returnUnreadable || supplied === ZERO ? null : formatWad(grossSupplyApr(drafts, ctx.comparisons, supplied)),
     // Null under exactly the conditions the APR beside it is null.
     ...(() => {
       const apy = planApy(apyLegs, Number(formatWad(deployed)));
       return {
-        supplyApyPct: rateUnknown || supplied === ZERO || apy.supplyApyPct === null ? null : pct(apy.supplyApyPct),
+        supplyApyPct: rateUnknown || returnUnreadable || supplied === ZERO || apy.supplyApyPct === null ? null : pct(apy.supplyApyPct),
         netApyPct: borrows && supplied > ZERO && !returnUnreadable && apy.netApyPct !== null ? pct(apy.netApyPct) : null,
       };
     })(),

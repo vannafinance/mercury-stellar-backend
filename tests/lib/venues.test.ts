@@ -1,6 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { anchoredVenueOps, unusedVenueOps, venueSentence } from "@/lib/copilot/investigation/venues";
+import { anchoredVenueOps, enforceRequestedOperations, requestedOperations, unusedVenueOps, venueSentence } from "@/lib/copilot/investigation/venues";
 import { parseDecision } from "@/lib/copilot/investigation/decision";
+import type { Candidate } from "@/lib/copilot/investigation/candidates";
+
+describe("requested operations survive strategy alternatives", () => {
+  const message = "allocate across LP and Blend";
+  const goal = { intent: "strategy" as const, relation: "new" as const, objective: message, constraints: [], borrowing: "forbidden" as const,
+    namedOps: [{ op: "add_liquidity" as const, sourceQuote: "LP" }, { op: "supply_blend" as const, sourceQuote: "Blend" }] };
+  const candidate = (label: string, ops: Candidate["steps"]) => ({ label, steps: ops } as Candidate);
+  const steps = (...ops: Array<"deposit_collateral" | "add_liquidity" | "supply_blend">) => ops.map(op => ({ op })) as Candidate["steps"];
+
+  it("rejects funding-only and single-venue alternatives while preserving a complete allocation", () => {
+    const complete = candidate("LP and Blend", steps("deposit_collateral", "add_liquidity", "supply_blend"));
+    const result = enforceRequestedOperations({ candidates: [candidate("Funding only", steps("deposit_collateral")), candidate("Blend only", steps("supply_blend")), complete], rejected: [] }, requestedOperations(goal, [message]));
+    expect(result.candidates).toEqual([complete]);
+    expect(result.rejected).toHaveLength(2);
+    expect(result.rejected[1].reason).toContain("add liquidity");
+    expect(result.rejected.every(row => row.repairable)).toBe(true);
+  });
+
+  it("does not add separate incomplete alternatives together to fulfill one request", () => {
+    const result = enforceRequestedOperations({ candidates: [candidate("LP only", steps("add_liquidity")), candidate("Blend only", steps("supply_blend"))], rejected: [] }, requestedOperations(goal, [message]));
+    expect(result.candidates).toEqual([]);
+  });
+
+  it("does not force permitted venues, read-only comparisons or unanchored operations", () => {
+    expect(requestedOperations({ ...goal, namedOps: undefined, venuesAllowed: [{ op: "add_liquidity", sourceQuote: "LP" }] }, [message])).toEqual([]);
+    expect(requestedOperations({ ...goal, intent: "answer" }, [message])).toEqual([]);
+    expect(requestedOperations(goal, ["lend XLM"])).toEqual([]);
+    expect(requestedOperations({ ...goal, namedOps: undefined, venuesAllowed: [{ op: "add_liquidity", sourceQuote: "LP", asked: true }] }, [message])).toEqual(["add_liquidity"]);
+  });
+});
 
 describe("venues the user allowed", () => {
   const messages = ["use my xlm, you can use spots and farm markets yourself"];

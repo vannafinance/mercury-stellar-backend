@@ -40,7 +40,10 @@ describe("the chosen plan's running presentation", () => {
     expect(runningPlan({ status: "running", candidateId: "unknown", feasible: options })).toBeNull();
   });
   it("replaces ready-for-review prose when the only selected plan is running", () => {
-    expect(runningPlan({ status: "running", candidateId: "first", feasible: options.slice(0, 1) })).toEqual({ letter: "A", title: "Lend XLM" });
+    const chosen = runningPlan({ status: "running", candidateId: "first", feasible: options.slice(0, 1) });
+    expect(chosen).toEqual({ letter: "", title: "Lend XLM" });
+    expect(runningPlanText(chosen!)).toBe("Running Lend XLM.");
+    expect(runningPlanText(chosen!, true)).toBe("Completed Lend XLM.");
   });
 
   it("replaces only the current run's comparison, then restores it when the override ends", () => {

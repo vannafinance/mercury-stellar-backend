@@ -161,6 +161,24 @@ it("hands an explicit account settlement to the existing lifecycle execution pat
   expect(view.proposalCandidateId).toBeNull();
   expect(view.candidates).toBeNull();
 });
+it("does not offer a single venue as fulfillment of a requested cross-venue allocation", async () => {
+  const message = "allocate my funds across LP and Blend";
+  let turn = 0;
+  const view = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {
+    subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp,
+    signal: new AbortController().signal,
+    model: async () => turn++ === 0
+      ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "blend_markets", args: {} }] }
+      : ({ ...modelComplete, goal: { ...modelComplete.goal, borrowing: "forbidden", objective: message,
+      allocationRequest: { sourceQuote: "allocate my funds" },
+      namedOps: [{ op: "add_liquidity", sourceQuote: "LP" }, { op: "supply_blend", sourceQuote: "Blend" }] },
+      plans: [{ ...modelComplete.plans[0], legs: modelComplete.plans[0].legs.slice(0, 2) }] }),
+  });
+  expect(view.candidates?.feasible ?? []).toEqual([]);
+  expect(view.proposalCandidateId).toBeNull();
+  expect(view.questionnaire ?? null).toBeNull();
+  expect(view.status).toBe("researched");
+});
 it("does not substitute margin settlement for a whole-portfolio withdrawal", async () => {
   const message = "withdraw all funds";
   const view = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {

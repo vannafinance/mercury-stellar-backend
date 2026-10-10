@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { askForUnstatedPlanAmounts } from "@/lib/copilot/investigation/unstated-amount";
 import type { ProposedPlan } from "@/lib/copilot/investigation/types";
+import { parseDecision } from "@/lib/copilot/investigation/decision";
 
 /**
  * 7 Oct, live: "deposit XLM" came back as a plan that deposits the whole balance, because the model called a plain instruction a
@@ -17,6 +18,20 @@ const complete = (plans: ProposedPlan[], namedOps?: Array<{ op: string; sourceQu
 const MESSAGES = ["deposit XLM"];
 
 describe("a named operation with an amount the copilot would choose", () => {
+  it("preserves an anchored allocation delegation across required venues without asking for amounts", () => {
+    const message = "allocate my funds across LP and Blend";
+    const input = parseDecision({ kind: "research_complete", goal: { objective: message, constraints: [], borrowing: "forbidden", intent: "strategy",
+      allocationRequest: { sourceQuote: "allocate my funds" }, namedOps: [{ op: "supply_blend", sourceQuote: "Blend" }] },
+      findings: [{ summary: "Review the allocation.", evidenceIds: [] }], openQuestions: [], plans: [plan("Allocation", leg("supply_blend", "XLM", { kind: "all_wallet" }))] });
+    expect(input?.kind).toBe("research_complete");
+    expect(askForUnstatedPlanAmounts(input!, [message])).toBe(input);
+    const unanchored = structuredClone(input!) as any;
+    unanchored.goal.allocationRequest.sourceQuote = "choose all amounts yourself";
+    expect((askForUnstatedPlanAmounts(unanchored, [message]) as any).kind).toBe("clarify");
+  });
+  it("rejects malformed allocation delegation instead of disabling the amount guard", () => {
+    expect(parseDecision({ kind: "research_complete", goal: { objective: "o", constraints: [], borrowing: "forbidden", intent: "strategy", allocationRequest: { sourceQuote: "" } }, findings: [], openQuestions: [] })).toBeNull();
+  });
   it("retains a named operation sized by the user's anchored whole-wallet instruction", () => {
     const message = "supply my entire BLUSDC wallet balance";
     const input = complete([plan("Supply", leg("lend", "BLUSDC", { kind: "all_wallet", sourceQuote: "my entire BLUSDC wallet balance" }))], [{ op: "lend", sourceQuote: message }]);
