@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Networks, TransactionBuilder } from "@stellar/stellar-sdk";
 import type { RecordStore, Stored } from "./store";
 import type { ProposalStep, WorkflowProposal, WorkflowRecord } from "./types";
+import { OP_FLOW } from "./types";
 import { PLAN_TTL_MS } from "../plan-ttl";
 
 /**
@@ -202,11 +203,18 @@ export class WorkflowJournal {
     return this.save(record);
   }
   async invocationResult(id: string, identity: Identity, stepId: string,
-    result: { kind: "submitted"; txHash: string; note?: string } | { kind: "unsigned"; unsignedXdr: string; note?: string; refusal?: string }
+    result: { kind: "submitted"; txHash: string; note?: string; transferAmount?: string } | { kind: "unsigned"; unsignedXdr: string; note?: string; refusal?: string; transferAmount?: string }
       | { kind: "uncertain"; txHash?: string } | { kind: "failed"; message: string }) {
     const record = await this.read(id, identity);
     const step = record.value.steps.find(s => s.id === stepId);
     if (!step || step.status !== "invoking") throw new WorkflowConflict("step_changed");
+    if ((result.kind === "submitted" || result.kind === "unsigned") && result.transferAmount !== undefined) {
+      const source = record.value.proposal.steps.find(row => row.id === stepId);
+      if (!source || OP_FLOW[source.op].from !== "account" || OP_FLOW[source.op].to !== "wallet"
+        || !/^\d+(\.\d+)?$/.test(result.transferAmount) || !Number.isFinite(Number(result.transferAmount)) || Number(result.transferAmount) <= 0)
+        throw new Error("invalid_transfer_amount");
+      step.transferAmount = result.transferAmount;
+    }
     if (result.kind === "submitted") {
       if (!/^[a-f0-9]{64}$/i.test(result.txHash)) throw new Error("invalid_transaction_hash");
       step.status = "submitted"; step.txHash = result.txHash.toLowerCase();

@@ -297,6 +297,8 @@ describe("composing the words above plan cards", () => {
       ] },
     ]);
     const marketFacts = context.facts.filter(fact => fact.id.includes(":output"));
+    expect(context.considered).toEqual([]);
+    expect(context.lead).toBeNull();
     expect(marketFacts).toHaveLength(3);
     expect(marketFacts.every(fact => fact.unit === "% APY")).toBe(true);
     expect(marketFacts.some(fact => fact.label.includes("BLUSDC"))).toBe(false);
@@ -320,6 +322,18 @@ describe("composing the words above plan cards", () => {
     expect(planFacts(original).plans[0].liquidityOutputs).toEqual([
       { asset: "XLM", supplyPrepared: false, marketRates: [] },
       { asset: "AQUSDC", supplyPrepared: false, marketRates: [] },
+    ]);
+  });
+
+  it("recognizes paired reinvestment through the sealed wallet bridge", () => {
+    const original = strategy({ candidates: { feasible: [plan({ steps: [
+      { id: "removal", op: "remove_liquidity", asset: "AQUSDC" },
+      { id: "blend", op: "supply_blend", asset: "XLM", sizing: { basis: "settled_payout", fromStep: "removal", asset: "XLM" } },
+      { id: "transfer", op: "withdraw_collateral", asset: "AQUSDC", sizing: { basis: "settled_payout", fromStep: "removal", asset: "AQUSDC" } },
+      { id: "earn", op: "lend", asset: "AQUSDC", sizing: { basis: "settled_transfer", fromStep: "transfer", asset: "AQUSDC" } },
+    ] })], rejected: [] } } as unknown as Partial<ResearchView>);
+    expect(planFacts(original).plans[0].liquidityOutputs.map(row => [row.asset, row.supplyPrepared])).toEqual([
+      ["XLM", true], ["AQUSDC", true],
     ]);
   });
 

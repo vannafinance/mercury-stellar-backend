@@ -782,7 +782,8 @@ function withLendPocketBridge(plan: ProposedPlan, ctx: PlanContext): ProposedPla
   let changed = false;
   const next: PlanLeg[] = [];
   for (const leg of plan.legs) {
-    const producer = [...next].reverse().find(earlier => producedAsset(earlier) === leg.asset);
+    const producer = [...next].reverse().find(earlier => earlier.op === "remove_liquidity"
+      ? removalPays(earlier, leg.asset) : producedAsset(earlier) === leg.asset);
     const matchingPositionExit = (() => {
       if (leg.op !== "lend" || leg.sizing.kind !== "literal" || producer?.sizing.kind !== "literal"
         || !POSITION_POCKETS.includes(OP_FLOW[producer.op].from)) return false;
@@ -790,10 +791,10 @@ function withLendPocketBridge(plan: ProposedPlan, ctx: PlanContext): ProposedPla
       catch { return false; }
     })();
     if (leg.op === "lend" && (leg.sizing.kind === "previous_leg" || matchingPositionExit)) {
-      // Keep the same-asset handoff, but expose the missing pocket transition. Swap
-      // and LP payouts still require their separate measured-output guarantees.
+      // Expose the wallet transition. LP withdrawals first measure the removal's
+      // account payout; their dependent lend follows the confirmed transfer principal.
       if (producer && OP_FLOW[producer.op].to === "account"
-        && producer.op !== "swap" && producer.op !== "remove_liquidity") {
+        && producer.op !== "swap") {
         next.push({ op: walletTransfer, asset: leg.asset, sizing: structuredClone(leg.sizing) });
         changed = true;
       }
@@ -933,6 +934,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     payouts?: ReadonlyArray<{ asset: string; amount: string }> | null;
     /** Index of the producer whose settled payout this leg spends. */
     settledFrom?: number;
+    /** Confirmed transfer whose principal this wallet action consumes. */
+    transferredFrom?: number;
     /** A pool quote is provisional until execution measures the producer's balance delta. */
     quotedSwapPayout?: string;
     postSwapPool?: PoolReserves;
@@ -1369,7 +1372,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (prev.leg.op === "remove_liquidity") throw new Reject(name, REMOVAL_PAYOUT_UNKNOWN);
       if (!feeds(prev.leg.op, leg.op)) throw new Reject(name, handoffReason(prev.leg.op, leg.op));
       claimedProducers.add(claimKey(producerIndex, leg.asset));
-      drafts.push({ leg, name, usd: { previous: producerIndex }, tokens: prev.produces, produces: prev.produces, heldTokens: null });
+      drafts.push({ leg, name, usd: { previous: producerIndex }, tokens: prev.produces, produces: prev.produces, heldTokens: null,
+        ...(prev.settledFrom !== undefined && OP_FLOW[prev.leg.op].from === "account" && OP_FLOW[prev.leg.op].to === "wallet"
+          ? { transferredFrom: producerIndex } : {}) });
       continue;
     }
     /**
@@ -1639,6 +1644,13 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       drafts.push({ leg, name, usd, tokens: vtokens, produces: sizing.amount, heldTokens: null, vtokenSymbol: position.vtokenSymbol });
       continue;
     }
+    if (flow.from === "lp") {
+      const shares = precise(sizing.amount, leg.asset, name);
+      drafts.push({ leg, name, usd: lpExitUsd(ctx.observations, leg.asset, shares, ctx.now) ?? "0",
+        tokens: shares, produces: null, heldTokens: null,
+        payouts: lpExitPayouts(ctx.observations, leg.asset, shares, ctx.now) });
+      continue;
+    }
     const tokens = sizing.amount;
     const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
     drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: null });
@@ -1892,6 +1904,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
             ? `Add ${d.tokens} ${def.displayLabel ?? def.id} + ${addLiquidity.amountB} ${paired.displayLabel ?? paired.id} to the ${venueLabel(dex!)} pool`
             : d.settledFrom !== undefined
               ? `${verbOf(d.leg.op)} an estimated ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}, the removal's payout`
+              : d.transferredFrom !== undefined
+                ? `${verbOf(d.leg.op)} an estimated ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}, the preceding transfer's principal`
               : `${verbOf(d.leg.op)} ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}`;
     const step: ProposalStep = {
       id: `s${index}-${d.leg.op}`,
@@ -1932,6 +1946,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
        */
       sizing: d.settledFrom !== undefined
         ? { basis: "settled_payout", fromStep: `s${d.settledFrom}-${drafts[d.settledFrom].leg.op}`, asset: d.leg.asset }
+        : d.transferredFrom !== undefined
+          ? { basis: "settled_transfer", fromStep: `s${d.transferredFrom}-${drafts[d.transferredFrom].leg.op}`, asset: d.leg.asset }
         : wholePositionRead(d.leg) ?? { basis: "stated" },
     };
     try { allowedInvocation(step, ctx.scope); } catch { throw new Reject(d.name, "this step is not an allowed protocol write"); }

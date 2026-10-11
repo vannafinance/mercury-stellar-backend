@@ -13,7 +13,6 @@ const SCOPE = {
   smartAccount: "CCKITLMKA2VKSWGOTFABSUFA3RMOZHRP5YNP6HLG73JSWMMUUNCTHDMC",
 };
 const UNKNOWN = "removing liquidity pays back two tokens, not one, so how much of either is not known in advance - state the next leg's amount yourself";
-const POCKET = "a remove puts tokens in the account - withdraw, repay, supply, swap or add them next, not a lend";
 
 const obs = (id: string, capability: string, data: Record<string, unknown>, args: Record<string, unknown> = {}): Observation =>
   ({ id, capability, args, observedAt: NOW, status: "ok", data });
@@ -38,12 +37,12 @@ const plan = (legs: ProposedPlan["legs"]): ProposedPlan => ({
   title: "Leave the pool", rationale: "The pool read sizes both tokens.", evidenceIds: ["lp", "r"], legs,
 });
 
-function run(legs: ProposedPlan["legs"], withPool: boolean) {
+function run(legs: ProposedPlan["legs"], withPool: boolean, messages = ["remove my AQUSDC liquidity and supply the XLM to Blend"]) {
   return resolvePlans([plan(legs)], {
     scope: SCOPE,
     observations: [wallet, ...prices, position, ...(withPool ? [pool] : [])],
     now: NOW,
-    messages: ["remove my AQUSDC liquidity and supply the XLM to Blend"],
+    messages,
     capacity: { grossCollateralUsd: "100000", debtUsd: "0", floor: null },
     borrowing: "allowed",
     comparisons: [],
@@ -98,13 +97,51 @@ describe("an LP exit feeds the next leg in that token", () => {
     expect(rejected[0]?.reason).toBe("a Blend supply leaves nothing in the account to use next");
   });
 
-  it("refuses a lend with the pocket sentence, because a removal pays the account", () => {
+  it("exposes the wallet bridge and seals the transferred principal for Earn", () => {
     const { candidates, rejected } = run([
       exit,
       { op: "lend", asset: "XLM", sizing: { kind: "previous_leg" } },
     ], true);
-    expect(candidates).toEqual([]);
-    expect(rejected[0]?.reason).toBe(POCKET);
+    expect(rejected).toEqual([]);
+    const steps = candidates[0]?.steps ?? [];
+    expect(steps.map((step) => [step.op, step.asset, step.amount])).toEqual([
+      ["remove_liquidity", "AQUSDC", "10"],
+      ["withdraw_collateral", "XLM", "100"],
+      ["lend", "XLM", "100"],
+    ]);
+    expect(steps[1]?.sizing).toEqual({ basis: "settled_payout", fromStep: "s0-remove_liquidity", asset: "XLM" });
+    expect(steps[2]?.sizing).toEqual({ basis: "settled_transfer", fromStep: "s1-withdraw_collateral", asset: "XLM" });
+  });
+
+  it("routes both outputs independently into Blend and Earn without existing wallet principal", () => {
+    const { candidates, rejected } = run([
+      exit,
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+      { op: "lend", asset: "AQUSDC", sizing: { kind: "previous_leg" } },
+    ], true);
+    expect(rejected).toEqual([]);
+    const steps = candidates[0]?.steps ?? [];
+    expect(steps.map((step) => [step.op, step.asset, step.amount])).toEqual([
+      ["remove_liquidity", "AQUSDC", "10"],
+      ["supply_blend", "XLM", "100"],
+      ["withdraw_collateral", "AQUSDC", "20"],
+      ["lend", "AQUSDC", "20"],
+    ]);
+    expect(steps[3]?.sizing).toEqual({ basis: "settled_transfer", fromStep: "s2-withdraw_collateral", asset: "AQUSDC" });
+  });
+
+  it("sizes both payouts from the pool for a stated partial LP share exit", () => {
+    const request = "remove 1 AQUSDC LP share and reinvest both outputs";
+    const { candidates, rejected } = run([
+      { op: "remove_liquidity", asset: "AQUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: request } },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+      { op: "lend", asset: "AQUSDC", sizing: { kind: "previous_leg" } },
+    ], true, [request]);
+    expect(rejected).toEqual([]);
+    expect(candidates[0]?.steps.map(step => [step.op, step.amount])).toEqual([
+      ["remove_liquidity", "1"], ["supply_blend", "10"], ["withdraw_collateral", "2"], ["lend", "2"],
+    ]);
+    expect(candidates[0]?.amountUsd).toBe("4");
   });
 
   it("keeps the old refusal, word for word, when the pool was not read", () => {

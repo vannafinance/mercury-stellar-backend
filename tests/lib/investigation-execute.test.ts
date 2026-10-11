@@ -38,7 +38,7 @@ vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
 });
 
 const { WorkflowJournal } = await import("@/lib/copilot/workflow/journal");
-const { advanceWorkflow, staleLiquidityAmounts, staleSwapFloor, stalePositionAmount } = await import("@/lib/copilot/investigation/execute");
+const { advanceWorkflow, staleLiquidityAmounts, staleSwapFloor, stalePositionAmount, settledTransferPrincipal } = await import("@/lib/copilot/investigation/execute");
 type McpCall = Pick<import("@/lib/copilot/mcp-client").MCPClient, "call">;
 
 const SCOPE = {
@@ -762,6 +762,62 @@ describe("advanceWorkflow - a removal's payout is measured when the next leg is 
     expect(done.value.proposal.digest).toBe(digest);
     expect(done.value.proposal.steps[1].amount).toBe("100");
   });
+
+  it("lends the confirmed LP transfer principal without reading a fee-affected wallet delta", async () => {
+    const journal = new WorkflowJournal(harness.store);
+    const transfer = {
+      ...supplyStep("100"), id: "transfer", op: "withdraw_collateral" as const,
+      tool: "vanna_withdraw_collateral",
+      args: writeArgsFor("withdraw_collateral", "XLM", "100", SCOPE),
+    };
+    const lend = {
+      id: "lend", op: "lend" as const, asset: "XLM", amount: "100", label: "Lend transferred XLM",
+      tool: "vanna_lend", args: writeArgsFor("lend", "XLM", "100", SCOPE),
+      sizing: { basis: "settled_transfer" as const, fromStep: "transfer", asset: "XLM" },
+    };
+    const created = await journal.create({ scope: SCOPE, server: SERVER, objective: "LP to Earn",
+      messages: [], assumptions: [], constraints: [], floor: null, steps: [exitStep, transfer, lend] });
+    const id = created.proposal.id;
+    await journal.approve(id, { scope: SCOPE, server: SERVER }, 1, created.proposal.digest, async () => null);
+    await advance(id, scripted(["1000"], [HASH]).mcp);
+    const withdrawal = scripted(["1100.4"], [HASH2]);
+    await advance(id, withdrawal.mcp);
+    expect(withdrawal.seen.map(row => row.tool)).toEqual([COLLATERAL, "vanna_withdraw_collateral"]);
+    expect(withdrawal.seen[1].args.amount).toBe("100.4");
+    const transferred = await stored(id);
+    expect(transferred.value.steps[1]).toMatchObject({ status: "settled", transferAmount: "100.4", txHash: HASH2 });
+    const lending = scripted([], ["c".repeat(64)]);
+    const completed = await advance(id, lending.mcp);
+    expect(lending.seen.map(row => row.tool)).toEqual(["vanna_lend"]);
+    expect(lending.seen[0].args.amount).toBe("100.4");
+    expect(completed.status).toBe("completed");
+    expect((await stored(id)).value.proposal.digest).toBe(created.proposal.digest);
+    expect((await stored(id)).value.proposal.steps[2].amount).toBe("100");
+  });
+
+  it.each(["pending", "missing_amount", "missing_hash", "outside_band", "wrong_asset", "wrong_pocket", "later_source"])(
+    "refuses unverified transfer principal: %s", async scenario => {
+      const journal = new WorkflowJournal(harness.store);
+      const transfer = { id: "transfer", op: "withdraw_collateral" as const, asset: "XLM", amount: "100",
+        label: "Transfer", tool: "vanna_withdraw_collateral", args: writeArgsFor("withdraw_collateral", "XLM", "100", SCOPE) };
+      const lend = { id: "lend", op: "lend" as const, asset: "XLM", amount: "100", label: "Lend",
+        tool: "vanna_lend", args: writeArgsFor("lend", "XLM", "100", SCOPE),
+        sizing: { basis: "settled_transfer" as const, fromStep: "transfer", asset: "XLM" } };
+      const created = await journal.create({ scope: SCOPE, server: SERVER, objective: "Transfer to Earn",
+        messages: [], assumptions: [], constraints: [], floor: null, steps: [transfer, lend] });
+      const proposal = structuredClone(created.proposal);
+      const states: import("@/lib/copilot/workflow/types").WorkflowStepState[] = [
+        { id: "transfer", status: "settled", txHash: HASH, transferAmount: "100.4" },
+      ];
+      if (scenario === "pending") states[0].status = "submitted";
+      if (scenario === "missing_amount") delete states[0].transferAmount;
+      if (scenario === "missing_hash") delete states[0].txHash;
+      if (scenario === "outside_band") states[0].transferAmount = "101";
+      if (scenario === "wrong_asset") proposal.steps[0].asset = "AQUSDC";
+      if (scenario === "wrong_pocket") proposal.steps[0].op = "deposit_collateral";
+      if (scenario === "later_source") proposal.steps.reverse();
+      expect(settledTransferPrincipal(lend, proposal, states, lend.args).kind).toBe("refuse");
+    });
 
   it("does not read a balance before a removal that nothing later spends", async () => {
     const journal = new WorkflowJournal(harness.store);

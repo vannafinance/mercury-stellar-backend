@@ -231,7 +231,9 @@ export type StepSizing =
    * Execute replaces the sent amount with the measured account balance change
    * after `fromStep` settles. The proposal amount stays the approved estimate.
    */
-  | { basis: "settled_payout"; fromStep: string; asset: string };
+  | { basis: "settled_payout"; fromStep: string; asset: string }
+  /** Spend the principal of a confirmed margin-to-wallet transfer, excluding wallet fees. */
+  | { basis: "settled_transfer"; fromStep: string; asset: string };
 
 export interface ProposalStep {
   id: string;
@@ -329,6 +331,8 @@ export interface WorkflowStepState {
    * keyed by registry id. Runtime state only: the approved proposal is not edited.
    */
   balancesBefore?: Record<string, string>;
+  /** Server-built transfer principal; usable by a dependent only after this step settles. */
+  transferAmount?: string;
   txHash?: string;
   unsignedXdr?: string;
   /**

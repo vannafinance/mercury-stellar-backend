@@ -4,7 +4,7 @@ import { factualReplyBlocks, healthOnContractBasis } from "./answer";
 import { formatFactValue } from "./answer-prose";
 import { bindReplyBlocks, plainReply, REPLY_SCHEMA, replyFactContext } from "./reply-contract";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
-import { OP_FLOW, type WorkflowOp, type WorkflowView } from "../workflow/types";
+import { OP_FLOW, type ProposalStep, type WorkflowOp, type WorkflowView } from "../workflow/types";
 import { lpPairs, resolveAssetDef, venueTable, venueSpellings, venueUsdc } from "../registry/assets";
 import { pct, shownApyPct } from "./apy";
 import type { RateComparison } from "./rate-comparison";
@@ -117,6 +117,21 @@ export function composablePlans(view: ResearchView): boolean {
     && view.proposalCandidateId !== REQUESTED_ACTIONS_ID;
 }
 
+function payoutOrigin(step: ProposalStep, steps: readonly ProposalStep[]): string | null {
+  const visited = new Set<string>();
+  let current: ProposalStep | undefined = step;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    const sizing: ProposalStep["sizing"] = current.sizing;
+    if (sizing?.basis === "settled_payout" && sizing.asset === step.asset) return sizing.fromStep;
+    if (sizing?.basis !== "settled_transfer" || sizing.asset !== step.asset) return null;
+    const producer: ProposalStep | undefined = steps.find(row => row.id === sizing.fromStep);
+    if (!producer || producer.asset !== step.asset || OP_FLOW[producer.op].from !== "account" || OP_FLOW[producer.op].to !== "wallet") return null;
+    current = producer;
+  }
+  return null;
+}
+
 /**
  * Each plan's figures as the sizer computed them, keyed by the letter its card shows. Only
  * these reach the model on a strategy turn, never the raw reads, so every figure it can
@@ -166,7 +181,7 @@ export function planFacts(view: ResearchView): {
           return [{ venue, factId }];
         });
         const supplyPrepared = (candidate.steps ?? []).slice(removalIndex + 1).some(later => later.asset === asset
-          && later.sizing?.basis === "settled_payout" && later.sizing.fromStep === step.id && later.sizing.asset === asset
+          && payoutOrigin(later, candidate.steps ?? []) === step.id
           && (OP_FLOW[later.op].rate === "earn_supply" || OP_FLOW[later.op].rate === "blend_supply"));
         return { asset, supplyPrepared, marketRates };
       });
@@ -177,7 +192,8 @@ export function planFacts(view: ResearchView): {
   });
   // What else was compared for the leading plan's job (the other held tokens priced as the same dollar), as facts the
   // reply may cite, so "why this token" is an answer from the reads and not a silence.
-  const considered = consideredAlongside(feasible[0]?.steps ?? [], view.rateComparisons ?? [], view.facts).flatMap((token) => {
+  const leadingLiquidityExit = (feasible[0]?.steps ?? []).some(step => OP_FLOW[step.op].from === "lp");
+  const considered = (leadingLiquidityExit ? [] : consideredAlongside(feasible[0]?.steps ?? [], view.rateComparisons ?? [], view.facts)).flatMap((token) => {
     const make = (key: string, label: string, value: string): ResearchFact =>
       ({ id: `considered:${token.asset}:${key}`, label, value, unit: "% APY", venue: "margin", evidenceId: "considered", sourcePath: key, readAt: 0 });
     return [
@@ -190,7 +206,7 @@ export function planFacts(view: ResearchView): {
     facts, plans, considered: considered.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact) })),
     notUsed: unusedVenueOps([...new Set((view.understanding?.venuesAllowed ?? []).map((row) => row.op))], feasible)
       .map((op) => ({ operation: opWords(op), reason: venueReasons(view.understanding?.venuesAllowed ?? []).get(op) ?? null })),
-    lead: feasible[0]?.decision?.factor ?? null,
+    lead: leadingLiquidityExit ? null : feasible[0]?.decision?.factor ?? null,
   };
 }
 

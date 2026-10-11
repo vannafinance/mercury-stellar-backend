@@ -24,7 +24,7 @@ import { isPositionRowRead, POSITION_ROWS, positionRowIn } from "./plan";
 import { resolveAssetDef } from "../registry/assets";
 import { workflowJournal } from "./proposal";
 import { TOOLS } from "../workflow/allowlist";
-import { WALLET_OPS } from "../workflow/types";
+import { OP_FLOW, WALLET_OPS, type WorkflowStepState } from "../workflow/types";
 import { assertSigningTime, checkSigningPreconditions, refreshSigningEnvelope } from "../workflow/signing-envelope";
 import { checkTransactionFee } from "../workflow/fee-budget";
 
@@ -449,6 +449,31 @@ export async function settledRemovalPayout(
   };
 }
 
+/** A wallet spend follows the confirmed transfer principal, never a fee-affected wallet delta. */
+export function settledTransferPrincipal(step: ProposalStep, proposal: WorkflowProposal,
+  states: readonly WorkflowStepState[], args: Record<string, unknown>): SettledPayoutVerdict {
+  const sizing = step.sizing;
+  if (sizing?.basis !== "settled_transfer") return { kind: "unchanged" };
+  const sourceIndex = proposal.steps.findIndex(row => row.id === sizing.fromStep);
+  const targetIndex = proposal.steps.findIndex(row => row.id === step.id);
+  const source = proposal.steps[sourceIndex];
+  const state = states.find(row => row.id === sizing.fromStep);
+  const refuse = (): SettledPayoutVerdict => ({ kind: "refuse",
+    message: "The preceding wallet transfer's confirmed principal could not be verified. Nothing was submitted. Prepare a new proposal to continue." });
+  if (!source || sourceIndex >= targetIndex || source.asset !== sizing.asset || step.asset !== sizing.asset
+    || OP_FLOW[source.op].from !== "account" || OP_FLOW[source.op].to !== "wallet"
+    || OP_FLOW[step.op].from !== "wallet" || state?.status !== "settled" || !state.txHash
+    || typeof state.transferAmount !== "string" || typeof args.amount !== "string") return refuse();
+  let actual: bigint, estimate: bigint;
+  try { actual = decimalWad(state.transferAmount); estimate = decimalWad(step.amount); } catch { return refuse(); }
+  const band = estimate * SWAP_SLIPPAGE_BPS / BigInt(10_000);
+  if (actual <= ZERO || actual < estimate - band || actual > estimate + band) return { kind: "refuse",
+    message: `The wallet transfer's principal is outside the approved estimate of ${step.amount} ${step.asset}. Nothing was submitted. Prepare and approve a new proposal for the amount transferred.` };
+  if (actual === estimate) return { kind: "unchanged" };
+  return { kind: "adjusted", amount: state.transferAmount,
+    note: `The preceding transfer settled ${state.transferAmount} ${step.asset} of principal. This step spends that amount; wallet transaction fees are separate.` };
+}
+
 /**
  * Refresh an LP leg's token ratio and share floor immediately before invoking the MCP.
  *
@@ -718,7 +743,9 @@ export async function advanceWorkflow(input: {
   const live = await journal.read(input.id, identity);
   const fromStep = step.sizing?.basis === "settled_payout" ? step.sizing.fromStep : null;
   const producer = fromStep ? live.value.proposal.steps.find(entry => entry.id === fromStep) : undefined;
-  const payout = await settledRemovalPayout(step, live.value.steps, swapAdjustedArgs, input.mcp, scope, input.signal, producer);
+  const payout = step.sizing?.basis === "settled_transfer"
+    ? settledTransferPrincipal(step, live.value.proposal, live.value.steps, swapAdjustedArgs)
+    : await settledRemovalPayout(step, live.value.steps, swapAdjustedArgs, input.mcp, scope, input.signal, producer);
   if (payout.kind === "refuse") {
     return workflowView(await journal.pauseForReapproval(input.id, identity, step.id, payout.message));
   }
@@ -735,6 +762,8 @@ export async function advanceWorkflow(input: {
   const invocationArgs = acceptedLoss && step.op === "swap"
     ? { ...payoutArgs, acknowledged_price_impact: true }
     : payoutArgs;
+  const transferAmount = OP_FLOW[step.op].from === "account" && OP_FLOW[step.op].to === "wallet"
+    && typeof invocationArgs.amount === "string" ? invocationArgs.amount : undefined;
   const note = [
     stale.kind === "adjusted" ? stale.note : null,
     liquidity.kind === "adjusted" ? liquidity.note : null,
@@ -820,7 +849,7 @@ export async function advanceWorkflow(input: {
       record = await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" });
       return workflowView(record);
     }
-    record = await journal.invocationResult(input.id, identity, step.id, { kind: "submitted", txHash, note: note ?? undefined });
+    record = await journal.invocationResult(input.id, identity, step.id, { kind: "submitted", txHash, note: note ?? undefined, transferAmount });
     record = await settleSubmitted(journal, input.id, identity, lookup, note ?? undefined);
     phase("settle", { settled: record.steps.find(s => s.id === step.id)?.status === "settled" });
     persistRun(record, input.subject);
@@ -846,6 +875,7 @@ export async function advanceWorkflow(input: {
     const refusal = autoSignRefusal(build);
     record = await journal.invocationResult(input.id, identity, step.id, {
       kind: "unsigned", unsignedXdr: result.unsigned_xdr,
+      transferAmount,
       note: [note, refusal].filter(Boolean).join(" ") || undefined,
       refusal: autoSignRefusalCode(build) ?? undefined,
     });
