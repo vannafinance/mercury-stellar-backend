@@ -110,6 +110,48 @@ describe("binding the model's blocks", () => {
 });
 
 describe("composing a reply", () => {
+  it("composes completed strategy research without turning a comparison into a prepared plan", async () => {
+    const original = view({ originalRequest: "Move my pool proceeds to the higher-paying venue",
+      understanding: { intent: "strategy", objective: "Reinvest proceeds", constraints: [], borrowing: "forbidden" },
+      facts: [fact("e3:rate", "Blend XLM supply APY", "32.7", "% APY", "blend")],
+      candidates: { feasible: [], rejected: [] }, message: "The user holds pool shares. Research findings follow.",
+    } as Partial<ResearchView>);
+    const generate = vi.fn(async () => ({ blocks: [
+      { type: "paragraph", segments: [{ type: "text", text: "Blend's observed XLM supply rate is " }, { type: "fact", factId: "e3:rate" }, { type: "text", text: "." }] },
+      { type: "paragraph", segments: [{ type: "text", text: "No executable reinvestment plan is ready. Nothing was submitted." }] },
+    ] }));
+    const out = await composeReply(original, new AbortController().signal, generate);
+    expect(generate).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
+    expect(payload.context.preparation).toEqual({ status: "not_prepared", executionSubmitted: false, reasons: [] });
+    expect(out.message).toContain("32.70% APY");
+    expect(out.replyBlocks).toHaveLength(2);
+    expect(out.candidates).toBe(original.candidates);
+    expect(out.continuation).toBe(original.continuation);
+    expect(out.proposalCandidateId).toBeUndefined();
+    expect(out.executionAllowed).toBe(false);
+  });
+  it("preserves verified strategy refusals and warnings in the composition context", async () => {
+    const reason = "The paired-token transfer has not been verified.";
+    const original = view({ understanding: { intent: "strategy", objective: "Rebalance", constraints: [], borrowing: "forbidden" },
+      warnings: ["Pool price was unavailable."], candidates: { feasible: [], rejected: [{ label: "Reinvest", asset: "XLM", reason }] },
+    } as Partial<ResearchView>);
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "Observed health factor: {{e0:health_factor}}. No executable plan is ready." }] }));
+    const out = await composeReply(original, new AbortController().signal, generate);
+    const payload = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
+    expect(payload.context.preparation.reasons).toEqual([reason]);
+    expect(payload.context.warnings).toEqual(original.warnings);
+    expect(out.warnings).toBe(original.warnings);
+    expect(out.candidates).toBe(original.candidates);
+  });
+  it("does not rewrite an active strategy questionnaire as an unprepared answer", async () => {
+    const original = view({ understanding: { intent: "strategy", objective: "Allocate", constraints: [], borrowing: "unspecified" },
+      question: "Which amount?", questionnaire: { id: "q", title: "Choose amount", subtitle: "", steps: [] },
+    });
+    const generate = vi.fn();
+    expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
+    expect(generate).not.toHaveBeenCalled();
+  });
   it("allows a valid model response beyond the former six-second deadline", async () => {
     vi.useFakeTimers();
     try {
