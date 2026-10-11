@@ -43,6 +43,7 @@ jobs:
       - name: Copilot behavior regressions
         run: >-
           npx vitest run
+          tests/copilot-brain.test.ts
           tests/lib/investigation-capacity.test.ts
           tests/lib/investigation-proposal.test.ts
           tests/lib/investigation-runtime.test.ts
