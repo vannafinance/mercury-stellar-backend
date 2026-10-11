@@ -11,16 +11,16 @@
  *
  * Here the tools are schemas instead, with four defences, strongest first:
  *
- *   1. UNREPRESENTABLE — enums pin every asset / pool / pair to a value that actually
+ *   1. UNREPRESENTABLE - enums pin every asset / pool / pair to a value that actually
  *      exists, so an invalid one cannot be emitted at all. Only this layer is a hard
  *      guarantee, so as much as possible lives here.
- *   2. SEPARATED — Earn, Blend and Aquarius are distinct functions, never one function
+ *   2. SEPARATED - Earn, Blend and Aquarius are distinct functions, never one function
  *      with a `venue` argument (that only moves the guess into a parameter). Each
  *      description says when NOT to call it, which the model reads exactly when that
  *      tool is under consideration.
- *   3. GUARDED — guardIntent() re-checks the model's choice against the raw message in
+ *   3. GUARDED - guardIntent() re-checks the model's choice against the raw message in
  *      plain code, because a schema cannot stop a *valid* wrong choice.
- *   4. ESCAPABLE — ask_clarification is a first-class tool, so "not sure" is a legal
+ *   4. ESCAPABLE - ask_clarification is a first-class tool, so "not sure" is a legal
  *      move. Models guess when guessing is the only thing they can represent.
  *
  * Schema and mapping live in one table (ROUTER_TOOLS) so they cannot drift apart.
@@ -35,7 +35,7 @@ import { WRITE_ASSET_ENUM, allAssets, blendReserveSymbols } from "./registry/ass
 export const EARN_POOLS = allAssets()
   .filter((a) => a.earnSymbol)
   .map((a) => a.id);
-/** Blend reserves on the registered pool — checked against a live list_reserves read. */
+/** Blend reserves on the registered pool - checked against a live list_reserves read. */
 export const BLEND_RESERVES = blendReserveSymbols();
 /** Aquarius/Soroswap pairs Vanna can farm. There is no XLM/AQUA pool. */
 export const AQUARIUS_PAIRS = ["XLM/USDC", "XLM/USDT"] as const;
@@ -230,7 +230,7 @@ export const ROUTER_TOOLS: ToolEntry[] = [
         "Every reserve on the Blend pool with its rates. Use ONLY when the user says " +
         "\"Blend\" or \"bToken\". " +
         "REQUIRED for any comparison between Blend reserves (\"which Blend reserve pays " +
-        "more, XLM or USDC?\") because it returns all sides at once — get_blend_reserve_stats " +
+        "more, XLM or USDC?\") because it returns all sides at once - get_blend_reserve_stats " +
         "handles one symbol and cannot answer \"which pays more\". " +
         "A question about Blend is still a READ: never answer it with deploy_to_blend.",
     },
@@ -308,7 +308,7 @@ export const ROUTER_TOOLS: ToolEntry[] = [
       name: "can_borrow",
       description:
         "Whether a SPECIFIC borrow amount is allowed. Use for \"can I borrow 50 USDC?\". " +
-        "This is a READ — it checks, it does not borrow.",
+        "This is a READ - it checks, it does not borrow.",
       parameters: params(
         { symbol: str("Asset to borrow.", WRITE_ASSETS), amount: num("Amount to test.") },
         ["symbol", "amount"],
@@ -325,7 +325,7 @@ export const ROUTER_TOOLS: ToolEntry[] = [
       name: "can_withdraw",
       description:
         "Whether a specific collateral withdrawal is allowed without breaching health. " +
-        "A READ — it checks, it does not withdraw.",
+        "A READ - it checks, it does not withdraw.",
       parameters: params(
         { symbol: str("Collateral asset.", WRITE_ASSETS), amount: num("Amount to test.") },
         ["symbol", "amount"],
@@ -341,7 +341,7 @@ export const ROUTER_TOOLS: ToolEntry[] = [
     decl: {
       name: "get_vtoken_balance",
       description:
-        "The user's vToken (Earn supply receipt) balance for one asset — how much they have " +
+        "The user's vToken (Earn supply receipt) balance for one asset - how much they have " +
         "supplied to a Vanna Earn pool.",
       parameters: params({ symbol: str("Earn pool asset.", EARN_POOLS) }, ["symbol"]),
     },
@@ -465,7 +465,7 @@ export const ROUTER_TOOLS: ToolEntry[] = [
       description:
         "Create the user's margin smart account (C-address) via MCP open. " +
         "Use ONLY for \"create a margin account\", \"open a smart account\", \"open margin account\". " +
-        "Do NOT use for \"create wallet\" / \"create Vanna wallet\" / G-wallet — that is client-side Privy, not MCP.",
+        "Do NOT use for \"create wallet\" / \"create Vanna wallet\" / G-wallet - that is client-side Privy, not MCP.",
     },
     toIntent: () => write("create_account", {}),
   },
@@ -529,7 +529,7 @@ export const ROUTER_TOOLS: ToolEntry[] = [
         "the user asks for both at once, or asks for leverage: \"deposit 20 USDC and borrow 2x\", " +
         "\"lever up 3x\". " +
         "Give leverage when the user expressed a multiple, or borrow_amount when they gave an " +
-        "explicit second figure — not both. " +
+        "explicit second figure - not both. " +
         USDC_NOTE,
       parameters: params(
         {
@@ -548,7 +548,7 @@ export const ROUTER_TOOLS: ToolEntry[] = [
         deposit_amount: asAmount(a.amount),
         borrow_amount: asAmount(a.borrow_amount),
         // Declared to the model since this tool existed, and dropped here since this
-        // tool existed — so a model that correctly extracted "borrow XLM" had its
+        // tool existed - so a model that correctly extracted "borrow XLM" had its
         // answer discarded one line after it arrived.
         borrow_asset: asStr(a.borrow_asset),
       }),
@@ -576,7 +576,7 @@ export const ROUTER_TOOLS: ToolEntry[] = [
         "Supply from the margin account into a Blend reserve to farm yield. Use for \"supply 10 " +
         "XLM to Blend\", \"deploy into Blend\", \"farm on Blend at 3x\". " +
         "Requires BOTH an explicit write verb AND the word Blend. " +
-        "Naming Blend alone is NOT intent to write — a question about Blend rates is a read " +
+        "Naming Blend alone is NOT intent to write - a question about Blend rates is a read " +
         "(list_blend_reserves). Never use this for deposit_collateral.",
       parameters: params(
         {
@@ -603,8 +603,8 @@ export const ROUTER_TOOLS: ToolEntry[] = [
             "start = begin enabling; use_defaults = accept default caps; custom = user gave caps; disable = turn off.",
             ["start", "use_defaults", "custom", "disable"],
           ),
-          max_per_tx_usd: num("Per-transaction USD cap, if the user gave one."),
-          max_per_day_usd: num("Daily USD cap, if the user gave one."),
+          max_per_tx_tokens: num("Testnet token amount limit per transaction; never reinterpret dollars as tokens."),
+          max_per_day_tokens: num("Testnet daily token amount limit; never reinterpret dollars as tokens."),
         },
         ["action"],
       ),
@@ -617,8 +617,8 @@ export const ROUTER_TOOLS: ToolEntry[] = [
           ? action
           : "start") as "start" | "use_defaults" | "custom" | "disable",
         template_id: "auto_sign",
-        ...(asAmount(a.max_per_tx_usd) != null ? { max_per_tx_usd: asAmount(a.max_per_tx_usd)! } : {}),
-        ...(asAmount(a.max_per_day_usd) != null ? { max_per_day_usd: asAmount(a.max_per_day_usd)! } : {}),
+        ...(asAmount(a.max_per_tx_tokens) != null ? { max_per_tx_tokens: asAmount(a.max_per_tx_tokens)! } : {}),
+        ...(asAmount(a.max_per_day_tokens) != null ? { max_per_day_tokens: asAmount(a.max_per_day_tokens)! } : {}),
       };
     },
   },
@@ -628,12 +628,12 @@ export const ROUTER_TOOLS: ToolEntry[] = [
       description:
         "A multi-step strategy that needs more than one call: park/lend for yield THEN farm Blend, " +
         "deposit then borrow, rebalances, multi-venue goals. Order steps as they must run. " +
-        "Amounts ONLY from explicit N ASSET (e.g. 20 XLM) — never use health-factor floors as amounts. " +
+        "Amounts ONLY from explicit N ASSET (e.g. 20 XLM) - never use health-factor floors as amounts. " +
         "Use a single-purpose tool instead whenever one call is enough. " +
         "Named strategies you must DECOMPOSE here rather than refuse or clarify: " +
         "a DELTA-NEUTRAL CARRY (also \"carry trade\", \"basis trade\", \"cash and carry\") on asset X " +
         "is deposit_collateral with the stable asset the user named, then borrow X, then lend or " +
-        "deploy_to_blend the SAME amount of X — owing X while holding X cancels the price exposure, " +
+        "deploy_to_blend the SAME amount of X - owing X while holding X cancels the price exposure, " +
         "and the return is the deploy yield minus the borrow cost. " +
         "A LEVERAGED FARM is deposit_collateral, borrow, then deploy_to_blend.",
       parameters: params(
@@ -691,7 +691,7 @@ export const ROUTER_TOOLS: ToolEntry[] = [
     decl: {
       name: "ask_clarification",
       description:
-        "Ask the user one short question when the request genuinely cannot be routed — an " +
+        "Ask the user one short question when the request genuinely cannot be routed - an " +
         "APY with no pool AND no venue named, an action with no asset, a request that could " +
         "mean two different venues. " +
         "PREFER THIS OVER GUESSING. Do not use it merely because an amount is missing: emit " +
@@ -726,7 +726,7 @@ export const ROUTER_TOOLS: ToolEntry[] = [
       kind: "restricted",
       reason: String(
         a.reason ??
-          "Liquidating other accounts is a restricted keeper action — the copilot won't run it.",
+          "Liquidating other accounts is a restricted keeper action - the copilot won't run it.",
       ),
       template_id: "liquidate",
     }),
@@ -823,9 +823,9 @@ export function guardIntent(intent: RoutedIntent, message: string): GuardResult 
   const blendNamed = BLEND_NAMED.test(text);
   const lpNamed = LP_NAMED.test(text);
 
-  // KIND guard — a comparison is never an instruction.
+  // KIND guard - a comparison is never an instruction.
   if (intent.kind === "write" && COMPARATIVE.test(text) && !WRITE_VERB.test(text)) {
-    corrections.push(`kind: write(${intent.op}) demoted to clarify — comparative question, no write verb`);
+    corrections.push(`kind: write(${intent.op}) demoted to clarify - comparative question, no write verb`);
     return {
       intent: {
         kind: "clarify",
@@ -838,7 +838,7 @@ export function guardIntent(intent: RoutedIntent, message: string): GuardResult 
     };
   }
 
-  // VENUE guard — a venue tool needs the venue named.
+  // VENUE guard - a venue tool needs the venue named.
   if (intent.kind === "write" && intent.op === "deploy_to_blend" && !blendNamed) {
     corrections.push("venue: deploy_to_blend without \"Blend\" named → deposit_collateral");
     return {
@@ -874,12 +874,12 @@ export function guardIntent(intent: RoutedIntent, message: string): GuardResult 
  *
  * Deliberately short. The routing rules now live on the individual tool descriptions,
  * where the model reads them exactly when that tool is a candidate, instead of in one
- * global block competing with everything else. Keep this text STABLE — it is the head
+ * global block competing with everything else. Keep this text STABLE - it is the head
  * of the cached prefix, and any edit invalidates the cache for every user.
  */
 export const FC_ROUTE_SYSTEM = `You are Vanna Copilot, the natural-language interface to the Vanna Finance MCP server on Stellar/Soroban.
 
-Your only job is to choose the right tool and fill its arguments. You never execute anything and you never write prose here — MCP performs every read and write, and the Sign Service signs.
+Your only job is to choose the right tool and fill its arguments. You never execute anything and you never write prose here - MCP performs every read and write, and the Sign Service signs.
 
 - Always call exactly one tool.
 - Questions are reads. Only an imperative instruction is a write.

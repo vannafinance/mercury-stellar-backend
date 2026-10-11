@@ -46,7 +46,7 @@ export type MultiLegStep = {
   tx_hash?: string | null;
   hf_after?: number | null;
   /**
-   * A swap leg's destination, carried so a resume can replay it — or, when the leg is
+   * A swap leg's destination, carried so a resume can replay it - or, when the leg is
    * paused because that destination is exactly what's wrong ("BLUSDC is Blend USDC,
    * use SOUSDC instead"), so the client knows what to replace when the user answers.
    * Dropped once already: this type never had them, so the wire payload for a stopped
@@ -54,7 +54,7 @@ export type MultiLegStep = {
    */
   token_in?: string | null;
   token_out?: string | null;
-  /** AMM LP pair — pause UI lets the user size either side. */
+  /** AMM LP pair - pause UI lets the user size either side. */
   token_a?: string | null;
   token_b?: string | null;
 };
@@ -64,7 +64,7 @@ export type MultiLegStep = {
  *
  * Extends `IntentSlots` rather than re-listing fields: this type was a hand-picked
  * subset (op/asset/amount/leverage/borrow_asset/token_in/token_out), so every other
- * executable slot — `fraction`, `amount_a/b`, `venue`, `min_hf` — was dropped in the
+ * executable slot - `fraction`, `amount_a/b`, `venue`, `min_hf` - was dropped in the
  * expansion regardless of what the plan said. An approved "remove half my liquidity"
  * reached the executor with no fraction to act on. Carrying the slot record means a new
  * slot survives expansion without this file being edited.
@@ -76,7 +76,7 @@ export type ExpandedWrite = Omit<
   op: string;
   label: string;
   multi_leg?: boolean;
-  /** Swap spelling of token_a / token_b — the same two slots downstream. */
+  /** Swap spelling of token_a / token_b - the same two slots downstream. */
   token_in?: string | null;
   token_out?: string | null;
   /**
@@ -84,7 +84,7 @@ export type ExpandedWrite = Omit<
    *
    * `IntentSlots` types every slot as `string | number | boolean | null` because it is
    * the generic wire form. These four are read as strings/numbers all over the executor,
-   * so they are pinned here — the record still carries every other slot untyped, which
+   * so they are pinned here - the record still carries every other slot untyped, which
    * is what makes a NEW slot survive without touching this file.
    */
   asset?: string | null;
@@ -191,7 +191,7 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
 }
 
 /**
- * Pre-Phase-3 expander — kept only so the differential harness can prove the
+ * Pre-Phase-3 expander - kept only so the differential harness can prove the
  * workflow table emits an identical step list. Do not call from production paths.
  *
  * @deprecated Prefer {@link expandPlanWrites}.
@@ -241,7 +241,7 @@ export function expandPlanWritesLegacy(steps: PlanStep[]): ExpandedWrite[] {
           asset,
           amount: null,
           leverage,
-          label: humanWriteLabel("deploy_to_blend", null, asset, leverage) + " — need amount",
+          label: humanWriteLabel("deploy_to_blend", null, asset, leverage) + " - need amount",
           multi_leg: true,
         });
         continue;
@@ -282,7 +282,7 @@ export function expandPlanWritesLegacy(steps: PlanStep[]): ExpandedWrite[] {
           amount: null,
           leverage: leverage ?? 2,
           borrow_asset: borrowAsset,
-          label: humanWriteLabel("deposit_and_borrow", null, asset, leverage ?? 2) + " — need amount",
+          label: humanWriteLabel("deposit_and_borrow", null, asset, leverage ?? 2) + " - need amount",
           multi_leg: true,
         });
         continue;
@@ -340,7 +340,7 @@ export function expandPlanWritesLegacy(steps: PlanStep[]): ExpandedWrite[] {
  *
  * Sync `expandPlanWrites` keeps cross-asset levered positions whole (no oracle there).
  * The multi-leg runner then marked that single write "done" after deposit and **dropped**
- * `runWrite`'s `next_step` borrow — live: AQUSDC@2× "borrow XLM" settled 1 tx, debt $0,
+ * `runWrite`'s `next_step` borrow - live: AQUSDC@2× "borrow XLM" settled 1 tx, debt $0,
  * UI still claimed XLM was borrowed. Size here with prices, then the one-leg-per-hop
  * loop runs deposit then borrow like same-asset already does.
  */
@@ -369,7 +369,7 @@ export function materializeLeverageWrites(
      * "Deposit X and borrow 3x BLUSDC and AqUSDC" expands into THREE writes: this
      * `deposit_and_borrow` (collateral + first borrow asset) immediately followed by
      * a separate, unsized `borrow` for the second asset. Reported live: the second
-     * write was left completely untouched here — no leverage, no amount — so the
+     * write was left completely untouched here - no leverage, no amount - so the
      * first write alone consumed the FULL (L−1) leveraged amount and the second asked
      * "how much?" with zero sizing context. A user answering with a similarly-sized
      * number silently doubled the account's real leverage past what was asked for.
@@ -378,7 +378,7 @@ export function materializeLeverageWrites(
      * each independently.
      *
      * Splitting the SAME (L−1) leveraged amount across N assets means each individual
-     * asset sizes as if leverage were only `1 + (L−1)/N` — for N=2 that is exactly
+     * asset sizes as if leverage were only `1 + (L−1)/N` - for N=2 that is exactly
      * half the original (L−1) total, and the formula generalizes past two without a
      * special case for "two".
      */
@@ -422,7 +422,7 @@ export function materializeLeverageWrites(
       multi_leg: false,
     });
     // Display leverage is the ORIGINAL total the user asked for (e.g. 3×), not the
-    // internal `effectiveLeverage` used to size a SPLIT leg (e.g. 2× per asset) — a
+    // internal `effectiveLeverage` used to size a SPLIT leg (e.g. 2× per asset) - a
     // split's two halves still together make up the one leveraged position the user
     // named, and a label reading "2× leverage" on it would misstate what was approved.
     // Equal to `sized.plan.leverage` in the non-split case, so this is a no-op then.
@@ -461,7 +461,7 @@ export function materializeLeverageWrites(
         label: humanWriteLabel("borrow", sized2.plan.borrowAmount, sized2.plan.borrowAsset),
         multi_leg: false,
       });
-      i += 1; // the second borrow write is fully consumed above — do not re-push it plain
+      i += 1; // the second borrow write is fully consumed above - do not re-push it plain
     }
   }
   const cap = copilotConfig.multiLegMaxLegs;
@@ -548,7 +548,7 @@ export function formatMultiLegReport(opts: {
           ? " · HF ∞"
           : ` · HF ≈ ${s.hf_after.toFixed(2)}`
         : "";
-    lines.push(`${s.index}. ${mark} — ${s.label}${hash}${hf}`);
+    lines.push(`${s.index}. ${mark} - ${s.label}${hash}${hf}`);
     if (s.message && s.status !== "ok" && s.status !== "pending") {
       // Drop internal multi-leg debug prefixes from nested write messages
       const clean = s.message
@@ -593,14 +593,14 @@ export function extractTxHash(res: ChatResponse): string | null {
 /**
  * One leg of an expanded plan → the action that executes it.
  *
- * Was one of five hand-written conversions, each with its own subset of the slots —
+ * Was one of five hand-written conversions, each with its own subset of the slots -
  * this one silently dropped `fraction`, `amount_a/b` and `venue`, so an approved
  * "remove half my liquidity" arrived with nothing to act on. Now it reads every slot in
  * EXECUTABLE_SLOTS by iteration (see registry/intent.ts), so a new slot cannot be
  * missing from this site while present in another.
  *
- * `token_in`/`token_out` are the swap spelling of `token_a`/`token_b` — the same two
- * slots `mapOpToMcpStep` reads — so they are mapped in before the read.
+ * `token_in`/`token_out` are the swap spelling of `token_a`/`token_b` - the same two
+ * slots `mapOpToMcpStep` reads - so they are mapped in before the read.
  */
 export function actionFromExpanded(
   w: ExpandedWrite,
@@ -689,14 +689,14 @@ export function humanizeLegError(raw: string | null | undefined): string {
   if (!m) return "Something went wrong on this step.";
   /**
    * "Swap 10 XLM to AQUSDC then add liquidity in Aquarius" failed leg 1 with "MCP auth
-   * failed — refresh the page or check WorkOS credentials" — reported live, traced to
+   * failed - refresh the page or check WorkOS credentials" - reported live, traced to
    * the actual server log. The REAL message, already built by `mcp-write.ts`'s
    * `isGenuinePolicyRejection` block, was "The Sign Service refused to sign this
    * (policy: unauthorized). Nothing was signed. Lower the size, or check the account's
-   * spend caps." — specific and correct. This function's own keyword classifiers below
+   * spend caps." - specific and correct. This function's own keyword classifiers below
    * then re-scanned that ALREADY-humanized text, matched the literal word "unauthorized"
-   * (a genuine, named Sign Service POLICY CODE — spend cap / allowlist / session
-   * identity — completely unrelated to the WorkOS M2M credential the rewritten message
+   * (a genuine, named Sign Service POLICY CODE - spend cap / allowlist / session
+   * identity - completely unrelated to the WorkOS M2M credential the rewritten message
    * blamed), and overwrote a correct, actionable message with a misleading one that sent
    * the wrong signal entirely (an infra/credentials problem, not a policy refusal).
    * A message this codebase already built deliberately (identified by its own unique
@@ -704,17 +704,17 @@ export function humanizeLegError(raw: string | null | undefined): string {
    * misread words inside it out of context.
    */
   if (/^The Sign Service refused to sign this \(policy: /i.test(m)) return m.slice(0, 220);
-  // Same wallet-has-no-XLM case as the single-write path — a strategy leg must not
+  // Same wallet-has-no-XLM case as the single-write path - a strategy leg must not
   // report it as a bare RPC dump when the single-write path explains it.
   if (isUnfundedWalletError(m)) return unfundedWalletMessage();
   if (/fetch failed|failed to fetch|networkerror|econnreset|epipe|econnrefused|enotfound|etimedout|socket hang up|abort(ed)?|timeout/i.test(m)) {
     return "Could not reach the Vanna MCP server (network). Check you’re online, MCP URL is up, then retry.";
   }
   if (/\b401\b|\b403\b|unauthorized|rejected the token|workos/i.test(m)) {
-    return "MCP auth failed — refresh the page or check WorkOS credentials.";
+    return "MCP auth failed - refresh the page or check WorkOS credentials.";
   }
   if (/Budget|ExceededLimit/i.test(m)) {
-    return "Soroban resource budget exceeded on this account — try a smaller size or retry.";
+    return "Soroban resource budget exceeded on this account - try a smaller size or retry.";
   }
   // Drop internal multi-leg debug prefixes
   return m.replace(/^multi-leg step \d+\/\d+:\s*/i, "").slice(0, 220);
@@ -724,13 +724,13 @@ export function humanizeLegError(raw: string | null | undefined): string {
 export function multiLegHeadline(steps: MultiLegStep[]): string {
   const failed = steps.find((s) => s.status === "error" || s.status === "blocked");
   if (failed) {
-    return `Stopped at “${failed.label}” — later steps were not run.`;
+    return `Stopped at “${failed.label}” - later steps were not run.`;
   }
   if (steps.some((s) => s.status === "stopped_hf")) {
     return "Stopped to protect your health-factor floor.";
   }
   if (steps.some((s) => s.status === "needs_sign")) {
-    return "Paused for signature — finish signing to continue.";
+    return "Paused for signature - finish signing to continue.";
   }
   if (steps.some((s) => s.status === "clarification")) {
     return "Need a bit more detail before continuing.";
@@ -739,7 +739,7 @@ export function multiLegHeadline(steps: MultiLegStep[]): string {
     return "All strategy steps finished.";
   }
   if (steps.some((s) => s.status === "ok")) {
-    return "Partial progress — some steps finished on-chain.";
+    return "Partial progress - some steps finished on-chain.";
   }
   return "Strategy did not complete.";
 }
@@ -753,7 +753,7 @@ export function multiLegHeadline(steps: MultiLegStep[]): string {
  * invisible to the entire resume machinery: `resume_legs` came back empty, `can_resume`
  * came back false, so the auto-approve chain had nothing to continue and the client's
  * post-signature path fell through to "final leg" and declared the strategy live. A
- * delta-neutral carry therefore deposited its collateral and stopped dead — the borrow
+ * delta-neutral carry therefore deposited its collateral and stopped dead - the borrow
  * and lend legs sat on "pending" forever, nothing ever asked for their size, and the
  * user's only way forward was to re-send the prompt, which re-planned from scratch and
  * deposited the collateral A SECOND TIME.
@@ -790,7 +790,7 @@ export function resumableLegsFromSteps(steps: MultiLegStep[]): Array<{
     }));
 }
 
-/** Clean payload for the UI card — never dump internal plan flags into FactsGrid. */
+/** Clean payload for the UI card - never dump internal plan flags into FactsGrid. */
 export function multiLegUiData(opts: {
   steps: MultiLegStep[];
   summary: string;

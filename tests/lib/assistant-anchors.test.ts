@@ -2,7 +2,7 @@
 
 /**
  * `data-copilot-id` is the contract the Guide points at. The Earn and Farm forms mount
- * the same panel twice — a desktop card and a mobile sheet, both in the DOM — so the
+ * the same panel twice - a desktop card and a mobile sheet, both in the DOM - so the
  * naive `querySelector` picked whichever came first, which on desktop can be the hidden
  * one: the page then scrolls to nothing and the pulse lands off-screen. The hint list had
  * the same problem in reverse, offering the model duplicate labels.

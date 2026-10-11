@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Plan approval card — the checkpoint between a multi-leg plan and the first signature.
+ * Plan approval card - the checkpoint between a multi-leg plan and the first signature.
  *
  * Ported from the Claude Design `Plan Approval Card.dc.html`. The design's mock data and
  * its own state machine are dropped; this renders the real `plan_preview` payload from
@@ -14,11 +14,11 @@
  * in one theme block and not the other. Three specific failures this shape prevents:
  *
  *   - No entry animation. An earlier version animated `copilot-in`, a keyframe that only
- *     exists in the design file — a missing keyframe with `forwards` still applies, so the
+ *     exists in the design file - a missing keyframe with `forwards` still applies, so the
  *     card sat in an unresolved state and rendered washed out.
  *   - No `opacity`, anywhere. Disabled and busy states change colour instead.
  *   - Busy never repaints the primary button grey. Only an expired or empty plan does,
- *     and it swaps to a solid violet-slate fill with white text, not a surface grey —
+ *     and it swaps to a solid violet-slate fill with white text, not a surface grey -
  *     grey-on-grey reads as "broken" rather than "not yet".
  *
  * Two properties the design encodes that matter more than the styling:
@@ -29,7 +29,7 @@
  *   - Waiting to Approve is not a timeout. Approve re-reads live funds; this card
  *     stays clickable until the user acts (or an abandoned plan is retired after a day).
  *
- * A missing amount renders as "amount to be confirmed", never blank or 0 — the server
+ * A missing amount renders as "amount to be confirmed", never blank or 0 - the server
  * will ask for it mid-execution, after earlier legs have already settled.
  */
 
@@ -41,7 +41,7 @@ export type PlanVenue = "earn" | "margin" | "farm" | "wallet" | "other";
 export interface PlanStepView {
   n: number;
   /**
-   * A "read" leg reports a number and is not signed — "…then tell me my health factor".
+   * A "read" leg reports a number and is not signed - "…then tell me my health factor".
    * Rendered without an amount block and without an asset, because it has neither, and
    * excluded from the signature count upstream.
    */
@@ -68,7 +68,7 @@ export interface PlanStepView {
    *
    * The card renders the label; this exists so `approvePlan` can echo the whole record
    * back unread. Echoing a hand-picked subset is what dropped `leverage`, then
-   * `borrow_asset`, then `token_out` — the client should not be deciding which parts of
+   * `borrow_asset`, then `token_out` - the client should not be deciding which parts of
    * an approved trade matter.
    */
   slots?: Record<string, string | number | boolean | null>;
@@ -85,7 +85,7 @@ export interface PlanPreview {
   warnings: string[];
   steps: PlanStepView[];
   /**
-   * A stated HF floor etc., read once when the plan was built. Opaque here — this card
+   * A stated HF floor etc., read once when the plan was built. Opaque here - this card
    * only has to carry it back verbatim on approve, not act on it.
    */
   constraints?: { minHf?: number | null } | null;
@@ -189,7 +189,7 @@ export function PlanApprovalCard({
   );
 
   // Styling is driven by `unusable`, never by `busy`. A running plan keeps its full
-  // gradient and says "Running…" — greying it out while the quote is still valid is what
+  // gradient and says "Running…" - greying it out while the quote is still valid is what
   // made the button look unavailable.
   const unusable = expired || plan.steps.length === 0;
   const approveBlocked = unusable || busy || autoPending;
@@ -356,7 +356,7 @@ export function PlanApprovalCard({
 
                 <div className="flex-shrink-0 text-right">
                   {/* A read leg has no size and asks for no signature, so it gets neither
-                      the amount figure nor the "amount to be confirmed" warning — that
+                      the amount figure nor the "amount to be confirmed" warning - that
                       warning is about a write that will stop mid-plan to ask. */}
                   {s.kind === "read" ? (
                     <p
@@ -416,7 +416,7 @@ export function PlanApprovalCard({
                     </p>
                   ) : s.fraction != null ? (
                     /* A share IS a size. Shown in the amount slot, in the heading colour
-                       rather than the warning colour, because nothing is outstanding —
+                       rather than the warning colour, because nothing is outstanding -
                        the figure is resolved against the live balance when the leg runs,
                        the same way the site's own 10/25/50/100% chips work. */
                     <p
@@ -527,7 +527,7 @@ export function PlanApprovalCard({
         ) : null}
       </div>
 
-      {/* Warnings — never dismissable, always above the buttons. One tinted block holding
+      {/* Warnings - never dismissable, always above the buttons. One tinted block holding
           compact rows rather than a stack of full-size panels: boxed panels each the
           height of a paragraph pushed Approve below the fold, which made the plan itself
           the smaller element. */}
@@ -562,7 +562,7 @@ export function PlanApprovalCard({
               >
                 !
               </span>
-              This plan sat unused for more than a day — ask again for a fresh
+              This plan sat unused for more than a day - ask again for a fresh
               one.
             </p>
           ) : null}
@@ -615,7 +615,7 @@ export function PlanApprovalCard({
               animation: "pc-pulse 1.4s ease-in-out infinite",
             }}
           />
-          session key is signing — no click needed
+          session key is signing - no click needed
         </p>
       ) : null}
 
@@ -652,7 +652,7 @@ export function PlanApprovalCard({
           type="button"
           onClick={onModify}
           className="pc-btn-2 cursor-pointer transition-colors"
-          // Border and colour come from .pc-btn-2 in globals.css — inline values here
+          // Border and colour come from .pc-btn-2 in globals.css - inline values here
           // would outrank the :hover rule and kill the tint.
           style={{
             borderRadius: 10,
@@ -682,7 +682,7 @@ export function PlanApprovalCard({
         </button>
       </div>
 
-      {/* plan_id — the proof that what executes is what was shown */}
+      {/* plan_id - the proof that what executes is what was shown */}
       <p
         className="m-0 mt-3 text-right"
         title={`plan_id ${plan.plan_id}`}

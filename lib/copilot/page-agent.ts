@@ -22,7 +22,7 @@ export { isAssistantChat };
 
 /** Shared formatting contract so every answer looks like a clean AI reply. */
 const FORMAT_RULES = `
-### OUTPUT FORMAT (required — the UI renders this with spacing and bullets)
+### OUTPUT FORMAT (required - the UI renders this with spacing and bullets)
 Structure every answer like a modern AI assistant:
 
 1) Open with 1–2 short sentences that answer the question directly.
@@ -33,17 +33,17 @@ Structure every answer like a modern AI assistant:
    • Point two
 4) Blank line before steps. For how-to, use a section title then numbered steps:
    How to do it
-   1. First action — brief detail.
-   2. Second action — brief detail.
-   3. Third action — brief detail.
+   1. First action - brief detail.
+   2. Second action - brief detail.
+   3. Third action - brief detail.
 5) Optional closing tip on its own line after a blank line (no section needed).
 
 Hard rules:
 - Put a blank line between the intro, each section, and the steps.
 - One idea per bullet or step. Keep steps short.
-- Use "• " for bullets (bullet character) and "1. " "2. " for steps — never walls of paragraphs.
+- Use "• " for bullets (bullet character) and "1. " "2. " for steps - never walls of paragraphs.
 - Do NOT use **bold**, *italic*, markdown # headings, or code fences.
-- Do NOT write First,/Second,/Third, as prose — always use numbered "1. 2. 3." instead.
+- Do NOT write First,/Second,/Third, as prose - always use numbered "1. 2. 3." instead.
 - No fake numbers. Only cite balances/APYs if they appear in pageContext.
 `;
 
@@ -52,7 +52,7 @@ Never call yourself Vanna Guide or Vanna Assistant.
 Help users understand what they see and how to use the product.
 ${DOMAIN_FIREWALL_SYSTEM}
 
-CRITICAL — ALWAYS ANSWER IN TEXT:
+CRITICAL - ALWAYS ANSWER IN TEXT:
 - Every reply MUST include a full natural-language answer.
 - NEVER respond with tools only.
 - Pure explain questions (what is / what can / how do I) → full structured answer, no tools.
@@ -75,7 +75,7 @@ Never call a tool that would sign or submit.
 ### Product notes
 Margin: deposit collateral, borrow, health factor (~1.1 liquidation). Earn: supply vaults.
 Farm: Blend / Aquarius / Soroswap. Spot: swap. BLUSDC / AQUSDC / SOUSDC are different.
-Leverage: deposit collateral + borrow (and related farm leverage) — explain from page text when present.
+Leverage: deposit collateral + borrow (and related farm leverage) - explain from page text when present.
 Never claim you signed a transaction.
 ${FORMAT_RULES}`;
 
@@ -189,7 +189,7 @@ function sanitizeProse(s: string): string {
 }
 
 /**
- * Offline answer from pageContext when Vertex is down — still answers
+ * Offline answer from pageContext when Vertex is down - still answers
  * “what is on my screen” without inventing numbers.
  */
 function offlineScreenAnswer(pageContext: SemanticPageContextCtx | null): string {
@@ -328,7 +328,7 @@ export async function runPageAgent(
     let guide: GuideAnswer | null = null;
 
     if (wantsGuidanceOnly) {
-      // One structured call first; prose fallback only if guide returns empty — not if
+      // One structured call first; prose fallback only if guide returns empty - not if
       // Vertex is still running (guide has its own timeout). Avoid stacking two full
       // 60s calls, which made the browser abort at 90s while the server kept going.
       guide = await vertexGuideAnswer(message, guideCtx || null, history, images);

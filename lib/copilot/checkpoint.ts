@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 
 /**
  * Durable checkpoint for a money-moving run. Plain serializable state behind
- * this interface — never whatever investigation/runtime.ts holds in memory.
+ * this interface - never whatever investigation/runtime.ts holds in memory.
  *
  * Cloud SQL is the intended store (P3). Firestore is out. Until a Postgres
  * instance is provisioned, local encrypted files match the workflow journal.

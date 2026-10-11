@@ -10,7 +10,7 @@ import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
  * `validateHealthPath` refuses states from model JSON, so this is the only sanctioned
  * source. Everything here is offline: the RPC client is injected, and no test reaches
  * the network. What matters is that a partial or inconsistent read becomes an ERROR
- * rather than a health factor — a numerator and denominator from two different ledgers
+ * rather than a health factor - a numerator and denominator from two different ledgers
  * are not a health factor, and neither is a balance with a missing debt.
  */
 
@@ -128,7 +128,7 @@ describe("contract health simulator", () => {
 
   it("passes the contract's unhealthy verdict through instead of re-deriving it", async () => {
     // The boundary is exclusive on chain (exactly 1.100000 is unhealthy), so the verdict
-    // is the contract's to give — a local ratio would disagree at the boundary.
+    // is the contract's to give - a local ratio would disagree at the boundary.
     const rpc = rpcStub({ balance: "110", debt: "100", healthy: false });
     const state = await readContractHealthState(ACCOUNT, { rpc });
     expect(state.contractHealthy).toBe(false);

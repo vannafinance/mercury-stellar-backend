@@ -2,7 +2,7 @@
  * "what is my total supply in earn section" executed a live `lend` write asking
  * which USDC variant, instead of answering the read question it actually was.
  * The old exclusion on the lend-write branch matched fixed substrings ("my
- * supply", "total supplied") — an adjective between "my" and "supply" ("my
+ * supply", "total supplied") - an adjective between "my" and "supply" ("my
  * TOTAL supply") broke the match, so the message fell straight into the write
  * branch. Separately, `asksAboutHoldings` (the "what do I hold" read) only
  * recognised "position"/"holdings" words, never "supply", so even once excluded
@@ -16,7 +16,7 @@ describe("a personal supply question reads the position, never writes", () => {
   it("answers 'what is my total supply in earn section'", () => {
     const r = routeMessage("what is my total supply in earn section");
     expect(r.kind).toBe("read");
-    // Names "earn" specifically — the Earn-only read, not the margin/farm fan-out.
+    // Names "earn" specifically - the Earn-only read, not the margin/farm fan-out.
     // See docs/copilot/TEST-RUN-FINDINGS.md on why these must not share an answer.
     if (r.kind === "read") expect(r.template_id).toBe("query_earn_position");
   });
@@ -53,19 +53,19 @@ describe("a personal supply question reads the position, never writes", () => {
 });
 
 /**
- * "some prompts are not running... my position in the earn or farm and whatever" —
+ * "some prompts are not running... my position in the earn or farm and whatever" -
  * a broader sweep beyond the one exact phrase above showed most everyday ways of
  * asking "how much do I have here" name no "position"/"holdings"/"supply" word at
  * all and fell through to the generic capabilities blurb. A fixed phrase list is
  * whack-a-mole against this; the shape is a quantity question word + a first-person
  * marker + a quantity noun + a named venue, in any order.
  *
- * "earn" and "farm" both get their own read, same reasoning as "blend"/"aquarius" —
+ * "earn" and "farm" both get their own read, same reasoning as "blend"/"aquarius" -
  * each names a specific thing, not "everything I own". "Farm" used to keep the
  * whole-account fan-out (the theory being its farm-overview call covered it), but
  * that call only ever contributes a best-effort PROSE sentence, never structured
  * facts, so "my farm position" answered with a MARGIN ACCOUNT card and a note
- * admitting Blend/Aquarius LP stay out of it — see farmPositionAnswer's doc comment
+ * admitting Blend/Aquarius LP stay out of it - see farmPositionAnswer's doc comment
  * in handle.ts for the fix (reads on-chain Blend/Aquarius/Soroswap LP state directly,
  * the same way earnPositionsAnswer does for Earn's vToken supply).
  */

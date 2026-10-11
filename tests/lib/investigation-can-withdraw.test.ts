@@ -18,7 +18,8 @@ vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
   return { ...actual, resolveInvestigationScope: mocks.resolveInvestigationScope };
 });
 
-vi.mock("@/lib/copilot/investigation/capacity", () => ({
+vi.mock("@/lib/copilot/investigation/capacity", async (importOriginal) => ({
+  PROTOCOL_MAX_BORROW_FLOOR: (await importOriginal<typeof import("@/lib/copilot/investigation/capacity")>()).PROTOCOL_MAX_BORROW_FLOOR,
   computeAccountPosition: mocks.computeAccountPosition,
   computeBorrowCapacity: mocks.computeBorrowCapacity,
 }));

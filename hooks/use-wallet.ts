@@ -115,7 +115,7 @@ export const useWallet = () => {
       await refreshWalletBalancesOnChain(targetAddress);
     } catch (error) {
       // Non-fatal: a transient RPC/Horizon failure shouldn't block the wallet or
-      // light up the dev error overlay — warn and let the next refresh recover.
+      // light up the dev error overlay - warn and let the next refresh recover.
       console.warn(
         "Error refreshing balances (non-fatal, will retry):",
         error instanceof Error ? error.message : String(error),
@@ -175,7 +175,7 @@ export const useWallet = () => {
           walletService: controls?.authenticated ? "ok" : useUserStore.getState().walletService,
         });
         if (controls?.resync?.()) return;
-        // Bridge not ready yet — leave kind=privy; PrivyWalletBridge will fill it.
+        // Bridge not ready yet - leave kind=privy; PrivyWalletBridge will fill it.
       } catch {
         /* ignore */
       }
@@ -223,7 +223,7 @@ export const useWallet = () => {
     }
   }, [refreshBalances]);
 
-  // Re-run when Privy finishes hydrating or recovers authentication — the mount
+  // Re-run when Privy finishes hydrating or recovers authentication - the mount
   // check is a snapshot, and wiping before that snapshot is the false logout.
   useEffect(() => {
     checkConnection();
@@ -239,7 +239,7 @@ export const useWallet = () => {
       // Opens Privy's login modal; PrivyWalletBridge reactively writes
       // address/isConnected/walletKind into the store once the user
       // authenticates and their Stellar embedded wallet is ready.
-      // `login()` no-ops when a Privy session is already live — startPrivyConnect
+      // `login()` no-ops when a Privy session is already live - startPrivyConnect
       // resyncs in that case so the click is not a dead button.
       try {
         useUserStore.getState().set({ manuallyDisconnected: false });
@@ -252,7 +252,7 @@ export const useWallet = () => {
         if (result === 'resync') {
           toast.success('Vanna wallet connected');
         } else if (result === 'pending-wallet') {
-          toast('Signed in — creating your Vanna wallet…');
+          toast('Signed in - creating your Vanna wallet…');
         }
       } catch (error: unknown) {
         console.error('Privy login failed:', error);
@@ -348,7 +348,7 @@ export const useWallet = () => {
 /**
  * Mutation to deposit into a pool. Variables: `{ amount, assetType }`. Requires a
  * connected wallet and a positive amount; on success invalidates `['earn']` and
- * `['margin']` to refetch real balances. (Lower-level than `useSupplyLiquidity` —
+ * `['margin']` to refetch real balances. (Lower-level than `useSupplyLiquidity` -
  * no toast/history side effects.)
  */
 export const useDeposit = () => {

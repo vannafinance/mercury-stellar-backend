@@ -1,5 +1,5 @@
 /**
- * The shape matrix — every cell of op × sizing × asset × funding state, GENERATED from the
+ * The shape matrix - every cell of op × sizing × asset × funding state, GENERATED from the
  * vocabulary the model is given (`WORKFLOW_OPS`, `PLAN_SIZINGS`), the registry
  * (`ASSET_IDS`) and the op-flow table (`OP_FLOW`). Nothing here is a hand-picked prompt.
  *
@@ -10,7 +10,7 @@
  * "lend 25% of xlm", a dust lend, a 14-decimal amount). A model that proposes shapes will
  * eventually propose every cell. So every cell is run here, and ONE invariant is asserted:
  *
- *   the sizer yields a fundable, precision-correct, allowlisted plan — or a refusal a
+ *   the sizer yields a fundable, precision-correct, allowlisted plan - or a refusal a
  *   person can read, that never came from a crash.
  *
  * A new op, sizing word or asset grows the grid by itself; the invariant still has to hold.
@@ -52,7 +52,7 @@ const WORLDS: World[] = WALLET_STATES.flatMap((wallet) => [false, true].flatMap(
   [false, true].flatMap((blendPosition) => [false, true].flatMap((lpPosition) => [false, true].flatMap((collateral) => [false, true].flatMap((debt) =>
     ACCOUNT_STATES.map((account) => ({ wallet, earnPosition, blendPosition, lpPosition, collateral, debt, account }))))))));
 
-/** A price per oracle feed — the registry says which feed prices each asset. */
+/** A price per oracle feed - the registry says which feed prices each asset. */
 const FEED_PRICE = { XLM: "0.18", USDC: "1", AQUA: "0.002", EURC: "1.1" } as const;
 const FUNDED = "1000";        // tokens in the wallet
 const DUST = "0.01";          // worth less than the 0.5 XLM fee reserve at any feed price above
@@ -100,11 +100,13 @@ function observations(asset: AssetId, world: World): Observation[] {
     rows.push(obs("ad", "account_debt", { debt: world.debt && def.marginSymbol ? [{ symbol: def.marginSymbol, balance: OWED }] : [] }));
   }
   // Live reserves for any asset paired with XLM on Aquarius, keyed the way `plan.ts` reads
-  // them — by the pool's non-XLM side — so add_liquidity can size the paired amount here
+  // them - by the pool's non-XLM side - so add_liquidity can size the paired amount here
   // exactly as it would from the real MCP read, in every world, not just a hand-picked one.
+  // Deep enough that a sized swap clears the 5% price-impact gate (3e55b06, which postdates
+  // this matrix); reserves and total_share scale together, so every LP payout is unchanged.
   if (poolVenueFor("XLM", asset) === "aquarius") {
     rows.push(obs("res", "aquarius_pool_reserves",
-      { found: true, pool: { available: true, reserves: { XLM: "10000", [asset]: "1800" }, total_share: "5000", fee: "0.0030" } },
+      { found: true, pool: { available: true, reserves: { XLM: "1000000", [asset]: "180000" }, total_share: "500000", fee: "0.0030" } },
       { asset }));
   }
   return rows;
@@ -137,6 +139,11 @@ function context(asset: AssetId, world: World, messages: string[]): PlanContext 
 
 // ── the legs: every sizing word, in every form it takes ─────────────────────────────────
 
+/** A share of the idle balance the model chose, as the parser hands it on. */
+function allocated(percent: number): PlanSizing {
+  return { kind: "fraction", percent: String(percent), of: "wallet", sourceQuote: "", allocation: { reason: "matrix split" } };
+}
+
 /** The sizing variants a word has, with the words the user would have said for it. */
 function sizingsOf(kind: (typeof PLAN_SIZINGS)[number], asset: AssetId): Array<{ sizing: PlanSizing; said: string; tag: string }> {
   switch (kind) {
@@ -145,10 +152,15 @@ function sizingsOf(kind: (typeof PLAN_SIZINGS)[number], asset: AssetId): Array<{
       { sizing: { kind, amount: "999999", sourceQuote: `999999 ${asset}` }, said: `999999 ${asset}`, tag: "literal:over" },
     ];
     case "fraction": return [
-      { sizing: { kind, percent: "25", of: "idle", sourceQuote: `25% of my ${asset}` }, said: `25% of my ${asset}`, tag: "fraction:idle" },
+      { sizing: { kind, percent: "25", of: "wallet", sourceQuote: `25% of my ${asset}` }, said: `25% of my ${asset}`, tag: "fraction:idle" },
       { sizing: { kind, percent: "25", of: "position", sourceQuote: `25% of my ${asset}` }, said: `25% of my ${asset}`, tag: "fraction:position" },
     ];
-    // As a lone single-leg cell this always refuses (no preceding deposit to multiply) —
+    // The model's own split of an idle balance (`sizing.kind: "share"`, normalised to a fraction that
+    // carries `allocation`): no user quote to anchor, so it is sized on its own and held to the pockets.
+    case "share": return [
+      { sizing: allocated(60), said: `part of my ${asset}`, tag: "share:60" },
+    ];
+    // As a lone single-leg cell this always refuses (no preceding deposit to multiply) -
     // the happy path needs two legs and is covered by plan-resolve.test.ts's own suite;
     // this only proves the refusal is clean, not a crash, on every op the matrix tries it on.
     case "leverage": return [{ sizing: { kind, multiple: "6", sourceQuote: `6x leverage on ${asset}` }, said: `6x leverage on ${asset}`, tag: "leverage:6" }];
@@ -156,10 +168,10 @@ function sizingsOf(kind: (typeof PLAN_SIZINGS)[number], asset: AssetId): Array<{
   }
 }
 
-/** The one sizing word that draws on an op's own source pocket — how a first leg is naturally sized. */
+/** The one sizing word that draws on an op's own source pocket - how a first leg is naturally sized. */
 function naturalSizing(op: WorkflowOp, asset: AssetId): { sizing: PlanSizing; said: string } {
   const flow = OP_FLOW[op];
-  if (flow.from === "wallet") return { sizing: { kind: "all_idle" }, said: `all my ${asset}` };
+  if (flow.from === "wallet") return { sizing: { kind: "all_wallet" }, said: `all my ${asset}` };
   if (flow.from === "debt") return { sizing: { kind: "to_floor" }, said: `as much ${asset} as the floor allows` };
   if (flow.positionRead) return { sizing: { kind: "all_position" }, said: `all my ${asset}` };
   return { sizing: { kind: "literal", amount: "100", sourceQuote: `100 ${asset}` }, said: `100 ${asset}` };
@@ -167,8 +179,8 @@ function naturalSizing(op: WorkflowOp, asset: AssetId): { sizing: PlanSizing; sa
 
 /**
  * A swap needs the asset it buys; add_liquidity needs the pool's other token. Any other
- * margin-accepted asset will do for a swap — the point of the grid is the sizing and
- * funding rules, not which pair was chosen — but add_liquidity's rejects on anything that
+ * margin-accepted asset will do for a swap - the point of the grid is the sizing and
+ * funding rules, not which pair was chosen - but add_liquidity's rejects on anything that
  * isn't a real pool partner, so it always takes the tradable one when there is one.
  */
 function withOut(op: WorkflowOp, asset: AssetId): { assetOut?: string } {
@@ -195,7 +207,7 @@ function cells(asset: AssetId): Cell[] {
   /**
    * Every ordered pair where BOTH legs size themselves from the same source, rather than
    * the second taking what the first produced. 14 Sep: the matrix had only `previous_leg`
-   * pairs, so it never generated "deposit all idle XLM, then repay all the debt" — a plan
+   * pairs, so it never generated "deposit all idle XLM, then repay all the debt" - a plan
    * that spent the same 3,315 XLM twice and was caught only at approve time.
    */
   const sameSource = WORKFLOW_OPS.flatMap((first) => WORKFLOW_OPS.flatMap((second) => {
@@ -205,7 +217,7 @@ function cells(asset: AssetId): Cell[] {
              { op: second, asset, sizing: b.sizing, ...withOut(second, asset) }] }];
   }));
   /**
-   * Deposit, then borrow the SAME asset at a stated multiple, then cover it with a supply —
+   * Deposit, then borrow the SAME asset at a stated multiple, then cover it with a supply -
    * the one shape leverage sizing exists for. Not reachable by `pairs`/`sameSource` at all:
    * both build every second leg from `naturalSizing`/`previous_leg`, never a stated
    * multiple, so leverage's own happy path needed its own generator or the matrix would
@@ -221,10 +233,10 @@ function cells(asset: AssetId): Cell[] {
     ],
   }];
   /**
-   * Deposit, then add it to the pool as previous_leg — add_liquidity's own happy path, not
+   * Deposit, then add it to the pool as previous_leg - add_liquidity's own happy path, not
    * reachable by `pairs` either: the paired amount only sizes off live reserves, and only
    * for a real pool partner, so a generic second leg picked by `naturalSizing` never lands
-   * here (15 Sep, same gap leverage sizing had — see `leveraged` above). Gated on the
+   * here (15 Sep, same gap leverage sizing had - see `leveraged` above). Gated on the
    * registry actually pairing this asset with XLM on Aquarius, not a named asset.
    */
   const pooled: Cell[] = poolVenueFor("XLM", asset) === "aquarius" ? [{
@@ -235,7 +247,22 @@ function cells(asset: AssetId): Cell[] {
       { op: "add_liquidity", asset, sizing: { kind: "previous_leg" }, ...withOut("add_liquidity", asset) },
     ],
   }] : [];
-  return [...single, ...pairs, ...sameSource, ...leveraged, ...pooled];
+  /**
+   * One idle balance split across two legs of ANY two ops, by the model's own shares: 60 + 40 fits
+   * the wallet exactly, 70 + 50 asks for 120% of it. The invariant below then holds both to the
+   * pockets - the second leg may take what the first left and no more - for every op pair,
+   * asset and funding state, not for the prompts that first showed the gap (a plan that spent
+   * 675 BLUSDC twice, 7 Oct).
+   */
+  // Only ops that spend the wallet, or the account the wallet funds, can take a share of an idle balance; the rest
+  // refuse it by the op's own source (covered by the single-leg `share:60` cells), so pairing them adds cells, not cases.
+  const drawing = WORKFLOW_OPS.filter((op) => OP_FLOW[op].from === "wallet" || OP_FLOW[op].from === "account");
+  const allocatedPairs = drawing.flatMap((first) => drawing.flatMap((second) => ([[60, 40], [70, 50]] as const).map(([a, b]) => ({
+    title: `${first} ${a}% + ${second} ${b}% ${asset} (allocated)`, said: `split my ${asset}`,
+    legs: [{ op: first, asset, sizing: allocated(a), ...withOut(first, asset) },
+           { op: second, asset, sizing: allocated(b), ...withOut(second, asset) }],
+  }))));
+  return [...single, ...pairs, ...sameSource, ...leveraged, ...pooled, ...allocatedPairs];
 }
 
 // ── the invariant ───────────────────────────────────────────────────────────────────────
@@ -245,7 +272,7 @@ const CRASH = "this plan could not be sized from the reads that completed";
 /** A refusal is a sentence for a person: no codes, no leaked JS values. */
 const NOT_FOR_PEOPLE = /undefined|NaN|\bnull\b|\[object|TypeError|RangeError|Cannot read|is not a function|\w+_\w+_\w+/;
 
-/** What the world holds in each pocket for the asset, in tokens — the balances a plan may spend. */
+/** What the world holds in each pocket for the asset, in tokens - the balances a plan may spend. */
 function pockets(asset: AssetId, world: World): Record<Pocket, bigint> {
   const held = world.wallet === "funded" ? FUNDED : world.wallet === "dust" ? DUST : "0";
   const spendable = asset === "XLM" && decimalWad(held) > decimalWad("0.5") ? decimalWad(held) - decimalWad("0.5") : decimalWad(held);
@@ -260,7 +287,7 @@ function pockets(asset: AssetId, world: World): Record<Pocket, bigint> {
 }
 
 function checkCell(asset: AssetId, world: World, cell: Cell): "plan" | "refusal" {
-  const ctx = context(asset, world, [`${cell.said} — ${cell.title}`]);
+  const ctx = context(asset, world, [`${cell.said} - ${cell.title}`]);
   const plan: ProposedPlan = { title: cell.title, rationale: "matrix", evidenceIds: ["w"], legs: cell.legs };
   const label = `${cell.title} | wallet=${world.wallet} earn=${world.earnPosition} blend=${world.blendPosition} lp=${world.lpPosition} coll=${world.collateral} debt=${world.debt} account=${world.account}`;
   const { candidates, rejected } = resolvePlans([plan], ctx);
@@ -313,7 +340,7 @@ function checkCell(asset: AssetId, world: World, cell: Cell): "plan" | "refusal"
 
 // ── run it ──────────────────────────────────────────────────────────────────────────────
 
-describe("the shape matrix — every op × sizing × asset × funding state", () => {
+describe("the shape matrix - every op × sizing × asset × funding state", () => {
   const grid = ASSET_IDS.flatMap((asset) => cells(asset).flatMap((cell) => WORLDS.map((world) => ({ asset, cell, world }))));
   const outcomes = { plan: 0, refusal: 0 };
   const plansBy = { op: new Set<WorkflowOp>(), sizing: new Set<string>(), asset: new Set<AssetId>() };
@@ -326,11 +353,15 @@ describe("the shape matrix — every op × sizing × asset × funding state", ()
         const outcome = checkCell(asset, world, cell);
         outcomes[outcome] += 1;
         if (outcome === "plan") {
-          for (const leg of cell.legs) { plansBy.op.add(leg.op); plansBy.sizing.add(leg.sizing.kind); }
+          for (const leg of cell.legs) {
+            plansBy.op.add(leg.op);
+            // A share is the parser's `share` word turned into a fraction that carries `allocation`.
+            plansBy.sizing.add(leg.sizing.kind === "fraction" && leg.sizing.allocation ? "share" : leg.sizing.kind);
+          }
           plansBy.asset.add(asset);
         }
       }
-    }, 120_000);
+    }, 300_000);
   });
 
   // 14 Sep: 1,880 plans and 51,040 refusals out of 52,920 cells.
@@ -342,13 +373,13 @@ describe("the shape matrix — every op × sizing × asset × funding state", ()
   it("offers at least one plan for every op, every sizing word and every asset the protocol accepts", () => {
     expect([...plansBy.op].sort()).toEqual([...WORKFLOW_OPS].sort());
     expect([...plansBy.sizing].sort()).toEqual([...PLAN_SIZINGS].sort());
-    // Assets with neither an Earn pool nor a margin symbol can only be refused — by the registry, not by a crash.
+    // Assets with neither an Earn pool nor a margin symbol can only be refused - by the registry, not by a crash.
     const accepted = ASSET_IDS.filter((id) => resolveAssetDef(id)!.earnSymbol || resolveAssetDef(id)!.marginSymbol);
     expect([...plansBy.asset].sort()).toEqual([...accepted].sort());
   });
 
   it("hands a leg to the next one only where the table says the tokens went", () => {
-    // Fixed properties of the table the matrix relies on — if these change, the grid's meaning changes.
+    // Fixed properties of the table the matrix relies on - if these change, the grid's meaning changes.
     for (const op of WORKFLOW_OPS) {
       const takers = WORKFLOW_OPS.filter((next) => feeds(op, next));
       const left = OP_FLOW[op].to;

@@ -31,6 +31,18 @@ beforeEach(() => {
     registryDiverged: false, wasmHash: "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960" });
 });
 describe("deterministic execution risk", () => {
+  it("validates a health-neutral remaining Blend step against the current floor", async () => {
+    const p = proposal("100");
+    p.steps = [{ ...p.steps[0], op: "supply_blend", tool: "vanna_blend_supply" }];
+    expect(await validate(p)).toBeNull();
+    expect(mocks.chain).toHaveBeenCalledOnce();
+    mocks.chain.mockResolvedValueOnce({ balanceWad: decimalWad("140").toString(), debtWad: decimalWad("100").toString(),
+      registryDiverged: false, wasmHash: "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960" });
+    expect(await validate(p)).toMatch(/already below/);
+    p.steps[0].amount = "1001";
+    p.steps[0].args.amount = "1001";
+    expect(await validate(p)).toMatch(/not enough XLM/);
+  });
   it("blocks a borrow that breaches the future floor despite healthy current HF", async () => {
     expect(await validate(proposal())).toMatch(/do not pass/);
     expect(mocks.app).not.toHaveBeenCalled();
@@ -54,7 +66,7 @@ describe("deterministic execution risk", () => {
      * (BlendControllerContract/src/controller.rs), and RiskEngine values that receipt at
      * underlying × oracle price (risk_engine.rs, `BlendUnderlying`). The op-flow table says
      * `neutral`; the sizer and this validator now agree. A borrow that lands exactly on the
-     * 1.5 floor stays there after the supply — and the supply still must be funded.
+     * 1.5 floor stays there after the supply - and the supply still must be funded.
      */
     const p = proposal("100");
     p.steps.push({ ...p.steps[0], id: "supply", op: "supply_blend", tool: "vanna_blend_supply" });
@@ -176,7 +188,7 @@ describe("redeem and withdraw in the risk gate", () => {
     ];
     mcp.call.mockImplementation(async (tool: string, args: Record<string, unknown>) => {
       if (tool === "vanna_get_price") return { price_usd: "1" };
-      // The wallet holds no AQUSDC yet — the redeem is what puts it there.
+      // The wallet holds no AQUSDC yet - the redeem is what puts it there.
       if (tool === "vanna_get_token_balance") return { holder: args.holder, contract: args.token_contract, human: "0", decimals: 7 };
       if (tool === "vanna_get_vtoken_balance") return { holder: args.holder, symbol: "AQUSDC", human: "4918.2651397", redeemable_human: "5000.786863027758031020" };
       throw new Error(`Unexpected tool ${tool}`);

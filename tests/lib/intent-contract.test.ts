@@ -1,5 +1,5 @@
 /**
- * Phase 2 — the typed intent contract.
+ * Phase 2 - the typed intent contract.
  *
  * ## What these tests are actually protecting
  *
@@ -13,7 +13,7 @@
  *   token_out     still dropped at the time Phase 2 was commissioned.
  *
  * Every fix was correct and none prevented the next, because the executable content of
- * an action had no single definition — five sites each hand-listed a subset, and a
+ * an action had no single definition - five sites each hand-listed a subset, and a
  * forgotten line is indistinguishable from a genuinely absent value.
  *
  * So the central test here is not per-field. `every executable slot survives…` LOOPS
@@ -77,7 +77,7 @@ describe("parseIntent refuses bad input where it enters", () => {
     expect("invalid" in r && r.invalid.reason).toBe("unknown_asset");
   });
 
-  it("a bare USDC is AMBIGUOUS, not invalid — the product asks", () => {
+  it("a bare USDC is AMBIGUOUS, not invalid - the product asks", () => {
     // The distinction is load-bearing. Flattening this to an error would replace a
     // working variant-chip question with a failure; flattening it to null would drop
     // the user's own word and ask "which one?" about nothing.
@@ -109,7 +109,7 @@ describe("parseIntent refuses bad input where it enters", () => {
   });
 
   it("1× or below is not leverage", () => {
-    // A borrow leg sized from L≤1 is zero or negative — meaningless, and previously it
+    // A borrow leg sized from L≤1 is zero or negative - meaningless, and previously it
     // would have been sized and handed to a signature prompt.
     for (const leverage of [1, 0, -2]) {
       const r = parseIntent({ op: "deposit_and_borrow", asset: "XLM", amount: 10, leverage });
@@ -149,7 +149,7 @@ describe("parseIntent refuses bad input where it enters", () => {
  * and this measures CARRIAGE rather than the split semantics of a levered op (whose
  * derived deposit leg legitimately does not inherit every slot). The base values are
  * deliberately different from every SAMPLE value, so adding the slot always changes the
- * fingerprint — a base that collided with the sample would make the hash test pass for
+ * fingerprint - a base that collided with the sample would make the hash test pass for
  * the wrong reason.
  */
 function planWithSlot(slot: SlotName): Extract<RoutedIntent, { kind: "plan" }> {
@@ -185,7 +185,7 @@ function approvalPayload(p: ReturnType<typeof freezePlan>) {
   };
 }
 
-describe.each(SLOT_NAMES)("every executable slot survives the whole path — %s", (slot) => {
+describe.each(SLOT_NAMES)("every executable slot survives the whole path - %s", (slot) => {
   it("is carried from the plan into the frozen step", () => {
     const [step] = freezePlan(planWithSlot(slot), NOW).steps;
     expect(compactSlots(step.slots)[slot]).toBeDefined();
@@ -193,7 +193,7 @@ describe.each(SLOT_NAMES)("every executable slot survives the whole path — %s"
 
   it("is inside the approval fingerprint", () => {
     // If it is not hashed, a client can change it after approval and the plan_id still
-    // matches — which is exactly how a different trade executed silently.
+    // matches - which is exactly how a different trade executed silently.
     const base = { op: "lend", slots: { asset: "XLM", amount: 1 } as IntentSlots };
     const withSlot = { op: base.op, slots: { ...base.slots, [slot]: SAMPLE[slot] } as IntentSlots };
     expect(planFingerprint([withSlot])).not.toBe(planFingerprint([base]));
@@ -215,7 +215,7 @@ describe.each(SLOT_NAMES)("every executable slot survives the whole path — %s"
     const payload = approvalPayload(frozen);
     // Strip BOTH spellings. The legacy top-level fields are honoured on purpose (an
     // older client that never learned `slots` must still validate), so a strip that
-    // leaves one of them behind is not a strip at all — it is a correct approval.
+    // leaves one of them behind is not a strip at all - it is a correct approval.
     const stripped = {
       ...payload,
       steps: payload.steps.map((s) => {
@@ -229,8 +229,8 @@ describe.each(SLOT_NAMES)("every executable slot survives the whole path — %s"
     const check = verifyApprovedPlan(stripped, NOW + 1_000);
     expect(check.ok).toBe(false);
     if (check.ok) return;
-    // Rejection is the guarantee. Which slot went missing is NOT knowable here — only
-    // the hash of the approved plan is held, not the plan — so the message stays generic
+    // Rejection is the guarantee. Which slot went missing is NOT knowable here - only
+    // the hash of the approved plan is held, not the plan - so the message stays generic
     // and the two hashes go to a log line instead.
     expect(check.reason).toBe("fingerprint_mismatch");
   });
@@ -251,7 +251,7 @@ describe.each(SLOT_NAMES)("every executable slot survives the whole path — %s"
 
 // ── the specific slot the operator called out ───────────────────────────────
 
-describe("a swap's token_out — the next instance of the same bug", () => {
+describe("a swap's token_out - the next instance of the same bug", () => {
   const swapPlan: Extract<RoutedIntent, { kind: "plan" }> = {
     kind: "plan",
     template_id: "t",
@@ -274,7 +274,7 @@ describe("a swap's token_out — the next instance of the same bug", () => {
     if (!check.ok) return;
     const [leg] = expandPlanWrites(check.plan.steps);
     expect(leg.op).toBe("swap");
-    // Live, this arrived null and the swap had no destination — the same class of drop
+    // Live, this arrived null and the swap had no destination - the same class of drop
     // as leverage and borrow_asset, in the third field.
     expect(leg.token_out).toBe("BLUSDC");
     const action = actionFromExpanded(leg, CTX);
@@ -330,7 +330,7 @@ describe("one conversion, so the sites cannot disagree", () => {
   });
 
   it("reads both spellings of every slot", () => {
-    // Producers disagree — the extractor writes args.borrow_asset, the router writes
+    // Producers disagree - the extractor writes args.borrow_asset, the router writes
     // borrow_asset. Each site used to know only its own, which is how a slot vanished
     // depending on which path built the step.
     for (const name of SLOT_NAMES) {
@@ -399,7 +399,7 @@ describe("slot record invariants", () => {
   });
 
   it("normalizeIntent canonicalises without rejecting", () => {
-    // Internal hops must not re-validate — see the module header.
+    // Internal hops must not re-validate - see the module header.
     const n = normalizeIntent({ op: "lend", asset: "usdc", amount: "5" });
     expect(n.op).toBe("lend");
     expect(n.slots.amount).toBe(5);

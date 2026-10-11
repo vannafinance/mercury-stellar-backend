@@ -1,5 +1,5 @@
 /**
- * LLM strategy planner — plan-then-execute without free tool roulette.
+ * LLM strategy planner - plan-then-execute without free tool roulette.
  *
  * Architecture (Coinbase AgentKit / Anthropic workflow style):
  *   Planner (LLM JSON) → validated legs → MultiLegAgent executor (MCP tools)
@@ -14,7 +14,7 @@ import type { RoutedIntent } from "./types";
 
 /**
  * JSON plan via generateText (public Vertex API).
- * Avoids importing generateJson — Turbopack sometimes fails to resolve that
+ * Avoids importing generateJson - Turbopack sometimes fails to resolve that
  * export from the large vertex module even when it is present.
  */
 async function planJson(system: string, user: string): Promise<Record<string, unknown>> {
@@ -57,7 +57,7 @@ const ALLOWED_OPS = new Set([
 const PLANNER_SYSTEM = `You are Vanna Finance strategy planner for Stellar DeFi.
 Your only job: convert the user message into an ordered JSON plan of write steps.
 Execution happens elsewhere (MCP tools). You do NOT invent balances, APYs, or tx hashes.
-DOMAIN: Vanna Finance only (Earn, Farm, Margin, swap, wallet). Refuse non-DeFi/coding in summary if somehow asked — prefer empty steps.
+DOMAIN: Vanna Finance only (Earn, Farm, Margin, swap, wallet). Refuse non-DeFi/coding in summary if somehow asked - prefer empty steps.
 
 Respond ONLY with JSON:
 {
@@ -79,7 +79,7 @@ Allowed ops only:
 lend, redeem, deposit_collateral, withdraw_collateral, borrow, repay, swap,
 deploy_to_blend, supply_to_blend, deposit_and_borrow, create_account, add_liquidity, remove_liquidity
 
-STRATEGY VOCABULARY — named strategies you must decompose yourself:
+STRATEGY VOCABULARY - named strategies you must decompose yourself:
 
 "delta-neutral carry" / "carry trade" / "basis trade" / "cash and carry" on asset X:
   The user wants yield without price exposure to X. Achieved by owing X and holding
@@ -87,13 +87,13 @@ STRATEGY VOCABULARY — named strategies you must decompose yourself:
     1. deposit_collateral with the STABLE asset the user named (their USDC variant)
     2. borrow X  ← this creates the short leg
     3. lend X (Vanna earn) or deploy_to_blend X  ← the long leg, and where yield comes from
-  Borrow and deploy the SAME amount of X — that is what makes it delta-neutral. The
+  Borrow and deploy the SAME amount of X - that is what makes it delta-neutral. The
   profit is the deploy yield minus the borrow cost, not price movement.
   "delta-neutral XLM carry with 1,000 USDC" → deposit_collateral USDC 1000, then
   borrow XLM, then lend XLM the same amount.
 
 "leveraged farm" / "lever up and farm" on asset X:
-  deposit_collateral X, borrow X, deploy_to_blend X — or a single deploy_to_blend with
+  deposit_collateral X, borrow X, deploy_to_blend X - or a single deploy_to_blend with
   leverage set, which the executor expands.
 
 "loop" / "recursive borrow": repeat deposit → borrow on the same asset. Never emit more
@@ -102,7 +102,7 @@ STRATEGY VOCABULARY — named strategies you must decompose yourself:
 Rules:
 1. Preserve USER ORDER of actions (then / and then / after).
 2. Amounts ONLY from explicit "N ASSET" (e.g. 20 XLM, 10 BLUSDC). Never invent.
-3. "keep HF above 1.4" is a constraint — NOT an amount. Never set amount=1.4 from that.
+3. "keep HF above 1.4" is a constraint - NOT an amount. Never set amount=1.4 from that.
 4. "farm Blend at 2x with 10 BLUSDC" → one step op=deploy_to_blend asset=BLUSDC amount=10 leverage=2
    (executor expands to deposit→borrow→supply).
 5. "park/lend 20 XLM for yield" → lend XLM 20.
@@ -162,19 +162,19 @@ function normalizeLlmPlan(data: Record<string, unknown>, message: string): Route
 /**
  * One planner call per message, however many times it is asked for.
  *
- * `handleChat` asks twice on purpose — once when the routed intent is already a plan, and
+ * `handleChat` asks twice on purpose - once when the routed intent is already a plan, and
  * again as a late catch when a single write might still be promoted. Both branches can be
  * reached in one turn: if the first call returns null (or a plan that loses the length
  * comparison) `routed` is still a write, so the second fires with the SAME message and the
  * same context, and Vertex is billed twice for an identical prompt. The planner is the most
- * expensive call in the turn — measured at ~950 prompt plus 400–1800 THINKING tokens, and
- * thinking bills at output rates — so a duplicate is the single easiest thing to stop
+ * expensive call in the turn - measured at ~950 prompt plus 400–1800 THINKING tokens, and
+ * thinking bills at output rates - so a duplicate is the single easiest thing to stop
  * paying for.
  *
  * Keyed by message + context, capped, and cleared on a timer rather than held for the life
  * of the process: this is a within-turn memo, not a cache of answers across users. A stale
  * plan replayed for a later turn would be a correctness bug, so the window is deliberately
- * short — long enough for one request, far too short to serve a second visit.
+ * short - long enough for one request, far too short to serve a second visit.
  */
 const PLAN_MEMO_TTL_MS = 30_000;
 const PLAN_MEMO_MAX = 64;

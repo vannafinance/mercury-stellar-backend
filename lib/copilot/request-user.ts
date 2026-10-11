@@ -12,7 +12,7 @@
  * sealed cookie instead, and that cookie is never forwarded to the Sign Service.
  *
  *   Privy  (default)  the session the user already has from getting a wallet.
- *                     Nothing extra to click — the browser sends its access
+ *                     Nothing extra to click - the browser sends its access
  *                     token, this verifies it, and `sub` is `did:privy:…`.
  *   WorkOS (optional) the Connect OAuth login in app/api/auth/*. Still supported,
  *                     no longer required.
@@ -30,7 +30,7 @@
  * A route handler is the only place that holds both the incoming cookie and the
  * outgoing response, so it is the only place that can rotate a WorkOS refresh
  * token and persist the result. Refreshing lazily deeper in the call stack would
- * mint a new token and then have nowhere to store it — the next request would
+ * mint a new token and then have nowhere to store it - the next request would
  * come back with the old one and refresh again, burning a rotation every call.
  *
  * Privy needs none of that: the browser owns that session and sends a live token
@@ -59,12 +59,12 @@ import {
 
 const SESSION_COOKIE_MAX_AGE = 30 * 24 * 3600;
 
-/** Cookie Privy sets when cookie storage is enabled — a fallback for callers
+/** Cookie Privy sets when cookie storage is enabled - a fallback for callers
  * that post to this API without going through the client helper. */
 export const PRIVY_TOKEN_COOKIE = "privy-token";
 
 /**
- * What happened to the Privy token on this request — for diagnostics only.
+ * What happened to the Privy token on this request - for diagnostics only.
  *
  * Exists because "not signed in" has two completely different causes and they need
  * completely different fixes: the browser never sent a token (client wiring), or it
@@ -90,7 +90,7 @@ export interface LoadedUser {
   /**
    * Write any cookie change onto the response: a rotated WorkOS session after
    * refresh, or a cleared cookie when the refresh token is dead. Always call
-   * this, even when `session` is null — that null may BE the change.
+   * this, even when `session` is null - that null may BE the change.
    */
   commit<T extends NextResponse>(res: T): T;
 }
@@ -128,7 +128,7 @@ async function loadPrivyUser(
     //
     // Logged at warn because in production this should be rare, and when it is
     // not rare it is the single most useful line for diagnosing why auto-sign
-    // stopped working — an expired token, a rotated key, or the wrong app id.
+    // stopped working - an expired token, a rotated key, or the wrong app id.
     const detail = e instanceof PrivyAuthError ? e.message : String(e);
     console.warn(
       `[privy-auth] ${JSON.stringify({ event: "assertion_rejected", source: found.source, detail })}`,
@@ -171,7 +171,7 @@ export async function loadUserFromRequest(req: NextRequest): Promise<LoadedUser>
     };
   }
 
-  // Expiring or expired — try to refresh. `resource` is re-sent inside
+  // Expiring or expired - try to refresh. `resource` is re-sent inside
   // refreshSession so the new token keeps the `aud` both verifiers require.
   try {
     const refreshed = await refreshSession(stored);

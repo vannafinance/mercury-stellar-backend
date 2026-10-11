@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Run execution card — the live view of a multi-leg strategy executing.
+ * Run execution card - the live view of a multi-leg strategy executing.
  *
  * Ported from the Claude Design `Run Execution Card.dc.html`. The design's mock configs
  * are dropped: this derives every state from the real leg statuses the server sends, so
@@ -12,7 +12,7 @@
  * nothing showed a leg waiting on the user, and nothing announced the run finishing. The
  * user was watching three signed transactions move real money with no narration.
  *
- * It is ONE card that advances in place — not a new card per leg. Three rules it holds to,
+ * It is ONE card that advances in place - not a new card per leg. Three rules it holds to,
  * each of them a bug that has already happened here once:
  *
  *   - A leg never reads as done before it is done. Status is carried by shape (dashed
@@ -59,8 +59,8 @@ export interface RunLeg {
   amount: string | null;
   asset: string | null;
   /**
-   * Carried so a resume can replay this leg as planned. Not displayed here — the label
-   * already says "at 2× leverage" — but dropping it meant answering a missing amount
+   * Carried so a resume can replay this leg as planned. Not displayed here - the label
+   * already says "at 2× leverage" - but dropping it meant answering a missing amount
    * resumed a levered leg unlevered, which is a different transaction from the approved one.
    */
   leverage?: number | null;
@@ -75,7 +75,7 @@ export interface RunLeg {
   /** Risk gate held this leg pending an acknowledgement. */
   gateReason?: string | null;
   /**
-   * A swap leg's current destination — what a paused-on-this-leg question is actually
+   * A swap leg's current destination - what a paused-on-this-leg question is actually
    * about when the leg is a swap. Lets the composer patch just this field on resume
    * instead of replaying (or being unable to correct) the original token.
    */
@@ -115,13 +115,13 @@ export interface RunExecutionCardProps {
   /** Section number in the workspace column, e.g. "02". */
   eyebrow?: string;
   legs: RunLeg[];
-  /** Live health factor — same source as the margin page. null when the read failed. */
+  /** Live health factor - same source as the margin page. null when the read failed. */
   hf: number | null;
   /** The user's own floor ("keep me above 1.4"), or the policy default. */
   floor?: number;
   liquidation?: number;
   signerText: string;
-  /** Auto-approve is signing without a popup — drives the blinking signer dot. */
+  /** Auto-approve is signing without a popup - drives the blinking signer dot. */
   signerLive?: boolean;
   /** A request is in flight. */
   busy?: boolean;
@@ -141,7 +141,7 @@ export interface RunExecutionCardProps {
     selectedAsset?: string,
     pair?: { amount_a: number; amount_b: number },
   ) => void;
-  /** After LP amounts are confirmed — scroll to the staged Approve & sign card. */
+  /** After LP amounts are confirmed - scroll to the staged Approve & sign card. */
   onLpEntered?: () => void;
   onApproveSign?: () => void;
   onConfirmGate?: (leg: RunLeg) => void;
@@ -150,10 +150,10 @@ export interface RunExecutionCardProps {
 /**
  * Map the server's leg vocabulary onto the design's.
  *
- * `clarification` becomes `needs_input` — the run is paused on a question. Whether that
+ * `clarification` becomes `needs_input` - the run is paused on a question. Whether that
  * question gets a NUMERIC FIELD is a separate decision, made per leg from whether an
  * amount is actually missing (see `showInput` below). A clarification that already has
- * its amount is asking about something else — which USDC, usually — and answering it
+ * its amount is asking about something else - which USDC, usually - and answering it
  * with a number box would be asking the wrong question.
  */
 export function toRunLegStatus(raw: string | null | undefined, inFlight = false): RunLegStatus {
@@ -178,7 +178,7 @@ export function toRunLegStatus(raw: string | null | undefined, inFlight = false)
     case "staged":
       return "staged";
     // A leg the model could not fill in becomes a clarification turn on the server. That
-    // is exactly this card's "paused, needs input" — the run stops for one number.
+    // is exactly this card's "paused, needs input" - the run stops for one number.
     case "clarification":
     case "needs_confirmation":
       return "needs_input";
@@ -246,7 +246,7 @@ function hfBand(v: number | null, floor: number, liquidation: number) {
 
 /**
  * Meter scale. The design pinned the liquidation and floor ticks at 5% and 20% while
- * scaling the fill by hf/3 — on that scale those marks sit at 0.15 and 0.6, so the
+ * scaling the fill by hf/3 - on that scale those marks sit at 0.15 and 0.6, so the
  * liquidation line was drawn nowhere near 1.10. Both the fill and the ticks now come
  * from this one function, so the marks mean what they say.
  */
@@ -423,7 +423,7 @@ export function RunExecutionCard({
       needsSign: legs.find((l) => l.status === "needs_sign") ?? null,
       running: legs.find((l) => l.status === "running") ?? null,
       /**
-       * Every leg reached a terminal state and not one of them settled — the run was
+       * Every leg reached a terminal state and not one of them settled - the run was
        * abandoned before it started. `stopped` and `failed` do not cover it, because a
        * planner that gives up marks the legs `skipped`, which is terminal but neither.
        * Without a case of its own this fell through to "ready" and invited the user to
@@ -589,18 +589,18 @@ export function RunExecutionCard({
          * run whose own TRANSACTIONS field, in the same card, correctly said 1. Counted
          * from the legs that actually produced a hash.
          *
-         * The `|| total` fallback below looked harmless — "if nothing has a hash yet,
-         * assume the leg count" — and was itself the same bug for the one case that
+         * The `|| total` fallback below looked harmless - "if nothing has a hash yet,
+         * assume the leg count" - and was itself the same bug for the one case that
          * matters most: an all-read strategy. "show me everything about my account" (5
          * read legs, zero signatures, zero writes) said "5 transactions on chain. Nothing
-         * is left in flight." — the exact false on-chain claim this card exists to
+         * is left in flight." - the exact false on-chain claim this card exists to
          * prevent, just arrived at through the fallback instead of the count. Zero on
          * chain must say zero, in words a read run has actually earned.
          */
         beatSub: (() => {
           const onChain = legs.filter((l) => l.txHash).length;
           if (onChain === 0) {
-            return "Every leg was a read — nothing signed, nothing on chain.";
+            return "Every leg was a read - nothing signed, nothing on chain.";
           }
           return `${onChain} transaction${onChain === 1 ? "" : "s"} on chain. Nothing is left in flight.`;
         })(),
@@ -627,11 +627,11 @@ export function RunExecutionCard({
       return {
         headline: "run stopped",
         headDanger: true,
-        beat: `Leg ${failed.n} failed — the run stopped there`,
+        beat: `Leg ${failed.n} failed - the run stopped there`,
         beatTone: "danger" as const,
         beatSub: settled.length
           ? `What is on chain right now: ${settled.map((l) => l.label.toLowerCase()).join(", ")}. Nothing after leg ${failed.n} ran.`
-          : "Nothing settled — your position is unchanged.",
+          : "Nothing settled - your position is unchanged.",
       };
     }
     if (needsInput) {
@@ -649,7 +649,7 @@ export function RunExecutionCard({
         headDanger: false,
         beat: `The risk gate wants a confirmation on leg ${gate.n}`,
         beatTone: "warn" as const,
-        beatSub: "Everything is priced and built — it just needs your acknowledgement.",
+        beatSub: "Everything is priced and built - it just needs your acknowledgement.",
       };
     }
     if (needsSign) {
@@ -668,14 +668,14 @@ export function RunExecutionCard({
         beat: running.label,
         beatTone: "plain" as const,
         beatSub: signerLive
-          ? "Submitted to the ledger — the session key signed it, no wallet popup."
+          ? "Submitted to the ledger - the session key signed it, no wallet popup."
           : "Submitted to the ledger.",
       };
     }
     // Nothing running / signing / gated, but legs remain. "Advancing" is only true
     // while a hop request is on the wire (busy). Without that gate the card said
     // "Leg 2 settled · advancing to leg 3 of 4" forever after the client queue
-    // was cleared — UI spinning, no POST.
+    // was cleared - UI spinning, no POST.
     //
     // Continue/Stop is an HF-floor decision, not an every-hop prompt. The parent
     // only passes `onContinue` when health dropped below the stated floor on a
@@ -723,11 +723,11 @@ export function RunExecutionCard({
       return {
         headline: "run stopped",
         headDanger: false,
-        beat: `Stopped at ${nth(focus)} — nothing ran`,
+        beat: `Stopped at ${nth(focus)} - nothing ran`,
         beatTone: "warn" as const,
         beatSub: at
           ? `${at.label} did not go through, so the later legs were skipped. Your position is unchanged.`
-          : "Nothing settled — your position is unchanged.",
+          : "Nothing settled - your position is unchanged.",
       };
     }
     return {
@@ -877,7 +877,7 @@ export function RunExecutionCard({
           const later = i > shape.focus && !shape.complete;
           const last = i === total - 1;
           /**
-           * A read leg has no amount and never will — it reports a number, it does not
+           * A read leg has no amount and never will - it reports a number, it does not
            * spend one. Treating a missing amount as "to be confirmed" made a reporting
            * step look like a write the run would stop and ask about. MCP read tools are
            * named `vanna_get_*` / `vanna_list_*`, which is what distinguishes them here.
@@ -891,7 +891,7 @@ export function RunExecutionCard({
           /**
            * One field at a time, and only on the leg the run is actually waiting on.
            *
-           * A stopped run can leave several legs `needs_input` at once — the leg that
+           * A stopped run can leave several legs `needs_input` at once - the leg that
            * halted it, plus every later leg whose size was also unknown. Rendering a field
            * on each put two live inputs on screen sharing a single draft value, so typing
            * in one filled both and it was ambiguous which leg a number belonged to. Later
@@ -1176,13 +1176,13 @@ export function RunExecutionCard({
                             const x = pretty(xlmDraft);
                             const o = pretty(otherDraft);
                             return x && o
-                              ? `Add ${x} XLM + ${o} ${l.lpSides[1]} — edit either box or sign as-is.`
+                              ? `Add ${x} XLM + ${o} ${l.lpSides[1]} - edit either box or sign as-is.`
                               : `How much XLM or ${l.lpSides[1]} should I add?`;
                           })()
                         : l.question ||
                           `How much ${l.asset || "of it"} should I ${l.op.replace(/_/g, " ")}?`}
                     </p>
-                    {/* The stakes, stated from the real legs — abandoning here is the
+                    {/* The stakes, stated from the real legs - abandoning here is the
                         expensive move, and it must not be a surprise. */}
                     <p
                       className="m-0 mt-1.5"
@@ -1688,7 +1688,7 @@ export function RunExecutionCard({
                   </div>
                 ) : null}
 
-                {/* Paused on a question that is not a number — no field, because there is
+                {/* Paused on a question that is not a number - no field, because there is
                     nothing numeric to type. The answer goes in the composer. */}
                 {showQuestionOnly ? (
                   <div
@@ -1717,7 +1717,7 @@ export function RunExecutionCard({
                     >
                       {isPausedHere
                         ? "Answer below and the run continues from here."
-                        : "I'll ask for this when the run reaches it — finish the leg above first."}
+                        : "I'll ask for this when the run reaches it - finish the leg above first."}
                       {shape.doneCount > 0
                         ? ` ${shape.doneCount === 1 ? "Leg 1 has" : `Legs 1–${shape.doneCount} have`} already settled on chain.`
                         : ""}
@@ -1725,7 +1725,7 @@ export function RunExecutionCard({
                   </div>
                 ) : null}
 
-                {/* risk gate held this leg — nothing is being asked FOR, only ABOUT */}
+                {/* risk gate held this leg - nothing is being asked FOR, only ABOUT */}
                 {showGate ? (
                   <div
                     className="mt-[11px]"
@@ -1763,7 +1763,7 @@ export function RunExecutionCard({
                       className="m-0 mt-[5px]"
                       style={{ fontSize: 13, lineHeight: "19px", color: "var(--rc-muted)" }}
                     >
-                      Nothing is being asked for — confirm you accept this and the run continues
+                      Nothing is being asked for - confirm you accept this and the run continues
                       on its own.
                     </p>
                     <div className="mt-[11px] flex gap-[9px]">
@@ -1855,7 +1855,7 @@ export function RunExecutionCard({
           className="relative mt-[7px]"
           style={{ height: 8, borderRadius: 4, background: "var(--rc-track)" }}
         >
-          {/* No fill at all when the read failed — a full green bar would be a lie. */}
+          {/* No fill at all when the read failed - a full green bar would be a lie. */}
           {hfUnavailable ? null : (
             <div
               className="absolute bottom-0 left-0 top-0"
@@ -1902,7 +1902,7 @@ export function RunExecutionCard({
             className="m-0 mt-[7px]"
             style={{ fontSize: 12.5, lineHeight: "18px", color: "var(--rc-warn-fg)" }}
           >
-            Reading your position failed, so this value is unavailable — the figures on the
+            Reading your position failed, so this value is unavailable - the figures on the
             margin page are live.
           </p>
         ) : null}
@@ -1972,7 +1972,7 @@ export function RunExecutionCard({
         </p>
       ) : null}
 
-      {/* actions — which ones exist follows from the state, so a finished run cannot
+      {/* actions - which ones exist follows from the state, so a finished run cannot
           still be offering "Cancel" and a stopped one cannot be offering "Running…" */}
       <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
         {shape.complete || shape.stopped ? (

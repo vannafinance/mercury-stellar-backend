@@ -9,7 +9,7 @@ import { useUserStore } from "@/store/user";
  * After Freighter is in the navbar, prove the G-address to the copilot.
  *
  * WalletSignerAttach is Privy-only: `verifyQuorumIsSigner` cannot name Freighter.
- * This is the replacement ownership proof — a SEP-53 challenge the extension
+ * This is the replacement ownership proof - a SEP-53 challenge the extension
  * signs once per day. It does not attach a Vanna signer and does not enable
  * auto-approve. Writes still pop Freighter.
  */

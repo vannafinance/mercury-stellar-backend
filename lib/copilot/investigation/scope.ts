@@ -176,7 +176,7 @@ export async function resolveInvestigationScope(
    * dropped "explain what a health factor is" for anyone without a linked wallet,
    * including signed-out visitors. Guest identity never has bindings to check.
    *
-   * A G-address on a guest request is still the navbar wallet — do not treat it
+   * A G-address on a guest request is still the navbar wallet - do not treat it
    * as verified, and do not pretend the user sent nothing. `session` lets the
    * service stop strategy instead of dumping public oracle rows.
    */

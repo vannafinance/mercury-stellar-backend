@@ -1,6 +1,6 @@
 /**
  * Aquarius / Soroswap LP is always XLM + the venue's USDC, sized at the live
- * reserve ratio — the same rule as the Farm add-liquidity form (one input fills
+ * reserve ratio - the same rule as the Farm add-liquidity form (one input fills
  * the other; both sides independently is not a valid AMM add).
  *
  * Used by the multi-leg pause ("pick XLM or AQUSDC") and by resume so a number

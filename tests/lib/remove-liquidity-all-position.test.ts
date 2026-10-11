@@ -3,19 +3,19 @@ import { routeMessage } from "@/lib/copilot/router";
 
 /**
  * "Remove my liquidity" with no number and no "half" is an explicit whole-position
- * removal — the same reading `withdraw_from_blend` already gives "Remove my XLM
+ * removal - the same reading `withdraw_from_blend` already gives "Remove my XLM
  * position from Blend" (handle.ts: "stating the position IS the size, not a request
  * to be asked").
  *
  * Live, 21 Sep: "remove everything: remove my liquidity, exit blend, redeem from
  * earn and repay what I owe" paused on leg 1 asking "Amount missing for 'remove
- * liquidity'. Include a size like '10 BLUSDC' or '20 XLM'" — on a clause that named
+ * liquidity'. Include a size like '10 BLUSDC' or '20 XLM'" - on a clause that named
  * no size because it meant all of it. The clause that TRIGGERED this branch
  * ("remove my liquidity", already one of the recognised phrases) was never read as
  * an answer to its own question.
  *
  * Two bugs closed together, because fixing either alone leaves the other:
- *   1. router.ts never set `fraction: 1` for a bare removal — only "half"/"50%" set
+ *   1. router.ts never set `fraction: 1` for a bare removal - only "half"/"50%" set
  *      anything at all.
  *   2. handle.ts's amount resolver explicitly excluded `fraction === 1` from the
  *      live-read-and-multiply every OTHER fraction got (`< 1`, not `<= 1`), so even

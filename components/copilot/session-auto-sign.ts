@@ -1,15 +1,10 @@
 import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
+import { acceptedTestnetBudget } from "@/lib/copilot/auto-approve-budget";
 
 /**
- * Client session auto-approve (Privy embedded wallet silent-sign of MCP XDR).
- *
- * Distinct from MCP Sign Service "enable auto-sign" (server-side caps). The app
- * toggle only promises the client path: whenever a hop returns a signable XDR,
- * auto-approve must submit it without asking the user to re-enable anything.
- *
- * Multi-leg used to break on hop 2+: MCP often returned needs_auto_sign while
- * hop 1 was needs_wallet_sign, and the UI only auto-submitted the latter — so
- * later legs showed the enable-auto-sign gate with auto-approve already on.
+ * Shared controls for server-enforced approval and wallet request dispatch.
+ * A delegated-signing refusal must never be bypassed by silent client signing.
+ * Freighter dispatch still requires the user to approve the wallet signature.
  */
 
 /** Stable key so each hop auto-submits once (request_id alone can collide or be missing). */
@@ -36,10 +31,10 @@ export function hopAutoSubmitKey(opts: {
 /**
  * Whether the client may silent-sign this response under app auto-approve.
  *
- * - needs_wallet_sign: always (XDR may still be missing — sign path errors cleanly)
+ * - needs_wallet_sign: always (XDR may still be missing - sign path errors cleanly)
  * - needs_auto_sign + signable XDR: yes (older servers / edge paths)
  * - risk **block** only: never auto-submit
- * - risk **needs_confirmation** / allow: still auto-submit — that chip is policy
+ * - risk **needs_confirmation** / allow: still auto-submit - that chip is policy
  *   copy on every staged XDR, not a request for a manual click
  * - after a failed auto-attempt for this hop key: never until a new hop key
  */
@@ -50,11 +45,13 @@ export function shouldSessionAutoSubmit(opts: {
   autoSubmitBlocked?: boolean;
   hasSignableXdr?: boolean;
   allowSessionSign?: boolean;
+  walletSigningRequired?: boolean;
+  allowWalletDispatch?: boolean;
 }): boolean {
   if (!opts.sessionSigning) return false;
-  if (opts.allowSessionSign === false) return false;
+  if (opts.walletSigningRequired ? opts.allowWalletDispatch !== true : opts.allowSessionSign === false) return false;
   if (opts.autoSubmitBlocked) return false;
-  // "needs_confirmation" is the normal staged risk label — do NOT treat as click gate.
+  // "needs_confirmation" is the normal staged risk label - do NOT treat as click gate.
   if (opts.riskDecision === "block") return false;
   if (opts.kind === "needs_wallet_sign") return true;
   if (opts.kind === "needs_auto_sign" && opts.hasSignableXdr) return true;
@@ -65,18 +62,18 @@ export function shouldSessionAutoSubmit(opts: {
  * Auto sign skips the SIGNING prompt, not the plan.
  *
  * Both were skipped before, so with the switch on, "deposit my idle XLM and supply it
- * to Blend" sized itself and settled with nothing to click — the user saw the result,
+ * to Blend" sized itself and settled with nothing to click - the user saw the result,
  * never the plan (17 Sep: `vanna_deposit_collateral` and `vanna_blend_supply` executed
  * that way, on a turn where nothing had been agreed to). Arming a capped signer is
  * consent to skip the wallet popup on a plan you approved; it is not consent to the
- * plan. The rail says as much — "cleared writes run without a prompt" is about the
+ * plan. The rail says as much - "cleared writes run without a prompt" is about the
  * prompt, and clearing the Sign Service policy is a cap on size, never agreement to
  * the trade.
  *
  * One case still needs no click: a swap whose proposal carries `slippageAccepted`.
  * That flag is set only from the user's own words, matched verbatim against a message
  * they sent, and only for a fill they were shown. They have already stated a decision
- * about this exact price, so a click would ask them to agree twice — the dead end that
+ * about this exact price, so a click would ask them to agree twice - the dead end that
  * left an accepted swap unexecutable. Every other plan, swap or not, waits.
  */
 export function shouldAutoApproveProposedWorkflow(opts: {
@@ -136,11 +133,48 @@ export function shouldArmAutoApprove(opts: {
   return { arm: true };
 }
 
+/**
+ * What a "turn auto-approve off" round trip proved. The server session is the authority,
+ * so the switch may read Off only once the signer has actually answered.
+ *
+ * - `confirmed`: the signer revoked (or had nothing to revoke).
+ * - `unbound`: Vanna holds no signing authority for this wallet, so no session can exist.
+ * - `unconfirmed`: no answer or an error. A session may still be live, so the switch must
+ *   not claim Off: the next write would sign itself while the page said otherwise.
+ */
+export function disableVerdict(
+  data: { kind?: string; data?: { error?: unknown; [fact: string]: unknown } | null } | null,
+): "confirmed" | "unbound" | "unconfirmed" {
+  if (!data) return "unconfirmed";
+  if (data.kind === "needs_wallet_bind") return "unbound";
+  if (data.kind === "error" || data.data?.error) return "unconfirmed";
+  return "confirmed";
+}
+
+/**
+ * Why a click on the auto-approve switch must do nothing right now, or null when it may
+ * proceed. A switch flipped under a running reply would change how that reply's writes
+ * are signed halfway through it.
+ */
+export function autoApproveToggleBlock(opts: {
+  switching: boolean;
+  replyRunning: boolean;
+  hasWallet: boolean;
+}): { tone: "info" | "error"; message: string } | null {
+  if (opts.switching) return { tone: "info", message: "Still switching auto-approve. One moment." };
+  if (opts.replyRunning) {
+    return { tone: "info", message: "Wait for the current reply to finish, then switch auto-approve." };
+  }
+  if (!opts.hasWallet) return { tone: "error", message: "Connect a wallet first." };
+  return null;
+}
+
 export type SignServiceRailStatus = "unknown" | "ok" | "unavailable" | "unbound";
 
 export type SignServiceRailState = {
   status: SignServiceRailStatus;
   reason: string | null;
+  authoritative?: boolean;
 };
 
 export function hasAuthenticatedPrivyHeader(headers: Record<string, string>): boolean {
@@ -152,7 +186,7 @@ export function preserveLastConclusiveSignState(
   current: SignServiceRailState,
   next: SignServiceRailState,
 ): SignServiceRailState {
-  return next.status === "unavailable" && current.status !== "unknown" ? current : next;
+  return next.status === "unavailable" && !next.authoritative && current.status !== "unknown" ? current : next;
 }
 
 /**
@@ -170,6 +204,7 @@ export function signServiceFromSessionRead(res: {
 }): {
   status: SignServiceRailStatus;
   reason: string | null;
+  authoritative?: boolean;
   caps?: { tx: number; day: number };
 } {
   const facts = (res.data ?? {}) as Record<string, unknown>;
@@ -195,14 +230,24 @@ export function signServiceFromSessionRead(res: {
   if (!enabled) {
     return { status: "unknown", reason: null };
   }
-  const tx = Number(facts.max_per_tx_usd);
-  const day = Number(facts.max_per_day_usd);
+  const caps = acceptedTestnetBudget(facts);
+  if (!caps) {
+    return { status: "unavailable", authoritative: true, reason: "The signer has not confirmed enforced testnet amount limits. Choose testnet amount limits before enabling auto-approve." };
+  }
   return {
     status: "ok",
     reason: null,
-    caps:
-      Number.isFinite(tx) && tx > 0
-        ? { tx, day: Number.isFinite(day) && day > 0 ? day : tx }
-        : undefined,
+    caps,
   };
+}
+
+/**
+ * Whether the client may sign a journal step without a click under auto-approve.
+ *
+ * A step the Sign Service refused (a cap, a lapsed session) carries its refusal. Signing it
+ * silently would walk around that refusal, so it waits for an explicit click. A step that was
+ * simply never auto-signed carries no refusal and may follow the session's signing mode.
+ */
+export function mayAutoSignJournalStep(step: { signRefusal?: string }): boolean {
+  return !step.signRefusal;
 }

@@ -1,5 +1,5 @@
 // A `useReducer` variant whose dispatch accepts a partial patch and deep-merges
-// it into state — convenient for nested form/object state where you want to
+// it into state - convenient for nested form/object state where you want to
 // update one leaf without spreading the whole tree by hand.
 
 import { useReducer } from "react";

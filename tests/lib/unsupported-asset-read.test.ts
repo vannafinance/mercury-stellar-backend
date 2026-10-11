@@ -1,6 +1,6 @@
 /**
  * The unsupported-asset gate only fired on write verbs (lend, borrow, swap, ...), so a
- * plain read-style question naming an unsupported ticker — "what's the XLM/BTC pool" —
+ * plain read-style question naming an unsupported ticker - "what's the XLM/BTC pool" -
  * matched none of them and fell through to the generic capabilities blurb instead of
  * the specific "not a Vanna asset" refusal. See docs/copilot/TEST-RUN-FINDINGS.md
  * §1 item 3.

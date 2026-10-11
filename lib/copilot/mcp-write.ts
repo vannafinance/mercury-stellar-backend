@@ -1,7 +1,7 @@
 /**
  * Map copilot write ops → live MCP tools, then optionally auto-sign via Sign Service.
  *
- * Risk / HF / caps are enforced by MCP + Sign Service — not by this layer.
+ * Risk / HF / caps are enforced by MCP + Sign Service - not by this layer.
  */
 
 import { isUnfundedWalletError, unfundedWalletMessage } from "@/lib/errors/normalize";
@@ -13,7 +13,6 @@ import { cleanExecutionCopy, fmtLpAmt, humanizeStroopCounts } from "./execution-
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
 import { allAssets, earnPoolSymbols, lpPairs, resolveAssetDef } from "./registry/assets";
-import { autoSignAllowed } from "./guardrail-policy";
 
 /**
  * Earn pool symbols, from the registry rather than from a doc.
@@ -21,7 +20,7 @@ import { autoSignAllowed } from "./guardrail-policy";
  * The previous list was transcribed from a spec PDF and carried alias spellings
  * (AQUARIUS_USDC, SOROSWAP_USDC) that `earnPoolSymbol` had already normalised away, so
  * half of it was unreachable. The registry's claim is checked against a recorded
- * `pool_stats` probe per symbol — see tests/lib/asset-registry.test.ts.
+ * `pool_stats` probe per symbol - see tests/lib/asset-registry.test.ts.
  */
 export const EARN_POOL_SYMBOLS: readonly string[] = earnPoolSymbols();
 
@@ -78,7 +77,7 @@ function looksC(a?: string | null): a is string {
 
 /**
  * Three distinct testnet USDC SACs (post 2026-07-19 rewire). They are NOT
- * interchangeable — users must pick one. Plain "USDC" is ambiguous.
+ * interchangeable - users must pick one. Plain "USDC" is ambiguous.
  */
 export const USDC_VARIANT_OPTIONS = [
   {
@@ -110,19 +109,19 @@ export type UsdcVariantId = (typeof USDC_VARIANT_OPTIONS)[number]["id"];
 export function needsUsdcVariant(asset?: string | null): boolean {
   if (asset == null || String(asset).trim() === "") return false;
   const a = String(asset).toUpperCase().replace(/\s+/g, "");
-  // A concrete asset — including every variant spelling — is never ambiguous.
+  // A concrete asset - including every variant spelling - is never ambiguous.
   if (resolveAssetDef(a)) return false;
   return a === "USDC";
 }
 
 /**
- * Which asset slot — if any — is genuinely ambiguous and may prompt for a variant.
+ * Which asset slot - if any - is genuinely ambiguous and may prompt for a variant.
  *
  * The gate used to be `needsUsdcVariant(action.asset)`, one slot for an action that has
  * two. A levered write carries collateral AND loan, and they are ambiguous
  * independently: "deposit 500 AQUSDC and borrow XLM" names both concretely, yet the
  * single-slot check saw a borrow leg that had inherited the string "USDC" from a
- * default and asked which USDC the user meant — about a token the user never mentioned.
+ * default and asked which USDC the user meant - about a token the user never mentioned.
  *
  * Returns null when nothing is ambiguous, which is the answer for every message that
  * names a concrete token: AQUSDC, BLUSDC, SOUSDC, XLM, AQUA. Only bare "USDC" prompts.
@@ -169,7 +168,7 @@ export function usdcVariantClarifyMessage(
  *
  * Not cosmetic: the contract REJECTS the string "BLUSDC" and accepts "USDC" for the
  * same token (verified in chain-facts.json, allowed=false / true). An unknown symbol
- * passes through unchanged so the protocol — not this function — gets to refuse it.
+ * passes through unchanged so the protocol - not this function - gets to refuse it.
  * Call needsUsdcVariant() first when the user only said "USDC".
  */
 export function marginCollateralSymbol(asset?: string | null): string {
@@ -202,7 +201,7 @@ export function displayUsdcLabel(mcpSymbol: string, userPick?: string | null): s
  * @param maxBorrowOverDeposit Optional extra cap as multiple of deposit
  *   (e.g. 0.8 = never borrow more than 0.8×D). Default null = no extra cap;
  *   protocol can_borrow still enforces risk. Do not use 1.0 thinking it means
- *   “full leverage” — that wrongly caps 3× down to borrow=D.
+ *   “full leverage” - that wrongly caps 3× down to borrow=D.
  */
 export function splitLeverageAmounts(
   deposit: number,
@@ -239,7 +238,7 @@ export function formatLeveragePlanLine(
 /**
  * The symbol the earn pool wants for this asset.
  *
- * BLUSDC and USDC are one pool — a live pool_stats read returns identical rates for
+ * BLUSDC and USDC are one pool - a live pool_stats read returns identical rates for
  * both, which is what makes the alias a fact rather than an assumption.
  */
 export function earnPoolSymbol(asset?: string | null): string {
@@ -253,7 +252,7 @@ function isSupportedEarnSymbol(symbol: string): boolean {
 
 /**
  * Parse wallet balance for a lend symbol from vanna_get_wallet_balance.
- * USDC earn uses the BLUSDC SAC on this deploy — plain USDC is not resolvable.
+ * USDC earn uses the BLUSDC SAC on this deploy - plain USDC is not resolvable.
  */
 export function walletBalanceForEarn(
   walletData: Record<string, unknown>,
@@ -316,11 +315,11 @@ export function validateLendParams(params: {
   const amt = params.amount;
   const amountGiven = amt != null && typeof amt === "number" && Number.isFinite(amt);
   if (amountGiven && amt <= 0) {
-    return `Amount must be positive — “${amt}” is not valid. e.g. “supply 10 ${symbol}”.`;
+    return `Amount must be positive - “${amt}” is not valid. e.g. “supply 10 ${symbol}”.`;
   }
   if (amountGiven && amt <= MIN_LEND_AMOUNT) {
     return (
-      `That amount (${amt} ${symbol}) is dust — at or below the minimum ${MIN_LEND_AMOUNT}. ` +
+      `That amount (${amt} ${symbol}) is dust - at or below the minimum ${MIN_LEND_AMOUNT}. ` +
       `Try a larger figure, e.g. “supply 1 ${symbol}”.`
     );
   }
@@ -361,21 +360,21 @@ export async function preflightLend(
           `You asked to supply ${params.amount} ${toolSymbol}, but your wallet only has ` +
           `${balance} ${symbolUsed} available for that earn pool.${feeNote}\n` +
           (lines.length ? `Wallet lines: ${lines.slice(0, 6).join(" · ")}.` : "") +
-          `\nNo transaction was built — try a smaller amount.`,
+          `\nNo transaction was built - try a smaller amount.`,
       };
     }
     return { ok: true, poolSymbol: toolSymbol, balance };
   } catch {
-    // Balance read failed — still allow MCP lend; simulation will catch it.
+    // Balance read failed - still allow MCP lend; simulation will catch it.
     return { ok: true, poolSymbol: toolSymbol, balance: Number.POSITIVE_INFINITY };
   }
 }
 
 /**
- * Static asset/op mismatches that can NEVER succeed — independent of amount, balance,
+ * Static asset/op mismatches that can NEVER succeed - independent of amount, balance,
  * leverage, or any live chain read. Exported so a proposed multi-leg PLAN can be
  * checked before it is even shown for approval, not only once execution reaches the
- * doomed leg — the exact same conditions `mapOpToMcpStep`'s own per-op blockers below
+ * doomed leg - the exact same conditions `mapOpToMcpStep`'s own per-op blockers below
  * use, factored out here so the two can never disagree.
  *
  * Reported live: "swap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC" showed a
@@ -390,13 +389,13 @@ export function staticStepBlocker(
 ): string | null {
   const norm = (s?: string | null) => (s || "").toUpperCase();
   if (op === "swap") {
-    // Either side — "swap 10 BLUSDC to XLM" is exactly as impossible as "swap 10 XLM
+    // Either side - "swap 10 BLUSDC to XLM" is exactly as impossible as "swap 10 XLM
     // to BLUSDC". BLEND_USDC is the registry's internal alias for the same token.
     const a = norm(params.token_a);
     const b = norm(params.token_b) || norm(params.asset);
     if (a === "BLUSDC" || a === "BLEND_USDC" || b === "BLUSDC" || b === "BLEND_USDC") {
       return (
-        "BLUSDC is Blend USDC — it isn't traded on Aquarius or Soroswap, so I can't swap " +
+        "BLUSDC is Blend USDC - it isn't traded on Aquarius or Soroswap, so I can't swap " +
         "into or out of it. Swap to AQUSDC (Aquarius) or SOUSDC (Soroswap) instead, or " +
         "say “USDC” and I'll use the venue's own USDC."
       );
@@ -407,7 +406,7 @@ export function staticStepBlocker(
     const bRaw = norm(params.token_b) || norm(params.asset);
     if (aRaw === "BLUSDC" || bRaw === "BLUSDC") {
       return (
-        "BLUSDC is the Blend-side USDC SAC (margin MCP symbol “USDC” — valid collateral). " +
+        "BLUSDC is the Blend-side USDC SAC (margin MCP symbol “USDC” - valid collateral). " +
         "Aquarius AMM LP is a different pool that spends AQUSDC, not BLUSDC. " +
         "Options:\n" +
         "  • LP on Aquarius: “add 15 XLM and 5 AQUSDC to Aquarius XLM/USDC”\n" +
@@ -447,19 +446,19 @@ export function staticStepBlocker(
     }
   }
   if (op === "deploy_to_blend" || op === "supply_to_blend" || op === "withdraw_from_blend") {
-    // Same asset-compatibility check for supply AND withdraw — Blend only ever holds
+    // Same asset-compatibility check for supply AND withdraw - Blend only ever holds
     // XLM/USDC reserves either way. This used to be deploy/supply-only; the withdraw op
     // (added for issue #16's Blend-remove fix) had its own separate inline copy of this
     // exact check, the same "same rule, reimplemented twice" pattern this function exists
-    // to prevent — consolidated here so a future Blend-family op only needs to be added
+    // to prevent - consolidated here so a future Blend-family op only needs to be added
     // to the op list above, not given its own copy of the asset rule.
     const a = norm(params.asset);
     if (a === "AQUSDC" || a === "SOUSDC") {
       const venue = a === "SOUSDC" ? "Soroswap" : "Aquarius";
       const verb = op === "withdraw_from_blend" ? "withdrawn from" : "supplied to";
       return (
-        `Blend only holds XLM and USDC (BLUSDC) reserves — ${a} is a different token and ` +
-        `cannot be ${verb} Blend. ${op === "withdraw_from_blend" ? `It was never in Blend to begin with — check ${venue}` : `Add liquidity on ${venue} instead`}, or name BLUSDC/USDC/XLM ` +
+        `Blend only holds XLM and USDC (BLUSDC) reserves - ${a} is a different token and ` +
+        `cannot be ${verb} Blend. ${op === "withdraw_from_blend" ? `It was never in Blend to begin with - check ${venue}` : `Add liquidity on ${venue} instead`}, or name BLUSDC/USDC/XLM ` +
         `for Blend.`
       );
     }
@@ -516,10 +515,10 @@ export function mapOpToMcpStep(
     price_impact_pct?: number | string | null;
     /** Resolved Registry blend pool C-address for deploy_to_blend. */
     blend_pool_address?: string | null;
-    /** enable_auto_sign only — Sign Service policy caps. */
+    /** enable_auto_sign only - Sign Service policy caps. */
     use_default_caps?: boolean | null;
-    max_per_tx_usd?: number | string | null;
-    max_per_day_usd?: number | string | null;
+    max_per_tx_tokens?: number | string | null;
+    max_per_day_tokens?: number | string | null;
   },
   ctx: AccountCtx,
 ): { step?: WriteStep; blocker?: string } {
@@ -662,7 +661,7 @@ export function mapOpToMcpStep(
           blocker:
             "How much of each token? e.g. “add 20 XLM and 5 AQUSDC to Aquarius XLM/USDC”. " +
             "Aquarius LP needs free XLM + AQUSDC in the margin account. " +
-            "BLUSDC is a different token (Blend USDC) — do not substitute.",
+            "BLUSDC is a different token (Blend USDC) - do not substitute.",
         };
       }
       const isSouswap =
@@ -678,7 +677,7 @@ export function mapOpToMcpStep(
       } else if (isSouswap) {
         usdSym = "SOUSDC";
       } else if (aRaw === "USDC" || bRaw === "USDC") {
-        // Ambiguous bare USDC on LP — Aquarius is the default farm LP on testnet.
+        // Ambiguous bare USDC on LP - Aquarius is the default farm LP on testnet.
         usdSym = "AQUSDC";
       } else {
         usdSym = "AQUSDC";
@@ -720,7 +719,7 @@ export function mapOpToMcpStep(
         };
       }
       /**
-       * MCP takes `liquidity` (a human string) or `remove_all` — it has never taken a
+       * MCP takes `liquidity` (a human string) or `remove_all` - it has never taken a
        * fraction.
        *
        * `fraction` / `share_fraction` were sent anyway, so "remove half my liquidity"
@@ -729,13 +728,13 @@ export function mapOpToMcpStep(
        * liquidity="50")… Never pass raw share integers." That is API documentation, not an
        * answer.
        *
-       * A full exit maps exactly onto `remove_all`. A PARTIAL share cannot be sized here —
-       * it needs the live LP balance, which this pure mapping function has no way to read —
+       * A full exit maps exactly onto `remove_all`. A PARTIAL share cannot be sized here -
+       * it needs the live LP balance, which this pure mapping function has no way to read -
        * so it asks for a figure in the user's own terms instead of sending an argument the
        * server will reject.
        */
       if (frac != null && frac >= 1) {
-        // Same wire-value fix as the partial-remove case below — see its own comment.
+        // Same wire-value fix as the partial-remove case below - see its own comment.
         const wireTokenBFull = usdSym === "AQUSDC" ? "USDC" : usdSym;
         return {
           step: {
@@ -757,7 +756,7 @@ export function mapOpToMcpStep(
       if (frac != null && !lpAmt) {
         return {
           blocker:
-            `I can't take a ${Math.round(frac * 100)}% slice of an LP position directly — the ` +
+            `I can't take a ${Math.round(frac * 100)}% slice of an LP position directly - the ` +
             `protocol removes either a specific number of LP tokens or the whole position. ` +
             `Tell me the LP amount (e.g. “remove 10 LP from XLM/${usdSym}”), or say “remove all ` +
             `my XLM/${usdSym} liquidity”.`,
@@ -765,19 +764,19 @@ export function mapOpToMcpStep(
       }
       /**
        * Reported live and reproduced exactly: removing from the Aquarius XLM/AQUSDC
-       * pool staged a card reading "LP BALANCE VERIFIED: no — No Aquarius LP tracking
+       * pool staged a card reading "LP BALANCE VERIFIED: no - No Aquarius LP tracking
        * symbol for XLM/AQUSDC (only XLM/USDC is tracked as AQ_XLM_USDC today)", and the
        * transaction it signed then landed SUCCESSFUL on-chain (confirmed on Stellar
        * Expert) while the account's real Aquarius LP balance was unchanged before and
-       * after — a hard-reloaded Farm page showed the identical LP count, so this is not
+       * after - a hard-reloaded Farm page showed the identical LP count, so this is not
        * display staleness. That MCP-side warning text is not in this repo, but its own
        * wording ("only XLM/USDC is tracked") says its tracking-symbol lookup wants the
-       * bare, generic ticker for this leg, not the Aquarius-specific one — the exact
+       * bare, generic ticker for this leg, not the Aquarius-specific one - the exact
        * shape of bug this codebase has hit before in its OWN asset tables (see the
        * registry consolidation history), just on the MCP side this time. Soroswap's
        * SOUSDC removal does not show this warning, so only Aquarius's wire value is
        * changed here. `usdSym` still drives the venue pick, the display label, and
-       * `staticStepBlocker` above (BLUSDC still refused) — only the ONE wire field the
+       * `staticStepBlocker` above (BLUSDC still refused) - only the ONE wire field the
        * suspected lookup reads is affected.
        */
       const wireTokenB = usdSym === "AQUSDC" ? "USDC" : usdSym;
@@ -806,20 +805,20 @@ export function mapOpToMcpStep(
       }
       const tokenIn = (params.token_a || params.asset || "XLM").toUpperCase();
       const tokenOut = (params.token_b || "USDC").toUpperCase();
-      // Read the RAW slot, not a defaulted one — defaulting first made "did the user name
+      // Read the RAW slot, not a defaulted one - defaulting first made "did the user name
       // a venue?" always true, so a named variant could never pick its own venue.
       const venueRaw = String(params.venue ?? "").toLowerCase();
       const venueStated = /soro|aqua/.test(venueRaw);
       let venue = venueRaw.includes("soro") ? "soroswap" : "aquarius";
 
       /**
-       * A named USDC variant picks the venue — it must never be silently swapped for a
+       * A named USDC variant picks the venue - it must never be silently swapped for a
        * different token.
        *
        * `mapUsdForVenue` below rewrites ANY variant to the venue's own USDC, and the label
        * deliberately kept the USER's word. Live result of "swap 10 XLM to BLUSDC": a card
        * headed "Swap 10 XLM → BLUSDC (aquarius)" over a transaction that actually bought
-       * **AQUSDC** — a different, non-interchangeable token, named correctly only in the
+       * **AQUSDC** - a different, non-interchangeable token, named correctly only in the
        * small print of the summary. That is the exact failure the USDC-variant work exists
        * to prevent, and it is worse here than a wrong prompt: the user gets the wrong asset
        * and the card tells them they got the right one.
@@ -835,7 +834,7 @@ export function mapOpToMcpStep(
       }
       /**
        * Blend USDC is not a DEX token. Neither venue trades it, so any "swap … to BLUSDC"
-       * could only ever be filled with a different token — refuse and name the two that
+       * could only ever be filled with a different token - refuse and name the two that
        * are real, rather than quietly substituting one.
        */
       if (stated && venueStated) {
@@ -843,7 +842,7 @@ export function mapOpToMcpStep(
         if (stated !== venueSym) {
           return {
             blocker:
-              `${stated} isn't traded on ${venue} — that venue uses ${venueSym}. ` +
+              `${stated} isn't traded on ${venue} - that venue uses ${venueSym}. ` +
               `Ask for ${venueSym} on ${venue}, or name the venue that matches ${stated}.`,
           };
         }
@@ -870,14 +869,14 @@ export function mapOpToMcpStep(
       const inSym = mapUsdForVenue(tokenIn);
       const outSym = mapUsdForVenue(tokenOut);
       if (inSym === outSym) {
-        return { blocker: `Cannot swap ${tokenIn} to itself on ${venue} — pick XLM ↔ USDC.` };
+        return { blocker: `Cannot swap ${tokenIn} to itself on ${venue} - pick XLM ↔ USDC.` };
       }
       /**
        * The label names the token that will actually be traded.
        *
        * It used to echo the user's own word while the wire carried a different symbol, so
        * a swap into AQUSDC could be presented as a swap into BLUSDC. A label is the last
-       * thing the user reads before signing — when it disagrees with the transaction, the
+       * thing the user reads before signing - when it disagrees with the transaction, the
        * transaction wins and the label is simply a false statement.
        */
       const uiIn = inSym;
@@ -958,16 +957,16 @@ export function mapOpToMcpStep(
         return { blocker: "How much do you want to supply to Blend? e.g. “supply 10 XLM to Blend”." };
       }
       /**
-       * Blend reserves are XLM or USDC (BLUSDC) ONLY — AQUSDC and SOUSDC are distinct,
+       * Blend reserves are XLM or USDC (BLUSDC) ONLY - AQUSDC and SOUSDC are distinct,
        * non-interchangeable SACs for the Aquarius and Soroswap AMMs, not Blend deposits.
        *
        * This used to silently COERCE any of AQUSDC/SOUSDC/anything-unrecognised into
-       * "USDC"/"XLM" and supply THAT to Blend instead — live result: a plan resumed after
+       * "USDC"/"XLM" and supply THAT to Blend instead - live result: a plan resumed after
        * a swap-destination clarify with "SOUSDC" (because BLUSDC itself can't be swapped
        * into) silently supplied real BLUSDC/USDC to Blend, when the user's actual intent
        * (having just swapped into SOUSDC) could only ever have been Soroswap LP. Refusing
-       * here — the same pattern the swap and add_liquidity branches in this file already
-       * use for exactly this asset confusion — stops money moving into a venue nobody
+       * here - the same pattern the swap and add_liquidity branches in this file already
+       * use for exactly this asset confusion - stops money moving into a venue nobody
        * asked for; asking "how much XLM/USDC to Blend?" cannot fix a wrong-venue deposit
        * after the fact.
        */
@@ -976,7 +975,7 @@ export function mapOpToMcpStep(
       if (!blendCompatible) {
         return {
           blocker:
-            `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
+            `Blend only holds XLM and USDC (BLUSDC) reserves - ${symbol} is a different token and ` +
             `cannot be supplied to Blend.`,
         };
       }
@@ -1009,7 +1008,7 @@ export function mapOpToMcpStep(
       if (!blendPool || !looksC(blendPool)) {
         return {
           blocker:
-            "Blend pool address is not configured yet — resolve it from the Registry first.",
+            "Blend pool address is not configured yet - resolve it from the Registry first.",
         };
       }
       return {
@@ -1019,7 +1018,7 @@ export function mapOpToMcpStep(
             smart_account: smart,
             deposit_amount: String(dep),
             borrow_amount: String(bor),
-            // Accept both token_symbol and symbol — MCP farm_blend deploy packing.
+            // Accept both token_symbol and symbol - MCP farm_blend deploy packing.
             token_symbol: blendSym,
             symbol: blendSym,
             blend_pool_address: blendPool,
@@ -1037,7 +1036,7 @@ export function mapOpToMcpStep(
     case "withdraw_from_blend": {
       // Farm write via the same consolidated MCP vanna_farm_blend dispatcher the supply
       // case above uses, action=withdraw (registered alias `vanna_blend_withdraw`,
-      // mcp-client.ts) — the underlying on-chain capability already exists
+      // mcp-client.ts) - the underlying on-chain capability already exists
       // (BlendService.withdrawFromBlendPool, used by the Farm page's own Remove panel);
       // it was simply never reachable from the router before this case existed.
       if (!trader || !smart) {
@@ -1047,14 +1046,14 @@ export function mapOpToMcpStep(
       if (amt == null || amt <= 0) {
         return { blocker: "How much do you want to withdraw from Blend? e.g. “remove 10 XLM from Blend”." };
       }
-      // Same asset restriction as supply — Blend only ever holds XLM/USDC reserves, so
+      // Same asset restriction as supply - Blend only ever holds XLM/USDC reserves, so
       // AQUSDC/SOUSDC (Aquarius/Soroswap-only tokens) were never in it to withdraw.
       const blendCompatible =
         symbol === "BLUSDC" || symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "XLM";
       if (!blendCompatible) {
         return {
           blocker:
-            `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
+            `Blend only holds XLM and USDC (BLUSDC) reserves - ${symbol} is a different token and ` +
             `was never supplied to Blend.`,
         };
       }
@@ -1102,8 +1101,8 @@ export function mapOpToMcpStep(
             wallet_address: trader,
             user_id: trader,
             ...(params.use_default_caps != null ? { use_default_caps: params.use_default_caps } : {}),
-            ...(params.max_per_tx_usd != null ? { max_per_tx_usd: params.max_per_tx_usd } : {}),
-            ...(params.max_per_day_usd != null ? { max_per_day_usd: params.max_per_day_usd } : {}),
+            ...(params.max_per_tx_tokens != null ? { max_per_tx_tokens: params.max_per_tx_tokens } : {}),
+            ...(params.max_per_day_tokens != null ? { max_per_day_tokens: params.max_per_day_tokens } : {}),
           },
           label: "Enable auto-sign",
         },
@@ -1135,8 +1134,8 @@ function wadToHuman(raw: string): string {
 }
 
 /**
- * MCP surfaces raw WAD integers in its own error text — "deposit_and_borrow of
- * 20000000000000000000 USDC …" — because that's the value it hands the contract.
+ * MCP surfaces raw WAD integers in its own error text - "deposit_and_borrow of
+ * 20000000000000000000 USDC …" - because that's the value it hands the contract.
  * Rewrite those runs into human units so the user reads "20 USDC". Only 19+ digit
  * runs are touched: real WAD amounts are that long, while ledger numbers (~7) and
  * unix timestamps (10–13) are not, so addresses and IDs are left alone.
@@ -1152,7 +1151,7 @@ function humanizeWadAmounts(message: string): string {
  * `health_check_failed` is the MCP server's own taxonomy for "account LTV is too
  * high for this operation" (mcp_server/error_handling.py), raised by the
  * `is_borrow_allowed` pre-flight before any XDR is built. It's a policy decision,
- * so it belongs in the UI's blocked/risk-gate state — surfacing it as a generic
+ * so it belongs in the UI's blocked/risk-gate state - surfacing it as a generic
  * error made a working safety check look like a crash.
  */
 function isRiskRejection(build: Record<string, unknown>): boolean {
@@ -1191,11 +1190,11 @@ export function humanizeMcpWriteError(
     );
   }
 
-  // Fallback only — preflightAssetReadiness should prevent these. Never dump HostError #13.
+  // Fallback only - preflightAssetReadiness should prevent these. Never dump HostError #13.
   //
   // `classifyTrustlineFailure` is itself asset-aware (`${asset} is not ready...`), but this
   // call site never passed one, so every trustline fallback read "XLM is not ready in your
-  // wallet" regardless of which asset actually hit HostError #13 — seen live on "borrow 2000
+  // wallet" regardless of which asset actually hit HostError #13 - seen live on "borrow 2000
   // BLUSDC" / "borrow 1k BLUSDC" / "borrow 1,000 BLUSDC", all reported as an XLM problem.
   if (isTrustlineMissingError(raw)) {
     return classifyTrustlineFailure(raw, { tool, asset: ctx?.asset ?? null, trader: ctx?.trader ?? null }).message;
@@ -1208,7 +1207,7 @@ export function humanizeMcpWriteError(
     return (
       `That token is not accepted as margin collateral on this deployment. ` +
       `Allowed: ${allowed}. ` +
-      `(Tip: Blend USDC is MCP symbol “USDC” — pick BLUSDC in the UI and we map it.)`
+      `(Tip: Blend USDC is MCP symbol “USDC” - pick BLUSDC in the UI and we map it.)`
     );
   }
 
@@ -1224,7 +1223,7 @@ export function humanizeMcpWriteError(
         /\[Deposit\].*\[0\]|amount:\s*0|amount_type:\s*0.*amount:\s*0|\[XLM\],\s*\[0\]/i.test(raw);
       if (zeroAmount || /#1216|error\(contract,\s*#1216\)/i.test(raw)) {
         return (
-          `Blend farm write failed — MCP/on-chain packed a zero Blend amount ` +
+          `Blend farm write failed - MCP/on-chain packed a zero Blend amount ` +
           `(execute_direct shows [Deposit] … [0]).\n\n` +
           `Escalate to MCP: vanna_farm_blend supply/deploy packing. ` +
           `No transaction was submitted.\n\nDetail: ${firstLine}`
@@ -1249,9 +1248,9 @@ export function humanizeMcpWriteError(
       if (/balance is not sufficient|#10|insufficient/i.test(raw)) {
         return (
           `Blend supply needs free balance inside the margin account (C-address).\n` +
-          `After a borrow, only the net amount is spendable (~0.3% origination fee is deducted) — ` +
+          `After a borrow, only the net amount is spendable (~0.3% origination fee is deducted) - ` +
           `supplying the gross borrow size fails on-chain.\n` +
-          `Copilot sizes the supply to free balance automatically — retry the supply leg.\n\n` +
+          `Copilot sizes the supply to free balance automatically - retry the supply leg.\n\n` +
           `Detail: ${firstLine}`
         );
       }
@@ -1303,10 +1302,10 @@ export function humanizeMcpWriteError(
         balanceHint = ` On-chain wallet balance seen in the sim: ~${human}.`;
       }
       return (
-        `Earn supply failed simulation — usually **insufficient wallet balance** for that amount ` +
+        `Earn supply failed simulation - usually **insufficient wallet balance** for that amount ` +
         `(or the token needs trustline/approval).${balanceHint}\n\n` +
         `No transaction was submitted. Check your wallet balance and try a smaller amount ` +
-        `(earn uses XLM or BLUSDC/USDC-family SACs — not plain circle USDC on this testnet).`
+        `(earn uses XLM or BLUSDC/USDC-family SACs - not plain circle USDC on this testnet).`
       );
     }
     if (tool === "vanna_repay") {
@@ -1314,7 +1313,7 @@ export function humanizeMcpWriteError(
       return (
         `Margin repay simulation failed. Repay spends free balance **inside the margin account** ` +
         `(C-address), not only what your G-wallet shows as Available.\n\n` +
-        `Debt can be larger than free balance because of accrued interest — the Margin page ` +
+        `Debt can be larger than free balance because of accrued interest - the Margin page ` +
         `caps repay at spendable and can top up from the wallet; Copilot caps the same way. ` +
         `If free balance is ~0, use Margin → Repay Loan → Pay Now, or free up that token in the account first.\n\n` +
         `Detail: ${firstLine}`
@@ -1329,7 +1328,7 @@ export function humanizeMcpWriteError(
      * transaction goes through. That is the behaviour behind the Margin page's Withdraw
      * button, and it is why the site can do something the copilot reports as impossible.
      *
-     * The copilot cannot copy that trick through MCP — MCP simulates before it returns
+     * The copilot cannot copy that trick through MCP - MCP simulates before it returns
      * an XDR, so a failed simulation means no envelope comes back to submit. Reporting a
      * bare "Simulation failed: HostError: Error(Budget, ExceededLimit)" is therefore
      * doubly wrong: it reads as "your withdraw is impossible" when the same withdraw
@@ -1338,7 +1337,7 @@ export function humanizeMcpWriteError(
     if (tool === "vanna_withdraw_collateral" && /Budget|ExceededLimit|resource/i.test(raw)) {
       return (
         `The withdraw hit a Soroban CPU budget limit while MCP was simulating it. That is a ` +
-        `simulation limit, not a refusal — the risk engine did not block this withdraw.\n\n` +
+        `simulation limit, not a refusal - the risk engine did not block this withdraw.\n\n` +
         `The Margin page expects this on withdraws and submits anyway, so use Margin → ` +
         `Withdraw for this one and it should go through. A smaller amount, or withdrawing ` +
         `one token at a time, also tends to fit inside the budget here.\n\n` +
@@ -1375,7 +1374,7 @@ export function humanizeMcpWriteError(
  * Why a risk rejection happened, when the tool makes the reason predictable.
  *
  * `vanna_deposit_and_borrow`'s pre-flight is `is_borrow_allowed(symbol,
- * borrow_amount, smart_account)` (vanna_core/contracts/account_manager.py) — and it
+ * borrow_amount, smart_account)` (vanna_core/contracts/account_manager.py) - and it
  * runs against the account's CURRENT on-chain state, before the deposit leg of the
  * same atomic call is credited. An account with little or no existing collateral is
  * therefore rejected no matter how large the deposit leg is, which reads as "the
@@ -1387,7 +1386,7 @@ function rejectionGuidance(tool: string): string {
     return (
       "\n\nThe borrow leg is checked against the collateral your account holds " +
       "*before* this transaction, so a combined deposit-and-borrow is refused while " +
-      "your collateral is still too low — the deposit in the same call isn't counted " +
+      "your collateral is still too low - the deposit in the same call isn't counted " +
       "yet. Deposit the collateral first, then borrow against it as a second step."
     );
   }
@@ -1420,24 +1419,20 @@ function traceOf(tool: string, build: Record<string, unknown>, xdr?: string | nu
 /**
  * One sentence for every "MCP built it, the Sign Service did not sign it" outcome.
  *
- * Manual signing is the DEFAULT, so why auto-sign did not happen is not news — it is the
+ * Manual signing is the DEFAULT, so why auto-sign did not happen is not news - it is the
  * setting the user is on. Six call sites each narrated their own version of it ("Vanna is
  * not authorized as a Sign Service signer for this wallet…", "Sign Service has no active
  * session…", and a couple that interpolated the raw reason code), which put signing
  * internals in front of someone who only wanted to approve a deposit.
  *
- * The reason is not lost — it stays on `mcp_trace.auto_sign_error` and in the server log.
+ * The reason is not lost - it stays on `mcp_trace.auto_sign_error` and in the server log.
  */
 function readyToSignMessage(_label: string): string {
   // The card's own headline is the label, so repeating it here says it twice in a row.
-  return "Built and ready — approve to sign it with your wallet.";
+  return "Built and ready - approve to sign it with your wallet.";
 }
 
-function writeOpForTool(tool: string): string {
-  const name = tool.replace(/^vanna_/, "");
-  if (name === "settle_account") return "settle";
-  return name;
-}
+
 
 export async function executeMcpWrite(
   mcp: MCPClient,
@@ -1450,7 +1445,7 @@ export async function executeMcpWrite(
   } catch (e) {
     // MCP can report the same failure either as a structured error field (handled
     // by humanizeMcpWriteError below) or as an isError result that mcp-client
-    // rethrows — so the unfunded-wallet check has to sit on both paths.
+    // rethrows - so the unfunded-wallet check has to sit on both paths.
     const thrown = e instanceof Error ? e.message : String(e);
     return {
       tool: step.tool,
@@ -1476,7 +1471,7 @@ export async function executeMcpWrite(
 
   // Tool already finished on-chain. MCP write tools may Sign-Service-submit when
   // a session is active (`auto_sign: "on"`, `signing_status: "submitted"`).
-  // Copilot must treat that as executed — never stage the same hop for a second sign.
+  // Copilot must treat that as executed - never stage the same hop for a second sign.
   if (
     build.status === "signed_and_submitted" ||
     build.tx_hash ||
@@ -1488,7 +1483,7 @@ export async function executeMcpWrite(
     build.signing_status === "submitted"
   ) {
     const hash = (build.tx_hash as string) || null;
-    // Prefer short chat copy — MCP often returns a Sign Service paragraph with
+    // Prefer short chat copy - MCP often returns a Sign Service paragraph with
     // full hash + explorer URL; the UI already shows those in dedicated rows.
     const { body } = cleanExecutionCopy({
       label: step.label,
@@ -1507,7 +1502,7 @@ export async function executeMcpWrite(
     };
   }
 
-  // False "done" without XDR or hash (seen on farm_blend supply) — treat as error.
+  // False "done" without XDR or hash (seen on farm_blend supply) - treat as error.
   if (
     !xdr &&
     !build.tx_hash &&
@@ -1525,7 +1520,7 @@ export async function executeMcpWrite(
         status: "error",
         message:
           `${step.label} returned no transaction and no tx hash from MCP. ` +
-          `Nothing was submitted — try again, or check margin-account balances for farm writes.`,
+          `Nothing was submitted - try again, or check margin-account balances for farm writes.`,
         mcp_trace: baseTrace,
       };
     }
@@ -1548,17 +1543,17 @@ export async function executeMcpWrite(
    *
    * These refusals arrive as a top-level `build.error` with `auto_sign` and
    * `auto_sign_error` both null, so they never reached the auto-sign branches further
-   * down — they fell into `softFail` above and were reported as `error`, throwing away
+   * down - they fell into `softFail` above and were reported as `error`, throwing away
    * the XDR MCP had already built and simulated in the same response.
    *
    * Live effect (owner-reported, reproduced 2026-08-10 on a fresh wallet): "create a
-   * margin account for me" worked with auto-approve ON and failed with it OFF — which is
+   * margin account for me" worked with auto-approve ON and failed with it OFF - which is
    * the default for every new user. The card showed `wallet_not_bound` and MCP's internal
    * plumbing prose, with no Approve & sign button, while a perfectly signable transaction
    * sat unused in the same payload.
    *
    * Manual signing is the DEFAULT path, not a fallback. So whenever an XDR exists, the
-   * refusal to AUTO-sign it is not an error to report — it is the ordinary way through.
+   * refusal to AUTO-sign it is not an error to report - it is the ordinary way through.
    *
    * Matched on the error CODE only. The prose is MCP's and varies; the code is the
    * contract, and matching prose would misread a genuine simulation failure that happens
@@ -1566,10 +1561,10 @@ export async function executeMcpWrite(
    */
   /**
    * A genuine Sign Service POLICY rejection (spend cap, allowlist, session identity) is
-   * not the same class of thing as the infrastructure refusals below — those mean "the
+   * not the same class of thing as the infrastructure refusals below - those mean "the
    * plumbing isn't set up yet, ask the human to sign instead"; this means "this tx must
    * not be signed by anyone right now". `function_not_allowlisted` used to sit in the
-   * `autoSignRefused` regex just below, alongside `wallet_not_bound` — an easy mistake
+   * `autoSignRefused` regex just below, alongside `wallet_not_bound` - an easy mistake
    * since both come back as `auto_sign` refusals, but one is "you haven't connected"
    * and the other is "this call is not permitted". See the block below for the live
    * repro (`over_per_tx_cap`) that exposed this: staged as `needs_wallet_sign`, then
@@ -1579,7 +1574,7 @@ export async function executeMcpWrite(
   const policyReason = String(build.reason ?? "").toLowerCase();
   const isGenuinePolicyRejection =
     String(build.auto_sign ?? "").toLowerCase() === "rejected" &&
-    /^(over_per_tx_cap|over_daily_cap|contract_not_allowlisted|function_not_allowlisted|source_mismatch|op_source_mismatch|amount_undecodable|session_expired|session_not_active|unauthorized)$/.test(
+    /^(over_per_tx_cap|over_daily_cap|contract_not_allowlisted|function_not_allowlisted|source_mismatch|op_source_mismatch|amount_undecodable|usd_valuation_unavailable|usd_budget_missing|transaction_already_reserved|session_expired|session_not_active|unauthorized)$/.test(
       policyReason,
     );
   if (isGenuinePolicyRejection) {
@@ -1589,6 +1584,16 @@ export async function executeMcpWrite(
       asset || null,
     );
     const spendCap = policyReason === "over_daily_cap" || policyReason === "over_per_tx_cap";
+    if (xdr && (policyReason === "usd_valuation_unavailable" || policyReason === "usd_budget_missing")) {
+      return {
+        tool: step.tool, label: step.label, build, unsigned_xdr: xdr,
+        status: "needs_wallet_sign", forbid_session_sign: true,
+        message: policyReason === "usd_budget_missing"
+          ? "A dollar budget is required for auto-approve. Choose one, or review and sign this transaction manually."
+          : "Complete live dollar pricing is unavailable for this transaction. Review and sign manually, or retry once pricing is available.",
+        mcp_trace: { ...baseTrace, auto_sign_error: policyReason },
+      };
+    }
     if (spendCap && xdr) {
       return {
         tool: step.tool,
@@ -1602,7 +1607,7 @@ export async function executeMcpWrite(
             ? "Daily auto-sign cap reached. "
             : "Per-transaction auto-sign cap reached. ") +
           detail +
-          " Approve & sign in your wallet to submit this step — wallet signing is not limited by that cap.",
+          " Approve & sign in your wallet to submit this step - wallet signing is not limited by that cap.",
         mcp_trace: { ...baseTrace, auto_sign_error: policyReason },
       };
     }
@@ -1630,6 +1635,7 @@ export async function executeMcpWrite(
       build,
       unsigned_xdr: xdr,
       status: "needs_wallet_sign",
+    forbid_session_sign: true,
       message: readyToSignMessage(step.label),
       mcp_trace: { ...baseTrace, auto_sign_error: errCode },
     };
@@ -1687,7 +1693,7 @@ export async function executeMcpWrite(
   }
 
   if (!xdr) {
-    // Fund-affecting writes must return XDR or a hash — bare "done" is a false success
+    // Fund-affecting writes must return XDR or a hash - bare "done" is a false success
     // (seen on farm_blend supply with empty farm UI afterwards).
     const fundTool = /lend|redeem|deposit|borrow|repay|blend|liquidity|deploy|withdraw|supply|swap/i.test(
       step.tool + " " + step.label,
@@ -1732,22 +1738,23 @@ export async function executeMcpWrite(
         build,
         unsigned_xdr: xdr,
         status: "needs_wallet_sign",
+    forbid_session_sign: true,
         // Kept to one line. The M2M-vs-user-assertion reason is our infrastructure
-        // detail, not something the user can act on — and when session signing is on
+        // detail, not something the user can act on - and when session signing is on
         // the UI submits this without a click, so a paragraph about pressing approve
         // actively contradicts what they are about to see.
-        message: "Built and simulated by MCP — it just needs your signature.",
+        message: "Built and simulated by MCP - it just needs your signature.",
         mcp_trace: baseTrace,
       };
     }
     if (/no_active_session|disabled|not.?enabled|wallet_not_bound/i.test(asErr + as)) {
       // Two different causes reach this branch and only one is "you never turned it
       // on". `wallet_not_bound` means Vanna has no authority to sign for this wallet
-      // at all, so "enable auto-sign" understates what is being asked for — the
+      // at all, so "enable auto-sign" understates what is being asked for - the
       // enable flow will then ask for the additional-signer consent (see
       // WalletBindPrompt). Naming it here keeps the two rails telling one story.
       //
-      // When MCP already built XDR, return needs_wallet_sign — not needs_auto_sign.
+      // When MCP already built XDR, return needs_wallet_sign - not needs_auto_sign.
       // App auto-approve is client session signing of that XDR; forcing the Sign
       // Service enable gate on hop 2+ made multi-leg ask for "auto-approve" again
       // even when the toggle was already on.
@@ -1757,6 +1764,7 @@ export async function executeMcpWrite(
         build,
         unsigned_xdr: xdr,
         status: "needs_wallet_sign",
+    forbid_session_sign: true,
         message: readyToSignMessage(step.label),
         mcp_trace: { ...baseTrace, auto_sign_error: asErr || as || null },
       };
@@ -1768,6 +1776,7 @@ export async function executeMcpWrite(
       build,
       unsigned_xdr: xdr,
       status: "needs_wallet_sign",
+    forbid_session_sign: true,
       message: readyToSignMessage(step.label),
       mcp_trace: { ...baseTrace, auto_sign_error: asErr || as || null },
     };
@@ -1775,7 +1784,7 @@ export async function executeMcpWrite(
 
   // High price impact: MCP built the XDR but withheld Sign Service auto-sign
   // until a human who was shown the figure confirms it. Do not let in-app
-  // auto-approve silent-sign this XDR — that would empty the gate. A click on
+  // auto-approve silent-sign this XDR - that would empty the gate. A click on
   // Approve still session-signs (or a later call with `acknowledged_price_impact`).
   if (as === "withheld_price_impact" && xdr) {
     const warning = String(build.message || build.price_impact_warning || "").trim();
@@ -1785,7 +1794,7 @@ export async function executeMcpWrite(
       build,
       unsigned_xdr: xdr,
       status: "needs_wallet_sign",
-      forbid_session_sign: true,
+    forbid_session_sign: true,
       message:
         warning ||
         "This fill is far below oracle fair value. Auto-sign is withheld until you confirm it.",
@@ -1795,17 +1804,16 @@ export async function executeMcpWrite(
 
   // Never call vanna_sign_and_submit from the brain. If a Sign Service session
   // is active, MCP write tools submit themselves (`auto_sign: "on"`) and we
-  // already returned above. If not, unsigned XDR is the contract: in-app
-  // auto-approve is client session-signing of this XDR, not a server submit.
-  const humanSign = !autoSignAllowed(writeOpForTool(step.tool));
+  // already returned above. An unsigned fallback requires manual approval;
+  // the client must not silently bypass the server budget.
   return {
     tool: step.tool,
     label: step.label,
     build,
     unsigned_xdr: xdr,
     status: "needs_wallet_sign",
+    forbid_session_sign: true,
     message: readyToSignMessage(step.label),
-    ...(humanSign ? { forbid_session_sign: true } : {}),
     mcp_trace: { ...baseTrace, auto_sign: "disabled" },
   };
 }
@@ -1813,9 +1821,8 @@ export async function executeMcpWrite(
 /**
  * Enable Sign Service auto-sign.
  *
- * MCP `use_default_caps=true` must NOT also send max_per_tx_usd — the MCP server
- * then omits stroops so Sign Service applies its env defaults
- * (`DEFAULT_CAP_PER_TX` / `DEFAULT_CAP_PER_DAY`, testnet stand-in ≈ $1000 each).
+ * MCP `use_default_caps=true` must NOT also send max_per_tx_tokens - the MCP server
+ * then applies `DEFAULT_CAP_USD_PER_TX` and `DEFAULT_CAP_USD_PER_DAY`.
  * Custom path sends only USD fields; if only per-tx is set, MCP mirrors it to day.
  */
 export async function enableAutoSign(
@@ -1824,8 +1831,8 @@ export async function enableAutoSign(
     wallet: string;
     userId: string;
     useDefaultCaps?: boolean;
-    maxPerTxUsd?: number | string;
-    maxPerDayUsd?: number | string;
+    maxPerTxTokens?: number | string;
+    maxPerDayTokens?: number | string;
   },
 ): Promise<Record<string, unknown>> {
   const args: Record<string, unknown> = {
@@ -1835,18 +1842,8 @@ export async function enableAutoSign(
   if (opts.useDefaultCaps) {
     args.use_default_caps = true;
   } else {
-    if (opts.maxPerTxUsd != null) args.max_per_tx_usd = opts.maxPerTxUsd;
-    if (opts.maxPerDayUsd != null) args.max_per_day_usd = opts.maxPerDayUsd;
+    if (opts.maxPerTxTokens != null) args.max_per_tx_tokens = opts.maxPerTxTokens;
+    if (opts.maxPerDayTokens != null) args.max_per_day_tokens = opts.maxPerDayTokens;
   }
   return mcp.call("vanna_enable_auto_sign", args, opts.userId);
-}
-
-/** Read default_cap_usd from MCP needs_confirmation / enabled payloads (no hardcode). */
-export function defaultCapUsdFromMcp(data: Record<string, unknown> | null | undefined): number {
-  const n = Number(data?.default_cap_usd);
-  if (Number.isFinite(n) && n > 0) return n;
-  // Fallback only when MCP did not return the field (older deploy).
-  const envN = Number(process.env.DEFAULT_AUTO_SIGN_CAP_USD || process.env.COPILOT_DEFAULT_AUTO_SIGN_CAP_USD);
-  if (Number.isFinite(envN) && envN > 0) return envN;
-  return 1000;
 }

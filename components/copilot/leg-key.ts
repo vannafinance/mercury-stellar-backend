@@ -2,7 +2,7 @@
  * Identity for a strategy leg, stable across planning and execution.
  *
  * Legs arrive with only a human label, and the planner and the executor word it
- * differently — "Deposit 10 BLUSDC as collateral" becomes "Deposit 10 BLUSDC
+ * differently - "Deposit 10 BLUSDC as collateral" becomes "Deposit 10 BLUSDC
  * collateral". Merging on the raw label therefore appended a duplicate instead of
  * updating, which left the original leg frozen at needs_sign while a second copy of it
  * reported done. Keying on the parts that actually identify the action survives the
@@ -42,7 +42,7 @@ export function legKey(label: string): string {
  *
  * A leg whose amount was unknown is labelled "Borrow XLM"; once the user supplies the
  * size, the executor relabels it "Borrow 15 XLM". Those are the same leg, but `legKey`
- * hashes the amount, so the resolved copy was appended as a NEW leg — leaving the original
+ * hashes the amount, so the resolved copy was appended as a NEW leg - leaving the original
  * frozen on "paused · needs input" with its question still open, a duplicate reporting
  * settled, a leg count inflated from 4 to 5, and a restarted server index that renumbered
  * step 2 as step 1.

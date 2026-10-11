@@ -5,7 +5,7 @@
  * capabilities the loop can read had no branch, so a successful `max_borrow` or
  * `farm_overview` read was discarded and the user told the data was unavailable
  * (first signed-in battery, 11 Sep). The MCP already says what its fields mean in the
- * key names and units — `*_pct`, `*_usd`, `*_human`, `*_wad`, `*_address` — so the
+ * key names and units - `*_pct`, `*_usd`, `*_human`, `*_wad`, `*_address` - so the
  * extractor reads those conventions instead. A capability nobody has written a branch
  * for renders the same day the MCP ships it.
  *
@@ -15,7 +15,7 @@
  * `<field>_untrusted`. Never invent a unit.
  */
 
-import { ASSET_IDS, assetDef, assetForVenueSpelling, type AssetDef } from "../registry/assets";
+import { ASSET_IDS, assetDef, assetForVenueSpelling, lpVenues, type AssetDef } from "../registry/assets";
 import { isRecord } from "./decision";
 import type { Observation } from "./types";
 import type { ResearchFact } from "./view";
@@ -23,7 +23,7 @@ import type { ResearchFact } from "./view";
 /**
  * The asset a read was made for, when its `args.asset` is a registry id. A venue spells
  * that asset its own way (`pool_symbol: "USDC"` for BLUSDC, AQUSDC and SOUSDC alike), and
- * a fact labelled by the venue's spelling cannot be told apart on the card — 13 Sep: three
+ * a fact labelled by the venue's spelling cannot be told apart on the card - 13 Sep: three
  * "USDC Earn" rates with no way to say which pool was which. The registry records each
  * asset's venue spellings (`earnSymbol`, `marginSymbol`), so a row symbol that equals one
  * of them names the requested asset, not the wire word.
@@ -37,7 +37,7 @@ function requestedAsset(observation: Observation): AssetDef | null {
  * Translate a read's rows into registry ids ONCE, where the observation is born, so the
  * model, the facts, the sealed evidence and the sizer all see the same `asset` beside the
  * venue's `symbol`. The model reads observations raw (`JSON.stringify(turn)`), so a label
- * fixed only in the facts never reaches it — 13 Sep: shown `{ symbol: "USDC" }` on a debt
+ * fixed only in the facts never reaches it - 13 Sep: shown `{ symbol: "USDC" }` on a debt
  * row, it named AQUSDC, then SOUSDC, for a BLUSDC debt. Rows that already carry `asset`
  * are left alone; a symbol no venue spelling resolves stays as it is.
  */
@@ -81,7 +81,7 @@ export interface ShapeFact {
   unit: string;
   venue: Venue;
   /**
-   * True only when this number is an AMOUNT OF THE ROW'S TOKEN — a balance, a receipt
+   * True only when this number is an AMOUNT OF THE ROW'S TOKEN - a balance, a receipt
    * balance, an underlying value. False for everything else `unitFor` produces: a rate,
    * a ratio, a health factor, a percentage, a bare integer.
    *
@@ -89,7 +89,7 @@ export interface ShapeFact {
    * two apart afterwards: "rate" and "XLM" are both non-empty unit strings, and the
    * symbol test that builds token units matches "rate" and "HF" just as happily. On
    * 20 Sep a Blend answer printed `b_rate` as the user's XLM balance for exactly that
-   * reason — the renderer took the row's first non-USD number and called it a quantity.
+   * reason - the renderer took the row's first non-USD number and called it a quantity.
    */
   quantity: boolean;
 }
@@ -195,9 +195,9 @@ const VENUE_LABEL: Partial<Record<Venue, string>> = { earn: "Earn", blend: "Blen
  * "XLM/USDC Aquarius LP shares", "Total debt". The parent collection name is kept
  * when it says what the number is a part of ("XLM collateral value").
  */
-function labelFor(capability: string, identity: string | null, venue: Venue, parents: readonly string[], field: string): string {
+function labelFor(capability: string, identity: string | null, venue: Venue, parents: readonly string[], field: string, venueName?: string): string {
   const parent = parents.length ? parents[parents.length - 1] : null;
-  const venueWord = VENUE_LABEL[venue];
+  const venueWord = venueName ?? VENUE_LABEL[venue];
   /**
    * The parent collection's name is kept only for the words that add meaning: venue
    * words are already in the label, a symbol-keyed record (`prices.XLM`) is the identity,
@@ -236,7 +236,7 @@ function rowUnavailable(row: Record<string, unknown>): boolean {
 }
 
 /**
- * A row that reports a non-ok status is information, not failure — the wallet read
+ * A row that reports a non-ok status is information, not failure - the wallet read
  * lists `USDC: not_resolvable` on purpose ("never silently omitted"). Its numbers are
  * not shown, and it is not a warning.
  */
@@ -262,10 +262,21 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
     const informational = rowInformational(node);
     const venue = venueFrom(observation.capability, segments, node);
     const here = identityOf(node, identity, requested, venue);
+    // A source-declared measurement basis travels with its values on every
+    // investigation, not only the account overview display path.
+    const labelParents = typeof node.balance_basis === "string"
+      ? [...segments.slice(0, -1), node.balance_basis] : segments;
+    // A row naming a registry LP venue ("soroswap") is labelled by it; the fact's venue type has
+    // no Soroswap, and "XLM/SOUSDC Aquarius LP shares" named the wrong DEX (25 Sep, live).
+    const lpName = typeof node.venue === "string" && (lpVenues() as readonly string[]).includes(node.venue.toLowerCase())
+      ? node.venue.charAt(0).toUpperCase() + node.venue.slice(1).toLowerCase() : undefined;
     for (const [key, raw] of Object.entries(node)) {
       if (facts.length >= MAX_FACTS) return;
       if (depth === 0 && consumed.has(key)) continue;
       if (SKIP_KEYS.has(key) || SKIP_SUFFIXES.some((s) => key.endsWith(s))) continue;
+      // A declared human sibling is the display amount; the bare value can be
+      // contract-scaled. Never guess a scale or show both representations.
+      if (Object.hasOwn(node, `${key}_human`)) continue;
       if (node[`${key}_untrusted`] === true) continue;
       const childPath = path ? `${path}.${key}` : key;
       if (Array.isArray(raw)) {
@@ -280,23 +291,27 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
         continue;
       }
       if (informational) continue;
+      if (key === "freshness" && raw === "unknown" && venue === "oracle" && node.price_usd != null) {
+        facts.push({ path: childPath, label: labelFor(observation.capability, here, venue, segments, key, lpName), value: "unknown", unit: "", venue, quantity: false });
+        continue;
+      }
       if (typeof raw === "boolean") {
         if (key.startsWith("has_") || key === "allowed" && depth === 0) continue;
         // A yes/no is never an amount of anything.
-        facts.push({ path: childPath, label: labelFor(observation.capability, here, venue, segments, key.replace(/^is_/, "")), value: raw ? "yes" : "no", unit: "", venue, quantity: false });
+        facts.push({ path: childPath, label: labelFor(observation.capability, here, venue, segments, key.replace(/^is_/, ""), lpName), value: raw ? "yes" : "no", unit: "", venue, quantity: false });
         continue;
       }
       const pct = percentString(raw);
       if (pct !== null) {
         const unit = /apy/.test(key) ? "% APY" : /apr/.test(key) ? "% APR" : "%";
-        push(childPath, labelFor(observation.capability, here, venue, segments, key), pct, unit, venue);
+        push(childPath, labelFor(observation.capability, here, venue, segments, key, lpName), pct, unit, venue);
         continue;
       }
       const meta = unitFor(key, here, node, requested, venue);
       if (!meta) continue;
       const value = decimalOf(raw);
       if (value === null) continue;
-      push(childPath, labelFor(observation.capability, here, venue, segments, meta.field), value, meta.unit, venue, meta.quantity === true);
+      push(childPath, labelFor(observation.capability, here, venue, labelParents, meta.field, lpName), value, meta.unit, venue, meta.quantity === true);
     }
   };
 

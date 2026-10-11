@@ -5,14 +5,14 @@
  * transaction (`vanna_deposit_collateral`, `vanna_borrow`, …). MCP simulates it,
  * assembles the Soroban resource footprint, and returns an `unsigned_xdr`. When
  * Sign Service auto-sign is unavailable (no user assertion bound to the server's
- * M2M token) the only thing missing is the user's signature — NOT a second copy
+ * M2M token) the only thing missing is the user's signature - NOT a second copy
  * of the transaction.
  *
  * Previously "Sign with connected wallet" threw that XDR away and rebuilt the
  * whole call through `MarginAccountService`, which re-ran its own Registry /
  * collateral pre-flight and needed its own `getAddress()`. That double build is
  * where "Failed to get user address" and the bogus "XLM not set in the Registry
- * contract" toasts came from — MCP had already simulated the same call
+ * contract" toasts came from - MCP had already simulated the same call
  * successfully. So: sign what MCP built, submit it, poll it. Nothing else.
  *
  * This module runs in the browser only (it needs the wallet).
@@ -30,7 +30,7 @@ export type SignXdrResult =
       ok: false;
       error: string;
       hash?: string;
-      /** Stale account sequence — rebuild the envelope; do not resubmit this XDR. */
+      /** Stale account sequence - rebuild the envelope; do not resubmit this XDR. */
       code?: "BAD_SEQ" | "ALREADY_SUBMITTED" | "TRY_AGAIN";
     };
 
@@ -75,7 +75,7 @@ export async function waitForAccountSequenceApplied(
       /**
        * `sequenceNumber` is a METHOD on AccountResponse, not a field.
        *
-       * This read `BigInt(acc.sequenceNumber)` — passing the function itself, which
+       * This read `BigInt(acc.sequenceNumber)` - passing the function itself, which
        * throws "Cannot convert a function to a BigInt" on every iteration. The throw
        * landed in the catch below, which is labelled transient and keeps polling, so the
        * loop always ran all 40 attempts (~16s) and always returned false. Every
@@ -86,7 +86,7 @@ export async function waitForAccountSequenceApplied(
       const last = BigInt(acc.sequenceNumber());
       if (last >= used) return true;
     } catch {
-      /* transient — keep polling */
+      /* transient - keep polling */
     }
     await new Promise((r) => setTimeout(r, delayMs));
   }
@@ -107,7 +107,7 @@ const submittedXdrKeys = new Set<string>();
  * envelopes are different: the faucet account is often `tx.source` (already
  * partially signed), and the user's G-address appears only as an *operation*
  * source (e.g. changeTrust). Rejecting those as "wrong wallet" was a false
- * positive — the connected wallet was correct.
+ * positive - the connected wallet was correct.
  */
 export function envelopeRequiresSigner(
   tx: { source: string; operations: ReadonlyArray<{ source?: string | null }> },
@@ -151,7 +151,7 @@ async function pollTransaction(
   hash: string,
   // 60 × 1s ≈ 60s, was 20 × 1.5s = 30s. Testnet regularly needs 30–60s, so the
   // old window gave up on transactions that were about to land and reported them
-  // as failures with a hash — the worst of both readings. Polling a little
+  // as failures with a hash - the worst of both readings. Polling a little
   // faster also shortens the gap between confirmation and the UI showing it.
   // This strengthens confirmation: nothing is accepted earlier, we just stop
   // abandoning it sooner than the network answers.
@@ -173,13 +173,13 @@ async function pollTransaction(
         try {
           reason = res.resultXdr?.result().switch().name;
         } catch {
-          /* result code unavailable — fall back to a bare failure */
+          /* result code unavailable - fall back to a bare failure */
         }
         return { status: "FAILED", reason };
       }
       // NOT_FOUND → not in a ledger yet.
     } catch {
-      /* transient RPC hiccup — testnet does this; keep polling */
+      /* transient RPC hiccup - testnet does this; keep polling */
     }
     await new Promise((r) => setTimeout(r, delayMs));
   }
@@ -202,7 +202,7 @@ async function signAndSubmitMcpXdrInner(
    * Fired the moment the network accepts the envelope, BEFORE polling starts.
    *
    * Confirmation can take the better part of a minute, and until this existed
-   * the caller had nothing to show for that time — the leg sat on a spinner with
+   * the caller had nothing to show for that time - the leg sat on a spinner with
    * no hash, which reads as hung rather than pending. The hash exists as soon as
    * the submit returns, so hand it over then; the user can check the explorer
    * even if they close the tab.
@@ -212,10 +212,10 @@ async function signAndSubmitMcpXdrInner(
   shouldAbort?: () => boolean,
 ): Promise<SignXdrResult> {
   if (!unsignedXdr || unsignedXdr.length < 20) {
-    return { ok: false, error: "No transaction to sign — re-run the request." };
+    return { ok: false, error: "No transaction to sign - re-run the request." };
   }
   if (shouldAbort?.()) {
-    return { ok: false, error: "Cancelled — transaction was not submitted." };
+    return { ok: false, error: "Cancelled - transaction was not submitted." };
   }
 
   const submitKey = xdrSubmitKey(unsignedXdr);
@@ -224,7 +224,7 @@ async function signAndSubmitMcpXdrInner(
       ok: false,
       code: "ALREADY_SUBMITTED",
       error:
-        "This exact transaction was already submitted. The sequence is used — " +
+        "This exact transaction was already submitted. The sequence is used - " +
         "rebuild the step (auto-retry) rather than signing the same envelope again.",
     };
   }
@@ -240,7 +240,7 @@ async function signAndSubmitMcpXdrInner(
       ok: false,
       error:
         detail ||
-        "Wallet unavailable — unlock Freighter / reconnect in the navbar, wait a second, then press sign again.",
+        "Wallet unavailable - unlock Freighter / reconnect in the navbar, wait a second, then press sign again.",
     };
   }
 
@@ -259,13 +259,13 @@ async function signAndSubmitMcpXdrInner(
     };
   }
 
-  // Guard against a real wallet switch — but allow faucet-style envelopes where
+  // Guard against a real wallet switch - but allow faucet-style envelopes where
   // the distribution account is tx.source and the trader only appears on an op
   // (Blend getAssets / Aquarius changeTrust+payment). Comparing only tx.source
   // falsely rejected those as "wrong wallet" while the rail showed the right G.
   //
   // Fallback: classic (non-Soroban) envelopes when the connected wallet still
-  // matches what Copilot sent as expectedSigner — Blend faucet XDRs are partially
+  // matches what Copilot sent as expectedSigner - Blend faucet XDRs are partially
   // signed by the distributor and Freighter only adds the trader's signature.
   const classicCosignOk =
     !!expectedSigner &&
@@ -287,7 +287,7 @@ async function signAndSubmitMcpXdrInner(
   }
 
   if (shouldAbort?.()) {
-    return { ok: false, error: "Cancelled — transaction was not submitted." };
+    return { ok: false, error: "Cancelled - transaction was not submitted." };
   }
 
   // 3. Sign via whichever wallet is active (Freighter extension or Privy raw-hash).
@@ -300,12 +300,12 @@ async function signAndSubmitMcpXdrInner(
     return { ok: false, error: detail || "Signing was cancelled." };
   }
   if (shouldAbort?.()) {
-    return { ok: false, error: "Cancelled — transaction was not submitted." };
+    return { ok: false, error: "Cancelled - transaction was not submitted." };
   }
 
   // 4. Submit + poll. MCP already simulated, so we do NOT re-prepare (that would
   //    invalidate the signature by mutating the envelope). Classic faucet setup
-  //    (changeTrust + payment) must go through Horizon — Soroban RPC rejects it.
+  //    (changeTrust + payment) must go through Horizon - Soroban RPC rejects it.
   try {
     const envelope = StellarSdk.TransactionBuilder.fromXDR(
       signed.signedTxXdr,
@@ -331,7 +331,7 @@ async function signAndSubmitMcpXdrInner(
         const detail = codes
           ? JSON.stringify(codes).slice(0, 180)
           : err?.response?.data?.title || err?.message || "Horizon rejected the transaction";
-        // Blend already topped this account — treat as success so setup can resume.
+        // Blend already topped this account - treat as success so setup can resume.
         if (
           detail.includes("tx_missing_operation") ||
           detail.includes("op_already_exists")
@@ -344,7 +344,7 @@ async function signAndSubmitMcpXdrInner(
             ok: false,
             code: "BAD_SEQ",
             error:
-              `Submission rejected: txBadSeq — this envelope's account sequence is stale ` +
+              `Submission rejected: txBadSeq - this envelope's account sequence is stale ` +
               `(usually the previous leg just landed). Rebuild the transaction; do not ` +
               `re-sign the same XDR.`,
           };
@@ -363,27 +363,27 @@ async function signAndSubmitMcpXdrInner(
           ok: false,
           code: "BAD_SEQ",
           error:
-            `Submission rejected: txBadSeq — account sequence is out of date after the ` +
+            `Submission rejected: txBadSeq - account sequence is out of date after the ` +
             `previous step. The app will rebuild a fresh envelope; signing the same one again will keep failing.`,
         };
       }
       return { ok: false, error: `Submission rejected: ${reason}` };
     }
-    // TRY_AGAIN_LATER means it was NOT queued — polling would just time out and
+    // TRY_AGAIN_LATER means it was NOT queued - polling would just time out and
     // hand the user a hash that never lands. Say what actually happened.
     if (sent.status === "TRY_AGAIN_LATER") {
       return {
         ok: false,
         code: "TRY_AGAIN",
         error:
-          "The network asked us to retry — usually another transaction from this " +
+          "The network asked us to retry - usually another transaction from this " +
           "account is still in flight. Press approve again in a few seconds.",
       };
     }
     // PENDING and DUPLICATE both mean "it's in", so poll for the outcome.
     // Mark submitted only once the network accepted the envelope (not on BadSeq).
     submittedXdrKeys.add(submitKey);
-    // Tell the caller now — the wait that follows is the long part.
+    // Tell the caller now - the wait that follows is the long part.
     try {
       onSubmitted?.(sent.hash);
     } catch {
@@ -397,7 +397,7 @@ async function signAndSubmitMcpXdrInner(
         ok: false,
         hash: sent.hash,
         error:
-          `Submitted, but the ledger had not confirmed it after 60s. It may still land — ` +
+          `Submitted, but the ledger had not confirmed it after 60s. It may still land - ` +
           `check ${sent.hash.slice(0, 10)}… on the explorer before retrying, so you do not ` +
           `send the same transaction twice.`,
       };

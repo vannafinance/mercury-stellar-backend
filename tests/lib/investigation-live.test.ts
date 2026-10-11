@@ -37,6 +37,8 @@ describe.skipIf(
       vanna_get_max_borrow: { max_borrow_human: "250", symbol: "XLM" },
       vanna_list_blend_reserves: { reserves: [{ symbol: "XLM", supply_apy_pct: "1.0", borrow_apr_pct: "6.0" }] },
       vanna_list_aquarius_pools: { pools: [{ pair: "XLM/USDC", apy_pct: "3.0" }] },
+      vanna_get_aquarius_pool_stats: { pair: "XLM/USDC", apy_pct: "3.0", tvl_usd: "120000" },
+      vanna_get_collateral_config: { assets: [{ symbol: "XLM", collateral_factor: "0.8" }, { symbol: "AQUSDC", collateral_factor: "0.9" }] },
       vanna_auto_sign_status: { enabled: false, status: "disabled" },
     };
     const result = await runInvestigation({

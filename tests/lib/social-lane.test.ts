@@ -25,11 +25,11 @@ describe("social leftover classify", () => {
   it("returns a social reply when Flash-Lite labels the leftover social", async () => {
     mocks.generateSocialLaneJson.mockResolvedValue({
       lane: "social",
-      reply: "Hi — I’m Vanna Copilot.",
+      reply: "Hi - I’m Vanna Copilot.",
     });
     await expect(classifySocialLane("hi")).resolves.toEqual({
       lane: "social",
-      reply: "Hi — I’m Vanna Copilot.",
+      reply: "Hi - I’m Vanna Copilot.",
     });
     expect(mocks.generateSocialLaneJson.mock.calls[0][2]).toBeInstanceOf(AbortSignal);
   });

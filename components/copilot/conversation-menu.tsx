@@ -21,7 +21,7 @@ export interface ConversationMenuProps {
  * Times here are relative ("Today", "14:32"), so they cannot be read during render: the
  * server would print one moment and the browser another, and `Date.now()` in a render body
  * is impure besides. This keeps one cached reading, refreshed each minute while anything is
- * listening, so render only ever reads a stable snapshot — zero until the first subscription,
+ * listening, so render only ever reads a stable snapshot - zero until the first subscription,
  * which is what the server sends and what the browser hydrates against.
  */
 let clockReading = 0;
@@ -45,7 +45,7 @@ function subscribeToClock(onChange: () => void): () => void {
 const readClock = () => clockReading;
 const readClockOnServer = () => 0;
 
-/** "Today", "Yesterday", "Earlier" — the only grouping a person scans a chat list by. */
+/** "Today", "Yesterday", "Earlier" - the only grouping a person scans a chat list by. */
 type Bucket = "Today" | "Yesterday" | "Earlier";
 const BUCKETS: readonly Bucket[] = ["Today", "Yesterday", "Earlier"];
 
@@ -74,7 +74,7 @@ export const HEADER_CONTROL =
  * A side rail was the obvious shape and the wrong one: the work surface on this page is
  * full width on purpose, and a column of two chat titles beside it left a tall empty
  * gutter. History is something you reach for occasionally, so it belongs in the header as
- * a menu — near the title, out of the way of the thread.
+ * a menu - near the title, out of the way of the thread.
  */
 export function ConversationMenu({ items, activeId, wallet, busy, onNew, onOpen, onDelete }: ConversationMenuProps) {
   const [open, setOpen] = useState(false);

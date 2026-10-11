@@ -5,11 +5,11 @@ import { parseMinHealthFactor } from "@/lib/copilot/router";
  * How users actually state a health-factor floor.
  *
  * The owner's own acceptance prompt says "so health factor does not go below 1.3", and
- * that phrasing parsed as NO floor — the matcher only knew "above / over / at least".
+ * that phrasing parsed as NO floor - the matcher only knew "above / over / at least".
  * A floor that does not parse is not enforced anywhere, including the write-risk gate,
  * so the constraint the user cared most about was silently dropped.
  */
-describe("parseMinHealthFactor — floor phrasings", () => {
+describe("parseMinHealthFactor - floor phrasings", () => {
   it.each([
     ["Use both USDC and XLM to build a strategy so health factor does not go below 1.3.", 1.3],
     ["keep health factor above 1.3", 1.3],

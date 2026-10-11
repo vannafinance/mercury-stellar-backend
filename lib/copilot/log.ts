@@ -11,7 +11,7 @@ function trunc(v: unknown, n = 12): string | null {
 
 /**
  * Per-turn events are opt-in via COPILOT_LOG so a dev terminal stays readable.
- * Errors and warnings elsewhere are never gated — only this routine chatter is.
+ * Errors and warnings elsewhere are never gated - only this routine chatter is.
  * Anything that sets an explicit log level (hosting, CI) keeps the full stream.
  */
 function enabled(): boolean {
@@ -27,7 +27,7 @@ export function logAssistantEvent(event: string, payload: Record<string, unknown
   );
 }
 
-/** Thrown value as investigate/route.ts logs it — name, message, stack. */
+/** Thrown value as investigate/route.ts logs it - name, message, stack. */
 export function unexpectedCause(error: unknown): { name: string; message: string; stack?: string } | string {
   return error instanceof Error
     ? { name: error.name, message: error.message, stack: error.stack }

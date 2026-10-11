@@ -6,7 +6,7 @@ import { routeMessage } from "@/lib/copilot/router";
  *
  * Live, 22 Sep: "remove xlm blend position" answered with the position's balances and
  * "To remove or withdraw this position, initiate a withdrawal transaction through the
- * Vanna interface or smart account" — a read, and a dead end, for a sentence whose
+ * Vanna interface or smart account" - a read, and a dead end, for a sentence whose
  * first word is a verb. "remove my earn position" and "withdraw my entire blend
  * position" did the same.
  *
@@ -18,7 +18,7 @@ import { routeMessage } from "@/lib/copilot/router";
  *   read being mistaken for a write
  *
  * So the read let it in and the write shut it out. `remove my lp position` escaped only
- * because the LP branch is ordered earlier — one venue working and the others not is
+ * because the LP branch is ordered earlier - one venue working and the others not is
  * what gave the missing vocabulary away.
  *
  * Fixed by giving both sides the SAME exit vocabulary (`POSITION_EXIT_VERBS`), so a
@@ -47,7 +47,7 @@ describe("THE LIVE BUG: removing a position answered with a read", () => {
   }
 
   /**
-   * This one also named the wrong venue before — "withdraw all of my XLM Blend
+   * This one also named the wrong venue before - "withdraw all of my XLM Blend
    * position" staged `withdraw_collateral`, taking margin collateral rather than the
    * Blend supply it named.
    */
@@ -56,7 +56,7 @@ describe("THE LIVE BUG: removing a position answered with a read", () => {
   });
 
   /**
-   * Earn spans several assets, so naming none leaves a real question — but it must be
+   * Earn spans several assets, so naming none leaves a real question - but it must be
    * the redeem question, not the generic "here is what I can do" blurb it used to get.
    */
   it("treats an Earn exit as an exit, and asks which asset", () => {
@@ -78,7 +78,7 @@ describe("THE LIVE BUG: removing a position answered with a read", () => {
 
 /**
  * The reads are the reason the exclusions existed. Widening the exit vocabulary must
- * not turn a question into a write — a sentence with no exit verb is still a question.
+ * not turn a question into a write - a sentence with no exit verb is still a question.
  */
 describe("asking about a position is still a question", () => {
   const READS: Array<[string, string]> = [

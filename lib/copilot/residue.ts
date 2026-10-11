@@ -3,7 +3,7 @@
  *
  * The control flow here is inverted relative to the cascade that caused the bugs this
  * exists to prevent. That cascade asked "does this look like something I can ignore?" and
- * fell through to ignoring it — so an unmatched fragment was treated as absent, and the
+ * fell through to ignoring it - so an unmatched fragment was treated as absent, and the
  * one class of input that must never be dropped, a second instruction, was dropped
  * silently whenever no rule happened to recognise it.
  *
@@ -58,7 +58,7 @@ export type ResidueVerdict = {
  * Action verbs, stem-tolerant. Sourced from the extractor's own verb list so the two
  * cannot disagree about what counts as an instruction.
  *
- * The suffix set over-matches slightly in the direction of "this is an action" — "invest"
+ * The suffix set over-matches slightly in the direction of "this is an action" - "invest"
  * also catches "investigate". That asymmetry is deliberate: a false action reading costs a
  * question, a missed one costs a dropped instruction.
  */
@@ -123,7 +123,7 @@ export function stripHedges(text: string): string {
  * Classify one span of unclaimed text.
  *
  * Order is the whole design. Action is tested before every safe class, because a fragment
- * that names an operation is an instruction regardless of how politely it is worded — the
+ * that names an operation is an instruction regardless of how politely it is worded - the
  * previous cascade got this backwards and let a courteous second goal fall through to
  * being ignored. Conditions come next, because they are the class we must refuse rather
  * than attempt. Only then do the drop-eligible classes get their turn, and each must

@@ -12,7 +12,7 @@ import { clauseToStep } from "@/lib/copilot/step-extractor";
  * A clause needs BOTH a deposit verb and a borrow verb to become
  * `deposit_and_borrow`, and `expandLeveredWrites` gates leverage sizing on exactly
  * that op. With "add" unrecognised there was no deposit leg, so no merged op, so
- * `planLeverage` never ran — and the user was asked to type a number the margin page
+ * `planLeverage` never ran - and the user was asked to type a number the margin page
  * derives instantly from the same collateral, leverage and oracle price.
  *
  * 10 XLM at 6x is a 50 XLM borrow (same-asset: deposit x (L-1)), which is what the

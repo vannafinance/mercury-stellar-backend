@@ -1,7 +1,7 @@
 /**
  * Size language the margin UI already exposes as chips (10% / 25% / 50% / 100%).
  *
- * "Repay all my XLM" is not a missing amount — it is fraction=1 against live debt.
+ * "Repay all my XLM" is not a missing amount - it is fraction=1 against live debt.
  * Asking "how much?" after that is the same class of bug as asking for a borrow size
  * when leverage already implied it.
  */
@@ -24,7 +24,7 @@ export function findAmountFraction(text: string): number | null {
   if (/\b(half|one\s*half)\b/.test(t)) return 0.5;
   if (/\b(quarter|one\s*quarter)\b/.test(t)) return 0.25;
 
-  // Full / max / clear — the Margin "100%" chip.
+  // Full / max / clear - the Margin "100%" chip.
   if (
     /\b(all|entire|full|everything|max(?:imum)?)\b/.test(t) ||
     /\b(pay\s*off|payoff|clear(?:\s+my)?(?:\s+loan|\s+debt)?|wipe)\b/.test(t) ||
@@ -37,18 +37,18 @@ export function findAmountFraction(text: string): number | null {
 }
 
 /**
- * A share of a BALANCE — for supply / deposit / withdraw, where the pot being divided is
+ * A share of a BALANCE - for supply / deposit / withdraw, where the pot being divided is
  * a live balance rather than a debt.
  *
  * Stricter than {@link findAmountFraction} on purpose. Repay can read a bare "all" as
  * "all of it", because the only quantity in scope is the debt. For an earn supply the
- * same word sits next to yield-seeking language the router already understands —
- * "invest for max yield", "earn me the best return" — and reading THAT "max" as a size
+ * same word sits next to yield-seeking language the router already understands -
+ * "invest for max yield", "earn me the best return" - and reading THAT "max" as a size
  * would silently move a whole wallet into a pool. So the full-balance rungs only fire
  * when the sentence names the balance the share is taken from.
  *
  * "max" is disqualified only when it is the superlative itself ("max yield"). A sentence
- * that says both — "invest all my USDC for max profit" — is still sized off "all my USDC",
+ * that says both - "invest all my USDC for max profit" - is still sized off "all my USDC",
  * because the size and the ranking preference are two separate instructions.
  */
 export function findBalanceFraction(text: string): number | null {
@@ -63,13 +63,13 @@ export function findBalanceFraction(text: string): number | null {
    * "Idle" names the pot AND the share: everything not already at work.
    *
    * Live, 22 Sep: "invest my idle tokens in farm market" answered "How much XLM do you
-   * want to supply to Blend?" — asking for a number the sentence had already given.
+   * want to supply to Blend?" - asking for a number the sentence had already given.
    * Every idle phrasing did it, because none of them reach the rungs below: "idle
    * tokens" and "idle funds" name no balance the `namesBalance` gate recognises, and
    * "my idle balance" names one but then says neither "all" nor "max", so the share
    * came back null and the write was left unsized.
    *
-   * It belongs here rather than beside the callers for the reason this file exists —
+   * It belongs here rather than beside the callers for the reason this file exists -
    * one place decides what counts as a size, so the router and the planner cannot
    * disagree about it. Checked after the percent and half/quarter rungs, so "half my
    * idle balance" is still a half.
@@ -106,7 +106,7 @@ export function applyFraction(balance: number, fraction: number): number {
 }
 
 /**
- * Balance-share chips — the same 10/25/50/100 rungs as `DEPOSIT_PERCENTAGES`, which is
+ * Balance-share chips - the same 10/25/50/100 rungs as `DEPOSIT_PERCENTAGES`, which is
  * what the Margin collateral box and the Earn supply form both render.
  */
 export const BALANCE_FRACTION_OPTIONS: Array<{
@@ -120,7 +120,7 @@ export const BALANCE_FRACTION_OPTIONS: Array<{
   { id: "1", fraction: 1, label: "100% / max" },
 ];
 
-/** Margin repay chips — same rungs the website shows. */
+/** Margin repay chips - same rungs the website shows. */
 export const REPAY_FRACTION_OPTIONS: Array<{
   id: string;
   fraction: number;

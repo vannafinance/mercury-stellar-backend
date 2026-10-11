@@ -2,10 +2,10 @@ import { routeMessage } from "../router";
 
 /**
  * Writes that are not plans. They spend no token amount and are not composed by the
- * sizer — the connected G-wallet is the only input. Kept off `WORKFLOW_OPS` so the
+ * sizer - the connected G-wallet is the only input. Kept off `WORKFLOW_OPS` so the
  * shape matrix and journal never treat them as sized legs.
  */
-export const LIFECYCLE_WRITES = ["create_account"] as const;
+export const LIFECYCLE_WRITES = ["create_account", "settle_account"] as const;
 export type LifecycleWriteOp = (typeof LIFECYCLE_WRITES)[number];
 
 export function isLifecycleWriteOp(value: string): value is LifecycleWriteOp {
@@ -31,8 +31,8 @@ export function anchoredLifecycleWrite(
  * Resolve a lifecycle write with dual sources and a shared veto.
  *
  * 1. Veto first. Opening an account cannot share a turn with a leg that spends it.
- * 2. Source 1 — the model, anchored (exact quote match against user message).
- * 3. Source 2 — the deterministic router. Reuses routeMessage(messages[0]).
+ * 2. Source 1 - the model, anchored (exact quote match against user message).
+ * 3. Source 2 - the deterministic router. Reuses routeMessage(messages[0]).
  *
  * When source 1 is rejected but source 2 fires, log a diagnostic console.warn
  * noting whether modelWrite was absent, missing quote, or quote-mismatched.
@@ -45,11 +45,11 @@ export function resolveLifecycleWrite(input: {
   // 1. Veto first: opening an account cannot share a turn with a leg that spends it.
   if (input.hasSizedWork) return null;
 
-  // 2. Source 1 — the model, anchored.
+  // 2. Source 1 - the model, anchored.
   const modelOp = anchoredLifecycleWrite(input.modelWrite, input.messages, false);
   if (modelOp) return modelOp;
 
-  // 3. Source 2 — the deterministic router.
+  // 3. Source 2 - the deterministic router.
   if (input.messages.length > 0 && typeof input.messages[0] === "string") {
     const routed = routeMessage(input.messages[0]);
     if (routed.kind === "write" && isLifecycleWriteOp(routed.op)) {

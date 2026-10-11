@@ -2,14 +2,14 @@
  * Plan → approve → execute.
  *
  * Multi-leg prompts used to go straight from text to "sign this". The decomposition
- * was already correct — "deposit 10 XLM, borrow 5 USDC, then supply that to Blend"
- * produced three ordered steps — but the user never saw it before the first signature
+ * was already correct - "deposit 10 XLM, borrow 5 USDC, then supply that to Blend"
+ * produced three ordered steps - but the user never saw it before the first signature
  * request. The only check on a wrong plan was the wallet prompt, which shows one leg at
  * a time and cannot show intent. A prompt whose condition had been dropped ("if my
  * health factor is above 2, borrow…") reached that prompt looking completely ordinary.
  *
  * The safety property that matters is: WHAT EXECUTES IS WHAT WAS APPROVED. That rules
- * out re-deriving the plan on approval — running the model twice can produce two
+ * out re-deriving the plan on approval - running the model twice can produce two
  * different plans, and the user only ever saw the first. So the plan is frozen,
  * fingerprinted, and replayed verbatim.
  *
@@ -33,7 +33,7 @@ import type { PlanConstraints } from "./plan-ir";
 import type { RoutedIntent } from "./types";
 import { PLAN_TTL_MS as SHARED_PLAN_TTL_MS } from "./plan-ttl";
 
-/** A plan is built on live prices and account health; both move. Waiting to Approve is not a timeout — Approve re-reads. */
+/** A plan is built on live prices and account health; both move. Waiting to Approve is not a timeout - Approve re-reads. */
 export const PLAN_TTL_MS = SHARED_PLAN_TTL_MS;
 
 export interface PlanStepView {
@@ -41,33 +41,33 @@ export interface PlanStepView {
   /**
    * Writes move funds and need a signature; reads report a number and do not.
    *
-   * Read legs exist because a strategy sentence often ends in a question — "…then tell me
+   * Read legs exist because a strategy sentence often ends in a question - "…then tell me
    * my health factor". `freezePlan` used to filter them out, so the card showed one step
    * for a two-part instruction, the leg was excluded from the fingerprint, and the client
    * replayed a plan the question had been silently removed from. The user approved
    * something narrower than what they asked for and was never told.
    */
   kind: "write" | "read";
-  /** Read legs only — the MCP tool that answers the question. */
+  /** Read legs only - the MCP tool that answers the question. */
   tool?: string | null;
   op: string;
   asset: string | null;
   amount: number | null;
   /**
    * A share of a live balance, when the size was given as one. Rendered as "50% of your
-   * XLM" instead of "amount to be confirmed" — the user stated a size, and a card that
+   * XLM" instead of "amount to be confirmed" - the user stated a size, and a card that
    * says the amount is missing is telling them they did not.
    */
   fraction: number | null;
   leverage: number | null;
   /**
-   * The loan asset, when it differs from the collateral — a first-class slot, not a
+   * The loan asset, when it differs from the collateral - a first-class slot, not a
    * detail of `asset`.
    *
    * It has to survive the approve round-trip for the same reason `leverage` does, and
    * it did not: a plan approved as "deposit 500 AQUSDC, borrow XLM at 3×" replayed with
    * this slot empty, `expandPlanWrites` then read the position as same-asset, and the
-   * user got `borrow 1000 AQUSDC` — the dollar value of the debt spent as collateral
+   * user got `borrow 1000 AQUSDC` - the dollar value of the debt spent as collateral
    * tokens, which failed on chain with a contract error. A different trade from the one
    * that was approved, which is precisely what this module exists to prevent.
    */
@@ -81,7 +81,7 @@ export interface PlanStepView {
    * The named fields above are a display view derived from it; this is what is hashed
    * and what is replayed, so a slot added to EXECUTABLE_SLOTS survives approval without
    * this file being touched. `leverage` needed a manual fix here once, `borrow_asset` a
-   * second time, and `token_out` was still broken — all three were the same omission in
+   * second time, and `token_out` was still broken - all three were the same omission in
    * three different fields.
    */
   slots: IntentSlots;
@@ -98,7 +98,7 @@ export interface FrozenPlan {
   created_at: number;
   /**
    * Total on-chain legs, which is what the user will actually be asked to sign.
-   * Higher than steps.length whenever a step is levered — see legCount().
+   * Higher than steps.length whenever a step is levered - see legCount().
    */
   signature_count: number;
   /** Things the user should read before approving. */
@@ -106,8 +106,8 @@ export interface FrozenPlan {
   /**
    * A stated HF floor etc., read once from the message that built this plan.
    *
-   * Absent for plans from the LLM planner. Carried so approval — which sends back
-   * `message: "approve plan"`, not the original text — can still see it; `runPlan`'s
+   * Absent for plans from the LLM planner. Carried so approval - which sends back
+   * `message: "approve plan"`, not the original text - can still see it; `runPlan`'s
    * fallback of re-parsing `ctx.message` finds nothing in that generic string.
    */
   constraints?: PlanConstraints | null;
@@ -176,12 +176,12 @@ const VENUE_SUFFIX: Record<PlanStepView["venue"], string> = {
 
 /**
  * Aquarius and Soroswap LP legs share the "farm" venue bucket with Blend (both are farm
- * actions, same as the app's own Farm tab covers all three) — but that bucket's suffix is
+ * actions, same as the app's own Farm tab covers all three) - but that bucket's suffix is
  * a flat "into Blend", so every add/remove-liquidity step read "... into Blend" even
  * though Blend has no AMM/liquidity concept at all. Live result: a real Soroswap LP leg
  * (added after swapping into SOUSDC, which only trades on Soroswap) rendered as "Add
- * liquidity with 5 SOUSDC into Blend" — badged FARM like a Blend supply, reading as one.
- * Which venue actually applies is determined by the USDC variant the step names — SOUSDC
+ * liquidity with 5 SOUSDC into Blend" - badged FARM like a Blend supply, reading as one.
+ * Which venue actually applies is determined by the USDC variant the step names - SOUSDC
  * only trades on Soroswap, AQUSDC only on Aquarius.
  */
 function lpVenueSuffix(asset: string | null): string {
@@ -207,7 +207,7 @@ function labelFor(
   const tail =
     op === "add_liquidity" || op === "remove_liquidity"
       ? lpVenueSuffix(asset)
-      // VENUE_SUFFIX.farm is "into Blend" — the right direction for a supply, backwards
+      // VENUE_SUFFIX.farm is "into Blend" - the right direction for a supply, backwards
       // for a withdrawal ("Withdraw 50 BLUSDC into Blend" reads as moving money the wrong
       // way). Same fix shape as the LP venue suffix above: the op's own direction wins.
       : op === "withdraw_from_blend"
@@ -218,7 +218,7 @@ function labelFor(
   // supply and hides the borrow the leverage implies.
   const lev = leverage != null && leverage > 1 ? `at ${leverage}× leverage` : "";
   // Which token the debt is in, when it is not the collateral. The step read "Deposit
-  // and borrow against 500 AQUSDC … at 3× leverage" — true, but silent about the one
+  // and borrow against 500 AQUSDC … at 3× leverage" - true, but silent about the one
   // slot the user stated explicitly, so a wrong borrow asset was invisible on the very
   // card meant to catch it.
   const loan =
@@ -242,7 +242,7 @@ function legCount(op: string, leverage: number | null): number {
 /**
  * Fingerprint the executable content of a plan.
  *
- * Only the fields that change what happens on-chain are hashed — labels and summaries
+ * Only the fields that change what happens on-chain are hashed - labels and summaries
  * are presentation, and including them would break approval on a harmless copy edit.
  */
 export function planFingerprint(
@@ -267,7 +267,7 @@ export function planFingerprint(
       if (s.kind === "read") return `read:${s.tool ?? ""}`;
       // Derived from EXECUTABLE_SLOTS by iteration, so every slot that changes what
       // happens on-chain is hashed automatically. Hand-listing the fields here is what
-      // left `leverage`, then `borrow_asset`, then `token_out` outside the hash — and an
+      // left `leverage`, then `borrow_asset`, then `token_out` outside the hash - and an
       // unhashed executable slot is one a client can alter after approval, which is the
       // exact hole this fingerprint exists to close.
       const slots = s.slots ? compactSlots(s.slots) : toSlots(s);
@@ -304,7 +304,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
       const venue = VENUE_BY_OP[op] ?? "other";
       const asset = s.asset ?? null;
       const amount = typeof s.amount === "number" && Number.isFinite(s.amount) ? s.amount : null;
-      // One read of every slot, handling both spellings (args.x and x) for all of them —
+      // One read of every slot, handling both spellings (args.x and x) for all of them -
       // rather than a per-field rescue for whichever slot was noticed to be missing.
       const slots = toSlots(s);
       const leverage = typeof slots.leverage === "number" ? slots.leverage : null;
@@ -343,7 +343,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   /**
    * Cap the number of top-level steps a single plan can carry.
    *
-   * Nothing upstream limits how many clauses a sentence can chain — "do 15 things" builds
+   * Nothing upstream limits how many clauses a sentence can chain - "do 15 things" builds
    * 15 real steps, each a signature, with no ceiling. Dropped rather than shown-then-refused,
    * because every one of them would otherwise reach `Approve & run` looking identical to an
    * intended plan.
@@ -355,7 +355,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
 
   /**
    * Only writes are signed. A read leg reports a number and asks nothing of the wallet, so
-   * counting it here would tell the user to expect one more signature than they will see —
+   * counting it here would tell the user to expect one more signature than they will see -
    * and "how many times will I be asked to sign" is the number this card exists to get
    * right.
    */
@@ -364,7 +364,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   const warnings: string[] = [];
   if (overflow) {
     warnings.push(
-      `This plan is capped at ${MAX_PLAN_STEPS} steps — ${overflow} more you asked for were dropped. ` +
+      `This plan is capped at ${MAX_PLAN_STEPS} steps - ${overflow} more you asked for were dropped. ` +
         `Ask again for the rest once these run.`,
     );
   }
@@ -372,7 +372,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   // A missing amount becomes a prompt mid-execution, after earlier legs have already
   // settled on-chain. Better to say so while the whole thing can still be cancelled.
   // Reads are exempt: a report has no size to be missing.
-  // A step sized as a share of a balance is NOT missing its amount — it has one, stated
+  // A step sized as a share of a balance is NOT missing its amount - it has one, stated
   // as "50%" and resolved against the live balance when the leg runs. Warning about it
   // told the user their own instruction had not been understood.
   const noAmount = writeSteps.filter(
@@ -380,7 +380,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   );
   if (noAmount.length) {
     warnings.push(
-      `Step ${noAmount.map((s) => s.n).join(" and ")} has no amount yet — I'll have to ask once it gets there.`,
+      `Step ${noAmount.map((s) => s.n).join(" and ")} has no amount yet - I'll have to ask once it gets there.`,
     );
   }
 
@@ -389,12 +389,12 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   // ambiguous, and only the collateral was being looked at.
   if (renumberedSteps.some((s) => s.asset === "USDC" || s.borrow_asset === "USDC")) {
     warnings.push(
-      "USDC is ambiguous on this network (BLUSDC, AQUSDC, SOUSDC) — I'll ask which one before that leg runs.",
+      "USDC is ambiguous on this network (BLUSDC, AQUSDC, SOUSDC) - I'll ask which one before that leg runs.",
     );
   }
 
   if (renumberedSteps.some((s) => s.venue === "farm") && renumberedSteps.some((s) => s.venue === "earn")) {
-    warnings.push("This plan touches both Earn and Farm — check each step is against the product you meant.");
+    warnings.push("This plan touches both Earn and Farm - check each step is against the product you meant.");
   }
 
   // A levered step is several transactions, so say what it expands into rather than
@@ -404,7 +404,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
     const n = legCount(s.op, s.leverage);
     // Say what the legs ACTUALLY are. This read "…borrow against it, then supply" for
     // every levered step, but a margin deposit_and_borrow is two legs and supplies
-    // nothing — describing a third leg that never runs on the card whose job is to
+    // nothing - describing a third leg that never runs on the card whose job is to
     // show what will run.
     const loan = s.borrow_asset && s.borrow_asset !== s.asset ? ` ${s.borrow_asset}` : "";
     const legs =
@@ -420,7 +420,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   // Every leg needs its own signature; there is no batching today.
   if (signatureCount > 1) {
     warnings.push(
-      `${signatureCount} separate signatures — the plan stops if you cancel partway.`,
+      `${signatureCount} separate signatures - the plan stops if you cancel partway.`,
     );
   }
 
@@ -452,7 +452,7 @@ export interface ApprovedPlan {
     leverage?: number | null;
     borrow_asset?: string | null;
   }>;
-  /** Echoed back from the plan_preview's own `constraints` — e.g. a stated HF floor. */
+  /** Echoed back from the plan_preview's own `constraints` - e.g. a stated HF floor. */
   constraints?: PlanConstraints | null;
 }
 
@@ -464,7 +464,7 @@ export type ApprovalCheck =
  * Validate an approval before anything executes.
  *
  * Rejects rather than repairs. A plan that does not match its fingerprint, or that was
- * built too long ago, is not a plan to fix silently — it is one to show again.
+ * built too long ago, is not a plan to fix silently - it is one to show again.
  */
 export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): ApprovalCheck {
   if (!approved?.steps?.length) {
@@ -477,7 +477,7 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
       ok: false,
       reason: "expired",
       message:
-        "That plan sat unused for more than a day. Ask again and I'll draw up a fresh one — Approve re-reads live funds until then.",
+        "That plan sat unused for more than a day. Ask again and I'll draw up a fresh one - Approve re-reads live funds until then.",
     };
   }
 
@@ -505,7 +505,7 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
      * trade executed silently.
      *
      * The message stays generic on purpose. Only the hash of the original plan is held,
-     * not the plan, so this cannot know WHICH slot went missing — and an earlier draft
+     * not the plan, so this cannot know WHICH slot went missing - and an earlier draft
      * that claimed to name it was reading the already-stripped payload against itself,
      * which would have reported "nothing missing" on every real drop. A log line carries
      * the two hashes for whoever debugs it; the user gets the one fact that matters.
@@ -540,7 +540,7 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
        * `args` carries the whole record because `expandPlanWrites` reads slots from
        * either place, and the top-level fields are set for the consumers that read them
        * directly. Neither is a hand-picked subset any more, which is what let an
-       * approved trade differ from the executed one — twice, in two different fields.
+       * approved trade differ from the executed one - twice, in two different fields.
        */
       steps: replay.map((s) =>
         s.kind === "read"

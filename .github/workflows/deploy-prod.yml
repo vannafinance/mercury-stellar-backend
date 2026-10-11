@@ -1,6 +1,6 @@
 name: Deploy prod
 
-# main → Cloud Run service vanna-app-prod → app.stellar.vanna.finance
+# Manual dispatch → Cloud Run service vanna-app-prod → app.stellar.vanna.finance
 #
 # Mirrors deploy-dev.yml. The only differences are the target service, the
 # baked-in site URL, and min-instances: prod keeps one warm instance so nobody
@@ -10,16 +10,6 @@ name: Deploy prod
 # builds its own image from the same commit rather than promoting the dev image.
 
 on:
-  push:
-    branches: [main]
-    # Same reasoning as dev: none of these change the container, and a rebuild
-    # is ~16 minutes. cloudbuild.yaml and this file stay in scope.
-    paths-ignore:
-      - "infra/**"
-      - "**/*.md"
-      - ".gitattributes"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/deploy-dev.yml"
   workflow_dispatch:
 
 permissions:

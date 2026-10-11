@@ -1,9 +1,13 @@
 "use client";
 
+import { Fragment } from "react";
 import { CircleAlert } from "lucide-react";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
+import type { ReplyBlock, ReplySegment } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { completionMatches, receiptBeside, settledTransactions, shortTransactionHash, transactionPurpose } from "@/lib/copilot/workflow-completion";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
+import { VANNA_ICON_SRC } from "@/components/copilot/vanna-icon-data";
 
 /**
  * Live thread chrome: user on the right, copilot on the left.
@@ -13,9 +17,23 @@ import { ExecutionStepper, type StepperStep } from "@/components/copilot/executi
  * lines; those stay in storage and are stripped here for display.
  */
 
+
+/**
+ * Where an assistant turn's TEXT starts: the 18px mark plus the 10px gap beside it. Lines that
+ * belong to the reply but sit outside it (the "Checked in" clock, the progress line) use this
+ * so they line up under the words, not under the logo.
+ */
+export const ASSISTANT_TEXT_INDENT = "pl-7";
+/**
+ * The one gap between a reply and the card that belongs to it (execution, plans, questionnaire),
+ * whichever component draws the card, so the space never depends on which path rendered it
+ * (owner, 29 Sep: the thread-drawn execution card sat 8px under the reply, the card-drawn one 20px).
+ */
+export const REPLY_CARD_GAP_PX = 20;
 export function UserBubble({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+    // The shell pins the latest of these to the top of the view on send (copilot-shell.tsx).
+    <div data-cp-user-bubble="" style={{ display: "flex", justifyContent: "flex-end" }}>
       <p
         style={{
           maxWidth: "82%",
@@ -40,14 +58,22 @@ export function AssistantMessage({
   children,
   note,
   tone = "default",
+  blocks,
+  beside,
 }: {
   children: React.ReactNode;
   note?: string | null;
   tone?: "default" | "error";
+  /** A composed reply (compose.ts); drawn in place of the plain text when present. */
+  blocks?: ReplyBlock[];
+  /** Set when each settled transaction is drawn at the end of its own list item (see receiptBeside). */
+  beside?: { at: number; nodes: React.ReactNode[] };
 }) {
   return (
-    <div>
-      {typeof children === "string" ? (
+    <div className="cp-reply-rise">
+      {blocks?.length && tone !== "error" ? (
+        <ReplyBlocksBody blocks={blocks} beside={beside} />
+      ) : typeof children === "string" ? (
         <AssistantBody text={children} color={tone === "error" ? "var(--z-danger, #c23d3d)" : null} />
       ) : (
         <p
@@ -85,7 +111,7 @@ export function AssistantMessage({
   );
 }
 
-/** Prose only — the headline paragraph, without the figures `answerToText` appended. */
+/** Prose only - the headline paragraph, without the figures `answerToText` appended. */
 export function chatProseFromStored(text: string): string {
   const first = chatBlocksFromStored(text).find((b) => b.kind === "p");
   return first && first.kind === "p" ? first.text : "";
@@ -96,14 +122,14 @@ export function chatProseFromStored(text: string): string {
  *
  * WHY A PARSER AND NOT A NEW RESPONSE FIELD
  *
- * The read path builds a `StructuredAnswer` — headline, facts, sections, tables — and
+ * The read path builds a `StructuredAnswer` - headline, facts, sections, tables - and
  * flattens it with `answerToText` (answer-schema.ts) to get the `message` that every
  * surface stores. This renderer threw away everything after the headline, so a read that
  * had already fetched the numbers printed only the sentence: "3 supplied, ~$100,239.97
  * total" with the three pools it had just read deleted one layer above the screen.
  *
  * `answerToText` and this function are a serialiser/parser pair over one format, so every
- * answer shape that exists — and every one added later — renders without anything here
+ * answer shape that exists - and every one added later - renders without anything here
  * naming a tool, a template or an asset. It also repairs turns already in storage, which
  * a new response field could not.
  *
@@ -115,6 +141,7 @@ export function chatProseFromStored(text: string): string {
  */
 export type ChatBlock =
   | { kind: "p"; text: string }
+  | { kind: "bullets"; items: string[] }
   | { kind: "facts"; rows: Array<{ label: string; value: string }> }
   | { kind: "table"; rows: string[][] };
 
@@ -147,6 +174,14 @@ export function chatBlocksFromStored(text: string): ChatBlock[] {
     const line = raw.trim();
     if (!line) {
       flushAll();
+      continue;
+    }
+    // Legacy serialized list syntax; no prompt or asset wording is interpreted.
+    if (line.startsWith("- ")) {
+      flushAll();
+      const previous = blocks[blocks.length - 1];
+      if (previous?.kind === "bullets") previous.items.push(line.slice(2));
+      else blocks.push({ kind: "bullets", items: [line.slice(2)] });
       continue;
     }
     const bullet = /^•\s*([^:]+):\s*(.+)$/.exec(line);
@@ -185,7 +220,7 @@ function FactRows({ rows }: { rows: Array<{ label: string; value: string }> }) {
       {rows.map((r, i) => (
         <div
           key={i}
-          className="flex items-baseline justify-between gap-4 border-b border-vgray-100 py-1.5"
+          className="cp-fact-rise flex items-baseline justify-between gap-4 border-b border-vgray-100 py-1.5"
         >
           <span className="min-w-0 truncate text-[11px] uppercase tracking-[0.08em] text-vgray-500">
             {r.label}
@@ -237,7 +272,82 @@ function FactTable({ rows }: { rows: string[][] }) {
   );
 }
 
-/** Every block the turn actually carries — prose, figures, tables. */
+/** A run of reply text; audited figures are set a touch heavier so the numbers read first. */
+function Segments({ segments }: { segments: readonly ReplySegment[] }) {
+  return (
+    <>
+      {segments.map((segment, i) => segment.figure
+        ? <strong key={i} style={{ fontWeight: 600, color: "var(--g900)" }}>{segment.text}</strong>
+        : <Fragment key={i}>{segment.text}</Fragment>)}
+    </>
+  );
+}
+
+/**
+ * A reply the model wrote around audited figures (compose.ts). Plain blocks only - the
+ * figures inside are code's, bound before they reach here - so nothing is parsed from text.
+ */
+/** `beside`: after the items of block `at`, the nth node is drawn at the end of the nth item. */
+export function ReplyBlocksBody({ blocks, beside }: { blocks: readonly ReplyBlock[]; beside?: { at: number; nodes: React.ReactNode[] } }) {
+  return (
+    <>
+      {blocks.map((block, i) => {
+        const lead = i === 0;
+        const gap = lead ? 0 : "10px 0 0";
+        if (block.type === "heading") {
+          return (
+            <h3 key={i} style={{ margin: lead ? 0 : "16px 0 0", fontSize: 16, lineHeight: "24px", fontWeight: 600, color: "var(--g900)" }}>
+              <Segments segments={block.segments} />
+            </h3>
+          );
+        }
+        if (block.type === "bullets" || block.type === "steps") {
+          const List = block.type === "steps" ? "ol" : "ul";
+          return (
+            <List key={i} style={{ margin: gap, paddingLeft: 24, listStyle: block.type === "steps" ? "decimal" : "disc", fontSize: 16, lineHeight: "26px", color: "var(--g800)" }}>
+              {block.items.map((item, j) => (
+                <li key={j} style={{ marginTop: j === 0 ? 0 : 2 }}><Segments segments={item} />{beside?.at === i ? beside.nodes[j] : null}</li>
+              ))}
+            </List>
+          );
+        }
+        if (block.type === "table") {
+          return (
+            <div key={i} style={{ margin: gap, maxWidth: "100%", overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, lineHeight: "22px", color: "var(--g800)" }}>
+                <thead><tr>{block.columns.map((column, j) => (
+                  <th key={j} scope="col" style={{ padding: "8px 12px", textAlign: "left", fontWeight: 600, borderBottom: "1px solid var(--g200)" }}><Segments segments={column} /></th>
+                ))}</tr></thead>
+                <tbody>{block.rows.map((row, j) => (
+                  <tr key={j}>{row.map((cell, k) => (
+                    <td key={k} style={{ padding: "8px 12px", verticalAlign: "top", borderBottom: "1px solid var(--g200)" }}><Segments segments={cell} /></td>
+                  ))}</tr>
+                ))}</tbody>
+              </table>
+            </div>
+          );
+        }
+        return (
+          <p
+            key={i}
+            style={{
+              // One voice: every paragraph at the reply's size (a smaller second line read as a footnote).
+              margin: gap,
+              fontSize: 16,
+              lineHeight: "26px",
+              color: "var(--g800)",
+              textWrap: "pretty",
+            }}
+          >
+            <Segments segments={block.segments} />
+          </p>
+        );
+      })}
+    </>
+  );
+}
+
+/** Every block the turn actually carries - prose, figures, tables. */
 export function AssistantBody({ text, color = null }: { text: string; color?: string | null }) {
   const blocks = chatBlocksFromStored(text);
   if (!blocks.length) return null;
@@ -249,15 +359,19 @@ export function AssistantBody({ text, color = null }: { text: string; color?: st
             key={i}
             style={{
               margin: i === 0 ? 0 : "10px 0 0",
-              fontSize: i === 0 ? 16 : 14,
-              lineHeight: i === 0 ? "26px" : "22px",
-              color: color ?? (i === 0 ? "var(--g800)" : "var(--g700)"),
+              fontSize: 16,
+              lineHeight: "26px",
+              color: color ?? "var(--g800)",
               textWrap: "pretty",
               whiteSpace: "pre-wrap",
             }}
           >
             {b.text}
           </p>
+        ) : b.kind === "bullets" ? (
+          <ul key={i} style={{ margin: "10px 0 0", paddingLeft: 24, listStyle: "disc", fontSize: 16, lineHeight: "26px", color: color ?? "var(--g800)" }}>
+            {b.items.map((item, index) => <li key={index}>{item}</li>)}
+          </ul>
         ) : b.kind === "facts" ? (
           <FactRows key={i} rows={b.rows} />
         ) : (
@@ -285,12 +399,13 @@ export function groupChatTurns(turns: ThreadTurn[]): Array<{ user?: ThreadTurn; 
 function receiptStepperSteps(receipt: ExecutionReceiptSnapshot): StepperStep[] {
   return receipt.steps.map((step, index) => ({
     id: `${receipt.workflowId}-${index}`,
-    label: "",
+    label: step.label ?? "",
     op: step.operation,
     asset: step.asset,
     amount: step.amount,
     status: step.status === "settled" ? "settled"
-      : step.status === "failed" || step.status === "uncertain" ? "failed"
+      : step.status === "uncertain" ? "uncertain"
+        : step.status === "failed" ? "failed"
         : step.status === "awaiting_signature" ? "signing"
           : step.status === "submitted" || step.status === "submitting" ? "submitting"
             : step.status === "invoking" ? "claiming" : "pending",
@@ -301,22 +416,26 @@ function receiptStepperSteps(receipt: ExecutionReceiptSnapshot): StepperStep[] {
 
 function AssistantTurn({
   text,
+  blocks,
   receipt,
+  completion,
   note,
   tone = "default",
   sessionSigning,
 }: {
   text: string;
+  blocks?: ReplyBlock[];
   receipt?: ThreadTurn["executionReceipt"];
+  completion?: ThreadTurn["completion"];
   note?: string | null;
   tone?: "default" | "error";
   sessionSigning?: boolean;
 }) {
   if (/^Investigation cancelled\./i.test(text)) {
     return (
-      <div className="flex items-start gap-2.5 max-w-[85%]">
+      <div className="flex items-start gap-2.5 w-full">
         <img
-          src="/logos/vanna-icon.png"
+          src={VANNA_ICON_SRC}
           alt="Vanna"
           width={18}
           height={18}
@@ -330,17 +449,44 @@ function AssistantTurn({
     );
   }
   return (
-    <div className="flex items-start gap-2.5 max-w-[85%]">
+    <div className="flex items-start gap-2.5 w-full">
       <img
-        src="/logos/vanna-icon.png"
+        src={VANNA_ICON_SRC}
         alt="Vanna"
         width={18}
         height={18}
         className="h-[18px] w-[18px] shrink-0 mt-1 rounded-full"
       />
-      <div className="flex flex-col gap-2 min-w-0 w-full">
-        <AssistantMessage note={note} tone={tone}>{text}</AssistantMessage>
-        {receipt ? (
+      <div className="flex flex-col min-w-0 w-full" style={{ gap: REPLY_CARD_GAP_PX }}>
+        {(() => {
+          const settled = receipt && completionMatches(receipt, completion) ? settledTransactions(receipt) : null;
+          // One list when the reply already has one item per transaction: each hash and ledger sits at the end of its own item.
+          const at = settled ? receiptBeside(blocks, settled.length) : null;
+          const link = (transaction: NonNullable<typeof settled>[number]) => (
+            <>
+              <span> · </span>
+              <a href={transaction.url} target="_blank" rel="noopener noreferrer" className="underline text-[var(--cp-emerald)]" title={transaction.hash} aria-label={`Transaction ${transaction.hash}`}>{shortTransactionHash(transaction.hash)} ↗</a>
+              <span> · Ledger <span className="text-[var(--cp-emerald)]">{transaction.ledger.toLocaleString()}</span></span>
+            </>
+          );
+          const beside = settled && at != null ? { at, nodes: settled.map((transaction) => <span key={transaction.hash} className="text-[14px] text-vgray-700">{link(transaction)}</span>) } : undefined;
+          return (
+            <>
+              <AssistantMessage note={note} tone={tone} blocks={blocks} beside={beside}>{text}</AssistantMessage>
+              {settled && !beside ? (
+                <ul className="list-disc pl-5 space-y-2 text-[14px] leading-6 text-vgray-700" aria-label="Settled transactions">
+                  {settled.map((transaction) => (
+                    <li key={transaction.hash}>
+                      <span>{transactionPurpose(transaction.steps)}</span>
+                      {link(transaction)}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </>
+          );
+        })()}
+        {receipt && !(completionMatches(receipt, completion)) ? (
           <div className="w-full">
             <ExecutionStepper
               steps={receiptStepperSteps(receipt)}
@@ -365,7 +511,13 @@ export function ChatTurns({
   liveNote,
   liveTone = "default",
   sessionSigning,
+  hideReceiptFor,
+  runningPlanText,
 }: {
+  /** A run the investigation card is drawing in place; the thread leaves its receipt out. */
+  hideReceiptFor?: string | null;
+  /** While a chosen plan runs, the newest reply says which one instead of comparing the options. */
+  runningPlanText?: string | null;
   turns: ThreadTurn[];
   hideAssistantText?: string | null;
   pendingUser?: string | null;
@@ -376,17 +528,26 @@ export function ChatTurns({
   sessionSigning?: boolean;
 }) {
   if (!turns.length && !pendingUser && !liveAssistant && !working) return null;
+  const groups = groupChatTurns(turns);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 34 }} aria-label="Conversation">
-      {groupChatTurns(turns).map((group, index) => {
+      {groups.map((group, index) => {
         const hideStaleAssistant = !!hideAssistantText && group.assistant && group.assistant.text === hideAssistantText;
+        const sayRunning = index === groups.length - 1 && !pendingUser && !working &&
+          !!runningPlanText && !!hideReceiptFor &&
+          group.assistant?.executionReceipt?.workflowId === hideReceiptFor &&
+          !group.assistant.completion;
         return (
           <section key={`turn-${index}`} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {group.user ? <UserBubble>{group.user.text}</UserBubble> : null}
-            {group.assistant && !hideStaleAssistant ? (
+            {group.assistant && !hideStaleAssistant && !group.assistant.quiet ? (
               <AssistantTurn
-                text={group.assistant.text}
-                receipt={group.assistant.executionReceipt}
+                text={sayRunning ? runningPlanText! : group.assistant.text}
+                blocks={sayRunning ? undefined : group.assistant.blocks}
+                completion={group.assistant.completion}
+                receipt={hideReceiptFor && group.assistant.executionReceipt?.workflowId === hideReceiptFor
+                  ? undefined
+                  : group.assistant.executionReceipt}
                 sessionSigning={sessionSigning}
               />
             ) : null}
@@ -404,9 +565,9 @@ export function ChatTurns({
               sessionSigning={sessionSigning}
             />
           ) : working ? (
-            <div className="flex items-start gap-2.5 max-w-[85%]">
+            <div className="flex items-start gap-2.5 w-full">
               <img
-                src="/logos/vanna-icon.png"
+                src={VANNA_ICON_SRC}
                 alt="Vanna"
                 width={18}
                 height={18}

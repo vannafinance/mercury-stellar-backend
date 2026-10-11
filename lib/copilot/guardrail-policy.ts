@@ -3,7 +3,7 @@
  *
  * Reads are open. Manual writes need a wallet, not a Sign Service binding.
  * Auto-sign needs a binding and live caps. Irreversible ops (close, settle,
- * liquidate) are human-signed only — they have no priced amount.
+ * liquidate) are human-signed only - they have no priced amount.
  *
  * New action types pick a grade here instead of re-arguing the gate.
  */

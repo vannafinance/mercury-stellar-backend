@@ -1,5 +1,5 @@
 /**
- * Copilot read answers — position, Earn, Farm, and the runRead dispatcher.
+ * Copilot read answers - position, Earn, Farm, and the runRead dispatcher.
  *
  * Writes stay in handle.ts. This module is the remaining P2 peel of the
  * investigation-owned read cluster.
@@ -54,7 +54,7 @@ const SNAPSHOT_TRUTH_TOOLS = new Set([
  *
  * WHY THIS OVERRIDES MCP RATHER THAN FALLING BACK TO IT
  *
- * MCP and the website returned different collateral for the same account — XLM 796.29 vs
+ * MCP and the website returned different collateral for the same account - XLM 796.29 vs
  * 93.22, BLEND_USDC 42.00 vs 0, and a gross figure of $214.72 against the page's $382.87,
  * which dragged the reported health factor to 1.95 where the page showed 3.47. That is not
  * a rounding difference or a second formula; the two reads do different work.
@@ -63,13 +63,13 @@ const SNAPSHOT_TRUTH_TOOLS = new Set([
  * has recorded. MCP's `get_collateral_token_balance_wad` reports the recorded balance only,
  * so anything held but not yet recorded is invisible to it.
  *
- * The website is the correct one, so it is the source of truth here — not a fallback for
+ * The website is the correct one, so it is the source of truth here - not a fallback for
  * when MCP errors, which is how this was wired before and why the disagreement survived.
  * Two different answers to "am I about to be liquidated" is the worst failure this surface
  * has, and the shared calculation is the one the user already trusts because it is what
  * their dashboard shows.
  *
- * Returns null on any failure so the MCP path still runs — a slower answer beats no answer.
+ * Returns null on any failure so the MCP path still runs - a slower answer beats no answer.
  */
 type MarginPositionRow = {
   symbol: string;
@@ -81,7 +81,7 @@ type MarginPositionRow = {
 
 type MarginPositions = {
   hf: number;
-  /** "∞ (no debt)" or a 2dp ratio — the same string every caller should print. */
+  /** "∞ (no debt)" or a 2dp ratio - the same string every caller should print. */
   hfText: string;
   collateral: MarginPositionRow[];
   borrowed: MarginPositionRow[];
@@ -96,7 +96,7 @@ type MarginPositions = {
 /**
  * Did the user write Hinglish? Decides whether the answer mirrors their language.
  *
- * The old test was `/\b(kya|hai|ka|ki|ke|mujhe|kitna|kitni|batao|apy)\b/i` — and "apy"
+ * The old test was `/\b(kya|hai|ka|ki|ke|mujhe|kitna|kitni|batao|apy)\b/i` - and "apy"
  * was in it. So "What is the supply APY on the XLM earn pool?", written in plain English,
  * was classified as Hinglish and answered "XLM earn pool par supply APY 0.17% hai." APY is
  * the single most common noun on this surface, so this fired on a large share of ordinary
@@ -104,7 +104,7 @@ type MarginPositions = {
  * same flag, so those turns silently lost the facts layout too.
  *
  * Now: a strong marker (a word with no English meaning) is enough on its own; the weak
- * ones — "ka", "ki", "ke", "hai" are all real English strings in other contexts — need
+ * ones - "ka", "ki", "ke", "hai" are all real English strings in other contexts - need
  * two before they count.
  */
 function looksHinglish(message: string): boolean {
@@ -115,12 +115,12 @@ function looksHinglish(message: string): boolean {
 }
 
 /**
- * The venue badge on an execution receipt, taken from what RAN — not from the model.
+ * The venue badge on an execution receipt, taken from what RAN - not from the model.
  *
  * `vertexSummarizeExecution` returns a `venue` field and the UI badges the card with it.
  * The model guessed: a plain `deposit_collateral` receipt came back badged VANNA EARN, so
  * the card named the wrong product for a margin deposit. The ops are known facts by the
- * time a receipt is written, so there is nothing to infer — a mislabelled product is the
+ * time a receipt is written, so there is nothing to infer - a mislabelled product is the
  * one thing this surface cannot afford, since Earn, Farm and Margin hold different money.
  *
  * Mixed-venue strategies fall back to "none" rather than picking a winner: badging a
@@ -144,7 +144,7 @@ export function receiptVenueFromOps(ops: string[]): AnswerVenue | null {
 /**
  * Ops the browser can execute locally through the site's own audited services.
  *
- * Mirrors `EXECUTABLE_OPS` in components/copilot/execute.ts — the client refuses anything
+ * Mirrors `EXECUTABLE_OPS` in components/copilot/execute.ts - the client refuses anything
  * outside it, so offering a fallback for an op it cannot run would strand the user on a
  * sign button that does nothing.
  */
@@ -190,7 +190,7 @@ function collateralSummaryFacts(pos: {
 /**
  * Name a farm TRACKING position for a human, not by its internal key.
  *
- * `BLEND_USDC` is USDC supplied into Blend, and `AQ_XLM_USDC` an Aquarius LP receipt —
+ * `BLEND_USDC` is USDC supplied into Blend, and `AQ_XLM_USDC` an Aquarius LP receipt -
  * both are legitimate collateral (see `isTrackingSymbol`), but printing the raw key put
  * "372.92 BLUSDC … 10.00 BLEND_USDC" in one sentence, which reads as the same token
  * listed twice, or a typo. The row is right; only its name was internal.
@@ -204,7 +204,7 @@ const positionRowLabel = (symbol: string): string => {
 };
 
 /**
- * Rounded for the readable sentence — "1228.8656935 SOUSDC" (the raw on-chain amount,
+ * Rounded for the readable sentence - "1228.8656935 SOUSDC" (the raw on-chain amount,
  * verbatim) read as noise next to a clean dollar figure. The exact value still lives
  * in the facts card underneath (see `prettyVal` in copilot-workspace.tsx), which is
  * where a user actually checking a precise on-chain amount should look.
@@ -216,17 +216,17 @@ const listPositionRows = (rows: MarginPositionRow[]): string =>
  * Which asset a position question is ABOUT, when it is about one.
  *
  * "How much XLM collateral is in C…?" and "how much USDC debt do I have?" were both
- * answered with the whole holdings table — every token, totalled — because the only
+ * answered with the whole holdings table - every token, totalled - because the only
  * thing these reads looked at was the account. The named asset was parsed by the router
  * and then dropped, so a question about one token got a dump of seven, and the number
  * the user actually asked for was somewhere in the middle of it.
  *
  * Returns:
  *   an AssetId    the user named exactly one asset
- *   "USDC"        they said bare "USDC" — for a READ that is answerable (show the
+ *   "USDC"        they said bare "USDC" - for a READ that is answerable (show the
  *                 variants they hold) rather than a variant chip, which is only needed
  *                 when something is about to be SPENT
- *   null          no asset named — answer with the whole account, as before
+ *   null          no asset named - answer with the whole account, as before
  *
  * Addresses are stripped first: a C-address is 56 base32 characters and can contain the
  * letters of a ticker by chance.
@@ -256,7 +256,7 @@ function positionAssetFocus(
  * collateral while Blend-supplied XLM was not. Same instrument, opposite treatment,
  * from two tables that were each individually defensible.
  *
- * Tracking rows are reported separately rather than folded in or dropped — "you have
+ * Tracking rows are reported separately rather than folded in or dropped - "you have
  * 893 XLM" is true, and "you also have 5.2 XLM inside Blend" is a different fact.
  */
 function focusPositionRows(
@@ -307,7 +307,7 @@ function focusedPositionMessage(
   const head = matched.length
     ? `You ${verb} ${listPositionRows(matched)}` +
       (matched.length > 1
-        ? ` — ${money(matched.reduce((s, r) => s + r.usd, 0))} of ${label} ${noun === "collateral" ? "collateral" : "debt"} in total.`
+        ? ` - ${money(matched.reduce((s, r) => s + r.usd, 0))} of ${label} ${noun === "collateral" ? "collateral" : "debt"} in total.`
         : ` of ${noun === "collateral" ? "collateral" : "debt"}.`)
     : `You have no ${label} ${noun === "collateral" ? "posted as collateral" : "debt"} on this margin account.`;
 
@@ -317,7 +317,7 @@ function focusedPositionMessage(
   const context =
     all.length > matched.length
       ? `\n\nAcross every asset your ${noun === "collateral" ? "collateral" : "debt"} totals ${money(totalUsd)}` +
-        ` — ask for “my ${noun === "collateral" ? "collateral" : "debt"}” to see the full breakdown.`
+        ` - ask for “my ${noun === "collateral" ? "collateral" : "debt"}” to see the full breakdown.`
       : "";
   return head + extra + context;
 }
@@ -342,7 +342,7 @@ export async function readMarginPositions(smartAccount: string): Promise<MarginP
     /**
      * Dust is noise in a position list; below a cent is not a holding.
      *
-     * But dust is a statement about the BALANCE, and this filtered on the USD valuation —
+     * But dust is a statement about the BALANCE, and this filtered on the USD valuation -
      * so a row the oracle could not price (`usdValue` empty, `NaN`, or the `|| 0` that
      * swallowed it) was dropped as if the user held nothing. Live: the Margin page and the
      * rail both showed 5.0036772 BLUSDC still owed while "repay all" answered "you have no
@@ -350,7 +350,7 @@ export async function readMarginPositions(smartAccount: string): Promise<MarginP
      *
      * A row is dust only when it is priced AND worth less than a cent. An unpriced row
      * with a real balance is kept, with `usd: 0` so no total is inflated by a number
-     * nobody has — it is a holding whose value is unknown, not a holding that is absent.
+     * nobody has - it is a holding whose value is unknown, not a holding that is absent.
      */
     const rows = (balances: typeof snap.collateralBalances): MarginPositionRow[] =>
       Object.entries(balances)
@@ -372,7 +372,7 @@ export async function readMarginPositions(smartAccount: string): Promise<MarginP
 
     const borrowedRows = rows(snap.borrowedBalances);
     /**
-     * `snap.collateralBalances[sym]` is a GROSS figure by design —
+     * `snap.collateralBalances[sym]` is a GROSS figure by design -
      * `reconcileMarginRawSacCollateral` (`farmTrackingCollateral.ts`) overlays the smart
      * account's raw on-chain token balance to fix a real staleness problem (the
      * on-chain collateral ledger doesn't update after an AMM swap/LP op), but a
@@ -381,7 +381,7 @@ export async function readMarginPositions(smartAccount: string): Promise<MarginP
      * with side-by-side screenshots: this answer's own "collateral · XLM" was inflated
      * by exactly the account's "borrowed · XLM" figure, and same again for BLUSDC and
      * AQUSDC. The client rail (`copilot-workspace.tsx`'s `positionRows`) already nets
-     * same-symbol debt out of collateral before display — this mirrors that exact rule,
+     * same-symbol debt out of collateral before display - this mirrors that exact rule,
      * so the copilot's own answer can never disagree with what the rail/Margin page show.
      */
     const borrowedBySymbol = new Map(borrowedRows.map((r) => [r.symbol, r]));
@@ -426,7 +426,7 @@ export async function readMarginPositions(smartAccount: string): Promise<MarginP
  * Append the health-factor guardrails to a position answer.
  *
  * Kept separate so the warning is identical whether the answer came from the snapshot or
- * from MCP — "am I about to be liquidated" must not depend on which source replied.
+ * from MCP - "am I about to be liquidated" must not depend on which source replied.
  */
 export function withHfGuardrails(
   message: string,
@@ -440,14 +440,14 @@ export function withHfGuardrails(
   if (!Number.isFinite(hf) || hf > 1e6) return message;
   /**
    * Liquidation requires debt. HF 0 on a brand-new account (collateral $0, debt $0) is
-   * "no position" — `deriveMarginHealth` returns 0 there, not the ∞ sentinel (that is
+   * "no position" - `deriveMarginHealth` returns 0 there, not the ∞ sentinel (that is
    * collateral-with-no-debt). Treating HF < 1 as liquidatable without checking debt
    * is how a fresh account got "URGENT: this account is liquidatable".
    */
   if (!(Number(debtUsd) > 0.01)) return message;
   if (hf < 1.0) {
     return (
-      `${message}\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 — this account is ` +
+      `${message}\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 - this account is ` +
       `liquidatable. Repay debt or deposit collateral now.`
     );
   }
@@ -461,12 +461,12 @@ export function withHfGuardrails(
 }
 
 /**
- * A hypothetical move stated inside a question — "simulate borrowing 10 BLUSDC",
+ * A hypothetical move stated inside a question - "simulate borrowing 10 BLUSDC",
  * "what if I deposit 500 XLM", "what happens to my HF if I repay 20 SOUSDC".
  *
  * Requires BOTH a hypothetical marker and a sized verb. "borrow 10 BLUSDC" on its own is
  * an instruction to borrow, not a question about borrowing, and must keep routing to the
- * write path — this only ever augments a READ.
+ * write path - this only ever augments a READ.
  */
 /**
  * The XLM price at which this position gets liquidated, as one sentence.
@@ -483,7 +483,7 @@ export function liquidationPriceLine(pos: {
 }): string {
   const debt = pos.totalBorrowedValue;
   if (!(debt > 0)) {
-    return "You have no debt, so there is no liquidation price — nothing can be liquidated.";
+    return "You have no debt, so there is no liquidation price - nothing can be liquidated.";
   }
   const collateral = pos.grossCollateralValue;
   if (!(collateral > 0)) return "No collateral is posted, so a liquidation price cannot be derived.";
@@ -513,7 +513,7 @@ export function liquidationPriceLine(pos: {
   return (
     `Liquidation price: XLM at about $${p.toFixed(4)}` +
     (drop != null && drop > 0
-      ? ` — roughly ${drop.toFixed(0)}% below the current $${current.toFixed(4)}.`
+      ? ` - roughly ${drop.toFixed(0)}% below the current $${current.toFixed(4)}.`
       : ".")
   );
 }
@@ -567,7 +567,7 @@ async function projectHealthFactor(
     }
   }
   if (price == null) {
-    return `I can't project that — the oracle price for ${ui} didn't come back, and I won't put a health factor on a guessed price.`;
+    return `I can't project that - the oracle price for ${ui} didn't come back, and I won't put a health factor on a guessed price.`;
   }
 
   const usdDelta = hypo.amount * price;
@@ -577,11 +577,11 @@ async function projectHealthFactor(
     hypo.op === "borrow" ? debt + usdDelta : hypo.op === "repay" ? Math.max(0, debt - usdDelta) : debt;
 
   if (nextDebt <= 0) {
-    return `After repaying ${hypo.amount} ${ui} you'd have no debt left, so the health factor becomes ∞ — nothing to liquidate.`;
+    return `After repaying ${hypo.amount} ${ui} you'd have no debt left, so the health factor becomes ∞ - nothing to liquidate.`;
   }
   // Derived, not assumed: whatever threshold the snapshot used stays used.
   if (!(debt > 0) || !(collateral > 0)) {
-    return `You have no debt yet, so there's no live ratio to derive your liquidation threshold from — I'd be guessing the projected figure. Ask again once the position has debt, or state the borrow and I'll size it against the risk gate.`;
+    return `You have no debt yet, so there's no live ratio to derive your liquidation threshold from - I'd be guessing the projected figure. Ask again once the position has debt, or state the borrow and I'll size it against the risk gate.`;
   }
   const lt = (pos.hf * debt) / collateral;
   const nextHf = (nextCollateral * lt) / nextDebt;
@@ -595,7 +595,7 @@ async function projectHealthFactor(
           : `withdrawing ${hypo.amount} ${ui}`;
   return (
     `After ${verb} (${money(usdDelta)}), your health factor would be about ` +
-    `${nextHf.toFixed(2)} — down from ${pos.hf.toFixed(2)}.`.replace(
+    `${nextHf.toFixed(2)} - down from ${pos.hf.toFixed(2)}.`.replace(
       "down from",
       nextHf >= pos.hf ? "up from" : "down from",
     ) +
@@ -628,10 +628,10 @@ async function snapshotPositionAnswer(
    * A real amount + symbol for the follow-up suggestion (`followUpFor` in
    * copilot-workspace.tsx), populated ONLY when the question narrowed to exactly one
    * asset. Reported live: "how much do I owe?" (no asset named, 3 different borrowed
-   * assets) suggested "Repay 2 USDC" — a canned example with no relation to the real
+   * assets) suggested "Repay 2 USDC" - a canned example with no relation to the real
    * $337.21 total just shown, because these slots were never populated at all and the
    * follow-up always fell back to the static placeholder. A multi-asset total still has
-   * no single figure to suggest, so this stays undefined for that case on purpose —
+   * no single figure to suggest, so this stays undefined for that case on purpose -
    * FOLLOW_UP no longer offers a fabricated one either, see that map's own comment.
    */
   let focusedRow: MarginPositionRow | null = null;
@@ -643,7 +643,7 @@ async function snapshotPositionAnswer(
       ? "You have no collateral posted on your margin account."
       : focus
         ? focusedPositionMessage(focus, "collateral", pos.collateral, pos.grossCollateralValue)
-        : `Your collateral: ${listPositionRows(pos.collateral)} — ${money(pos.grossCollateralValue)} in total.`;
+        : `Your collateral: ${listPositionRows(pos.collateral)} - ${money(pos.grossCollateralValue)} in total.`;
     if (focus) {
       const { matched } = focusPositionRows(pos.collateral, focus);
       if (matched.length === 1) focusedRow = matched[0];
@@ -661,7 +661,7 @@ async function snapshotPositionAnswer(
       ? "You have no outstanding debt on your margin account."
       : focus
         ? focusedPositionMessage(focus, "debt", pos.borrowed, pos.totalBorrowedValue)
-        : `You owe ${listPositionRows(pos.borrowed)} — ${money(pos.totalBorrowedValue)} in total.`;
+        : `You owe ${listPositionRows(pos.borrowed)} - ${money(pos.totalBorrowedValue)} in total.`;
     if (focus) {
       const { matched } = focusPositionRows(pos.borrowed, focus);
       if (matched.length === 1) focusedRow = matched[0];
@@ -682,17 +682,17 @@ async function snapshotPositionAnswer(
   } else {
     /**
      * "What's my health factor", "am I safe" and "am I close to liquidation" are three
-     * different questions and were returning the BYTE-IDENTICAL sentence — this branch
+     * different questions and were returning the BYTE-IDENTICAL sentence - this branch
      * never looked at `ctx.message` beyond the hypothetical/liquidation-price checks below.
      * It is deterministic on purpose (no LLM call, so it can never disagree with the margin
      * page it shares a data source with), so the fix has to stay deterministic too: a
      * keyword check picks the lead clause, not a model call.
      *
      * 1.1 here is `LIQUIDATION_THRESHOLD` from `lib/margin-health.ts` (not imported
-     * statically — this file already reaches that module by dynamic import a few lines
+     * statically - this file already reaches that module by dynamic import a few lines
      * down for the Soroban-budget fallback, so this follows the same pattern). 1.3 is the
      * same default safety floor `parseMinHealthFactor(...) ?? 1.3` already uses elsewhere
-     * in this file — not a new number, the existing one made explicit here.
+     * in this file - not a new number, the existing one made explicit here.
      */
     const { LIQUIDATION_THRESHOLD, HEALTH_FACTOR_INFINITY_SENTINEL: INF } = await import(
       "@/lib/margin-health"
@@ -707,17 +707,17 @@ async function snapshotPositionAnswer(
     );
     let lead: string;
     if (empty) {
-      lead = "No margin position yet — nothing to liquidate";
+      lead = "No margin position yet - nothing to liquidate";
     } else if (askedDistance) {
       lead = infinite
         ? "No debt, so there is nothing to liquidate"
         : `Health factor ${pos.hfText} is ${(pos.hf - LIQUIDATION_THRESHOLD).toFixed(2)} above the ${LIQUIDATION_THRESHOLD.toFixed(2)} liquidation line`;
     } else if (askedIfSafe) {
       lead = infinite
-        ? "Yes — no debt, so there is nothing to liquidate"
+        ? "Yes - no debt, so there is nothing to liquidate"
         : pos.hf > LIQUIDATION_THRESHOLD
-          ? `Yes, you're healthy — health factor ${pos.hfText} is above the ${LIQUIDATION_THRESHOLD.toFixed(2)} protocol liquidation line`
-          : `No — health factor ${pos.hfText} is at or below the ${LIQUIDATION_THRESHOLD.toFixed(2)} liquidation line`;
+          ? `Yes, you're healthy - health factor ${pos.hfText} is above the ${LIQUIDATION_THRESHOLD.toFixed(2)} protocol liquidation line`
+          : `No - health factor ${pos.hfText} is at or below the ${LIQUIDATION_THRESHOLD.toFixed(2)} liquidation line`;
     } else {
       lead = `Health factor ${pos.hfText}`;
     }
@@ -728,14 +728,14 @@ async function snapshotPositionAnswer(
         `${money(pos.collateralLeftBeforeLiquidation)} of collateral left before liquidation.`;
 
     /**
-     * "Simulate borrowing 10 BLUSDC — what happens to my health factor?" asks what the
+     * "Simulate borrowing 10 BLUSDC - what happens to my health factor?" asks what the
      * number WOULD BE, and was answered with what it currently is. The question contains
      * a hypothetical and an amount; answering with today's figure looks like an answer and
      * is not one.
      *
      * The liquidation threshold is DERIVED from the live pair rather than assumed, so this
      * projection can never disagree with the snapshot it is based on. With no debt there is
-     * nothing to derive it from, so the projection is declined rather than guessed — an
+     * nothing to derive it from, so the projection is declined rather than guessed - an
      * invented threshold on the number that decides liquidation is the worst thing to be
      * confidently wrong about.
      */
@@ -746,14 +746,14 @@ async function snapshotPositionAnswer(
     }
 
     /**
-     * "What's my liquidation price?" — the XLM price at which this position is liquidated.
+     * "What's my liquidation price?" - the XLM price at which this position is liquidated.
      *
      * Only XLM moves; the USDC variants are dollar stables, so the question reduces to:
      * at what P does `(stables + xlmQty × P) × lt / debt` reach 1?
      *
      *     P* = (debt / lt − stables) / xlmQty
      *
-     * A negative or zero P* means the stable collateral alone already covers the debt —
+     * A negative or zero P* means the stable collateral alone already covers the debt -
      * no XLM price can liquidate this position, and saying so is the honest answer rather
      * than printing a meaningless negative number.
      */
@@ -772,7 +772,7 @@ async function snapshotPositionAnswer(
      * Reported live: "What is my XLM Balance in Margin account?" correctly answered
      * "You have 6,975.1535 XLM ($1078.76) of collateral." in prose, but the facts card
      * underneath it dumped the health factor, debt, net value, both liquidation figures,
-     * AND every other asset's amount — the exact "gross amount only, not everything else"
+     * AND every other asset's amount - the exact "gross amount only, not everything else"
      * violation this session already fixed for named single-figure margin questions
      * (`marginFigureAnswer`). The prose was narrowed; the card never was.
      */
@@ -868,7 +868,7 @@ async function marginSideAnswer(ctx: {
 }
 
 /**
- * Structured "all open positions" card — headline + scannable facts.
+ * Structured "all open positions" card - headline + scannable facts.
  *
  * The old path jammed every holding into one comma-separated paragraph, which
  * rendered as an unreadable wall of text. Same numbers; layout via AnswerView.
@@ -884,12 +884,12 @@ export function allPositionsStructured(
   );
 
   if (pos) {
-    // Reused below on every `borrowed · X` row instead of a flat "warn" — a debt
+    // Reused below on every `borrowed · X` row instead of a flat "warn" - a debt
     // line isn't inherently a warning, the account's actual risk tier is. A flat
     // "warn" put the same small-square glyph (AnswerFact's colorblind-accessible
     // tone shape, see TONE_MARK in answer-view.tsx) on every borrowed asset even
     // at a comfortable HF ~4.8, reading as "something is wrong here" when nothing
-    // was — reported live as "what is this box representing?". A genuinely
+    // was - reported live as "what is this box representing?". A genuinely
     // stressed account (HF < 1.4) still shows it; a healthy one no longer does.
     const hfTone: AnswerFact["tone"] =
       !(pos.totalBorrowedValue > 0.01)
@@ -902,7 +902,7 @@ export function allPositionsStructured(
     facts.push({ label: "health factor", value: pos.hfText, tone: hfTone });
     facts.push({ label: "collateral", value: money(pos.grossCollateralValue) });
     facts.push({ label: "borrowed", value: money(pos.totalBorrowedValue) });
-    // "net value" must mean equity (collateral minus debt), not `pos.totalValue` —
+    // "net value" must mean equity (collateral minus debt), not `pos.totalValue` -
     // that field is `netAvailableCollateral + totalBorrowedValue`, which algebraically
     // always collapses back to `grossCollateralValue` (adding debt back cancels the
     // subtraction that created it). Labeled "net", it silently showed the user their
@@ -911,7 +911,7 @@ export function allPositionsStructured(
 
     /**
      * `BLEND_USDC`/`AQ_XLM_USDC`/`SS_XLM_USDC` are farm-venue LP/receipt tokens, not plain
-     * margin collateral the user deposited — see `isTrackingSymbol`. Reported live: they
+     * margin collateral the user deposited - see `isTrackingSymbol`. Reported live: they
      * were listed as `collateral · BLEND_USDC` alongside real collateral rows, reading as
      * duplicate or confusing entries. They go in the LP box (`group: "lp"`) instead, with a
      * human label via `positionRowLabel` rather than the internal key.
@@ -949,7 +949,7 @@ export function allPositionsStructured(
   }
 
   const headline = pos
-    ? `Open positions — HF ${pos.hfText}, net ${money(pos.netAvailableCollateral)}.`
+    ? `Open positions - HF ${pos.hfText}, net ${money(pos.netAvailableCollateral)}.`
     : "Open positions on your farm venues.";
 
   const noteParts: string[] = [];
@@ -969,7 +969,7 @@ export function allPositionsStructured(
   };
 }
 
-/** Truncate G/C addresses for scannable facts — full strkeys belong in explorers, not headlines. */
+/** Truncate G/C addresses for scannable facts - full strkeys belong in explorers, not headlines. */
 function shortAddr(addr: string | null | undefined): string | null {
   if (!addr || addr.length < 12) return addr ?? null;
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
@@ -981,7 +981,7 @@ function pickStellarAddr(text: string, kind: "G" | "C"): string | null {
 }
 
 /**
- * Open / create margin account — structured card instead of a wall of full strkeys.
+ * Open / create margin account - structured card instead of a wall of full strkeys.
  * Same MCP facts; layout via AnswerView (mirrors allPositionsStructured).
  */
 export function createAccountStructured(
@@ -1013,12 +1013,12 @@ export function createAccountStructured(
    * The server says so in a field; the prose is only a fallback.
    *
    * Live, 22 Sep: "open a margin account" on an account that already existed answered
-   * "Margin account opened." — reporting a submission that never happened. MCP's
+   * "Margin account opened." - reporting a submission that never happened. MCP's
    * `vanna_open_account` is idempotent and says which of the two it did in
    * `status`: `already_exists` when `discover_active_smart_account` found one
    * (`account_tools.py`). Nothing here read that field.
    *
-   * It read the summary instead, for three phrases — and MCP has TWO already-exists
+   * It read the summary instead, for three phrases - and MCP has TWO already-exists
    * branches. The first ("already has … NOT submitted … one-account-per-trader")
    * matches all three by luck. The recovery branch, taken when create_account's
    * simulation trips and on-chain storage is re-read, says "Treating as existing
@@ -1056,14 +1056,14 @@ export function createAccountStructured(
       : "Margin account opened.",
     facts,
     note: alreadyOpen
-      ? "One account per trader — nothing new was submitted. Use this C-address for deposit, borrow, and farm."
+      ? "One account per trader - nothing new was submitted. Use this C-address for deposit, borrow, and farm."
       : "Use this C-address for deposit, borrow, and farm.",
     venue: "margin",
   };
 }
 
 /**
- * "What are all my open positions?" — margin and the farm venues in one answer.
+ * "What are all my open positions?" - margin and the farm venues in one answer.
  *
  * Two sources, because no single tool holds the whole picture: `computeMarginSnapshot` has
  * collateral, debt and health factor (and is the margin page's own read, so the numbers
@@ -1094,10 +1094,10 @@ async function allPositionsAnswer(
   const [pos, earnReads] = await Promise.all([
     ctx.smartAccount ? readMarginPositions(ctx.smartAccount) : Promise.resolve(null),
     // "add earn positions as well... asset supplied i have xlm, aqusdc and sousdc so it
-    // should all be properly represented" — reported live: this answer covered margin
+    // should all be properly represented" - reported live: this answer covered margin
     // collateral/debt and Blend/LP, but never Earn (vToken) supply at all, even though a
     // token can be held in Earn AND margin AND a farm LP at once, three genuinely
-    // different pools. Runs alongside the other two reads, not sequenced after them —
+    // different pools. Runs alongside the other two reads, not sequenced after them -
     // the "must be sequential" rule (see readEarnPositions) is about its OWN four calls
     // to each other, not about racing an unrelated tool.
     // Earn is required for this view; successful reads are cached inside
@@ -1140,7 +1140,7 @@ async function allPositionsAnswer(
     return {
       kind: "unavailable",
       message: ctx.smartAccount
-        ? "I could not read your positions just now — neither the margin snapshot nor the farm " +
+        ? "I could not read your positions just now - neither the margin snapshot nor the farm " +
           "overview responded. Your live figures are on the Portfolio and Margin pages."
         : "That needs your Vanna smart account (C-address). Open a margin account, or connect the " +
           "wallet that owns one.",
@@ -1177,8 +1177,8 @@ async function allPositionsAnswer(
   }
   if (!pos && !farm && earnSucceeded) {
     structured.headline = earnSupplied.length
-      ? `Open positions — ${earnSupplied.length} Earn position${earnSupplied.length === 1 ? "" : "s"}.`
-      : "Open positions — no non-zero Earn balances found.";
+      ? `Open positions - ${earnSupplied.length} Earn position${earnSupplied.length === 1 ? "" : "s"}.`
+      : "Open positions - no non-zero Earn balances found.";
     structured.venue = "earn";
   }
   let message = answerToText(structured);
@@ -1190,7 +1190,7 @@ async function allPositionsAnswer(
    * Reported live: a second, raw-fact card duplicated every number the three structured
    * sections above it already show (health factor, collateral/debt USD, each asset's
    * amount, plus internal fields like "AQUARIUS LP TOKEN A"/"TRACKING SYMBOL" that mean
-   * nothing to a user) — "already sare farm/margin card m dikha rahi h, combine kyu
+   * nothing to a user) - "already sare farm/margin card m dikha rahi h, combine kyu
    * dikha rahi h isko remove karo, upar k 3 kaafi h" (already shown in the farm/margin
    * cards, why show it combined again, remove it, the three above are enough). Same
    * class of bug as `copilot-redundant-card-generalized`: whenever the structured
@@ -1221,7 +1221,7 @@ async function allPositionsAnswer(
   };
 }
 
-/** Every asset the Earn pool supports — the vToken-balance equivalent of ASSET_SCAN_ORDER. */
+/** Every asset the Earn pool supports - the vToken-balance equivalent of ASSET_SCAN_ORDER. */
 const EARN_ASSETS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"] as const;
 const EARN_POSITION_CACHE_TTL_MS = 60_000;
 const earnPositionCache = new Map<string, {
@@ -1247,11 +1247,11 @@ async function readEarnPositions(
    * Sequential on purpose, not Promise.all. Four concurrent `vanna_get_vtoken_balance`
    * calls against the live MCP session reliably abort with "operation was aborted due to
    * timeout" well inside the 90s per-call budget, even though any ONE of them alone
-   * resolves in ~10s with the right answer — confirmed live (a single call correctly
+   * resolves in ~10s with the right answer - confirmed live (a single call correctly
    * returned 20.0183 XLM, matching the Earn page's own number, while the 4-way parallel
    * version returned nothing for any asset). Whatever the live MCP session is doing
    * internally, it does not like concurrent calls on this tool. Slower (~10s × up to 4
-   * assets) beats fast-and-silently-wrong — the whole point of this fix was to stop
+   * assets) beats fast-and-silently-wrong - the whole point of this fix was to stop
    * answering "no active Earn positions" when that is not true.
    */
 
@@ -1259,11 +1259,11 @@ async function readEarnPositions(
   // so a transient timeout cannot make a partial result look like an empty Earn portfolio.
   const readOne = async (symbol: (typeof EARN_ASSETS)[number]) => {
     try {
-      // Earn positions are held by the G-wallet, not the margin account — vanna_lend
+      // Earn positions are held by the G-wallet, not the margin account - vanna_lend
       // deposits from the trader's wallet and the pool mints vTokens back to that same
       // address. buildToolArgs already encodes this (`holder = trader || smart`, verified
       // against a live lend that settled on-chain while a smart-account lookup still
-      // reported zero) — reuse it here instead of re-guessing the argument shape.
+      // reported zero) - reuse it here instead of re-guessing the argument shape.
       const built = buildToolArgs("vanna_get_vtoken_balance", { symbol }, {
         trader: ctx.trader,
         smartAccount: ctx.smartAccount,
@@ -1272,7 +1272,7 @@ async function readEarnPositions(
         return null;
       }
       // vanna_get_vtoken_balance does 3-4 sequential Soroban contract calls internally
-      // (balance/total_supply/decimals, then convert_vtoken_to_asset, then symbol) — it
+      // (balance/total_supply/decimals, then convert_vtoken_to_asset, then symbol) - it
       // is genuinely slow (~10s) by design, not a simple lookup, and prone to a transient
       // "aborted due to timeout" under live testnet RPC load even well inside its own 90s
       // budget. One retry recovers most of these; a real failure still surfaces as null
@@ -1280,7 +1280,7 @@ async function readEarnPositions(
       //
       // A budget overrun or other soft failure can arrive as a SUCCESSFUL response
       // carrying an `error` field rather than a thrown exception (the same shape
-      // `fetchHealth` in risk.ts already guards against) — confirmed live: this
+      // `fetchHealth` in risk.ts already guards against) - confirmed live: this
       // silently computed `amount = 0` from a genuine failure response, indistinguishable
       // from an honest zero balance, and answered "no active Earn positions" for a wallet
       // with real supply on every single asset. Must be treated as a failure, not a zero.
@@ -1301,7 +1301,7 @@ async function readEarnPositions(
         throw e;
       }
       // `redeemable_human` (underlying token, e.g. "20.018337...") is what the Earn
-      // page's own "Your Supply" column shows — NOT `human` (the vToken share count,
+      // page's own "Your Supply" column shows - NOT `human` (the vToken share count,
       // e.g. "19.9917264" VXLM for the same position). Confirmed live: reading the
       // wrong/nonexistent field names here (`balance_human`/`balance`, neither of
       // which this tool returns) silently computed 0 for every asset on every
@@ -1309,7 +1309,7 @@ async function readEarnPositions(
       const amount = Number(r?.redeemable_human ?? r?.human ?? 0);
       // The USD variants are pegged 1:1, so their redeemable amount doubles as its own
       // USD value; XLM needs a real price. One extra call, only when XLM has a balance,
-      // and resilient — a failed price lookup still shows the amount, just no USD.
+      // and resilient - a failed price lookup still shows the amount, just no USD.
       let usd: number | null = symbol === "XLM" ? null : amount;
       if (symbol === "XLM" && amount > 0.0001) {
         try {
@@ -1319,7 +1319,7 @@ async function readEarnPositions(
           const price = Number(priceResp?.price_usd ?? priceResp?.price ?? NaN);
           if (Number.isFinite(price)) usd = amount * price;
         } catch {
-          // USD estimate is best-effort — the amount itself still answers the question.
+          // USD estimate is best-effort - the amount itself still answers the question.
         }
       }
       return {
@@ -1348,13 +1348,13 @@ async function readEarnPositions(
 }
 
 /**
- * "Can you provide my Earn positions" — the vToken (Earn-supplied) balance for every
+ * "Can you provide my Earn positions" - the vToken (Earn-supplied) balance for every
  * asset Earn supports. Deliberately never falls back to `computeMarginSnapshot` or
  * `vanna_get_farm_overview` the way {@link allPositionsAnswer} does: Earn supply and
  * margin collateral are two different pools that can both hold the same token at once
  * (deposit some XLM as margin collateral, separately supply other XLM to Earn), so
  * answering "my Earn positions" with the margin account's numbers names a different
- * product's figures entirely — confirmed live, where an account with margin collateral
+ * product's figures entirely - confirmed live, where an account with margin collateral
  * but no Earn supply got back a card plainly labeled MARGIN ACCOUNT.
  */
 async function earnPositionsAnswer(
@@ -1366,7 +1366,7 @@ async function earnPositionsAnswer(
     message: string;
   },
   /**
-   * "What is my Overall Deposit in XLM Lending Pool" names one Earn asset — router.ts
+   * "What is my Overall Deposit in XLM Lending Pool" names one Earn asset - router.ts
    * passes it through as `args.symbol`. Without this, the answer always fanned out
    * across every Earn asset (reported live: a question about the XLM pool alone came
    * back listing AQUSDC and SOUSDC too), which is right for the unscoped "my Earn
@@ -1409,10 +1409,10 @@ async function earnPositionsAnswer(
   const totalUsd = supplied.reduce((sum, r) => sum + (r.usd ?? 0), 0);
   const headline = supplied.length
     ? onlySymbol
-      ? `Your ${onlySymbol} Earn position — ${fmtPosAmount(String(supplied[0]!.amount))} ${onlySymbol}${
+      ? `Your ${onlySymbol} Earn position - ${fmtPosAmount(String(supplied[0]!.amount))} ${onlySymbol}${
           supplied[0]!.usd != null ? ` (~${money(supplied[0]!.usd!)})` : ""
         }.`
-      : `Your Earn positions — ${supplied.length} supplied${totalUsd > 0 ? `, ~${money(totalUsd)} total` : ""}.`
+      : `Your Earn positions - ${supplied.length} supplied${totalUsd > 0 ? `, ~${money(totalUsd)} total` : ""}.`
     : onlySymbol
       ? `You have no active ${onlySymbol} Earn position right now.`
       : "You have no active Earn positions right now.";
@@ -1420,12 +1420,12 @@ async function earnPositionsAnswer(
   const structured: StructuredAnswer = { headline, facts, venue: "earn" };
 
   /**
-   * `structured.facts` already renders "EARN · XLM: 20.0219 ($3.15)" — the raw `data`
+   * `structured.facts` already renders "EARN · XLM: 20.0219 ($3.15)" - the raw `data`
    * card built from the same `earn_positions` array flattened out to a SECOND card
    * ("XLM AMOUNT: 20.0219") repeating the identical number, reported live. Same class
    * of bug as the generic single-read path's `suppressRawData` (see
    * copilot-redundant-card-generalized): whenever the structured answer already covers
-   * the fact, the raw card is redundant, not additive — dropped rather than deduped.
+   * the fact, the raw card is redundant, not additive - dropped rather than deduped.
    */
   return {
     kind: "answer",
@@ -1439,7 +1439,7 @@ async function earnPositionsAnswer(
 
 /**
  * "My farm position" answered with a card explicitly badged MARGIN ACCOUNT and a note
- * admitting "Blend supplies and Aquarius LP shares stay on Farm" — the whole-account
+ * admitting "Blend supplies and Aquarius LP shares stay on Farm" - the whole-account
  * fan-out's farm-overview call only ever contributes a best-effort PROSE sentence, never
  * structured facts, so a real Blend supply or Aquarius LP position never actually showed
  * up in this answer at all. Same root cause and same fix shape as the Earn-positions bug:
@@ -1448,11 +1448,11 @@ async function earnPositionsAnswer(
  *
  * An earlier version of this fix reused `getLitePositionsFromChain` (the Lite-mode
  * leveraged-position tracker), which nets each pool's supply against SmartAccount margin
- * debt attributed to that asset — the right number for "what's my net exposure on this
+ * debt attributed to that asset - the right number for "what's my net exposure on this
  * leveraged position", the wrong one for "how much do I have in Farm". Live-verified: a
  * real ~$49.86 Blend BLUSDC supply (confirmed on the Farm page's own Positions tab)
  * answered "$0.00" here, because unrelated margin debt in the same asset fully netted it
- * out. This reads the GROSS balance directly instead — the same on-chain calls
+ * out. This reads the GROSS balance directly instead - the same on-chain calls
  * `getLitePositionsFromChain` itself makes (`BlendService`/`AquariusService`/
  * `SoroswapService`), just without the debt-netting step, so it matches what the Farm
  * page's Positions tab actually shows.
@@ -1478,7 +1478,7 @@ async function farmPositionAnswer(
   const facts: AnswerFact[] = [];
   const tableRows: string[][] = [];
   let totalUsd = 0;
-  const farmApy = (raw: unknown, fallback = "—"): string => {
+  const farmApy = (raw: unknown, fallback = "-"): string => {
     if (raw == null || raw === "") return fallback;
     const s = String(raw).trim();
     if (/%$/.test(s)) return s;
@@ -1560,9 +1560,9 @@ async function farmPositionAnswer(
           facts.push({
             label: "Soroswap · XLM/USDC LP",
             // The underlying split answers "how much would I get back"; the raw LP
-            // share count answers "how much do I actually hold" — reported live as
+            // share count answers "how much do I actually hold" - reported live as
             // missing entirely, with only the underlying split shown. The USDC leg is
-            // named SOUSDC, not bare "USDC" — this pool's own stable is one of three
+            // named SOUSDC, not bare "USDC" - this pool's own stable is one of three
             // USDC variants in this app, and "which one" is exactly what a Farm LP
             // answer needs to say plainly.
             value: `${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} SOUSDC (${money(usd)}) · ${fmtPosAmount(String(ssLp))} LP`,
@@ -1643,7 +1643,7 @@ async function farmPositionAnswer(
 
   if (!tableRows.length) {
     const structured: StructuredAnswer = {
-      headline: `Your ${venueLabel} Deposit TVL is $0.00 — no active positions.`,
+      headline: `Your ${venueLabel} Deposit TVL is $0.00 - no active positions.`,
       facts: [],
       venue: "none",
     };
@@ -1671,7 +1671,7 @@ async function farmPositionAnswer(
       ? `Your other ${venueLabel} positions are below.`
       : venue
         ? undefined
-        : "Blend lending plus Aquarius/Soroswap LP — same total as Farm → Your Deposit TVL. Earn (vTokens) is separate.",
+        : "Blend lending plus Aquarius/Soroswap LP - same total as Farm → Your Deposit TVL. Earn (vTokens) is separate.",
   };
   return {
     kind: "answer",
@@ -1688,18 +1688,18 @@ async function farmStatsAnswer(
   scope: "blend" | "farm",
 ): Promise<ChatResponse> {
   const pct = (raw: unknown): string => {
-    if (raw == null || raw === "") return "—";
+    if (raw == null || raw === "") return "-";
     const s = String(raw).trim();
     if (/%$/.test(s)) return s;
     const n = Number(s);
-    return Number.isFinite(n) ? `${n.toFixed(2)}%` : "—";
+    return Number.isFinite(n) ? `${n.toFixed(2)}%` : "-";
   };
   let statsTable: { columns: string[]; rows: string[][] } = {
     columns: ["", "XLM", "USDC"],
     rows: [
-      ["Supply APY", "—", "—"],
-      ["Borrow APY", "—", "—"],
-      ["Utilization", "—", "—"],
+      ["Supply APY", "-", "-"],
+      ["Borrow APY", "-", "-"],
+      ["Utilization", "-", "-"],
     ],
   };
   try {
@@ -1747,13 +1747,13 @@ async function farmStatsAnswer(
 
 /**
  * "What is XLM to SoUSDC Ratio in farm Soroswap pool?" fell through to the generic
- * capabilities blurb — the only existing ratio math (the Aquarius add_liquidity clarify's
+ * capabilities blurb - the only existing ratio math (the Aquarius add_liquidity clarify's
  * "Current pool ratio" note, a few hundred lines down in this file) is Aquarius-only and
  * reachable only as a side note on a blocked write, never from a plain question, and
  * nothing at all answered the same question for Soroswap.
  *
- * Reads the SAME live reserves the LP pool pages and that clarify note already use —
- * `SoroswapService.getPoolStats` / `AquariusService.getAquariusPoolStats` — so this can
+ * Reads the SAME live reserves the LP pool pages and that clarify note already use -
+ * `SoroswapService.getPoolStats` / `AquariusService.getAquariusPoolStats` - so this can
  * never disagree with what the user sees there. Account-agnostic: a pool's ratio is
  * public, no smart account needed.
  */
@@ -1810,12 +1810,12 @@ async function poolRatioAnswer(
      * middle-dot separator ("1 XLM ≈ 0.0680 SOUSDC · 1 SOUSDC ≈ 14.7109 XLM") read as a
      * run-on and was hard to scan. The headline now leads with just the figure the
      * question actually asked for (X→Y); the reverse direction lives in its own fact row
-     * below, where it already had one — no reason to also cram it into the headline.
+     * below, where it already had one - no reason to also cram it into the headline.
      */
     /**
      * "What are the pool stats of XLM AQUSDC pool in Aquarius" is really two questions
      * in one: what tokens make up this LP, and how much of each is in it right now.
-     * The ratio alone answers neither — added the pool's two real reserve balances and
+     * The ratio alone answers neither - added the pool's two real reserve balances and
      * a composition line naming both tokens, so this doubles as the "what tokens are in
      * this LP" answer an add/remove-liquidity write also needs.
      */
@@ -1862,15 +1862,15 @@ const MARGIN_FIGURE_LABELS: Record<string, { label: string; get: (p: MarginPosit
 };
 
 /**
- * Answers a question that names ONE OR MORE specific margin figures — "net available
- * collateral", "collateral left before liquidation", "net amount borrowed" — with
+ * Answers a question that names ONE OR MORE specific margin figures - "net available
+ * collateral", "collateral left before liquidation", "net amount borrowed" - with
  * exactly those numbers and nothing else.
  *
  * Reported live: these questions either fell through to the generic capabilities
  * blurb, or (worse) "collateral left before liquidation" was refused outright as a
  * restricted liquidate command. The underlying complaint generalizes beyond any one
  * phrasing: "if a user wants the gross amount of anything it should return only
- * that, not extra info" — a single-figure ask should never come back as the full
+ * that, not extra info" - a single-figure ask should never come back as the full
  * query_all_positions card just because that card happens to contain the number too.
  */
 async function marginFigureAnswer(
@@ -1902,7 +1902,7 @@ async function marginFigureAnswer(
   const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
   // Reported live: "Here's what you asked for: X, Y" read as vague filler instead of
   // naming the figures directly. Each requested figure now reads as its own clear
-  // "Label: Value" clause — the same shape as the facts card underneath it.
+  // "Label: Value" clause - the same shape as the facts card underneath it.
   const headline =
     facts.length === 1
       ? `Your ${facts[0].label} is ${facts[0].value}.`
@@ -1913,7 +1913,7 @@ async function marginFigureAnswer(
     kind: "answer",
     message: answerToText(structured),
     answer: structured,
-    // No `data` (raw facts-grid) card — the answer above already names each requested
+    // No `data` (raw facts-grid) card - the answer above already names each requested
     // figure exactly once. A second card repeating the same number(s), unformatted and
     // with an unspaced camelCase key ("COLLATERALLEFTBEFORELIQUIDATION"), was reported
     // live as pure clutter on a single-figure answer that has nothing left to add.
@@ -1924,7 +1924,7 @@ async function marginFigureAnswer(
 }
 
 /**
- * "How much interest accrued in BLUSDC" — no tool in this deployment tracks accrued
+ * "How much interest accrued in BLUSDC" - no tool in this deployment tracks accrued
  * interest separately from principal; the debt balance itself is the compounding
  * figure, the same way a vToken's exchange rate bakes in Earn-side accrual. Answered
  * honestly with the current owed amount for the named asset plus a note explaining
@@ -1973,7 +1973,7 @@ async function accruedInterestAnswer(
     headline: `Your current ${row.symbol} owed is ${money(row.usd)}.`,
     facts: [{ label: `${row.symbol} owed`, value: `${fmtPosAmount(row.amount)} (${money(row.usd)})` }],
     note:
-      "This deployment doesn't track accrued interest separately from principal — the amount owed above already includes it, compounding as it accrues.",
+      "This deployment doesn't track accrued interest separately from principal - the amount owed above already includes it, compounding as it accrues.",
     venue: "margin",
   };
   return {
@@ -2005,7 +2005,7 @@ export async function runRead(
     return marginSideAnswer(ctx);
   }
 
-  // "My Earn positions" names one specific product feature — see earnPositionsAnswer's
+  // "My Earn positions" names one specific product feature - see earnPositionsAnswer's
   // own doc comment for why this must never fall back to the margin/farm fan-out above.
   if (routed.template_id === "query_earn_position") {
     const scopedSymbol = routed.args?.symbol;
@@ -2015,7 +2015,7 @@ export async function runRead(
     return earnPositionsAnswer(ctx, onlySymbol);
   }
 
-  // Farm Deposit TVL / "what am I farming" — same Blend + Aquarius + Soroswap snapshot
+  // Farm Deposit TVL / "what am I farming" - same Blend + Aquarius + Soroswap snapshot
   // as the Farm page. Vertex maps these questions onto `vanna_get_farm_overview`, which
   // reads Registry tracking tokens (Aquarius LP = 0 while Farm shows 1.64 LP). Never
   // let that MCP path answer a holdings question.
@@ -2023,8 +2023,8 @@ export async function runRead(
    * Honour the reserve the route resolved.
    *
    * This branch ran `farmStatsAnswer` for every `query_blend` turn, discarding the tool
-   * the router had already chosen. So "what is the blend XLM supply APY" — routed
-   * correctly to `vanna_get_blend_reserve_stats` with `symbol: XLM` — was answered with
+   * the router had already chosen. So "what is the blend XLM supply APY" - routed
+   * correctly to `vanna_get_blend_reserve_stats` with `symbol: XLM` - was answered with
    * the whole-venue table instead: an XLM column, a USDC column, and the account's Farm
    * holdings including an Aquarius LP, for a question about one number on one reserve.
    * The venue table is the right answer only when the route asked for the venue, which it
@@ -2051,7 +2051,7 @@ export async function runRead(
     );
   }
 
-  // "What is XLM to SoUSDC Ratio in farm Soroswap pool?" — see poolRatioAnswer's own
+  // "What is XLM to SoUSDC Ratio in farm Soroswap pool?" - see poolRatioAnswer's own
   // doc comment for why this reads live pool reserves directly instead of failing to
   // a generic capabilities blurb.
   if (routed.template_id === "query_pool_ratio") {
@@ -2059,7 +2059,7 @@ export async function runRead(
     return poolRatioAnswer(venue, ctx);
   }
 
-  // "What is my net available collateral & net amount borrowed" names specific figures —
+  // "What is my net available collateral & net amount borrowed" names specific figures -
   // see marginFigureAnswer's own doc comment for why this must answer with ONLY those,
   // not the full query_all_positions card.
   if (routed.template_id === "query_margin_figure") {
@@ -2067,7 +2067,7 @@ export async function runRead(
     return marginFigureAnswer(figures, ctx);
   }
 
-  // "How much interest accrued in BLUSDC" — see accruedInterestAnswer's own doc comment
+  // "How much interest accrued in BLUSDC" - see accruedInterestAnswer's own doc comment
   // for why this answers honestly from the current debt figure instead of a fabricated one.
   if (routed.template_id === "query_accrued_interest") {
     const symbol = typeof routed.args?.symbol === "string" ? routed.args.symbol : null;
@@ -2116,12 +2116,12 @@ export async function runRead(
   }
 
   /**
-   * "How much can I borrow?" with no asset named — headroom for every asset, not one.
+   * "How much can I borrow?" with no asset named - headroom for every asset, not one.
    *
    * `vanna_get_max_borrow` answers for one symbol, and `buildToolArgs` defaults an unnamed
    * symbol to USDC. So an assetless question was answered for a single token the user
    * never mentioned, and (before the route was fixed) via `vanna_can_borrow`, a yes/no on
-   * an amount that had not been stated — which the composer wrote up as "You can borrow 1
+   * an amount that had not been stated - which the composer wrote up as "You can borrow 1
    * USDC" over a payload whose own headroom field read 559.8.
    *
    * The absence of a symbol IS the request for all of them; no sentinel value is needed.
@@ -2176,7 +2176,7 @@ export async function runRead(
       return {
         kind: "unavailable",
         message:
-          "I could not read your borrowing headroom just now — the read failed for every asset, " +
+          "I could not read your borrowing headroom just now - the read failed for every asset, " +
           "so I have no figure to give you. Your live limits are on the Margin page.",
         intent: { template_id: routed.template_id },
         mcp: { tool: "vanna_get_max_borrow", has_unsigned_xdr: false },
@@ -2200,7 +2200,7 @@ export async function runRead(
           .filter((r) => r.max == null)
           .map((r) => ({ label: r.symbol, value: "read failed", tone: "warn" as const })),
       ],
-      note: "Each figure is the most that asset alone allows — borrowing one reduces the others.",
+      note: "Each figure is the most that asset alone allows - borrowing one reduces the others.",
       venue: "margin",
     };
     return {
@@ -2213,7 +2213,7 @@ export async function runRead(
     };
   }
 
-  // Fan-out: all Vanna earn pools (Sanujit E3/E4) — MCP has no list-all tool.
+  // Fan-out: all Vanna earn pools (Sanujit E3/E4) - MCP has no list-all tool.
   if (
     routed.tool === "vanna_get_pool_stats" &&
     (routed.args?.symbol === "__ALL_EARN__" || routed.template_id === "query_all_earn_pools")
@@ -2230,7 +2230,7 @@ export async function runRead(
      *
      * A WorkOS token-endpoint 520 put `<!DOCTYPE html><!--[if lt IE 7]>…` straight into
      * the answer text, where a pool's APY should have been. Tags are stripped, the known
-     * infra faults get a plain sentence, and anything else is capped — an error message is
+     * infra faults get a plain sentence, and anything else is capped - an error message is
      * still an answer, and it has to read like one.
      */
     const shortError = (e: unknown): string => {
@@ -2239,10 +2239,10 @@ export async function runRead(
         .replace(/\s+/g, " ")
         .trim();
       if (/token endpoint returned 5\d\d|workos/i.test(s)) {
-        return "upstream auth error — try again in a moment";
+        return "upstream auth error - try again in a moment";
       }
       if (/\b5\d\d\b|timeout|ECONNRESET|fetch failed/i.test(s)) {
-        return "upstream error — try again in a moment";
+        return "upstream error - try again in a moment";
       }
       if (!s) return "unavailable";
       return s.length > 120 ? `${s.slice(0, 117)}…` : s;
@@ -2270,7 +2270,7 @@ export async function runRead(
     /**
      * "Compare the XLM and BLUSDC pools" names TWO pools and asks which is better.
      *
-     * It was answered with all four pools and the highest-yield winner — which is neither
+     * It was answered with all four pools and the highest-yield winner - which is neither
      * a comparison nor restricted to what was asked. Naming pools narrows the set; asking
      * to compare means the answer must lead with a verdict and the size of the gap, not
      * leave the user to subtract two percentages themselves.
@@ -2294,7 +2294,7 @@ export async function runRead(
     }
 
     /**
-     * "USDC pool stats" asked about USDC, not XLM — showing XLM alongside it answered a
+     * "USDC pool stats" asked about USDC, not XLM - showing XLM alongside it answered a
      * bigger question than the one asked. Only a bare, unqualified "USDC" narrows the set
      * this way; a genuine "list all earn pools"/"highest APY" request names no "usdc" at
      * all and is unaffected, so it still shows every pool including XLM.
@@ -2323,7 +2323,7 @@ export async function runRead(
       const head =
         top && next
           ? `${top.symbol} pays more for supplying: ${pct(top.supply_apy_pct)} vs ` +
-            `${pct(next.supply_apy_pct)} on ${next.symbol} — ` +
+            `${pct(next.supply_apy_pct)} on ${next.symbol} - ` +
             `${(Number(top.supply_apy_pct) - Number(next.supply_apy_pct)).toFixed(2)} points apart.` +
             (Number(top.utilization_pct) > 80
               ? ` Note ${top.symbol} is ${pct(top.utilization_pct)} utilised, so withdrawal liquidity is thin.`
@@ -2349,13 +2349,13 @@ export async function runRead(
     /**
      * "Total value locked across all earn pools" asks for ONE number.
      *
-     * The fan-out below lists four pools and names the best-paying one — a good answer to
+     * The fan-out below lists four pools and names the best-paying one - a good answer to
      * a question nobody asked. Worse, the per-pool figures are in TOKENS, so a reader
      * adding them up by eye would sum XLM to USDC and get a number that means nothing.
      *
      * TVL is total ASSETS supplied (not the liquidity still available to borrow), valued
      * in USD. Stables are $1; XLM needs the oracle, and if that read fails the total is
-     * omitted rather than guessed — a TVL quoted at an invented XLM price would be wrong
+     * omitted rather than guessed - a TVL quoted at an invented XLM price would be wrong
      * by an order of magnitude and look authoritative.
      */
     const wantTotal =
@@ -2376,7 +2376,7 @@ export async function runRead(
         const p = Number(prices.XLM?.price_usd ?? prices.xlm?.price_usd);
         if (Number.isFinite(p) && p > 0) xlmPrice = p;
       } catch {
-        /* leave null — the total is then omitted, never guessed */
+        /* leave null - the total is then omitted, never guessed */
       }
       let sum = 0;
       for (const r of displayRows) {
@@ -2402,8 +2402,8 @@ export async function runRead(
       const head =
         tvlUsd != null
           ? `Total value locked across all ${displayRows.length} Vanna earn pools is ${usd(tvlUsd)}` +
-            (tvlPartial ? " (some pools could not be valued — see below)." : ".")
-          : `I couldn't total the pools — the XLM oracle price didn't come back, and I won't ` +
+            (tvlPartial ? " (some pools could not be valued - see below)." : ".")
+          : `I couldn't total the pools - the XLM oracle price didn't come back, and I won't ` +
             `quote a TVL built on a guessed price.`;
       const structured = earnPoolStructuredAnswer({
         rows: asPoolRows(displayRows),
@@ -2460,7 +2460,7 @@ export async function runRead(
     const data = await mcp.call(routed.tool, built.args, ctx.userId);
 
     // A Soroban budget overrun comes back as a SUCCESSFUL response carrying an error
-    // field — it never rejects. So the ExceededLimit fallback in the catch below was
+    // field - it never rejects. So the ExceededLimit fallback in the catch below was
     // unreachable, and "my health factor" answered "no value available" while
     // vanna_get_collateral ($214.70) and vanna_get_debt ($110.25) were both returning
     // fine. Re-raise so that fallback runs. Scoped to budget/resource faults: other
@@ -2485,14 +2485,14 @@ export async function runRead(
      *
      * BLUSDC, AQUSDC and SOUSDC are separate pools that all report `pool symbol: "USDC"` on
      * the wire. So "BLUSDC pool stats" came back labelled "The USDC Vanna earn pool … 1,536
-     * USDC total liquidity" — right numbers, wrong name, and indistinguishable from the other
+     * USDC total liquidity" - right numbers, wrong name, and indistinguishable from the other
      * two pools' answers. That is the failure the test script flags at R-11 and the reason
      * R-11/R-12/R-13 all read as wrong.
      *
-     * This does NOT relabel from the user's word — that is the documented P0 (a swap card
+     * This does NOT relabel from the user's word - that is the documented P0 (a swap card
      * once said BLUSDC while buying AQUSDC). `built.args.symbol` is the same resolved value
      * that ends up in `intent.slots` a few lines down and the same one that picked which
-     * pool to call, so it agrees with the data by construction. (Not `routed.args.symbol` —
+     * pool to call, so it agrees with the data by construction. (Not `routed.args.symbol` -
      * that is the router's PRE-normalisation guess; `buildToolArgs` is what upper-cases it
      * and applies the "USDC" fallback, so reading `routed.args` here silently never matched
      * and the fix did nothing.) The substitution is deliberately narrow: only when the wire
@@ -2502,7 +2502,7 @@ export async function runRead(
     if (typeof resolvedSymbol === "string" && /^(BLUSDC|AQUSDC|SOUSDC)$/i.test(resolvedSymbol)) {
       // Both spellings: the MCP sends `pool_symbol`, and `factsForUi` is what turns
       // underscores into spaces for display. Reading only the spaced form meant this
-      // matched nothing on the raw payload — the second reason this fix sat dead.
+      // matched nothing on the raw payload - the second reason this fix sat dead.
       for (const key of ["pool_symbol", "pool symbol", "symbol"]) {
         if (data[key] === "USDC") data[key] = resolvedSymbol.toUpperCase();
       }
@@ -2536,12 +2536,12 @@ export async function runRead(
         structured = enforceGroundedFigure(structured, routed.tool, data);
       }
       /**
-       * An enumeration must arrive whole — but only when the question WAS one.
+       * An enumeration must arrive whole - but only when the question WAS one.
        * `completeIdentifierFacts` exists for "show me the protocol contract addresses":
        * the model is capped at six facts, so a genuinely broad ask put six of fifteen in
        * the card and left the rest to the generic facts dump underneath it. Reported
-       * live: "Give me XLM Lending Pool Address" — a question naming exactly ONE
-       * contract — got the SAME unconditional treatment and padded back out to all 9
+       * live: "Give me XLM Lending Pool Address" - a question naming exactly ONE
+       * contract - got the SAME unconditional treatment and padded back out to all 9
        * addresses, defeating the model's own correct one-item answer. A plural
        * "addresses" (or "all"/"every"/"list") is the actual signal that every identifier
        * was wanted; a singular, specifically-named ask (one contract, or "the oracle and
@@ -2550,16 +2550,16 @@ export async function runRead(
        */
       const isBroadIdentifierAsk = /\b(all|every|list)\b|\baddresses\b/i.test(ctx.message);
       if (structured && isBroadIdentifierAsk) structured = completeIdentifierFacts(structured, data);
-      // The value only needs to live once — in its own copyable row below, not also
+      // The value only needs to live once - in its own copyable row below, not also
       // spelled out in the prose above it. See dedupeInlineIdentifiers's own comment.
       if (structured) structured = dedupeInlineIdentifiers(structured);
       /**
        * "Can I borrow 20 BLUSDC?" answered "You cannot borrow 20 BLUSDC from the Vanna
-       * earn pool because your collateral health is insufficient" — a genuine MARGIN
+       * earn pool because your collateral health is insufficient" - a genuine MARGIN
        * pre-flight (`vanna_can_borrow`/`vanna_can_withdraw` both map to `vanna_margin_trade`,
        * mcp-client.ts; `collateral_health` as a limiting factor is a margin risk-engine
        * concept, meaningless for an Earn deposit), mislabeled by the model as being about
-       * "the Vanna earn pool" — this generic path has no dedicated handler the way
+       * "the Vanna earn pool" - this generic path has no dedicated handler the way
        * `query_margin_figure`/`query_accrued_interest` do, so `venue` and the venue's NAME
        * inside the prose sentence are both a free guess from the tool name alone, and
        * `vanna_can_borrow`'s BLUSDC/AQUSDC/SOUSDC symbols read as Earn-pool-flavoured to
@@ -2586,7 +2586,7 @@ export async function runRead(
       try {
         prose = await vertexExplain(
           hinglish
-            ? `${ctx.message}\n\n(Reply in the same language mix as the user — clear Hinglish is fine.)`
+            ? `${ctx.message}\n\n(Reply in the same language mix as the user - clear Hinglish is fine.)`
             : ctx.message,
           routed.tool,
           data,
@@ -2614,7 +2614,7 @@ export async function runRead(
       if (Number.isFinite(hf) && Number(debt) > 0.01) {
         if (hf < 1.0) {
           prose +=
-            `\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 — this account is liquidatable. ` +
+            `\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 - this account is liquidatable. ` +
             `Repay debt or deposit collateral now (e.g. “repay 5 AQUSDC” or “deposit 20 XLM as collateral”). ` +
             `I will not auto-move funds without your go-ahead on this turn; say “repay what I need to get safe” to act.`;
         } else if (hf < floor) {
@@ -2638,12 +2638,12 @@ export async function runRead(
      * full-precision raw twin ("10.375107") and both rendered.
      *
      * General fix, not a per-tool one: whenever the structured path succeeds, its
-     * headline/facts/note ARE the curated answer — nothing in the separate raw `data`
+     * headline/facts/note ARE the curated answer - nothing in the separate raw `data`
      * dump adds something a user acts on that isn't already there in a readable form.
      * The one case that legitimately needs more than the model's own facts (an
      * enumeration like "list every protocol address") is already handled by
      * `completeIdentifierFacts` merging the extra items directly into `structured.facts`
-     * above, not by falling back to this raw dump — so dropping `data` here whenever
+     * above, not by falling back to this raw dump - so dropping `data` here whenever
      * `structured` exists loses nothing, for any tool.
      */
     return {
@@ -2741,8 +2741,8 @@ export async function runRead(
           }
         };
         // Sequential, not Promise.all. These share one reused MCP session, and firing
-        // both at once had vanna_get_collateral — the heavier of the two, it walks every
-        // collateral token plus LP positions — abort on timeout while debt returned
+        // both at once had vanna_get_collateral - the heavier of the two, it walks every
+        // collateral token plus LP positions - abort on timeout while debt returned
         // fine. The same call succeeds on its own, so the concurrency is the problem,
         // not the call. This path is already degraded; correctness beats latency here.
         const debt = await probe("vanna_get_debt");
@@ -2756,7 +2756,7 @@ export async function runRead(
               ? 999
               : null;
         const parts = [
-          "Full health endpoint hit a Soroban CPU budget limit on this account — using collateral + debt instead:",
+          "Full health endpoint hit a Soroban CPU budget limit on this account - using collateral + debt instead:",
         ];
         // Name what is missing. Omitting a component silently made the line read as a
         // complete picture when it was half of one.
@@ -2766,7 +2766,7 @@ export async function runRead(
           parts.push(
             hf >= 999
               ? "health factor ∞ (no meaningful debt)"
-              : // Health factor IS gross collateral / debt — see lib/margin-health.ts,
+              : // Health factor IS gross collateral / debt - see lib/margin-health.ts,
                 // which is checked against the protocol math reference. There is no
                 // liquidation-threshold haircut on the collateral side; the threshold
                 // (1.1) is the level HF is compared against, not a multiplier. This

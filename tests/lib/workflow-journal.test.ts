@@ -1,8 +1,8 @@
 import { Account, Keypair, Networks, TransactionBuilder } from "@stellar/stellar-sdk";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WorkflowJournal, PROPOSAL_TTL_MS } from "@/lib/copilot/workflow/journal";
 import type { RecordStore } from "@/lib/copilot/workflow/store";
-import type { WorkflowRecord } from "@/lib/copilot/workflow/types";
+import { workflowView, type WorkflowRecord } from "@/lib/copilot/workflow/types";
 
 const identity = { scope: { subject: "owner", trader: "wallet", smartAccount: "account", network: "testnet" }, server: "mcp" };
 function fixture() {
@@ -35,11 +35,13 @@ describe("workflow approval and execution journal", () => {
       .toBe("6541.043333");
   });
 
-  it("invalidates a strategy card after several minutes so stale terms cannot be approved", async () => {
+  it("keeps a strategy card resumable after several minutes while validating fresh terms", async () => {
     const { journal, create, advance } = fixture();
     const { proposal: p } = await create();
     advance(10 * 60_000);
-    await expect(journal.approve(p.id, identity, 1, p.digest, async () => null)).rejects.toThrow("proposal_expired");
+    const validate = vi.fn(async () => null);
+    expect((await journal.approve(p.id, identity, 1, p.digest, validate)).status).toBe("approved");
+    expect(validate).toHaveBeenCalledTimes(1);
   });
 
   it("rejects wrong identity, modified approval, and expiration", async () => {
@@ -69,7 +71,7 @@ describe("workflow approval and execution journal", () => {
   });
   /**
    * Approval is not a standing licence. Between approving a plan and broadcasting a later
-   * step, a price move can push the position through the floor the user set — so the
+   * step, a price move can push the position through the floor the user set - so the
    * readiness check runs per step, and refusing must STOP the run rather than re-size the
    * amount to make it fit.
    */
@@ -84,7 +86,7 @@ describe("workflow approval and execution journal", () => {
     const record = await journal.read(p.id, identity);
     expect(record.value.status).toBe("blocked");
     expect(record.value.message).toMatch(/1.30 floor would be breached/);
-    // Nothing was submitted, so the step is not a FAILED transaction — and a blocked run
+    // Nothing was submitted, so the step is not a FAILED transaction - and a blocked run
     // cannot be claimed again, so returning it to pending is not a retry.
     expect(record.value.steps[0]).toEqual({ id: "one", status: "pending" });
     await expect(journal.claimNext(p.id, identity)).rejects.toThrow("workflow_not_runnable");
@@ -141,7 +143,7 @@ describe("workflow approval and execution journal", () => {
   /**
    * A swap's floor can be adjusted moments before broadcast when the pool moved but the
    * fresh fill is still fair (execute.ts's staleSwapFloor). That note is the only record of
-   * what price it actually swapped at — `settled()` runs immediately after and generates
+   * what price it actually swapped at - `settled()` runs immediately after and generates
    * its own generic confirmation message, which must not silently erase it.
    */
   it("carries a note recording an adjusted price through to the settled message", async () => {
@@ -156,7 +158,7 @@ describe("workflow approval and execution journal", () => {
     expect(settled.status).toBe("completed");
     expect(settled.message).toBe(`All approved transactions were confirmed on chain. ${note}`);
   });
-  it("does not append a note to a failed settlement — the failure reason is the message", async () => {
+  it("does not append a note to a failed settlement - the failure reason is the message", async () => {
     const { journal, create } = fixture();
     const { proposal: p } = await create();
     await journal.approve(p.id, identity, 1, p.digest, async () => null);
@@ -177,7 +179,7 @@ describe("workflow approval and execution journal", () => {
     const { proposal: p } = await create();
     const record = await journal.approve(
       p.id, identity, 1, p.digest,
-      async () => "Live balances could not be re-read in time. Nothing was submitted — approve again.",
+      async () => "Live balances could not be re-read in time. Nothing was submitted - approve again.",
     );
     expect(record.status).toBe("proposed");
     expect(record.message).toMatch(/approve again/);
@@ -185,7 +187,7 @@ describe("workflow approval and execution journal", () => {
   });
   /**
    * Reconcile before retrying. An uncertain step's transaction may or may not be in flight,
-   * so the ledger — not a retry — decides what happened.
+   * so the ledger - not a retry - decides what happened.
    */
   describe("reconciling an uncertain submission", () => {
     const uncertain = async (txHash?: string) => {
@@ -255,7 +257,7 @@ describe("workflow approval and execution journal", () => {
    *
    * Stopping mid-plan is not neutral: leg one's borrowed money pays interest while leg two
    * is blocked. So an amount DERIVED from a constraint is re-derived at broadcast time. An
-   * amount the user STATED is not — that would carry out a different instruction — and
+   * amount the user STATED is not - that would carry out a different instruction - and
    * re-derivation is bounded, or the health floor stops being a stop condition.
    */
   describe("re-sizing a derived amount between legs", () => {
@@ -301,7 +303,7 @@ describe("workflow approval and execution journal", () => {
         .rejects.toThrow("step_not_ready");
     });
 
-    it("refuses to re-size UPWARD — a favourable move is not authority to borrow more", async () => {
+    it("refuses to re-size UPWARD - a favourable move is not authority to borrow more", async () => {
       const { journal, p } = await approved(derived("500"));
       await expect(journal.claimNext(p.id, identity, async () => ({ kind: "resize", amountUsd: "1200" })))
         .rejects.toThrow("step_not_ready");
@@ -339,6 +341,28 @@ describe("workflow approval and execution journal", () => {
     expect(record.steps[0]).toMatchObject({ status: "failed", message: "Simulation failed. Nothing was submitted." });
     expect(record.steps[0].txHash).toBeUndefined();
     await expect(journal.claimNext(p.id, identity)).rejects.toThrow("workflow_not_runnable");
+  });
+
+  it("records why the signer refused a step handed back to the wallet, and clears it when it was not refused", async () => {
+    const { journal, create } = fixture();
+    const { proposal: p } = await create();
+    await journal.approve(p.id, identity, 1, p.digest, async () => null);
+    await journal.claimNext(p.id, identity);
+    const tx = new TransactionBuilder(new Account(Keypair.random().publicKey(), "0"), { fee: "100", networkPassphrase: Networks.TESTNET }).setTimeout(60).build();
+    const refused = await journal.invocationResult(p.id, identity, "one", { kind: "unsigned", unsignedXdr: tx.toXDR(), refusal: "Sign Service: over the per-tx cap." });
+    expect(refused.steps[0]).toMatchObject({ status: "awaiting_signature", signRefusal: "Sign Service: over the per-tx cap." });
+    expect(workflowView(refused).steps[0].signRefusal).toBe("Sign Service: over the per-tx cap.");
+  });
+
+  it("leaves no refusal on a step that was simply never auto-signed", async () => {
+    const { journal, create } = fixture();
+    const { proposal: p } = await create();
+    await journal.approve(p.id, identity, 1, p.digest, async () => null);
+    await journal.claimNext(p.id, identity);
+    const tx = new TransactionBuilder(new Account(Keypair.random().publicKey(), "0"), { fee: "100", networkPassphrase: Networks.TESTNET }).setTimeout(60).build();
+    const record = await journal.invocationResult(p.id, identity, "one", { kind: "unsigned", unsignedXdr: tx.toXDR() });
+    expect(record.steps[0].signRefusal).toBeUndefined();
+    expect(workflowView(record).steps[0].signRefusal).toBeUndefined();
   });
 
   it("accepts a submitted hash only from awaiting_signature", async () => {

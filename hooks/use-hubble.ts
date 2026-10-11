@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 // Client hooks for the Hubble analytics routes. Hubble data is batch/aggregate
 // and cached server-side for 5 min, so this uses a plain React Query with a
-// matching staleTime — NOT the ledger tick (that's for live chain state).
+// matching staleTime - NOT the ledger tick (that's for live chain state).
 
 /** Thrown when a Hubble route returns 503 (the Hubble backend isn't configured). Not retried. */
 export class HubbleNotConfiguredError extends Error {
@@ -30,7 +30,7 @@ async function fetchHubble<T>(path: string): Promise<T[]> {
 /**
  * Generic React Query hook for a Hubble analytics route returning an array of T.
  * Hubble data is aggregate and server-cached for 5 min, so this uses a plain
- * 5-min staleTime (NOT the ledger tick — that's for live chain state). A 503
+ * 5-min staleTime (NOT the ledger tick - that's for live chain state). A 503
  * surfaces as {@link HubbleNotConfiguredError} and is not retried; other errors
  * retry up to twice.
  *

@@ -1,13 +1,13 @@
 /**
  * Reported live: depositing 5 XLM as collateral (debt unchanged) projected the health
  * factor to WORSEN (1.50 → 1.35 in the staged-action card), when adding collateral with
- * no new debt can only ever raise or leave health factor unchanged — never lower it.
+ * no new debt can only ever raise or leave health factor unchanged - never lower it.
  *
  * Root cause: `hfFrom()` multiplied collateral by a `DEFAULT_LT` of 0.9 that does not
  * exist anywhere in the actual product formula (`avgHealthFactor = grossCollateralValue /
  * effectiveDebtValue` in lib/margin-health.ts, confirmed by the Margin page's own
  * displayed number). `hf_before` almost always comes straight from a real MCP/snapshot
- * read and bypasses this, but `hf_after` — a hypothetical future state — has no such
+ * read and bypasses this, but `hf_after` - a hypothetical future state - has no such
  * real read and ALWAYS went through the discounted formula, so every write's projected
  * post-action health factor was ~10% off from what the same formula would show once the
  * write actually landed.
@@ -61,7 +61,7 @@ const depositAction: CopilotAction = {
 
 describe("deposit-collateral health-factor projection matches the real formula", () => {
   it("never predicts a worse health factor from adding collateral with no new debt", async () => {
-    const realHfBefore = COLLATERAL_BEFORE / DEBT_BEFORE; // 1.4996… — the undiscounted, real formula
+    const realHfBefore = COLLATERAL_BEFORE / DEBT_BEFORE; // 1.4996… - the undiscounted, real formula
     const { simulation } = await evaluateWriteRisk(mcpWithHealth(realHfBefore), {
       action: depositAction,
       smartAccount: "CTEST",
@@ -85,7 +85,7 @@ describe("deposit-collateral health-factor projection matches the real formula",
   });
 
   it("uses the undiscounted ratio for the fallback hf_before too, when MCP omits health_factor", async () => {
-    // MCP sometimes returns collateral/debt with no health_factor field at all — the
+    // MCP sometimes returns collateral/debt with no health_factor field at all - the
     // fallback formula must match the real one just as strictly as the happy path.
     const { simulation } = await evaluateWriteRisk(mcpWithHealth(undefined), {
       action: depositAction,

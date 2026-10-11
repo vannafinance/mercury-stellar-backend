@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "baseUrl": { "$env": "COPILOT_EVAL_BASE_URL" },
+  "timeoutMs": 90000,
+  "network": "testnet",
+  "rpcUrl": { "$env": "COPILOT_EVAL_RPC_URL" },
+  "headers": { "x-privy-token": { "$env": "COPILOT_EVAL_PRIVY_TOKEN" } },
+  "signer": { "secret": { "$env": "COPILOT_EVAL_TESTNET_SECRET" }, "wallet": { "$env": "COPILOT_EVAL_WALLET" } },
+  "scenarios": [
+    {
+      "id": "single-step-manual-wallet-roundtrip",
+      "steps": [
+        {
+          "id": "before", "method": "POST", "path": "/api/copilot/investigate",
+          "body": { "message": { "$env": "COPILOT_EVAL_BALANCE_PROMPT" }, "wallet": { "$env": "COPILOT_EVAL_WALLET" } },
+          "assert": [
+            { "path": "/status", "op": "eq", "value": 200 },
+            { "path": "/body/type", "op": "eq", "value": "result" },
+            { "path": "/body/result/status", "op": "eq", "value": "researched" },
+            { "path": "/body/result/scope/network", "op": "eq", "value": "testnet" },
+            { "path": "/body/result/scope/wallet", "op": "eq", "value": { "$env": "COPILOT_EVAL_WALLET" } },
+            { "path": "/body/result/facts/0/label", "op": "eq", "value": { "$env": "COPILOT_EVAL_FACT_LABEL" } },
+            { "path": "/body/result/facts/0/unit", "op": "eq", "value": { "$env": "COPILOT_EVAL_FACT_UNIT" } },
+            { "path": "/body/result/facts/0/venue", "op": "eq", "value": { "$env": "COPILOT_EVAL_FACT_VENUE" } },
+            { "path": "/body/result/facts/0/value", "op": "exists" }
+          ]
+        },
+        {
+          "id": "research", "method": "POST", "path": "/api/copilot/investigate",
+          "body": { "message": { "$env": "COPILOT_EVAL_WRITE_PROMPT" }, "wallet": { "$env": "COPILOT_EVAL_WALLET" } },
+          "assert": [
+            { "path": "/status", "op": "eq", "value": 200 },
+            { "path": "/body/type", "op": "eq", "value": "result" },
+            { "path": "/body/result/scope/network", "op": "eq", "value": "testnet" },
+            { "path": "/body/result/scope/wallet", "op": "eq", "value": { "$env": "COPILOT_EVAL_WALLET" } },
+            { "path": "/body/result/proposalCandidateId", "op": "exists" }
+          ]
+        },
+        {
+          "id": "proposal", "method": "POST", "path": "/api/copilot/workflow/propose",
+          "body": { "continuation": { "$ref": "research#/body/result/continuation" }, "candidateId": { "$ref": "research#/body/result/proposalCandidateId" } },
+          "assert": [
+            { "path": "/status", "op": "eq", "value": 200 },
+            { "path": "/body/status", "op": "eq", "value": "proposed" },
+            { "path": "/body/steps/length", "op": "eq", "value": 1 }
+          ]
+        },
+        {
+          "id": "approve", "method": "POST", "path": ["/api/copilot/workflow/", { "$ref": "proposal#/body/id" }, "/approve"],
+          "body": { "revision": { "$ref": "proposal#/body/revision" }, "digest": { "$ref": "proposal#/body/digest" } },
+          "assert": [{ "path": "/status", "op": "eq", "value": 200 }, { "path": "/body/status", "op": "eq", "value": "approved" }]
+        },
+        {
+          "id": "advance", "method": "POST", "path": ["/api/copilot/workflow/", { "$ref": "proposal#/body/id" }, "/advance"],
+          "assert": [{ "path": "/status", "op": "eq", "value": 200 }, { "path": "/body/steps/0/status", "op": "eq", "value": "awaiting_signature" }]
+        },
+        {
+          "id": "sign", "sign": { "$ref": "advance#/body/steps/0/unsignedXdr" },
+          "assert": [{ "path": "/signedXdr", "op": "exists" }]
+        },
+        {
+          "id": "submit", "method": "POST", "path": ["/api/copilot/workflow/", { "$ref": "proposal#/body/id" }, "/submit"],
+          "body": { "signedXdr": { "$ref": "sign#/signedXdr" } },
+          "assert": [{ "path": "/status", "op": "eq", "value": 200 }, { "path": "/body/steps/0/txHash", "op": "exists" }]
+        },
+        {
+          "id": "confirm", "method": "POST", "path": ["/api/copilot/workflow/", { "$ref": "proposal#/body/id" }, "/confirm"],
+          "body": { "txHash": { "$ref": "submit#/body/steps/0/txHash" } },
+          "poll": { "attempts": 24, "intervalMs": 5000, "until": { "path": "/body/steps/0/status", "op": "eq", "value": "settled" } },
+          "assert": [{ "path": "/status", "op": "eq", "value": 200 }, { "path": "/body/steps/0/status", "op": "eq", "value": "settled" },
+            { "path": "/body/steps/0/amount", "op": "eq", "value": { "$ref": "proposal#/body/steps/0/amount" } }]
+        },
+        {
+          "id": "receipt", "method": "PATCH", "path": ["/api/copilot/session/", { "$ref": "research#/body/conversationId" }],
+          "body": { "executionReceipt": { "workflowId": { "$ref": "confirm#/body/id" }, "status": { "$ref": "confirm#/body/status" },
+            "network": { "$ref": "research#/body/result/scope/network" }, "steps": [{ "operation": { "$ref": "confirm#/body/steps/0/op" },
+              "label": { "$ref": "confirm#/body/steps/0/label" }, "asset": { "$ref": "confirm#/body/steps/0/asset" }, "amount": { "$ref": "confirm#/body/steps/0/amount" },
+              "status": { "$ref": "confirm#/body/steps/0/status" }, "txHash": { "$ref": "confirm#/body/steps/0/txHash" }, "settledLedger": { "$ref": "confirm#/body/steps/0/settledLedger" } }] } },
+          "assert": [{ "path": "/status", "op": "eq", "value": 200 }]
+        },
+        {
+          "id": "summary", "method": "POST", "path": ["/api/copilot/workflow/", { "$ref": "proposal#/body/id" }, "/reply"],
+          "body": { "conversationId": { "$ref": "research#/body/conversationId" } },
+          "assert": [{ "path": "/status", "op": "eq", "value": 200 }, { "path": "/body/completion/workflowId", "op": "eq", "value": { "$ref": "proposal#/body/id" } },
+            { "path": "/body/completion/source", "op": "eq", "value": "model" }, { "path": "/body/replyBlocks/length", "op": "gte", "value": 1 },
+            { "path": "/body/receipt/steps/0/txHash", "op": "eq", "value": { "$ref": "confirm#/body/steps/0/txHash" } },
+            { "path": "/body/receipt/steps/0/settledLedger", "op": "eq", "value": { "$ref": "confirm#/body/steps/0/settledLedger" } }]
+        },
+        {
+          "id": "restore-summary", "path": ["/api/copilot/session/", { "$ref": "research#/body/conversationId" }],
+          "assert": [{ "path": "/status", "op": "eq", "value": 200 }, { "path": "/body/turns/1/completion/workflowId", "op": "eq", "value": { "$ref": "proposal#/body/id" } },
+            { "path": "/body/turns/1/blocks/length", "op": "gte", "value": 1 }, { "path": "/body/turns/1/executionReceipt/steps/0/txHash", "op": "eq", "value": { "$ref": "confirm#/body/steps/0/txHash" } }]
+        },
+        {
+          "id": "after", "method": "POST", "path": "/api/copilot/investigate",
+          "body": { "message": { "$env": "COPILOT_EVAL_BALANCE_PROMPT" }, "wallet": { "$env": "COPILOT_EVAL_WALLET" } },
+          "assert": [{ "path": "/status", "op": "eq", "value": 200 }, { "path": "/body/type", "op": "eq", "value": "result" },
+            { "path": "/body/result/status", "op": "eq", "value": "researched" },
+            { "path": "/body/result/scope/network", "op": "eq", "value": "testnet" },
+            { "path": "/body/result/scope/wallet", "op": "eq", "value": { "$env": "COPILOT_EVAL_WALLET" } },
+            { "path": "/body/result/facts/0/label", "op": "eq", "value": { "$ref": "before#/body/result/facts/0/label" } },
+            { "path": "/body/result/facts/0/unit", "op": "eq", "value": { "$ref": "before#/body/result/facts/0/unit" } },
+            { "path": "/body/result/facts/0/venue", "op": "eq", "value": { "$ref": "before#/body/result/facts/0/venue" } },
+            { "path": "/body/result/facts/0/sourcePath", "op": "eq", "value": { "$ref": "before#/body/result/facts/0/sourcePath" } },
+            { "path": "/body/result/facts/0/readAt", "op": "gte", "value": { "$ref": "before#/body/result/facts/0/readAt" } },
+            { "path": "/body/result/facts/0/value", "op": "delta", "from": { "$ref": "before#/body/result/facts/0/value" }, "value": { "$env": "COPILOT_EVAL_EXPECTED_DELTA" } }]
+        }
+      ]
+    }
+  ]
+}

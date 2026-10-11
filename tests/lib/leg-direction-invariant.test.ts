@@ -7,7 +7,7 @@ import { OP_FLOW, POCKET_HOLDER, WORKFLOW_OPS } from "@/lib/copilot/workflow/typ
  * Money must not move the way the user did not ask.
  *
  * Live, 22 Sep: "withdraw 30 XLM from blend and lend it in earn" planned
- * `lend 30 XLM` then `deploy_to_blend BLUSDC` — INTO Blend, the opposite direction, in
+ * `lend 30 XLM` then `deploy_to_blend BLUSDC` - INTO Blend, the opposite direction, in
  * an asset never mentioned, sitting on WAITING ON YOUR SIGNATURE. The multi-goal
  * planner pushes a Blend leg on the presence of the word "blend" alone, so a sentence
  * taking money OUT of Blend built a leg putting money in.
@@ -34,13 +34,13 @@ describe("THE LIVE BUG: a plan that moves money the wrong way", () => {
 
 /**
  * The invariant reads `OP_FLOW`'s pockets, so it holds for every op that has a reverse
- * twin — including the pairs the fix names nowhere.
+ * twin - including the pairs the fix names nowhere.
  */
 describe("a source-naming prompt never resolves to an op's reverse twin", () => {
   const CASES: Array<{ message: string; banned: string }> = [
     // The reported pair.
     { message: "withdraw 30 XLM from blend and lend it in earn", banned: "deploy_to_blend" },
-    // Pairs the fix does not name — proof this comes from the flow table, not a list.
+    // Pairs the fix does not name - proof this comes from the flow table, not a list.
     { message: "redeem 20 XLM from earn and deposit it as collateral", banned: "lend" },
     { message: "withdraw 50 XLM from collateral and lend it", banned: "deposit_collateral" },
   ];
@@ -93,7 +93,7 @@ describe("a source is read from grammar, not from a verb", () => {
 
   /**
    * The vocabulary is derived from `POCKET_HOLDER`, not written out, so every pocket a
-   * user can speak of is understood without being listed — including any added later.
+   * user can speak of is understood without being listed - including any added later.
    * `debt` is the one deliberate exclusion: nobody says "from my debt" to mean a borrow
    * draws on it, and reading it as a source would refuse a legitimate repay.
    */
@@ -111,7 +111,7 @@ describe("a source is read from grammar, not from a verb", () => {
 
   /**
    * A leg that draws from a stated source is doing what it was told, whatever else the
-   * sentence names — the test is one-sided on purpose. A swap both spends and receives
+   * sentence names - the test is one-sided on purpose. A swap both spends and receives
    * inside the margin account, so a sentence naming that account as the source must not
    * be read as contradicting it.
    */

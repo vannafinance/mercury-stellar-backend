@@ -57,7 +57,7 @@ export function sanitizePlan(
   message: string,
 ): Extract<RoutedIntent, { kind: "plan" }> {
   const explicit = explicitAssetAmounts(message);
-  // Same finder as the router — includes "deposit … borrow 3" (no trailing x).
+  // Same finder as the router - includes "deposit … borrow 3" (no trailing x).
   const leverage = findLeverage(message);
 
   const rawSteps = plan.steps.map((step) => {
@@ -91,7 +91,7 @@ export function sanitizePlan(
 
   /**
    * Any producer can hand us a split levered deposit+borrow, not just the clause
-   * extractor — the LLM planner emits the two legs too, and its plan does not pass
+   * extractor - the LLM planner emits the two legs too, and its plan does not pass
    * through the extractor. Every plan reaches this function, so putting the merge here
    * as well means one sizing path regardless of who wrote the plan (product rule: no
    * silent drop). A plan that has nothing to merge is returned unchanged.
@@ -198,14 +198,14 @@ export function looksLikeMultiGoal(message: string): boolean {
    * "deposit 100 BLUSDC, borrow 50 XLM, lend 50 XLM".
    *
    * Without this, a prompt like that is under the 90-char bar above and contains no
-   * "then", so it never registered as multi-goal — which meant `preferExtractedPlan`
+   * "then", so it never registered as multi-goal - which meant `preferExtractedPlan`
    * was never called and the whole list collapsed to whichever single op
    * `clauseToStep` matched first. The comma is doing the same work "then" does; it
    * just was not being read that way.
    *
    * AMM LP is the same class: "swap 10 XLM to AQUSDC and add liquidity in Aquarius"
    * has two actions joined by "and", but "add liquidity" is not in the bare-verb
-   * list (deliberately — bare "add" would steal deposits). Counted via hasAmmLpIntent.
+   * list (deliberately - bare "add" would steal deposits). Counted via hasAmmLpIntent.
    */
   if (/,|\band\b|&/i.test(t)) {
     if (distinctActionCount(t) >= 2) return true;
@@ -218,7 +218,7 @@ export function looksLikeMultiGoal(message: string): boolean {
    * An action followed by a QUESTION is two goals, not one.
    *
    * Every gate above counts write verbs, so "…put 15 SOUSDC into it, then tell me my
-   * health factor" scored one — "put" is not even in those verb lists — and the whole
+   * health factor" scored one - "put" is not even in those verb lists - and the whole
    * message was handled as a single write. `preferExtractedPlan` never ran, so the
    * trailing question was dropped without a trace: the plan card showed one step and the
    * user was never told the second half of their instruction had been ignored.

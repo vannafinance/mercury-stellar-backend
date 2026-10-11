@@ -5,14 +5,14 @@ import { createAccountStructured } from "@/lib/copilot/handle-read";
  * Reporting a submission that never happened.
  *
  * Live, 22 Sep: "open a margin account", on a trader who already had one, answered
- * "Margin account opened." MCP had opened nothing — `vanna_open_account` is idempotent
+ * "Margin account opened." MCP had opened nothing - `vanna_open_account` is idempotent
  * and returns `status: "already_exists"` when `discover_active_smart_account` finds an
  * existing C-address (`account_tools.py`), precisely so the caller need not guess.
  *
  * The card guessed anyway, from three phrases in the summary prose, and MCP has TWO
- * already-exists branches. The first matches all three by luck. The recovery branch —
+ * already-exists branches. The first matches all three by luck. The recovery branch -
  * taken when create_account's simulation trips and on-chain storage is re-read, which
- * is the stronger evidence of the two — says "Treating as existing account" and matched
+ * is the stronger evidence of the two - says "Treating as existing account" and matched
  * none of them.
  */
 
@@ -63,7 +63,7 @@ describe("THE LIVE BUG: an account that already existed reported as opened", () 
   });
 
   /**
-   * `status` is read for what it says, not for being present — a real open still
+   * `status` is read for what it says, not for being present - a real open still
    * reports as one, or this trades a false success for a false refusal.
    */
   it("still reports a genuine open as opened", () => {

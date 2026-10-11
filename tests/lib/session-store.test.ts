@@ -1,17 +1,18 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import type { StepStatus, WorkflowRecord } from "@/lib/copilot/workflow/types";
+import { receiptKey, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 
 /**
  * Conversations, on both backends.
  *
  * The file backend is development; Firestore is what runs on Cloud Run. Testing only the
- * first would leave the durable path — the one that decides whether history survives a
- * redeploy — unexercised, so every case runs against both. The Firestore double speaks the
+ * first would leave the durable path - the one that decides whether history survives a
+ * redeploy - unexercised, so every case runs against both. The Firestore double speaks the
  * REST dialect the store uses: `updateTime` as the version, `currentDocument.exists=false`
  * to create, `currentDocument.updateTime=…` to compare-and-set, 412 when that fails.
  */
@@ -95,6 +96,45 @@ describe.each(BACKENDS)("copilot conversation store (%s backend)", (backend) => 
     vi.doUnmock("google-auth-library");
     delete process.env.COPILOT_WORKFLOW_FIRESTORE_PROJECT;
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it("keeps the server's composed reply, and drops it once new text replaces the reply", async () => {
+    const blocks = [{ type: "paragraph" as const, segments: [{ text: "Your health factor is " }, { text: "2.32", figure: true as const }] }];
+    const first = await store.appendSessionTurn({ subject: "alice", user: "hf?", result: { ...view("Your health factor is 2.32"), replyBlocks: blocks } });
+    expect((await store.readConversation("alice", first.id))?.turns[1]?.blocks).toEqual(blocks);
+    expect(await store.updateSessionAssistantText({ subject: "alice", conversationId: first.id, text: "Done. Supplied 1 XLM to Blend." })).toBe(true);
+    const turn = (await store.readConversation("alice", first.id))?.turns[1];
+    expect(turn?.text).toBe("Done. Supplied 1 XLM to Blend.");
+    expect(turn?.blocks).toBeUndefined();
+  });
+
+  it("persists settled summaries on the exact owning turn across later turns and reopen", async () => {
+    const first = await store.appendSessionTurn({ subject: "alice", user: "swap", result: view("Approve") });
+    const r = receipt("completed", "settled", 123);
+    await store.updateSessionExecutionReceipt({ subject: "alice", conversationId: first.id, receipt: r });
+    await store.appendSessionTurn({ subject: "alice", conversationId: first.id, user: "hi", result: view("Hello") });
+    const reply: WorkflowCompletionReply = { receipt: r, message: "Settled swap", replyBlocks: [{ type: "paragraph", segments: [{ text: "Settled swap" }] }],
+      completion: { workflowId: r.workflowId, receiptKey: receiptKey(r), generatedAt: 1, source: "model" } };
+    expect(await store.updateSessionWorkflowCompletion({ subject: "bob", conversationId: first.id, reply })).toBe(false);
+    expect(await store.updateSessionWorkflowCompletion({ subject: "alice", conversationId: first.id, reply })).toBe(true);
+    expect(await store.updateSessionWorkflowCompletion({ subject: "alice", conversationId: first.id, reply })).toBe(true);
+    const restored = await store.openConversation("alice", first.id);
+    expect(restored?.turns[1]).toMatchObject({ text: reply.message, blocks: reply.replyBlocks, completion: reply.completion, executionReceipt: r });
+    expect(restored?.turns[3].text).toBe("Hello");
+    expect(await store.updateSessionExecutionReceipt({ subject: "alice", conversationId: first.id, receipt: receipt("running", "submitted") })).toBe(false);
+    expect((await store.readConversation("alice", first.id))?.turns[1].completion).toEqual(reply.completion);
+  });
+
+  it("refuses to attach a summary to an unowned workflow or replace it with legacy late text", async () => {
+    const first = await store.appendSessionTurn({ subject: "alice", user: "swap", result: view("Approve") });
+    const r = receipt("completed", "settled", 123);
+    const reply: WorkflowCompletionReply = { receipt: r, message: "Settled swap", replyBlocks: [{ type: "paragraph", segments: [{ text: "Settled swap" }] }],
+      completion: { workflowId: r.workflowId, receiptKey: receiptKey(r), generatedAt: 1, source: "model" } };
+    expect(await store.updateSessionWorkflowCompletion({ subject: "alice", conversationId: first.id, reply })).toBe(false);
+    await store.updateSessionExecutionReceipt({ subject: "alice", conversationId: first.id, receipt: r });
+    await store.updateSessionWorkflowCompletion({ subject: "alice", conversationId: first.id, reply });
+    await store.updateSessionAssistantText({ subject: "alice", conversationId: first.id, text: "Wait for signing" });
+    expect((await store.readConversation("alice", first.id))?.turns[1].text).toBe("Settled swap");
   });
 
   it("starts a conversation on the first turn, titled by the prompt, and appends later turns to it", async () => {
@@ -181,6 +221,67 @@ describe.each(BACKENDS)("copilot conversation store (%s backend)", (backend) => 
     const { id } = await store.appendSessionTurn({ subject: "carol", user: "t0", result: view("r0") });
     for (let i = 1; i < 12; i += 1) await store.appendSessionTurn({ subject: "carol", conversationId: id, user: `t${i}`, result: view(`r${i}`) });
     expect((await store.readConversation("carol", id))?.turns).toHaveLength(store.TURN_LIMIT);
+  });
+
+  it("erases expired chat content, keeps pins, and does not change a pin's activity time", async () => {
+    const clock = vi.spyOn(Date, "now");
+    const start = Date.now();
+    clock.mockReturnValue(start);
+    try {
+      const expired = await store.appendDirectSessionTurn({ subject: "alice", user: "old private prompt", assistant: "old reply" });
+      const pinned = await store.appendDirectSessionTurn({ subject: "alice", user: "important", assistant: "keep" });
+      expect(await store.pinConversation("bob", pinned.id, true)).toBe(false);
+      expect(await store.pinConversation("alice", pinned.id, true)).toBe(true);
+      clock.mockReturnValue(start + 31 * 24 * 60 * 60_000);
+      const list = await store.listConversations("alice");
+      expect(list.conversations.map((entry) => entry.id)).toEqual([pinned.id]);
+      expect(await store.readConversation("alice", expired.id)).toBeNull();
+      expect((await store.readConversation("alice", pinned.id))?.updatedAt).toBe(start);
+      expect(await store.pinConversation("alice", pinned.id, false)).toBe(true);
+      expect((await store.listConversations("alice")).conversations).toEqual([]);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("protects an unresolved workflow after its receipt falls outside the transcript window", async () => {
+    const start = Date.now();
+    const first = await store.appendSessionTurn({ subject: "alice", user: "swap", result: view("sign"), executionReceipt: receipt("uncertain", "uncertain") });
+    for (let i = 0; i < 12; i++) await store.appendDirectSessionTurn({ subject: "alice", conversationId: first.id, user: `question ${i}`, assistant: "answer" });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(start + 31 * 24 * 60 * 60_000);
+    try {
+      expect((await store.listConversations("alice")).conversations).toEqual([expect.objectContaining({ id: first.id, pending: true })]);
+      expect(await store.deleteConversation("alice", first.id)).toBe(false);
+      expect((await store.readConversation("alice", first.id))?.turns.some((turn) => turn.executionReceipt)).toBe(false);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("erases overflow records rather than only trimming their index entries", async () => {
+    const first = await store.appendDirectSessionTurn({ subject: "alice", user: "overflow", assistant: "private" });
+    for (let i = 0; i < store.CONVERSATION_LIMIT; i++) await store.appendDirectSessionTurn({ subject: "alice", user: `new ${i}`, assistant: "reply" });
+    expect((await store.listConversations("alice")).conversations).toHaveLength(store.CONVERSATION_LIMIT);
+    expect(await store.readConversation("alice", first.id)).toBeNull();
+    if (backend === "file") {
+      const files = await readdir(join(process.cwd(), ".local/copilot-conversations"));
+      expect(files.filter((file) => file.startsWith(first.id + "."))).toHaveLength(1);
+      expect(await readdir(join(process.cwd(), ".local/copilot-conversation-index"))).toHaveLength(1);
+    }
+  });
+
+  it("uses the authoritative journal instead of a stale completed browser receipt, then retains the settled journal after cleanup", async () => {
+    const { workflowStore } = await import("@/lib/copilot/workflow/store");
+    const journal = workflowStore<WorkflowRecord>(SECRET);
+    const id = "b54b036b-5b36-4c89-9436-f58f570b63fb";
+    const running = { proposal: { scope: { subject: "alice" } }, status: "running", steps: [{ status: "submitted" }] } as WorkflowRecord;
+    expect(await journal.write(id, null, running)).toBe(true);
+    const first = await store.appendSessionTurn({ subject: "alice", user: "swap", result: view("pending"),
+      executionReceipt: { ...receipt("completed", "settled", 100), workflowId: id } });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 24 * 60 * 60_000);
+    try {
+      expect((await store.listConversations("alice")).conversations[0]).toMatchObject({ id: first.id, pending: true });
+      const stored = await journal.read(id);
+      expect(await journal.write(id, stored!.version, { ...running, status: "completed", steps: [{ id: "step", status: "settled" }] })).toBe(true);
+      expect((await store.listConversations("alice")).conversations).toEqual([]);
+      expect((await journal.read(id))?.value.status).toBe("completed");
+    } finally { clock.mockRestore(); }
   });
 
   it("persists a structured receipt and updates it idempotently without changing prose", async () => {

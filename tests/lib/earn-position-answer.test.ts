@@ -1,9 +1,9 @@
 /**
  * Reported live: "Can you provide my Earn positions" answered with a card explicitly
- * badged "MARGIN ACCOUNT", showing the margin account's collateral/debt — a different
+ * badged "MARGIN ACCOUNT", showing the margin account's collateral/debt - a different
  * pool from Earn supply, even when the same token (e.g. XLM) sits in both at once. This
  * exercises the actual handler (`earnPositionsAnswer`, dispatched via `handleChat`), not
- * just the router's classification — the classification-only tests are in
+ * just the router's classification - the classification-only tests are in
  * supply-position-read.test.ts.
  */
 import { describe, expect, it } from "vitest";
@@ -25,7 +25,7 @@ describe("'my Earn positions' answers with Earn's own numbers, not the margin ac
       expect(res.intent?.template_id).toBe("query_earn_position");
       expect(res.answer?.venue).toBe("earn");
       expect(res.answer?.venue).not.toBe("margin");
-      // The reported failure mode named collateral/debt/MARGIN ACCOUNT — this answer
+      // The reported failure mode named collateral/debt/MARGIN ACCOUNT - this answer
       // must never mention them at all.
       expect(res.message).not.toMatch(/margin account/i);
       expect(res.message).not.toMatch(/borrowed/i);

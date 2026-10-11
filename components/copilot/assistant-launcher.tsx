@@ -7,7 +7,7 @@
  * - Chat history persists across navigations
  *
  * The reply is rendered from the structured `guide` the brain returns, not from its
- * flattened text — see guide-answer-view.tsx. `text` is kept on the turn regardless so
+ * flattened text - see guide-answer-view.tsx. `text` is kept on the turn regardless so
  * history stays readable and a turn without structure still renders.
  */
 
@@ -41,7 +41,7 @@ import { AssistantPanel, type AssistantSendExtras } from "./assistant-panel";
 import { AssistantRegionOverlay } from "./assistant-region-overlay";
 
 const ASK_EVENT = "vanna:assistant:ask";
-/** Browser abort — must cover guide (60s) + prose fallback on cold Vertex. */
+/** Browser abort - must cover guide (60s) + prose fallback on cold Vertex. */
 const ASSISTANT_FETCH_MS = 125_000;
 
 function AssistantLauncherInner() {
@@ -95,7 +95,7 @@ function AssistantLauncherInner() {
   /**
    * A drawn region is a VIEWPORT rectangle, and the capture resolves it with
    * `getBoundingClientRect()`. So if the page scrolls or navigates between drawing the
-   * box and pressing send, the same coordinates now cover different content — the
+   * box and pressing send, the same coordinates now cover different content - the
    * Assistant would answer confidently about a part of the page the user never selected.
    * Dropping the rect is the honest failure: the chip disappears, and the question falls
    * back to the full page capture instead of a silently wrong crop.
@@ -204,7 +204,7 @@ function AssistantLauncherInner() {
           error: e instanceof Error ? e.message : String(e),
         });
         const msg = timedOut
-          ? "That took too long and I stopped waiting. Ask again — a shorter question usually comes back faster."
+          ? "That took too long and I stopped waiting. Ask again - a shorter question usually comes back faster."
           : e instanceof Error
             ? e.message
             : "Request failed.";
@@ -272,7 +272,7 @@ function AssistantLauncherInner() {
           />
           <aside
             data-assistant-panel
-            aria-label="Vanna Assist — ask about this page"
+            aria-label="Vanna Assist - ask about this page"
             className="cp-root relative flex h-full w-full max-w-[452px] flex-col border-l border-vgray-100 bg-surface shadow-2xl"
             style={{
               fontFamily: "var(--font-plus-jakarta-sans), system-ui, sans-serif",
@@ -321,7 +321,7 @@ function AssistantLauncherInner() {
                     setLastContextPath(null);
                     clearRegion();
                     setComposerNonce((n) => n + 1);
-                    toast.success("New chat — history cleared", { duration: 2000 });
+                    toast.success("New chat - history cleared", { duration: 2000 });
                   }}
                   disabled={turns.length === 0}
                   className="flex cursor-pointer items-center gap-1.5 rounded-r2 border border-vgray-100 bg-transparent px-2.5 py-1.5 text-[12px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500 disabled:cursor-default disabled:opacity-40 disabled:hover:border-vgray-100 disabled:hover:bg-transparent disabled:hover:text-vgray-800"

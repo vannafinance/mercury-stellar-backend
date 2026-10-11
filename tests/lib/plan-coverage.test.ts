@@ -109,7 +109,7 @@ describe("residue classification surfaces unless proven safe", () => {
   });
 
   it("does not absorb a health-factor floor as reassurance", () => {
-    // "keep me above 1.4" must stay surfaced if constraint extraction ever misses it —
+    // "keep me above 1.4" must stay surfaced if constraint extraction ever misses it -
     // "above" is deliberately outside the reassurance adjective set.
     const d = classifyResidueText("keep me above 1.4");
     expect(d.class).not.toBe("sentiment");

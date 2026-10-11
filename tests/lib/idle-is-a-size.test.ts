@@ -6,7 +6,7 @@ import { findBalanceFraction } from "@/lib/copilot/amount-intent";
  * "Idle" names the pot and the share at once: everything not already at work.
  *
  * Live, 22 Sep: "can you invest my idle tokens in farm market" answered "How much XLM
- * do you want to supply to Blend?" — asking for a number the sentence had given, and
+ * do you want to supply to Blend?" - asking for a number the sentence had given, and
  * naming an asset and a venue the user never did. Every idle phrasing did it.
  *
  * Two separate faults, both needed:
@@ -49,7 +49,7 @@ describe("THE LIVE BUG: an idle balance asked for a number it had already given"
   }
 
   /**
-   * Stated outright, and still asked for — the same branch, reached without the word
+   * Stated outright, and still asked for - the same branch, reached without the word
    * "idle" at all, which is why the fix belongs in the shared reading and not beside
    * one caller.
    */
@@ -73,7 +73,7 @@ describe("the share is read, not assumed", () => {
   });
 
   /**
-   * The ranking preference is not a size — the guard that keeps "max yield" from
+   * The ranking preference is not a size - the guard that keeps "max yield" from
    * meaning "all of it" has to survive a branch that now reads shares.
    */
   it("still refuses to read the max of max yield as a size", () => {

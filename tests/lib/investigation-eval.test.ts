@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { SIZING_SOURCES_DISAGREE_WARNING } from "@/lib/copilot/investigation/sizing-copy";
+import { CONDITIONAL_REFUSAL } from "@/lib/copilot/conditional-guard";
+import { researchCodec } from "@/lib/copilot/investigation/continuation";
+import { buildQuestionnaireSet } from "@/lib/copilot/investigation/questionnaire";
 
 /**
  * P2.6 fixture-backed evaluation gate. Asserts behaviour, not prose: which
@@ -22,7 +25,8 @@ vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
   return { ...actual, resolveInvestigationScope: mocks.resolveInvestigationScope };
 });
 
-vi.mock("@/lib/copilot/investigation/capacity", () => ({
+vi.mock("@/lib/copilot/investigation/capacity", async (importOriginal) => ({
+  PROTOCOL_MAX_BORROW_FLOOR: (await importOriginal<typeof import("@/lib/copilot/investigation/capacity")>()).PROTOCOL_MAX_BORROW_FLOOR,
   computeAccountPosition: mocks.computeAccountPosition,
   computeBorrowCapacity: mocks.computeBorrowCapacity,
 }));
@@ -106,7 +110,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     );
   });
 
-  it("owner strategy ranks candidates including a non-borrowing alternative", async () => {
+  it("owner strategy offers a borrowing plan beside the model's non-borrowing alternative", async () => {
     const prompt = "use both usdc and xlm to build a strategy in a way that health factor doesnt go below 1.3. You can use spot and farm markets yourself. You can even take new loans";
     const mcp = {
       call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
@@ -153,8 +157,13 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
               constraints: ["Health factor at or above 1.3"],
               borrowing: "allowed",
             },
-            findings: [{ summary: "Rates and idle balances were read", evidenceIds: ["e1", "e2", "e3"] }],
+            findings: [{ summary: "Rates and wallet balances were read", evidenceIds: ["e1", "e2", "e3"] }],
             openQuestions: [],
+            // The no-debt alternative is the model's to compose; the generator no longer volunteers one.
+            plans: [{
+              title: "Lend BLUSDC to Earn", rationale: "Earn pays on the BLUSDC in the wallet (e2, e4), with no new debt.", evidenceIds: ["e2", "e4"],
+              legs: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "all_wallet" } }],
+            }],
           }),
     );
     expect(["researched", "needs_input"]).toContain(result.status);
@@ -169,19 +178,146 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     expect(tools).toContain("vanna_get_price");
   });
 
+  it("a strategy clarify is sent back for plans and becomes plan cards, not a questionnaire (25 Sep, live)", async () => {
+    const mcp = {
+      call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+        if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "19", supply_apy_pct: "19", borrow_apr_pct: "4", utilization_pct: "60" };
+        if (tool === "vanna_list_blend_reserves") return { reserves: [{ venue: "blend", symbol: "USDC", supply_apr_pct: "2", supply_apy_pct: "2", borrow_apr_pct: "5", utilization_pct: "50" }] };
+        if (tool === "vanna_get_wallet_balance") return { assets: [{ symbol: "XLM", balance: "50", status: "ok" }, { symbol: "BLUSDC", balance: "80", status: "ok" }] };
+        if (tool === "vanna_get_price") return { price_usd: args.symbol === "XLM" ? "0.18" : "1" };
+        return {};
+      }),
+    };
+    let turn = 0;
+    let sentBack: string | null = null;
+    const result = await researchTurn(
+      { message: "put my idle usdc to work", wallet: SCOPE.trader, continuation: null, promptName: "strategy-clarify" },
+      deps(mcp, async (modelTurn) => {
+        if (turn++ === 0) return { kind: "inspect", reads: [
+          { capability: "earn_market", args: { asset: "BLUSDC" } },
+          { capability: "blend_markets", args: {} },
+          { capability: "wallet_balances", args: {} },
+          { capability: "asset_price", args: { asset: "BLUSDC" } },
+        ] };
+        if (turn === 2) return {
+          kind: "clarify", intent: "strategy",
+          question: "Which venue would you like to put your USDC to work in?",
+          missing: [{ asset: "USDC", slots: ["asset", "venue", "amount"], sourceQuote: "put my idle usdc to work" }],
+        };
+        // Asked again, with the reason, the model composes the plan itself.
+        sentBack = modelTurn.decisionFeedback ?? null;
+        return {
+          kind: "research_complete",
+          goal: { intent: "strategy", relation: "new", objective: "Put USDC to work", constraints: [], borrowing: "unspecified" },
+          findings: [{ summary: "The wallet holds BLUSDC and Earn pays on it.", evidenceIds: ["e1"] }],
+          openQuestions: [],
+          plans: [{
+            title: "Lend BLUSDC to Earn", rationale: "Earn pays 19% on the BLUSDC in the wallet (e1).", evidenceIds: ["e1"],
+            legs: [{ op: "lend", asset: "BLUSDC", sizing: { kind: "all_wallet" } }],
+          }],
+        };
+      }),
+    );
+    expect(sentBack).toMatch(/plans, not a questionnaire/);
+    expect(result.questionnaire).toBeUndefined();
+    expect(result.candidates?.feasible.length ?? 0).toBeGreaterThan(0);
+    expect(result.executionAllowed).toBe(false);
+  });
+
   it("bare USDC clarifies or resolves a variant rather than guessing", async () => {
     const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a clarify"); }) };
     const result = await researchTurn(
       { message: "what is the USDC rate?", wallet: SCOPE.trader, continuation: null, promptName: "bare-usdc-rate" },
       deps(mcp, async () => ({
         kind: "clarify",
-        question: "Which USDC do you mean — Blend (BLUSDC), Aquarius (AQUSDC), or Soroswap (SOUSDC)?",
+        question: "Which USDC do you mean - Blend (BLUSDC), Aquarius (AQUSDC), or Soroswap (SOUSDC)?",
       })),
     );
     expect(result.status).toBe("needs_input");
     expect(result.executionAllowed).toBe(false);
     expect(result.question).toMatch(/BLUSDC|AQUSDC|SOUSDC|which USDC/i);
     expect(mcp.call).not.toHaveBeenCalled();
+  });
+
+  it("refuses a future-conditioned clarify before issuing a questionnaire", async () => {
+    const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a refused conditional"); }) };
+    const result = await researchTurn(
+      { message: "supply XLM when it reaches $0.30", wallet: SCOPE.trader, continuation: null, promptName: "conditional-clarify" },
+      deps(mcp, async () => ({
+        kind: "clarify",
+        question: "How much XLM?",
+        missing: [{ op: "supply_blend", asset: "XLM", slots: ["amount"], sourceQuote: "supply XLM" }],
+        trigger: { kind: "future_condition", sourceQuote: "when it reaches $0.30" },
+      })),
+    );
+    expect(result.status).toBe("blocked");
+    expect(result.message).toBe(CONDITIONAL_REFUSAL);
+    expect(result.questionnaire).toBeUndefined();
+    expect(result.executionAllowed).toBe(false);
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
+
+  it("refuses 'repay 5 xlm when xlm hits $0.30' with no standing-order mandate (25 Sep, live)", async () => {
+    const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a refused conditional"); }) };
+    const message = "repay 5 xlm of my debt when xlm hits $0.30";
+    const result = await researchTurn(
+      { message, wallet: SCOPE.trader, continuation: null, promptName: "conditional-complete" },
+      deps(mcp, async () => ({
+        kind: "research_complete",
+        goal: { objective: message, constraints: [], borrowing: "unspecified", intent: "strategy",
+          trigger: { kind: "future_condition", sourceQuote: "when xlm hits $0.30" },
+          actions: [{ op: "repay", asset: "XLM", sizing: { kind: "literal", amount: "5", sourceQuote: "repay 5 xlm" }, sourceQuote: "repay 5 xlm" }] },
+        findings: [{ summary: "The user wants this later, when a price arrives.", evidenceIds: [] }], openQuestions: [],
+      })),
+    );
+    expect(result.status).toBe("blocked");
+    expect(result.message).toBe(CONDITIONAL_REFUSAL);
+    expect(result.message).not.toMatch(/Mandate/);
+    expect(result.executionAllowed).toBe(false);
+  });
+
+  it("refuses answers to a sealed future-conditioned questionnaire before planning", async () => {
+    const now = Date.now();
+    const observations = [{
+      id: "w", capability: "wallet_balances", args: {}, observedAt: now, status: "ok" as const,
+      data: { assets: [{ symbol: "XLM", balance: "10", decimals: 7, status: "ok" }], fee_reserve_xlm: "0" },
+    }, {
+      id: "a", capability: "account_collateral", args: {}, observedAt: now, status: "ok" as const,
+      data: { collateral: [{ symbol: "XLM", balance: "10", decimals: 7 }] },
+    }];
+    const questionnaire = buildQuestionnaireSet(
+      [{ op: "supply_blend", asset: "XLM", slots: ["amount"], sourceQuote: "supply XLM" }],
+      observations, now, ["supply XLM when it reaches $0.30"], [], true,
+      { kind: "future_condition", sourceQuote: "when it reaches $0.30" },
+    )!;
+    const continuation = researchCodec("a".repeat(32), "mcp-test").seal(
+      SCOPE,
+      ["supply XLM when it reaches $0.30"],
+      "How much XLM?",
+      { capturedAt: now, observations, capacity: null, questionnaire },
+    );
+    const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a refused questionnaire answer"); }) };
+    const model = vi.fn(async () => { throw new Error("no model on a refused questionnaire answer"); });
+    const section = questionnaire.sections![0];
+    const result = await researchTurn({
+      message: "Use 1 XLM",
+      wallet: SCOPE.trader,
+      continuation,
+      promptName: "conditional-answer",
+      answers: {
+        questionnaireId: questionnaire.id,
+        asset: "XLM",
+        venue: "supply_blend:XLM",
+        amount: { kind: "literal", amount: "1" },
+        summary: "Supply 1 XLM when it reaches $0.30",
+        sections: [{ sectionId: section.id, asset: "XLM", venue: "supply_blend:XLM", amount: { kind: "literal", amount: "1" } }],
+      },
+    }, deps(mcp, model));
+    expect(result.status).toBe("blocked");
+    expect(result.message).toBe(CONDITIONAL_REFUSAL);
+    expect(result.executionAllowed).toBe(false);
+    expect(mcp.call).not.toHaveBeenCalled();
+    expect(model).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -202,7 +338,8 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     );
     expect(result.status).toBe("blocked");
     expect(result.executionAllowed).toBe(false);
-    expect(mcp.call).not.toHaveBeenCalled();
+    // The phrase regex no longer refuses before the model. A future condition is
+    // goal.trigger, anchored to the user's words, and these fixtures never set one.
   });
 
   it("refuses an off-domain prompt at the immediate gate", async () => {
@@ -221,7 +358,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
   it("refuses to size when the app snapshot understates debt vs the contract", async () => {
     // Fixture from BUGS-FOR-APP-TEAM.md: dropped USDC leg → app $1,684.99, contract $2,705.60.
     const prompt =
-      "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 — you can use spot and farm markets yourself, and you can even take new loans.";
+      "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 - you can use spot and farm markets yourself, and you can even take new loans.";
     const mcp = {
       call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
         if (tool === "vanna_get_pool_stats") {
@@ -274,7 +411,9 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
       d,
     );
     expect(result.capacity).toBeNull();
-    expect(result.warnings).toContain(SIZING_SOURCES_DISAGREE_WARNING);
+    // Withheld, not explained on the card: how our two sizing sources compare is not the user's to act on.
+    // What matters is that nothing was sized off the disagreeing figures.
+    expect(result.warnings).not.toContain(SIZING_SOURCES_DISAGREE_WARNING);
     expect(result.candidates?.feasible.some((candidate) => candidate.borrows) ?? false).toBe(false);
     expect(result.message).not.toMatch(/Sized so health/i);
     expect(result.executionAllowed).toBe(false);

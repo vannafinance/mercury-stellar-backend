@@ -1,6 +1,6 @@
 /**
  * Read-only tx lookup for the Assistant diagnosis lane.
- * One RPC call, short timeout — never waits for a ledger to close, never submits.
+ * One RPC call, short timeout - never waits for a ledger to close, never submits.
  */
 
 import { extractTxHash } from "@/lib/assistant/packet";
@@ -49,7 +49,7 @@ export async function lookupAssistantTx(
     return {
       hash,
       status: "NOT_FOUND",
-      detail: "No ledger result yet — it may still be unconfirmed, or the hash is not on this network.",
+      detail: "No ledger result yet - it may still be unconfirmed, or the hash is not on this network.",
     };
   } catch (e) {
     return {

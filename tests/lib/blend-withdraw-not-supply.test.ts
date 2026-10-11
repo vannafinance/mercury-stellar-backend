@@ -1,9 +1,9 @@
 /**
- * Reported live, safety-critical — "Can You Remove 50 BLUSDC fom Farm's Blend Pool"
+ * Reported live, safety-critical - "Can You Remove 50 BLUSDC fom Farm's Blend Pool"
  * (typo "fom" for "from") staged "Supply 50 BLUSDC to Blend" instead of a withdrawal.
  * Root cause: the Blend-write matcher fires on venue signals alone ("blend pool" is a
  * literal substring, "farm's" contains "farm" as a whole word under the router's `any()`
- * boundary rule) with no check for which DIRECTION the money should move — every verb in
+ * boundary rule) with no check for which DIRECTION the money should move - every verb in
  * its allowlist (supply/deposit/deploy/farm/leverage) means "put money in", and nothing
  * excluded a removal verb. Had this been approved, real funds would have moved the wrong
  * way. Fixed by adding a `withdraw_from_blend` op, checked ahead of the supply route
@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import { routeMessage } from "@/lib/copilot/router";
 import { mapOpToMcpStep } from "@/lib/copilot/mcp-write";
 // The write pipeline's risk/simulation step reads the live margin snapshot regardless of
-// MCP_MODE (a real Soroban RPC call, not routed through the mocked MCP client) — mocked
+// MCP_MODE (a real Soroban RPC call, not routed through the mocked MCP client) - mocked
 // here the same way other write-execution tests do, so this test never touches the
 // network.
 vi.mock("@/lib/account-snapshot", async (importOriginal) => {
@@ -39,7 +39,7 @@ vi.mock("@/lib/account-snapshot", async (importOriginal) => {
  * network-dependent: under full-suite load it flaked, and a money-direction test that
  * can go green or red on latency is worse than none. The override this guards
  * (`blendWrite` in handle.ts) lives on the KEYWORD path, so making Vertex unavailable is
- * both deterministic and the case that actually needs covering — if the model is down,
+ * both deterministic and the case that actually needs covering - if the model is down,
  * the wrong-direction bug must still not reappear.
  */
 vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
@@ -114,7 +114,7 @@ describe("withdraw_from_blend builds a real MCP step, not a supply", () => {
 });
 
 /**
- * THE LIVE BUG, end-to-end. `routeMessage` alone was already correct — a SEPARATE,
+ * THE LIVE BUG, end-to-end. `routeMessage` alone was already correct - a SEPARATE,
  * independent regex inside `handleChat` (`blendWrite`, lib/copilot/handle.ts) re-derives
  * "is this a Blend write" from the raw message and unconditionally overrides `routed` to
  * `deploy_to_blend` whenever it fires, clobbering a correctly-routed withdrawal. Live-

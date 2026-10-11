@@ -3,10 +3,10 @@
  *
  * Found live: "Swap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC" paused on the
  * swap leg (BLUSDC can't be swapped into) and, once the plan resumed with SOUSDC as the
- * swap destination, the SAME asset leaked into the farm leg too — "deploy_to_blend" with
+ * swap destination, the SAME asset leaked into the farm leg too - "deploy_to_blend" with
  * SOUSDC. The old code silently coerced AQUSDC/SOUSDC (and anything else unrecognised)
  * into Blend's own USDC reserve, so a Soroswap-flavored token got quietly supplied to
- * Blend instead — confirmed on-chain: real "Supply 2.00 USDC" / "Supply 10.00 USDC"
+ * Blend instead - confirmed on-chain: real "Supply 2.00 USDC" / "Supply 10.00 USDC"
  * transactions landed in Blend when the user's actual intent (having just swapped into
  * SOUSDC) could only ever have been Soroswap liquidity.
  */

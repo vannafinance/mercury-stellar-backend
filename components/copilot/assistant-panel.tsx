@@ -1,11 +1,11 @@
 "use client";
 
 /**
- * Assistant drawer body — the Guide surface from the Copilot design.
+ * Assistant drawer body - the Guide surface from the Copilot design.
  *
  * The Guide explains; the Copilot acts. A turn renders as the design's article
  * (summary → sections → glossary → follow-ups) whenever the brain returned a
- * structured answer, and falls back to prose when it returned only text — an error,
+ * structured answer, and falls back to prose when it returned only text - an error,
  * a clarification, or a turn that navigated the page instead of explaining it.
  */
 
@@ -37,7 +37,7 @@ export type AssistantSend = (
   data?: Record<string, unknown> | null;
 }>;
 
-/** Short openers, Gemini-style — chips hug the text, they don’t stretch full width. */
+/** Short openers, Gemini-style - chips hug the text, they don’t stretch full width. */
 const SUGGESTIONS = [
   "What can you do?",
   "What am I looking at?",
@@ -242,7 +242,7 @@ export function AssistantPanel({
     phase === "capturing"
       ? "Reading this page…"
       : phase === "thinking"
-        ? "Thinking — answers usually take 10–30 seconds."
+        ? "Thinking - answers usually take 10–30 seconds."
         : "Working…";
 
   return (

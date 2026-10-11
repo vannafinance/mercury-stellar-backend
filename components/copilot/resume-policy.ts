@@ -6,13 +6,13 @@
  *
  * A 4-leg run (lend → deposit → borrow → supply) used to continue by posting
  * EVERY remaining leg in a single request. The server's runPlan happily executed
- * the whole tail in that one hop — deliberately, to avoid a client round-trip on
- * the happy auto-sign path — and there is no streaming, so the card could not
+ * the whole tail in that one hop - deliberately, to avoid a client round-trip on
+ * the happy auto-sign path - and there is no streaming, so the card could not
  * re-render until the entire batch came back. What the user saw was leg 2 frozen
  * on "submitted · waiting on ledger" for tens of seconds, then legs 3 and 4
  * appearing already settled, having never been shown running.
  *
- * The final state was correct — distinct hashes, right order. Only the progress
+ * The final state was correct - distinct hashes, right order. Only the progress
  * was invisible, which is its own bug: on a money path, "nothing is happening"
  * and "three transactions are happening" must not look the same.
  *
@@ -25,7 +25,7 @@
  * Send one leg and the server plans one leg, so its `remaining_legs` comes back
  * empty and it reports the strategy finished. The queue therefore cannot live on
  * the server: whoever splits the batch must remember what it held back.
- * pickRemainingLegs is that rule — trust the server while it still knows about
+ * pickRemainingLegs is that rule - trust the server while it still knows about
  * later legs, fall back to the client's tail once it stops.
  */
 
@@ -62,12 +62,12 @@ export function splitResumeBatch<T>(legs: readonly T[] | null | undefined): {
  *
  * The server's list wins whenever it is non-empty: it reflects what actually
  * executed, including legs it skipped or re-ordered. An empty or absent list is
- * ambiguous — either the strategy is genuinely finished, or we only handed it
- * one leg and it finished THAT — so the client's own tail decides.
+ * ambiguous - either the strategy is genuinely finished, or we only handed it
+ * one leg and it finished THAT - so the client's own tail decides.
  *
  * `cardUnsettled` is the last resort: rebuild from the strategy card's pending /
  * needs_sign rows. Needed when the client queue was advanced before a hop
- * landed and then that hop aborted — without this, borrow disappears from the
+ * landed and then that hop aborted - without this, borrow disappears from the
  * queue and the run summarizes after deposit alone.
  */
 export function pickRemainingLegs<T>(
@@ -130,7 +130,7 @@ export function hasMoreLegs<T>(
   return pickRemainingLegs(serverRemaining, clientTail, cardUnsettled).length > 0;
 }
 
-/** Terminal statuses — the leg will not run again. */
+/** Terminal statuses - the leg will not run again. */
 const TERMINAL_STEP: ReadonlySet<string> = new Set([
   "ok",
   "done",
@@ -161,7 +161,7 @@ export function strategyIsComplete(
 }
 
 /**
- * Whether the full strategy card is done — never a single-hop patch.
+ * Whether the full strategy card is done - never a single-hop patch.
  *
  * A resume hop often returns `multi_leg_steps: [thisLegOnly]`. Treating that
  * 1-row array as "complete" cleared the borrow/supply queue while the card
@@ -181,7 +181,7 @@ export function isStrategyRunComplete(
  * `preferResume` true and toasted "Running Borrow… (N more after this)".
  *
  * When incomplete, only server remaining or the client's own split tail may
- * drive resume — not orphan unsettled card rows alone (those can be a previous
+ * drive resume - not orphan unsettled card rows alone (those can be a previous
  * STAGED plan merged into the accumulator).
  */
 export function isUnsizedAddLiquidity(leg: {
@@ -240,7 +240,7 @@ const FARM_WRITE_OPS = new Set([
   "withdraw_from_blend",
 ]);
 
-/** True when the card already has this Farm write settled — leftover unsized twin is not a new hop. */
+/** True when the card already has this Farm write settled - leftover unsized twin is not a new hop. */
 export function farmWriteAlreadySettled(
   op: string | null | undefined,
   card: readonly { op?: string | null; status?: unknown }[] | null | undefined,
@@ -278,7 +278,7 @@ export function shouldAutoResume(opts: {
   /** Prefer / can_resume flags from the server for this hop. */
   preferFlag?: boolean;
   canResumeWithAutoApprove?: boolean;
-  /** Stated HF floor breached — wait for Continue / Stop, do not auto-chain. */
+  /** Stated HF floor breached - wait for Continue / Stop, do not auto-chain. */
   hfPaused?: boolean;
 }): boolean {
   if (opts.complete) return false;
@@ -305,7 +305,7 @@ const UNSETTLED_FOR_RESUME: ReadonlySet<string> = new Set([
 
 /**
  * Rebuild a resume queue from the strategy card when the client/server lists are
- * empty. Only legs that still need to run — never ok/done/skipped.
+ * empty. Only legs that still need to run - never ok/done/skipped.
  */
 export function legsFromUnsettledSteps(
   steps: readonly {
@@ -341,7 +341,7 @@ export function legsFromUnsettledSteps(
  * Statuses that mean "this leg is the one a signature is about to settle".
  *
  * `pending` is deliberately absent. Including it once let a single signature
- * stamp legs 3 and 4 with leg 2's hash — three rows reading DONE against two
+ * stamp legs 3 and 4 with leg 2's hash - three rows reading DONE against two
  * on-chain transactions. Claiming a transaction that never happened is the
  * worst thing this UI can do, so a pending leg is never touched.
  */
@@ -355,9 +355,9 @@ export const AWAITING_SIGNATURE: ReadonlySet<string> = new Set([
  * Apply `patch` to the FIRST leg awaiting a signature, and no others.
  *
  * One signature settles exactly one leg, so this is the only sanctioned way to
- * write a hash onto a row. Both callers go through it — the submit-time stamp
+ * write a hash onto a row. Both callers go through it - the submit-time stamp
  * (hash + "confirming", status untouched) and the confirmation-time settle
- * (status → ok) — so the rule cannot drift between them.
+ * (status → ok) - so the rule cannot drift between them.
  */
 export function claimFirstAwaitingLeg<T extends { status?: unknown }>(
   steps: readonly T[] | null | undefined,
@@ -377,7 +377,7 @@ export function claimFirstAwaitingLeg<T extends { status?: unknown }>(
 
 /**
  * How long a Soroban testnet transaction realistically takes to confirm. Not a
- * timeout — just what the user is told to expect, so a normal wait does not read
+ * timeout - just what the user is told to expect, so a normal wait does not read
  * as a hang.
  */
 export const LEDGER_CONFIRM_HINT = "testnet can take ~30–60s";
@@ -392,6 +392,6 @@ export const LEDGER_CONFIRM_HINT = "testnet can take ~30–60s";
 export function ledgerWaitCopy(hash?: string | null): string {
   const short = hash ? `${hash.slice(0, 10)}…` : null;
   return short
-    ? `Submitted ${short} — confirming on ledger (${LEDGER_CONFIRM_HINT})…`
+    ? `Submitted ${short} - confirming on ledger (${LEDGER_CONFIRM_HINT})…`
     : `Confirming on ledger (${LEDGER_CONFIRM_HINT})…`;
 }

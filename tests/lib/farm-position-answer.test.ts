@@ -1,14 +1,14 @@
 /**
  * Reported live, issue #18: "My farm position" answered with a card explicitly badged
  * MARGIN ACCOUNT and a note admitting "Blend supplies and Aquarius LP shares stay on
- * Farm" — the whole-account fan-out's farm-overview call only ever contributes a
+ * Farm" - the whole-account fan-out's farm-overview call only ever contributes a
  * best-effort PROSE sentence, never structured facts, so a real Blend/Aquarius LP
  * position never actually showed up. This exercises the actual handler
  * (`farmPositionAnswer`, dispatched via `handleChat`), not just the router's
- * classification — the classification-only tests are in supply-position-read.test.ts.
+ * classification - the classification-only tests are in supply-position-read.test.ts.
  *
  * An earlier version of this fix reused `getLitePositionsFromChain` (nets farm supply
- * against margin debt in the same asset — right for "net exposure", wrong for "how much
+ * against margin debt in the same asset - right for "net exposure", wrong for "how much
  * do I have"); live-verified it answered "$0.00" for a real ~$49.86 Blend BLUSDC supply.
  * These tests pin the corrected version: gross balances straight from
  * `BlendService`/`AquariusService`/`SoroswapService`, no debt-netting.
@@ -24,7 +24,7 @@ describe("'my farm position' routes to the Farm-only read, not the margin fan-ou
   });
 
   it("narrows to just that venue when one is named, on the same route", () => {
-    // No separate per-venue route exists — naming "blend"/"aquarius"/"soroswap" alongside
+    // No separate per-venue route exists - naming "blend"/"aquarius"/"soroswap" alongside
     // "farm position" used to fall through the exclusion built for this comment's old
     // (incorrect) assumption, straight to the generic capabilities blurb. It now narrows
     // the SAME farm-overview read instead.
@@ -50,7 +50,7 @@ describe("'my farm position' routes to the Farm-only read, not the margin fan-ou
     }
   });
 
-  // Still holdings rather than pool-wide reserve APY — but a named venue AND a named
+  // Still holdings rather than pool-wide reserve APY - but a named venue AND a named
   // asset is one position, which Blend publishes its own read for. The farm overview
   // headlines with Deposit TVL across every venue, which is not what was asked.
   it("my Blend/XLM position stats is that one Blend position", () => {
@@ -126,7 +126,7 @@ const noBlend = { bTokenBalance: "0", underlyingBalance: "0" };
 
 describe("the farm-position answer never mentions the margin account", () => {
   it("reports the real GROSS Blend/Aquarius balance, not a debt-netted equity figure", async () => {
-    // Blend XLM: none. Blend USDC (BLUSDC): a real ~$49.86 supply, gross — the exact
+    // Blend XLM: none. Blend USDC (BLUSDC): a real ~$49.86 supply, gross - the exact
     // figure that a debt-netted computation zeroed out in the reported bug.
     mocks.getUserBlendBalance.mockImplementation(async (_addr: string, symbol: string) =>
       symbol === "USDC" ? { bTokenBalance: "47.22", underlyingBalance: "49.8607014" } : noBlend,
@@ -151,7 +151,7 @@ describe("the farm-position answer never mentions the margin account", () => {
   });
 
   it("reports the actual LP share count, not just the underlying token split", async () => {
-    // Reported live: "Soroswap · XLM/USDC LP: 28.904 XLM + 1.9678 USDC ($6.38)" — the
+    // Reported live: "Soroswap · XLM/USDC LP: 28.904 XLM + 1.9678 USDC ($6.38)" - the
     // underlying split, correct as far as it went, but never the LP share amount itself.
     mocks.getUserBlendBalance.mockResolvedValue(noBlend);
     mocks.getLpBalance.mockResolvedValue("5.5"); // Soroswap LP shares held

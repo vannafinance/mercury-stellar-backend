@@ -47,7 +47,8 @@ describe("executionReceiptFromWorkflowView", () => {
     } as WorkflowView;
     expect(executionReceiptFromWorkflowView(view, "testnet")).toEqual({
       workflowId: "wf-1", status: "completed", network: "testnet",
-      steps: [{ operation: "swap", asset: "XLM", amount: "10", status: "settled", txHash: "ab".repeat(32), settledLedger: 42 }],
+      // The card's own label travels too: a restored card read "swap 10 XLM" without it.
+      steps: [{ operation: "swap", label: "Swap", asset: "XLM", amount: "10", status: "settled", txHash: "ab".repeat(32), settledLedger: 42 }],
     });
   });
 });

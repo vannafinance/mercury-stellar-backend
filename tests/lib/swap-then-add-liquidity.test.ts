@@ -1,6 +1,6 @@
 /**
  * Reported live: "Swap 10 XLM to AQUSDC and add liquidity in Aquarius" executed ONLY
- * the swap — no plan preview, no LP leg. Same class of bug for Soroswap.
+ * the swap - no plan preview, no LP leg. Same class of bug for Soroswap.
  *
  * Root cause (three independent verb/override lists that all missed AMM LP phrases):
  *   1. looksLikeMultiGoal never counted "add liquidity" as a second action
@@ -36,7 +36,7 @@ const vertexSwap = vi.hoisted(() =>
  *
  * What this file tests is the DETERMINISTIC path: that the step extractor still adds the
  * add_liquidity leg when Vertex's tool selection names only the swap. The planner is a
- * separate route to a plan and is not under test here — but it was left unmocked, so
+ * separate route to a plan and is not under test here - but it was left unmocked, so
  * `handleChat` made a real Vertex call against vitest's 5s default timeout. That made a
  * multi-leg correctness test fail or pass on network latency.
  */

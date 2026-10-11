@@ -81,7 +81,7 @@ export const useAllSoroswapPoolStats = (): SoroswapPoolWithStats[] => {
  * `{ stats, isLoading, isRefreshing, refresh }`.
  * @param enabled - Gate the query (e.g. only when the Soroswap tab is visible).
  * @param pairAddress - Which pool to fetch (see `SOROSWAP_POOLS`). Omitting
- *   this defaults to the XLM/USDC pool — passing the wrong (or no) address
+ *   this defaults to the XLM/USDC pool - passing the wrong (or no) address
  *   for a non-default pool silently returns XLM/USDC's stats instead.
  */
 export const useSoroswapPoolStats = (enabled = true, pairAddress?: string) => {
@@ -173,7 +173,7 @@ export const useSoroswapEvents = (
     enabled: Boolean(pairAddress && marginAccountAddress),
     queryFn: async (): Promise<SoroswapLpEvent[]> => {
       if (!pairAddress || !marginAccountAddress) return [];
-      // Mercury + a bounded RPC fallback, merged via Promise.allSettled —
+      // Mercury + a bounded RPC fallback, merged via Promise.allSettled -
       // same fix already applied to margin, Earn, and Aquarius LP history.
       const [mercurySettled, rpcSettled] = await Promise.allSettled([
         getSoroswapLpEventsFromMercury(pairAddress, marginAccountAddress),

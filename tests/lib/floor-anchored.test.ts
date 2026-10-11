@@ -1,6 +1,6 @@
 /**
  * The floor is the user's number, located by the model and verified against the user's
- * own words — not re-parsed from their sentence by a regex list.
+ * own words - not re-parsed from their sentence by a regex list.
  *
  * ## The live failure this pins
  *
@@ -61,7 +61,7 @@ describe("parseDecision healthFactorFloor", () => {
 
 /**
  * A budget the user armed, refusing a spend they set the limit for, is the budget
- * working — but only if they are told which limit and how to move it. The card used to
+ * working - but only if they are told which limit and how to move it. The card used to
  * say "sign this in your wallet" for a blown cap, a dead session and an unallowlisted
  * contract alike, which sends someone who armed a budget precisely to avoid the popup
  * back to the popup, unable to tell which of their own caps stopped it.
@@ -87,9 +87,9 @@ describe("autoSignRefusal", () => {
 
 describe("preBroadcastRejection", () => {
   it("names the MCP's reason for an envelope it classified inside the tool", () => {
-    // The 13 Sep deposit: keys error, message, code, contract_diagnostic, reason — no tx_hash.
+    // The 13 Sep deposit: keys error, message, code, contract_diagnostic, reason - no tx_hash.
     const build = { error: "simulation_failed", message: "On-chain simulation rejected the transaction: balance too low", code: "3", contract_diagnostic: "…", reason: "insufficient_balance_or_allowance" };
-    expect(preBroadcastRejection(build, null)).toBe("Not submitted — the protocol rejected this step before broadcast: On-chain simulation rejected the transaction: balance too low");
+    expect(preBroadcastRejection(build, null)).toBe("Not submitted - the protocol rejected this step before broadcast: On-chain simulation rejected the transaction: balance too low");
   });
   it("falls back to error and reason when there is no message", () => {
     expect(preBroadcastRejection({ error: "health_check_failed", reason: "ltv_too_high" }, null)).toMatch(/health_check_failed \(ltv too high\)/);
@@ -110,7 +110,7 @@ describe("preBroadcastRejection", () => {
       auto_sign: "rejected",
       reason: "wallet_not_bound",
       error: "wallet_not_bound",
-      message: "FULL unsigned envelope is in tool result field unsigned_xdr (8188 chars). Sign it in Freighter/wallet — do not invent a hash.",
+      message: "FULL unsigned envelope is in tool result field unsigned_xdr (8188 chars). Sign it in Freighter/wallet - do not invent a hash.",
     };
     expect(preBroadcastRejection(build, null)).toBeNull();
   });
@@ -123,7 +123,7 @@ describe("preBroadcastRejection", () => {
     expect(preBroadcastRejection(build, null)).toMatch(/rejected this step before broadcast/);
   });
 
-  it("stays silent — uncertain — when a hash exists or the error carries no classification", () => {
+  it("stays silent - uncertain - when a hash exists or the error carries no classification", () => {
     expect(preBroadcastRejection({ error: "submit_failed", message: "timeout", code: "x" }, "a".repeat(64))).toBeNull();
     expect(preBroadcastRejection({ error: "internal_error", message: "boom" }, null)).toBeNull();
     expect(preBroadcastRejection({ unsigned_xdr: "AAAA" }, null)).toBeNull();

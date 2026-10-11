@@ -1,10 +1,10 @@
 /**
- * Workflows as data — Phase 3 of the consolidation plan.
+ * Workflows as data - Phase 3 of the consolidation plan.
  *
  * Op ordering used to live only as branches inside `expandPlanWrites`. Adding a
  * product surface meant editing that switch (and hoping `plan-approval` leg counts
  * stayed in sync). Here each op declares its ordered legs, whether they are
- * atomic, and why a split exists — protocol meaning next to the rule.
+ * atomic, and why a split exists - protocol meaning next to the rule.
  *
  * Expansion still uses the shared sizers (`splitLeverageAmounts`,
  * `netOfOriginationFee`, `sameAsset`). This file owns *order and metadata*; math
@@ -35,7 +35,7 @@ export interface WorkflowDef {
   steps: StepDef[];
   /** false ⇒ separate signatures / hops required. */
   atomic: boolean;
-  /** Protocol reason for a non-atomic split — kept next to the rule. */
+  /** Protocol reason for a non-atomic split - kept next to the rule. */
   splitWhy: string;
   sizing: "leverage" | "fraction" | null;
   requires: Array<"wallet" | "smart_account">;
@@ -148,7 +148,7 @@ export const WORKFLOWS = {
     resumable: true,
   },
   /**
-   * Unlevered Blend supply — one call. Levered paths use deploy_to_blend / supply
+   * Unlevered Blend supply - one call. Levered paths use deploy_to_blend / supply
    * with L>1 and expand into deposit → borrow → supply (see expand below).
    */
   supply_to_blend: {
@@ -161,7 +161,7 @@ export const WORKFLOWS = {
     atomic: false,
     splitWhy:
       "Levered farm must credit collateral before borrow, then supply free balance " +
-      "(net of origination fee) into Blend — three signatures.",
+      "(net of origination fee) into Blend - three signatures.",
     sizing: "leverage",
     requires: ["smart_account"],
     resumable: true,
@@ -228,7 +228,7 @@ export const WORKFLOWS = {
     atomic: false,
     splitWhy:
       "is_borrow_allowed runs against collateral before the deposit leg of the same " +
-      "combined call is credited — so levered deposit+borrow must be two signatures. " +
+      "combined call is credited - so levered deposit+borrow must be two signatures. " +
       "Cross-asset sizing needs an oracle and stays whole until materializeLeverageWrites.",
     sizing: "leverage",
     requires: ["smart_account"],
@@ -303,7 +303,7 @@ export type ExpandLabelFns = {
 /**
  * Expand one plan step using {@link WORKFLOWS}.
  *
- * Behaviour matches the historical `expandPlanWrites` branches — the differential
+ * Behaviour matches the historical `expandPlanWrites` branches - the differential
  * harness asserts that. Unknown ops fall through as a single pass-through leg.
  */
 export function expandStepViaWorkflow(
@@ -379,7 +379,7 @@ export function expandStepViaWorkflow(
           asset,
           amount: null,
           leverage,
-          label: labels.write("deploy_to_blend", null, asset, leverage) + " — need amount",
+          label: labels.write("deploy_to_blend", null, asset, leverage) + " - need amount",
           multi_leg: true,
         },
       ];
@@ -430,7 +430,7 @@ export function expandStepViaWorkflow(
           borrow_asset: borrowAsset,
           label:
             labels.write("deposit_and_borrow", null, asset, leverage ?? 2) +
-            " — need amount",
+            " - need amount",
           multi_leg: true,
         },
       ];
@@ -476,7 +476,7 @@ export function expandStepViaWorkflow(
 
   // ── Pass-through (atomic / unlevered / unknown) ─────────────────────────
   // Keep the plan's op spelling (supply vs lend, open_account vs create_account)
-  // — historical expand did not rewrite aliases here.
+  // - historical expand did not rewrite aliases here.
   return [
     {
       ...carry,

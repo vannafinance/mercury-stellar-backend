@@ -7,6 +7,7 @@ import { createFlashResearchModel, investigateWithFlash, researchThinkingLevel }
 import { generateInvestigationJson } from "@/lib/copilot/vertex";
 import { getMcpClient } from "@/lib/copilot/mcp-client";
 import type { ResearchTurn } from "@/lib/copilot/investigation/types";
+import { MODEL_DEFAULTS } from "@/lib/copilot/model-registry";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); });
 
@@ -22,8 +23,9 @@ describe("Flash research adapter", () => {
     const signal = new AbortController().signal;
     vi.mocked(generateInvestigationJson).mockResolvedValue({ kind: "clarify", question: "Which objective?" });
     await model(turn, signal);
+    const { capabilities: _capabilities, ...turnForModel } = turn;
     expect(generateInvestigationJson).toHaveBeenCalledWith(
-      "gemini-3.8-flash", expect.stringContaining("Permission to borrow is optional"), JSON.stringify(turn), signal,
+      "gemini-3.8-flash", expect.stringContaining("Permission to borrow is optional"), JSON.stringify(turnForModel), signal,
       "LOW",
       expect.arrayContaining([
         expect.objectContaining({ name: "research_complete" }),
@@ -50,15 +52,23 @@ describe("Flash research adapter", () => {
       id, capability: "wallet_balances", args: {}, observedAt: 0, status: "ok" as const,
     });
 
+    // Gathering is always the cheap level, whatever the concluding level is configured to be.
     expect(researchThinkingLevel(turn({}))).toBe("LOW");
-    // Budget exhausted: this turn has to produce a conclusion, so pay for the reasoning.
-    expect(researchThinkingLevel(turn({ remaining: { turns: 8, toolCalls: 0 } }))).toBe("MEDIUM");
-    // Last turn available — no further read can inform it.
-    expect(researchThinkingLevel(turn({ remaining: { turns: 1, toolCalls: 8 } }))).toBe("MEDIUM");
-    // Enough evidence in hand that a handoff is plausible.
-    expect(researchThinkingLevel(turn({
-      observations: ["e1", "e2", "e3", "e4"].map(observation),
-    }))).toBe("MEDIUM");
+    const concluding = [
+      // Budget exhausted: this turn has to produce a conclusion.
+      turn({ remaining: { turns: 8, toolCalls: 0 } }),
+      // Last turn available - no further read can inform it.
+      turn({ remaining: { turns: 1, toolCalls: 8 } }),
+      // Enough evidence in hand that a handoff is plausible.
+      turn({ observations: ["e1", "e2", "e3", "e4"].map(observation) }),
+    ];
+    // The concluding level is the registry default for the research model, and an env var overrides it.
+    for (const t of concluding) expect(researchThinkingLevel(t)).toBe(MODEL_DEFAULTS.researchConcludeThinking);
+    vi.stubEnv("VERTEX_RESEARCH_CONCLUDE_THINKING", "medium");
+    for (const t of concluding) expect(researchThinkingLevel(t)).toBe("MEDIUM");
+    vi.stubEnv("VERTEX_RESEARCH_CONCLUDE_THINKING", "banana");
+    for (const t of concluding) expect(researchThinkingLevel(t)).toBe(MODEL_DEFAULTS.researchConcludeThinking);
+    expect(researchThinkingLevel(turn({}))).toBe("LOW");
   });
 
   it("tells the model about venues from the registry, not a hand-written list", async () => {
@@ -67,7 +77,7 @@ describe("Flash research adapter", () => {
     for (const { venue, assets } of venueTable()) expect(RESEARCH_SYSTEM).toContain(`${venue} takes ${assets.join(", ")}`);
     for (const { venue, usdc } of venueUsdc()) expect(RESEARCH_SYSTEM).toContain(`${venue} → ${usdc}`);
     for (const { venue, tokens } of lpPairs()) expect(RESEARCH_SYSTEM).toContain(`${venue}: ${tokens.join(" + ")}`);
-    // A venue the user leaves open is their choice when several executable venues fit — not a rate pick.
+    // A venue the user leaves open is their choice when several executable venues fit - not a rate pick.
     expect(RESEARCH_SYSTEM).not.toMatch(/Venue selection is yours/);
     expect(RESEARCH_SYSTEM).toMatch(/names NO venue and more than one\s+executable venue fits/);
     expect(RESEARCH_SYSTEM).not.toMatch(/AQUSDC for Aquarius, SOUSDC for Soroswap/);

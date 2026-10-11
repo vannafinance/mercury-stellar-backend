@@ -1,4 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
+
+/**
+ * What is under test is the account lookup and the deploy prompt, not the chain. Left live,
+ * the position read went to Horizon/RPC and a dropped connection ran it past the 20s timeout
+ * (29 Sep, 3 of 4 runs locally). An account with no readable position is what these cases mean.
+ */
+vi.mock("@/lib/copilot/investigation/capacity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/investigation/capacity")>();
+  return { ...actual, computeAccountPosition: vi.fn(async () => null), computeBorrowCapacity: vi.fn(async () => null), computeSizingBasis: vi.fn(async () => null) };
+});
+// The on-chain double-check before create_account (service.ts) asks the chain directly; here
+// the chain agrees with the MCP's "required": no account.
+vi.mock("@/lib/margin-utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/margin-utils")>();
+  return { ...actual, MarginAccountService: { ...actual.MarginAccountService, discoverExistingAccount: vi.fn(async () => null) } };
+});
+vi.mock("@/lib/account-snapshot", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/account-snapshot")>();
+  return { ...actual, computeMarginSnapshot: vi.fn(async () => { throw new Error("no chain in test"); }) };
+});
 import { researchTurn } from "@/lib/copilot/investigation/service";
 import { mapOpToMcpStep } from "@/lib/copilot/mcp-write";
 

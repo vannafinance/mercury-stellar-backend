@@ -92,7 +92,7 @@ describe("normalizeDepositCollateralError trustline", () => {
   });
 });
 
-describe("walletSacBalance — failed simulation is unknown, not zero", () => {
+describe("walletSacBalance - failed simulation is unknown, not zero", () => {
   const g = "G" + "A".repeat(55);
 
   it("returns POSITIVE_INFINITY when simulation throws an error", async () => {

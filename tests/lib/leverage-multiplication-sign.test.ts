@@ -1,6 +1,6 @@
 /**
  * The app's own rendered summaries and labels write leverage as "2×" (U+00D7), not "2x"
- * (see step-extractor.ts's summary text and plan-approval.ts's labelFor) — but both
+ * (see step-extractor.ts's summary text and plan-approval.ts's labelFor) - but both
  * `findLeverage` (router.ts) and step-extractor.ts's own LEVERAGE regex matched only
  * ascii "x". A message containing a resent/rendered "at 2×" summary therefore silently
  * lost its leverage on any round trip, surfacing live as a leveraged plan resuming with

@@ -5,7 +5,7 @@ import type { RoutedIntent } from "@/lib/copilot/types";
 /**
  * Aquarius and Soroswap LP legs share the "farm" venue bucket with Blend (same as the
  * app's own Farm tab covers all three), but that bucket's label suffix was a flat "into
- * Blend" — so a genuine Soroswap add_liquidity step rendered "Add liquidity with 5 SOUSDC
+ * Blend" - so a genuine Soroswap add_liquidity step rendered "Add liquidity with 5 SOUSDC
  * into Blend". Reported live after a swap-into-SOUSDC-then-add-liquidity plan: the leg
  * showed a Blend transaction card, and running it deposited into Blend instead of
  * Soroswap. The venue actually applies is determined by the USDC variant named, not by

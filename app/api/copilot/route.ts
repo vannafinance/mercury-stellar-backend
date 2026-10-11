@@ -1,5 +1,5 @@
 /**
- * In-process Copilot API — Gemini intent + MCP execution + auto-sign.
+ * In-process Copilot API - Gemini intent + MCP execution + auto-sign.
  *
  *   GET  /api/copilot           → health
  *   GET  /api/copilot?probe=1   → health + Vertex probe

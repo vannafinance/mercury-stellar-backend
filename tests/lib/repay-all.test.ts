@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { findAmountFraction, REPAY_FRACTION_OPTIONS } from "@/lib/copilot/amount-intent";
 import { routeMessage } from "@/lib/copilot/router";
 
-describe("findAmountFraction — Margin chip language", () => {
+describe("findAmountFraction - Margin chip language", () => {
   it("maps all / full / pay off / clear to 100%", () => {
     expect(findAmountFraction("Repay all my XLM debt on margin")).toBe(1);
     expect(findAmountFraction("pay off my loan")).toBe(1);
@@ -25,7 +25,7 @@ describe("findAmountFraction — Margin chip language", () => {
     expect(findAmountFraction("repay 100% of debt")).toBe(1);
   });
 
-  it("stays null when the user only named the asset — chips belong there", () => {
+  it("stays null when the user only named the asset - chips belong there", () => {
     expect(findAmountFraction("repay my XLM")).toBeNull();
     expect(findAmountFraction("repay XLM on margin")).toBeNull();
   });
@@ -35,7 +35,7 @@ describe("findAmountFraction — Margin chip language", () => {
   });
 });
 
-describe("routeMessage — repay all carries fraction, not a blank amount ask", () => {
+describe("routeMessage - repay all carries fraction, not a blank amount ask", () => {
   it("Repay all my XLM debt → repay XLM with fraction 1, requires_amount false", () => {
     const r = routeMessage("Repay all my XLM debt on margin");
     expect(r.kind).toBe("write");

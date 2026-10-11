@@ -1,6 +1,6 @@
 /**
- * Reported live, issue #14: "How much collateral do I have?" — one of the product's
- * own suggested prompts — fell through to the generic capabilities blurb. The fixed
+ * Reported live, issue #14: "How much collateral do I have?" - one of the product's
+ * own suggested prompts - fell through to the generic capabilities blurb. The fixed
  * phrase list matched "my collateral"/"collateral value" but not this word order.
  *
  * Issue #15: "Why is it showing 'Repay 2 USDC'? When I asked 'How much do I owe?'"
@@ -35,7 +35,7 @@ vi.mock("@/lib/account-snapshot", async (importOriginal) => {
   return { ...actual, computeMarginSnapshot: mocks.computeMarginSnapshot };
 });
 // query_debt/query_collateral aren't on handleChat's "keywordConfident" allowlist, so a
-// real run also asks Vertex to independently confirm the route — a live network call
+// real run also asks Vertex to independently confirm the route - a live network call
 // this test environment can't make. Rejecting it exercises the documented fallback
 // ("vertex route failed, keyword fallback") instead of hanging on a real request.
 vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
@@ -90,10 +90,10 @@ describe("the debt/collateral snapshot answer's follow-up slots", () => {
 });
 
 /**
- * Reported live — a follow-up to the fix above: "What is my XLM Balance in Margin
+ * Reported live - a follow-up to the fix above: "What is my XLM Balance in Margin
  * account?" correctly answered "You have 6,975.1535 XLM ($1078.76) of collateral." in
  * PROSE, but its facts CARD still dumped health factor, debt, net value, both
- * liquidation figures, and every other asset's amount — the exact "gross amount only"
+ * liquidation figures, and every other asset's amount - the exact "gross amount only"
  * violation this session already fixed for named single-figure margin questions. A
  * focused single-asset question must narrow the card the same way it narrows the
  * sentence.
@@ -120,7 +120,7 @@ describe("a focused single-asset question narrows the facts card too, not just t
     });
   });
 
-  it("shows only the asked-about asset's amount — no health factor, debt, or other assets", async () => {
+  it("shows only the asked-about asset's amount - no health factor, debt, or other assets", async () => {
     const res = await handleChat({ ...base, message: "What is my XLM Balance in Margin account?" });
     expect(res.kind).toBe("answer");
     const facts = res.data as Record<string, unknown>;

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { interruptible, runInvestigation } from "@/lib/copilot/investigation/runtime";
 import { readCapabilities, resolveRead } from "@/lib/copilot/investigation/capabilities";
-import { MAX_BATCHED_READS } from "@/lib/copilot/investigation/decision";
+import { MAX_BATCHED_READS, parseDecision } from "@/lib/copilot/investigation/decision";
 import { assertFlashModel } from "@/lib/copilot/investigation/flash-policy";
 import type { InvestigationRequest, ResearchModel, ResearchTurn } from "@/lib/copilot/investigation/types";
 
@@ -26,6 +26,63 @@ const read = () => ({ call: vi.fn(async () => ({ debt_usd: "217.59" })) });
 afterEach(() => vi.useRealTimers());
 
 describe("adaptive investigation", () => {
+  it("does not reuse a prior parse repair for an oversized decision", async () => {
+    parseDecision({ ...complete([]), findings: [] });
+    const model = sequence({ ...complete([]), extra: "x".repeat(20_000) });
+    const result = await runInvestigation(request, { model, mcp: read() });
+    expect(result.outcome).toEqual({ kind: "stopped", reason: "invalid_decision" });
+    expect(model).toHaveBeenCalledTimes(1);
+  });
+  it("repairs an empty completion once using the existing observations", async () => {
+    const malformed = { ...complete(), findings: [] };
+    const model = sequence(inspect("account_debt"), malformed, complete());
+    const mcp = read();
+    const result = await runInvestigation(request, { model, mcp });
+    expect(result.outcome).toEqual(complete());
+    expect(model).toHaveBeenCalledTimes(3);
+    expect(mcp.call).toHaveBeenCalledTimes(1);
+    const repairedTurn = vi.mocked(model).mock.calls[2][0];
+    expect(repairedTurn.decisionFeedback).toContain("no findings");
+    expect(repairedTurn.observations).toHaveLength(1);
+    expect(result.executionAllowed).toBe(false);
+  });
+  it("stops after a repeated empty completion without fabricating an answer or execution", async () => {
+    const malformed = { ...complete([]), findings: [] };
+    const model = sequence(malformed, malformed);
+    const mcp = read();
+    const result = await runInvestigation(request, { model, mcp });
+    expect(result.outcome).toEqual({ kind: "stopped", reason: "invalid_decision" });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(mcp.call).not.toHaveBeenCalled();
+    expect(result.executionAllowed).toBe(false);
+  });
+  it("repairs a fully dropped action once instead of returning a request echo", async () => {
+    const malformed = { ...complete([]), goal: { ...complete([]).goal, intent: "strategy", actions: [
+      { op: "redeem", asset: "XLM", sourceQuote: "redeem all my XLM from Earn", sizing: { kind: "all_position", sourceQuote: "all my XLM" } },
+    ] } };
+    const valid = { ...malformed, goal: { ...malformed.goal, actions: [
+      { ...malformed.goal.actions[0], sizing: { kind: "all_position" } },
+    ] } };
+    const model = vi.fn(async (turn: ResearchTurn) => turn.decisionFeedback ? valid : malformed);
+    const mcp = read();
+    const result = await runInvestigation({ ...request, message: "redeem all my XLM from Earn" }, { model, mcp });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(model.mock.calls[1][0].decisionFeedback).toContain("sizing");
+    expect(result.outcome.kind).toBe("research_complete");
+    if (result.outcome.kind === "research_complete") expect(result.outcome.goal.actions).toHaveLength(1);
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
+  it("stops after one unsuccessful shape repair without rereading or pretending an action is ready", async () => {
+    const malformed = { ...complete([]), goal: { ...complete([]).goal, intent: "strategy", actions: [
+      { op: "redeem", asset: "XLM", sourceQuote: "redeem XLM", sizing: { kind: "unknown" } },
+    ] } };
+    const model = sequence(malformed, malformed);
+    const mcp = read();
+    const result = await runInvestigation(request, { model, mcp });
+    expect(result.outcome).toEqual({ kind: "stopped", reason: "invalid_decision" });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
   it("feeds actual observations into subsequent decisions and returns research, never execution", async () => {
     const turns: ResearchTurn[] = [];
     const mcp = { call: vi.fn(async (tool: string) => tool === "vanna_get_wallet_balance"
@@ -310,7 +367,7 @@ describe("bounded execution", () => {
 
   /**
    * The zero-output failure, reproduced. MCP stalled, the run hit its deadline mid-batch,
-   * and the loop threw away the reads that HAD returned — reporting "0 reads" while holding
+   * and the loop threw away the reads that HAD returned - reporting "0 reads" while holding
    * real evidence. A stop must stop reading, not discard what came back.
    */
   it("keeps the reads that completed when the deadline fires mid-batch", async () => {
@@ -324,7 +381,7 @@ describe("bounded execution", () => {
       limits: { maxDurationMs: 500, maxReadDurationMs: 5_000 },
       model: async () => turn++ === 0
         ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "asset_price", args: { asset: "XLM" } }] }
-        : { kind: "blocked", reason: "unreachable" },
+        : await new Promise(() => {}),
       mcp: { call: async (tool) => {
         if (tool === "vanna_get_price") return { price_usd: "0.19" };
         await new Promise((resolve) => setTimeout(resolve, 900));
@@ -332,22 +389,34 @@ describe("bounded execution", () => {
       } },
     });
 
-    expect(result.outcome.kind).toBe("research_complete");
-    if (result.outcome.kind !== "research_complete") throw new Error("expected a partial research handoff");
-    expect(result.outcome.goal.constraints.some((constraint) => /time budget ran out/i.test(constraint))).toBe(true);
-    expect(result.outcome.findings).toHaveLength(1);
-    expect(result.outcome.findings[0].summary).toMatch(/^Recorded asset price\./);
-    expect(result.outcome.findings[0].summary).toMatch(/Still missing: wallet balances/);
-    expect(result.outcome.findings[0].summary.match(/time budget ran out/g)).toBeNull();
+    expect(result.outcome).toEqual({ kind: "stopped", reason: "deadline" });
+    // A timer cannot infer the requested action from the successful capabilities.
     // Both observations survive: the price as evidence, the stalled one as an honest error.
     expect(result.observations).toHaveLength(2);
     const price = result.observations.find((observation) => observation.capability === "asset_price");
     expect(price?.status).toBe("ok");
     expect(price?.data).toMatchObject({ price_usd: "0.19" });
-    // The read still in flight is aborted with the run and recorded as an honest error —
+    // The read still in flight is aborted with the run and recorded as an honest error -
     // the point is that the finished one is no longer thrown away alongside it.
     const slow = result.observations.find((observation) => observation.capability === "wallet_balances");
     expect(slow?.status).toBe("error");
+  });
+
+  it("reserves a conclusion turn after a slow read without inventing the user's intent", async () => {
+    const model: ResearchModel = vi.fn(async (turn) => {
+      if (!turn.observations.length) return inspect("wallet_balances");
+      expect(turn.remaining.toolCalls).toBe(0);
+      expect(turn.message).toBe(request.message);
+      expect(turn.observations[0].status).toBe("error");
+      return { kind: "clarify", question: "Which asset should the proposed strategy use?" };
+    });
+    const result = await runInvestigation(request, {
+      limits: { maxDurationMs: 600, maxReadDurationMs: 500 }, model,
+      mcp: { call: () => new Promise(() => {}) },
+    });
+    expect(result.outcome).toEqual({ kind: "clarify", question: "Which asset should the proposed strategy use?" });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(result.executionAllowed).toBe(false);
   });
 
   it("fails one stalled read on its own clock instead of spending the whole run on it", async () => {
@@ -499,12 +568,75 @@ describe("batched reads", () => {
     expect(MAX_BATCHED_READS).toBe(8);
   });
 
-  it("still stops when a batch re-asks for evidence it already holds", async () => {
+  /**
+   * 7 Oct, live: a strategy prompt died on "repeated read" with eight good reads in hand because the
+   * model asked once more for one it already held. A read it holds is left out of the batch and the
+   * rest runs; a batch with nothing new in it earns one nudge, and only a second one stops the run.
+   */
+  it("leaves out a read it already holds and runs the rest of the batch", async () => {
     const mcp = { call: vi.fn(async () => ({ debt_usd: "217.59" })) };
-    const model = sequence(batch(["account_debt"]), batch(["account_collateral"], ["account_debt"]));
+    const model = sequence(batch(["account_debt"]), batch(["account_collateral"], ["account_debt"]), complete(["e1", "e2"]));
+    const result = await runInvestigation(request, { model, mcp });
+
+    expect(result.outcome.kind).toBe("research_complete");
+    expect(mcp.call).toHaveBeenCalledTimes(2);
+    expect(result.observations.map((o) => [o.id, o.capability])).toEqual([["e1", "account_debt"], ["e2", "account_collateral"]]);
+  });
+
+  it("tells the model once what it already holds when nothing in the batch is new, and lets it conclude", async () => {
+    const mcp = { call: vi.fn(async () => ({ debt_usd: "217.59" })) };
+    const turns: ResearchTurn[] = [];
+    const decisions = [batch(["account_debt"]), batch(["account_debt"]), complete(["e1"])];
+    const model: ResearchModel = vi.fn(async (turn) => { turns.push(structuredClone(turn)); return decisions[turns.length - 1]; });
+    const result = await runInvestigation(request, { model, mcp });
+
+    expect(result.outcome.kind).toBe("research_complete");
+    expect(mcp.call).toHaveBeenCalledTimes(1);
+    expect(turns[1].decisionFeedback).toBeUndefined();
+    expect(turns[2].decisionFeedback).toMatch(/account_debt.*already hold/);
+  });
+
+  /**
+   * The position snapshot takes 5-7s and the first model turn only decides which reads to make, so the loop used to
+   * wait for the snapshot and THEN start the model (7 Oct, live: the two stacked). The first turn now starts without
+   * it; the loop takes the evidence the moment that turn answers, so every later turn sees it.
+   */
+  it("starts the first model turn without waiting for late evidence, and shows that evidence to every turn after", async () => {
+    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const late = { id: "e0", capability: "account_position", args: {}, observedAt: Date.now(), status: "ok" as const, data: { collateral_usd: "100", debt_usd: "50" } };
+    let seedResolvedAt = 0;
+    let firstTurnStartedAt = 0;
+    const seen: string[][] = [];
+    const model: ResearchModel = vi.fn(async (turn: ResearchTurn) => {
+      if (!seen.length) firstTurnStartedAt = Date.now();
+      seen.push(turn.observations.map((observation) => observation.id));
+      await delay(30);
+      return seen.length === 1 ? inspect("account_debt") : complete(["e0"]);
+    });
+    const result = await runInvestigation(
+      { ...request, seedLater: delay(60).then(() => { seedResolvedAt = Date.now(); return [late]; }) },
+      { model, mcp: read() },
+    );
+    expect(firstTurnStartedAt).toBeLessThan(seedResolvedAt);
+    expect(seen[0]).toEqual([]);
+    expect(seen[1]).toContain("e0");
+    expect(result.outcome.kind).toBe("research_complete");
+    expect(result.observations.map((observation: { id: string }) => observation.id)).toContain("e0");
+  });
+
+  it("carries on without the late evidence when it never arrives", async () => {
+    const model: ResearchModel = vi.fn(async () => complete([]));
+    const result = await runInvestigation({ ...request, seedLater: Promise.reject(new Error("snapshot failed")).catch(() => []) }, { model, mcp: read() });
+    expect(result.outcome.kind).toBe("research_complete");
+  });
+
+  it("still stops when the model keeps re-asking after it was told", async () => {
+    const mcp = { call: vi.fn(async () => ({ debt_usd: "217.59" })) };
+    const model = sequence(batch(["account_debt"]), batch(["account_debt"]), batch(["account_debt"]));
     const result = await runInvestigation(request, { model, mcp });
 
     expect(result.outcome).toEqual({ kind: "stopped", reason: "repeated_read" });
+    expect(mcp.call).toHaveBeenCalledTimes(1);
   });
 
   it("fulfills health, debt and collateral from a seeded snapshot instead of MCP", async () => {

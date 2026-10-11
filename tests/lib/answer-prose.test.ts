@@ -6,7 +6,7 @@ import type { ResearchFact } from "@/lib/copilot/investigation/view";
  * The model phrases; code supplies every figure.
  *
  * Answers are composed from fixed templates today, which is why "what is my Blend supply?"
- * reads as `Blend: XLM 122.6934092, USDC 0.` — the data is derived but the sentence is
+ * reads as `Blend: XLM 122.6934092, USDC 0.` - the data is derived but the sentence is
  * written in code, so every new case needs another template. Handing the whole answer to
  * the model would fix the prose and break the thing that matters: on 20 Sep an answer
  * attached a b-rate to an XLM label and called it a balance, and a model free to type
@@ -14,7 +14,7 @@ import type { ResearchFact } from "@/lib/copilot/investigation/view";
  *
  * What is pinned here is the division: a template may say anything about the facts and
  * nothing about their values. A citation of a fact nobody read, or a digit the model typed
- * itself, is refused — so the caller keeps its deterministic sentence rather than
+ * itself, is refused - so the caller keeps its deterministic sentence rather than
  * publishing an unbacked number.
  */
 

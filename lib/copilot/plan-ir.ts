@@ -2,7 +2,7 @@
  * Span accounting for deterministic plan extraction.
  *
  * The failure this exists to catch: every silent-drop bug in this pipeline has the same
- * shape — a fragment of the user's sentence that no component claimed, and no component
+ * shape - a fragment of the user's sentence that no component claimed, and no component
  * noticed was missing. A first-match-wins cascade cannot notice, because a missing rule
  * is not a no-op; it silently promotes whatever rule happens to match first. So instead
  * of trusting each producer to have read the whole message, every producer records the
@@ -13,7 +13,7 @@
  *   - "Deposit 50 BLUSDC, run a delta-neutral XLM carry, and also lend 20 XLM on Earn"
  *     used to emit the carry's three legs and discard the Earn lend entirely.
  *   - "run a delta-neutral XLM carry with 100 BLUSDC then farm 10 BLUSDC at 2x" used to
- *     emit the carry and drop the Blend leg — no error, no clarification.
+ *     emit the carry and drop the Blend leg - no error, no clarification.
  *
  * Pure and offline: no network, no model, no imports from the orchestrator.
  */
@@ -34,8 +34,8 @@ export interface ClauseSpan extends Span {
  * Who claimed a range of the message.
  *
  * `strategy` is separate from `step` because a named strategy reads text that is not
- * contiguous — the phrase "delta-neutral XLM carry" can sit in one clause while the
- * deposit amount it consumed sits in another — so its claim cannot be attributed to any
+ * contiguous - the phrase "delta-neutral XLM carry" can sit in one clause while the
+ * deposit amount it consumed sits in another - so its claim cannot be attributed to any
  * single clause's step.
  */
 export interface SpanClaim {
@@ -46,8 +46,8 @@ export interface SpanClaim {
 export interface ResidueSpan extends Span {
   text: string;
   /**
-   * `failed_clause` — the splitter produced a clause and nothing claimed any of it.
-   * `intra_clause` — a claimed clause with words left over around what was matched.
+   * `failed_clause` - the splitter produced a clause and nothing claimed any of it.
+   * `intra_clause` - a claimed clause with words left over around what was matched.
    */
   source: "failed_clause" | "intra_clause";
 }
@@ -73,9 +73,9 @@ export interface Coverage {
 /**
  * Constraints extracted once from the raw message and carried, not re-parsed downstream.
  *
- * Unwatchable conditions are deliberately absent. Two components already detect them —
+ * Unwatchable conditions are deliberately absent. Two components already detect them -
  * `detectAutomationGap` at the routing gate, and the class-C branch of the residue
- * classifier — and a third copy of that judgment is exactly the kind of duplicated
+ * classifier - and a third copy of that judgment is exactly the kind of duplicated
  * vocabulary that drifts. Conditions surface through `Coverage.residue` instead.
  */
 export interface PlanConstraints {

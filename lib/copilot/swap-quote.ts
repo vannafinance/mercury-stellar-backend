@@ -16,7 +16,7 @@ export function dexWireSymbol(token: string): "XLM" | "USDC" | null {
 
 export type DexQuote = {
   expected: number;
-  /** expected / amountIn — 1 tokenIn ≈ rate tokenOut */
+  /** expected / amountIn - 1 tokenIn ≈ rate tokenOut */
   rate: number;
 };
 
@@ -99,7 +99,7 @@ export type SwapPriceImpact = {
 /**
  * How far a quoted fill sits below oracle fair value.
  *
- * An unreadable price is `unknown`, never 0% — "no warning" and "no data"
+ * An unreadable price is `unknown`, never 0% - "no warning" and "no data"
  * must not look alike. MCP withholds auto-sign at `high` (≥ 10%) unless the
  * caller sets `acknowledged_price_impact` after a human was shown this figure.
  */
@@ -155,7 +155,7 @@ export function usdPriceFromOracleBatch(
   return null;
 }
 
-/** `1 XLM ≈ 0.261694 SOUSDC` — the fill rate Trade/Spot shows, not oracle USD. */
+/** `1 XLM ≈ 0.261694 SOUSDC` - the fill rate Trade/Spot shows, not oracle USD. */
 export function swapFillRateLabel(
   amountIn: number,
   expectedOut: number,
@@ -185,7 +185,7 @@ function formatCrossRate(rate: number): string {
   return rate.toFixed(6);
 }
 
-/** Farm-style `30 BLUSDC ≈ $30.01` — live oracle USD next to the tx hash. */
+/** Farm-style `30 BLUSDC ≈ $30.01` - live oracle USD next to the tx hash. */
 export function liveUsdLabel(amount: number, asset: string, priceUsd: number): string | null {
   if (!(amount > 0) || !asset || !(priceUsd > 0)) return null;
   const usd = amount * priceUsd;

@@ -12,7 +12,7 @@ vi.mock("@/contexts/ledger-subscriber", () => ({
 
 import { usePoolData } from "@/hooks/use-earn";
 
-// usePoolData fetches the cached /api/pools edge route (since D25, #40) — it no
+// usePoolData fetches the cached /api/pools edge route (since D25, #40) - it no
 // longer calls ContractService.getPoolStats directly. The previous version of
 // this test mocked getPoolStats and timed out because the real fetch hung in
 // happy-dom; it now mocks /api/pools to match the actual implementation.
@@ -39,7 +39,7 @@ function makeWrapper(qc: QueryClient) {
   };
 }
 
-describe("usePoolData — /api/pools fetch + tick invalidation", () => {
+describe("usePoolData - /api/pools fetch + tick invalidation", () => {
   let qc: QueryClient;
   let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -91,7 +91,7 @@ describe("usePoolData — /api/pools fetch + tick invalidation", () => {
       rerender();
     });
 
-    // We already have data — a tick triggers a background refetch, not a spinner.
+    // We already have data - a tick triggers a background refetch, not a spinner.
     expect(result.current.isLoading).toBe(false);
   });
 

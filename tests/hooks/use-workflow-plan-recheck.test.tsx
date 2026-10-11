@@ -7,7 +7,7 @@ import type { WorkflowView } from "@/lib/copilot/workflow/types";
  * A plan that waits must stay true, or say that it no longer is.
  *
  * Amounts are sized from reads taken at one moment and then sit on the card until someone
- * clicks Approve. Approve re-reads funds, prices and projected health — but only at the
+ * clicks Approve. Approve re-reads funds, prices and projected health - but only at the
  * click, so until then a plan whose price has moved looks exactly like one that still
  * holds. What is pinned here: while a proposal waits, ledger closes drive the same check
  * against the server, a plan that fails it is withdrawn with the server's own reason, and
@@ -51,7 +51,7 @@ const flush = () => act(async () => { await Promise.resolve(); await Promise.res
 beforeEach(() => { localStorage.setItem(`vanna-workflow:${WALLET}`, ID); });
 afterEach(() => { vi.unstubAllGlobals(); mocks.tick.value = 0; localStorage.clear(); });
 
-describe("useWorkflow — a waiting plan is re-checked at the ledger, not only at Approve", () => {
+describe("useWorkflow - a waiting plan is re-checked at the ledger, not only at Approve", () => {
   it("withdraws the plan with the server's reason when it no longer holds", async () => {
     const calls = server([
       { body: view("proposed") },

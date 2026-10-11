@@ -71,7 +71,7 @@ export const RETRY = {
     ],
     onExhaustion: "throw",
   },
-  /** MCP / Sign Service writes — never retry from this policy. */
+  /** MCP / Sign Service writes - never retry from this policy. */
   mcpWrite: {
     attempts: 1,
     backoffMs: [],

@@ -70,7 +70,7 @@ describe("GET /api/account/[addr]", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe(CACHE);
     expect(mocks.discoverExistingAccount).not.toHaveBeenCalled();
-    expect(mocks.computeMarginSnapshot).toHaveBeenCalledWith(C_ADDR);
+    expect(mocks.computeMarginSnapshot).toHaveBeenCalledWith(C_ADDR, { freshAfter: null });
 
     const body = await res.json();
     expect(body).toMatchObject({
@@ -88,8 +88,16 @@ describe("GET /api/account/[addr]", () => {
     expect(res.status).toBe(200);
     expect(mocks.discoverExistingAccount).toHaveBeenCalledWith(G_ADDR);
     // the snapshot runs against the *resolved* margin account, not the G-address
-    expect(mocks.computeMarginSnapshot).toHaveBeenCalledWith(C_ADDR);
+    expect(mocks.computeMarginSnapshot).toHaveBeenCalledWith(C_ADDR, { freshAfter: null });
     expect((await res.json()).marginAccountAddress).toBe(C_ADDR);
+  });
+
+  it("forwards the settled transaction barrier so the next snapshot cannot reuse a pre-transaction read", async () => {
+    const hash = "a".repeat(64);
+    mocks.computeMarginSnapshot.mockResolvedValue(snapshot());
+    const res = await GET(new Request(`http://test/api/account?after=${hash}`), { params: Promise.resolve({ addr: C_ADDR }) });
+    expect(res.status).toBe(200);
+    expect(mocks.computeMarginSnapshot).toHaveBeenCalledWith(C_ADDR, { freshAfter: hash });
   });
 
   it("G-address with no margin account → 200 { hasMarginAccount:false } (no-store)", async () => {

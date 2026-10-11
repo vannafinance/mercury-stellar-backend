@@ -11,14 +11,14 @@
  *   assertionError: assertion subject is not an end user: sub="client_01KXBNH…"
  *                   does not start with "user_"
  *
- * An assertion WAS arriving — but it was the M2M bearer, because the MCP falls
+ * An assertion WAS arriving - but it was the M2M bearer, because the MCP falls
  * back to the bearer when the copilot sends no X-Vanna-User-Assertion header. So
  * the header never left the app, even though /api/auth/session on the same
  * deployment reported anchor:"privy" for the same user.
  *
  * The existing transport test could not catch that: it called
  * `client.call()` from inside `withBoundUser`, which skips every layer where the
- * ambient identity can actually be lost — the route handler, handleChat, and the
+ * ambient identity can actually be lost - the route handler, handleChat, and the
  * async hops between them. This drives the REAL exported POST handler instead,
  * with only the network and the Privy verifier faked, so the binding has to
  * survive the same path production takes.
@@ -120,7 +120,7 @@ async function postCopilot(headers: Record<string, string>) {
     body: JSON.stringify({
       user_id: TRADER,
       tier: "paid",
-      // Short-circuits before any LLM routing — the live enable_auto_sign path.
+      // Short-circuits before any LLM routing - the live enable_auto_sign path.
       auto_sign: { action: "start" },
     }),
   });
@@ -142,8 +142,8 @@ function setEnv() {
 // Warm the route module graph once, outside any test's budget.
 //
 // `postCopilot` imports the real `/api/copilot` route, which pulls in the whole copilot
-// brain. That transform+load is genuine work — over five seconds while the full suite has
-// every worker busy — and inside `it()` it was charged to a 5s test timeout, so the FIRST
+// brain. That transform+load is genuine work - over five seconds while the full suite has
+// every worker busy - and inside `it()` it was charged to a 5s test timeout, so the FIRST
 // test here failed with "Test timed out in 5000ms" on roughly every other full-suite run
 // and passed alone every time. The measured failures were 5123ms / 5258ms / 5277ms: not a
 // hang, just marginally over. Later tests in the file were always fine, because by then

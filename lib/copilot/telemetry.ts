@@ -18,7 +18,7 @@ import {
 
 const TRACER = "vanna-copilot";
 
-/** Attribute names from the GenAI / MCP specs — not guessed. */
+/** Attribute names from the GenAI / MCP specs - not guessed. */
 export const ATTR = {
   OPERATION: "gen_ai.operation.name",
   PROVIDER: "gen_ai.provider.name",
@@ -56,7 +56,7 @@ export function isForbiddenSpanKey(key: string): boolean {
   return (FORBIDDEN_SPAN_KEYS as readonly string[]).includes(key) || SENSITIVE_KEY.test(key);
 }
 
-/** Safe attributes only — never prompts, payloads, addresses, or tokens. */
+/** Safe attributes only - never prompts, payloads, addresses, or tokens. */
 export function setSpanAttr(key: string, value: string | number | boolean): void {
   if (isForbiddenSpanKey(key)) return;
   trace.getActiveSpan()?.setAttribute(key, value);

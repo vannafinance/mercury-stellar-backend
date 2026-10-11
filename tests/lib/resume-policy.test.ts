@@ -6,7 +6,7 @@
  * streaming the card could not repaint until the batch finished. Leg 2 sat on
  * "waiting on ledger" for tens of seconds and then legs 3 and 4 appeared
  * already settled, having never been shown running. Correct final state,
- * invisible progress — which on a money path is its own failure.
+ * invisible progress - which on a money path is its own failure.
  */
 
 import { describe, expect, it } from "vitest";
@@ -26,7 +26,7 @@ import {
   type ResumeLegLike,
 } from "@/components/copilot/resume-policy";
 
-/** Park 20 XLM then farm 10 BLUSDC at 2x — the repro from the report. */
+/** Park 20 XLM then farm 10 BLUSDC at 2x - the repro from the report. */
 const FOUR_LEGS: ResumeLegLike[] = [
   { op: "lend", asset: "XLM", amount: 20, label: "Lend 20 XLM" },
   { op: "deposit_collateral", asset: "BLUSDC", amount: 10, label: "Deposit 10 BLUSDC" },
@@ -34,7 +34,7 @@ const FOUR_LEGS: ResumeLegLike[] = [
   { op: "supply_to_blend", asset: "BLUSDC", amount: 20, label: "Supply 20 BLUSDC to Blend" },
 ];
 
-describe("splitResumeBatch — one leg per hop", () => {
+describe("splitResumeBatch - one leg per hop", () => {
   it("sends exactly one leg and keeps the rest", () => {
     const { head, tail } = splitResumeBatch(FOUR_LEGS);
     expect(head).toHaveLength(1);
@@ -82,14 +82,14 @@ describe("splitResumeBatch — one leg per hop", () => {
   });
 
   it("carries the leg payload through untouched", () => {
-    // Dropping leverage here would resume a levered leg unlevered — a different
+    // Dropping leverage here would resume a levered leg unlevered - a different
     // transaction from the one that was approved.
     const levered: ResumeLegLike = { op: "borrow", asset: "XLM", amount: 5, leverage: 2 };
     expect(splitResumeBatch([levered]).head[0]).toEqual(levered);
   });
 });
 
-describe("pickRemainingLegs — the server stops knowing, the client keeps knowing", () => {
+describe("pickRemainingLegs - the server stops knowing, the client keeps knowing", () => {
   it("prefers the server list while it still reports later legs", () => {
     const server = FOUR_LEGS.slice(1);
     expect(pickRemainingLegs(server, [FOUR_LEGS[3]])).toEqual(server);
@@ -135,7 +135,7 @@ describe("pickRemainingLegs — the server stops knowing, the client keeps knowi
     expect(tail).toHaveLength(2);
   });
 
-  it("hasMoreLegs mirrors it — used to hold back 'All steps completed'", () => {
+  it("hasMoreLegs mirrors it - used to hold back 'All steps completed'", () => {
     expect(hasMoreLegs([], FOUR_LEGS.slice(3))).toBe(true);
     expect(hasMoreLegs(FOUR_LEGS.slice(1), [])).toBe(true);
     expect(hasMoreLegs([], [], FOUR_LEGS.slice(2))).toBe(true);
@@ -181,7 +181,7 @@ describe("full auto-approve walk", () => {
   });
 });
 
-describe("claimFirstAwaitingLeg — one signature settles one leg", () => {
+describe("claimFirstAwaitingLeg - one signature settles one leg", () => {
   const steps = [
     { n: 1, status: "ok", tx_hash: "hash_leg1" },
     { n: 2, status: "needs_sign", tx_hash: null as string | null },
@@ -200,7 +200,7 @@ describe("claimFirstAwaitingLeg — one signature settles one leg", () => {
   });
 
   it("NEVER stamps a pending leg with an earlier hash", () => {
-    // The regression: legs 3 and 4 once read "DONE tx c7ec9aa…" — leg 2's hash —
+    // The regression: legs 3 and 4 once read "DONE tx c7ec9aa…" - leg 2's hash -
     // while only two transactions existed on chain.
     const { steps: out } = claimFirstAwaitingLeg(steps, (s) => ({
       ...s,
@@ -314,7 +314,7 @@ describe("ledger wait copy", () => {
   });
 });
 
-describe("strategyIsComplete + shouldAutoResume — hard stop after final", () => {
+describe("strategyIsComplete + shouldAutoResume - hard stop after final", () => {
   const fourOk = [
     { status: "ok" },
     { status: "ok" },
@@ -345,7 +345,7 @@ describe("strategyIsComplete + shouldAutoResume — hard stop after final", () =
 
   it("hop patch of 1 settled leg is NOT a complete run (borrow stuck bug)", () => {
     // Deposit hop returns multi_leg_steps:[deposit ok]. Full card still has
-    // borrow+supply pending — must NOT treat the hop as RUN COMPLETE.
+    // borrow+supply pending - must NOT treat the hop as RUN COMPLETE.
     const fullCard = [
       { status: "ok" },
       { status: "ok" },
@@ -391,7 +391,7 @@ describe("strategyIsComplete + shouldAutoResume — hard stop after final", () =
         canResumeWithAutoApprove: true,
       }),
     ).toBe(true);
-    // Done only when complete AND nothing remains — not !preferResume.
+    // Done only when complete AND nothing remains - not !preferResume.
     const remaining = pickRemainingLegs([], clientTail, legsFromUnsettledSteps(fullCard));
     expect(remaining.map((l) => l.op)).toEqual(["borrow", "supply_to_blend"]);
     expect(complete && remaining.length === 0).toBe(false);
@@ -403,7 +403,7 @@ describe("strategyIsComplete + shouldAutoResume — hard stop after final", () =
       { op: "borrow", status: "needs_wallet_sign", amount: 50, asset: "XLM", label: "Borrow 50 XLM" },
       { op: "supply_to_blend", status: "pending", amount: 20, asset: "BLUSDC", label: "Supply" },
     ];
-    // Claim settle the signed borrow BEFORE pickRemaining — do not re-queue it.
+    // Claim settle the signed borrow BEFORE pickRemaining - do not re-queue it.
     const { steps: settled } = claimFirstAwaitingLeg(steps, (s) => ({
       ...s,
       status: "ok",
@@ -466,7 +466,7 @@ describe("strategyIsComplete + shouldAutoResume — hard stop after final", () =
     ).toBe(true);
   });
 
-  it("unsized add_liquidity after swap never auto-resumes — wait for XLM|AQUSDC amount", () => {
+  it("unsized add_liquidity after swap never auto-resumes - wait for XLM|AQUSDC amount", () => {
     expect(
       shouldAutoResume({
         complete: false,

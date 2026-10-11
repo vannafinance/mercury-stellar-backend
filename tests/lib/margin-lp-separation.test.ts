@@ -3,11 +3,11 @@
  *
  * 1. "Margin account details" listed `collateral · BLEND_USDC`, `collateral · SS_XLM_USDC`,
  *    `collateral · BLEND_XLM` in the SAME facts list as real margin collateral
- *    (`collateral · XLM`) — farm-venue LP/receipt tokens read as duplicate or confusing
+ *    (`collateral · XLM`) - farm-venue LP/receipt tokens read as duplicate or confusing
  *    entries next to plain collateral. `isTrackingSymbol` already exists to tell them
  *    apart (used correctly one function over, in `focusPositionRows`) but was never
  *    applied on this "list everything" path.
- * 2. The same answer never showed an Aquarius LP position, even when one exists —
+ * 2. The same answer never showed an Aquarius LP position, even when one exists -
  *    `aquariusLpCollateralRow` (lib/analytics/stellar/farmTrackingCollateral.ts) read only
  *    the Registry tracking-token balance, which goes stale, instead of falling back to the
  *    pool contract's own `get_user_shares()` the way the Farm page and `farmPositionAnswer`
@@ -38,7 +38,7 @@ const basePos = {
     { symbol: "BLUSDC", amount: "155.7031", usd: 155.83 },
     { symbol: "AQUSDC", amount: "147.7031", usd: 147.82 },
     { symbol: "SOUSDC", amount: "30.1727", usd: 30.2 },
-    // Farm-venue LP/receipt tokens — NOT plain collateral the user deposited.
+    // Farm-venue LP/receipt tokens - NOT plain collateral the user deposited.
     { symbol: "BLEND_USDC", amount: "12", usd: 12.01 },
     { symbol: "SS_XLM_USDC", amount: "7.36", usd: 6.36 },
     { symbol: "BLEND_XLM", amount: "10", usd: 1.53 },
@@ -69,7 +69,7 @@ describe("allPositionsStructured separates LP/farm-tracking rows from plain coll
     expect(labels).toContain("XLM/USDC LP on Aquarius");
   });
 
-  it("no fact is dropped — every collateral row appears exactly once, in one group or the other", () => {
+  it("no fact is dropped - every collateral row appears exactly once, in one group or the other", () => {
     expect(collateralFacts.length + lpFacts.length).toBe(basePos.collateral.length);
   });
 

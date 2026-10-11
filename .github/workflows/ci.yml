@@ -30,14 +30,36 @@ jobs:
         run: npx tsc --noEmit
       - name: Investigation eval
         run: npx vitest run tests/lib/investigation-eval.test.ts
+      - name: Shared financial calculation regressions
+        run: >-
+          npx vitest run
+          tests/lib/margin-health.test.ts
+          tests/lib/margin-utils.test.ts
+          tests/lib/margin-withdraw.test.ts
+          tests/lib/account-snapshot-gross-collateral.test.ts
+          tests/lib/farm-tracking-collateral-reconcile.test.ts
+          tests/lib/earn-pool-copy.test.ts
+          tests/hooks/use-pool-data.test.tsx
+      - name: Copilot behavior regressions
+        run: >-
+          npx vitest run
+          tests/copilot-brain.test.ts
+          tests/lib/investigation-capacity.test.ts
+          tests/lib/investigation-proposal.test.ts
+          tests/lib/investigation-runtime.test.ts
+          tests/lib/compose-reply.test.ts
+          tests/lib/max-credit.test.ts
+          tests/lib/questionnaire-credit.test.ts
+          tests/lib/questionnaire-service-roundtrip.test.ts
+          tests/components/clarify-questionnaire.test.tsx
+          tests/components/running-plan.test.tsx
+          tests/components/investigation-card-stated-run.test.tsx
       - name: Build
         run: npm run build
 
-      # Informational for now. Lint has a known baseline to clean up, and the
-      # test suite can be promoted to a hard gate once green in CI.
+      # Lint retains its existing informational baseline. Test failures fail CI.
       - name: Lint
         run: npm run lint
         continue-on-error: true
       - name: Test
         run: npm test
-        continue-on-error: true

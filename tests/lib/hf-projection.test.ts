@@ -1,15 +1,15 @@
 /**
- * "Simulate borrowing 10 BLUSDC — what happens to my health factor?" must answer with the
+ * "Simulate borrowing 10 BLUSDC - what happens to my health factor?" must answer with the
  * projected figure, not today's.
  *
  * Only the parser is unit-tested here: the projection itself reads a live snapshot and an
  * oracle price. What matters most is that the parser never turns an INSTRUCTION into a
- * hypothetical — "borrow 10 BLUSDC" has to keep routing to the write path.
+ * hypothetical - "borrow 10 BLUSDC" has to keep routing to the write path.
  */
 import { describe, expect, it } from "vitest";
 import { liquidationPriceLine, parseHypotheticalMove as parse } from "@/lib/copilot/handle";
 
-describe("liquidationPriceLine — the XLM price that liquidates the position", () => {
+describe("liquidationPriceLine - the XLM price that liquidates the position", () => {
   /** 2000 XLM @ $0.16 = $320 plus $200 stables, $400 debt, HF derived so lt = 1. */
   const pos = {
     hf: 1.3,
@@ -49,9 +49,9 @@ describe("liquidationPriceLine — the XLM price that liquidates the position", 
   });
 });
 
-describe("parseHypotheticalMove — a question about a move, not the move itself", () => {
+describe("parseHypotheticalMove - a question about a move, not the move itself", () => {
   it("reads simulate / what if / what happens", () => {
-    expect(parse("simulate borrowing 10 BLUSDC — what happens to my health factor?")).toEqual({
+    expect(parse("simulate borrowing 10 BLUSDC - what happens to my health factor?")).toEqual({
       op: "borrow",
       asset: "BLUSDC",
       amount: 10,

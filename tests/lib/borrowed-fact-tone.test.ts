@@ -1,5 +1,5 @@
 /**
- * Reported live: "Margin Details are also Wrong and what is this box representing?" — every
+ * Reported live: "Margin Details are also Wrong and what is this box representing?" - every
  * `borrowed · X` fact on the "all open positions" card carried a flat `tone: "warn"`, so a
  * perfectly healthy account (HF ~4.8) still showed the colorblind-accessible warning glyph
  * (the small square, see TONE_MARK in answer-view.tsx) on every debt line, reading as

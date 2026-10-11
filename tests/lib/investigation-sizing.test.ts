@@ -7,7 +7,7 @@ import { decimalWad, formatWad, WAD } from "@/lib/copilot/investigation/fixed";
 
 /**
  * Deterministic sizing. No model output reaches this code, so every number here is
- * re-derivable from its inputs — which is the whole point of taking amounts away from
+ * re-derivable from its inputs - which is the whole point of taking amounts away from
  * the model.
  *
  * The authoritative formula is dev's (`lib/margin-health.ts`): HF = gross/debt,
@@ -84,7 +84,7 @@ describe("sizeLegs", () => {
     if (!result.ok) return;
     /**
      * Lands on the MARGINED target (floor + 1bps, `FLOOR_MARGIN_BPS` in sizing.ts),
-     * not the stated 1.30 floor itself — a max sized exactly to a floor is invalid
+     * not the stated 1.30 floor itself - a max sized exactly to a floor is invalid
      * the instant anything moves before the write re-validates it.
      */
     expect(result.legs[0].amountUsd).toBe("6537.458085829473894645");
@@ -96,7 +96,7 @@ describe("sizeLegs", () => {
     const result = sizeLegs(BASE, [leg("withdraw_collateral", "max", "Withdraw as much as the floor allows")], "1.30");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // Same margined target as the borrow case above — both max formulas land on
+    // Same margined target as the borrow case above - both max formulas land on
     // `sizeAgainst`, never on the stated floor itself.
     expect(result.legs[0].amountUsd).toBe("1962.0872953");
     expect(result.finalHealthFactor).toBe("1.30013");

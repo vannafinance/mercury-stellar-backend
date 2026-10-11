@@ -1,6 +1,6 @@
 /**
  * Confirmed live (Z-07, §16): two concurrent identical "lend 1 XLM" requests both
- * executed independently before this fix — two real transactions, not one deduped
+ * executed independently before this fix - two real transactions, not one deduped
  * into the other. See docs/copilot/TEST-RUN-FINDINGS.md §3 item 5.
  */
 import { describe, expect, it } from "vitest";

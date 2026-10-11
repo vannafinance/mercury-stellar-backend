@@ -15,13 +15,13 @@
 import type { RoutedIntent } from "./types";
 import { findAmountFraction, findBalanceFraction } from "./amount-intent";
 import { matchFastPath } from "./investigation/read-cache";
-import { ASSET_SCAN_ORDER } from "./registry/assets";
+import { ASSET_SCAN_ORDER, resolveAssetDef } from "./registry/assets";
 import { needsUsdcVariant, usdcVariantClarifyMessage } from "./mcp-write";
 import { namesEarnPoolMetric } from "./earn-pool-copy";
 import { contradictsStatedSource } from "./leg-direction";
 
 /**
- * Scan order comes from the asset registry — one membership list, guarded by a test,
+ * Scan order comes from the asset registry - one membership list, guarded by a test,
  * instead of the six that used to disagree. Still longest-first so BLUSDC wins over
  * the USDC nested inside it.
  */
@@ -44,7 +44,7 @@ const UNSUPPORTED_ASSETS = [
   "AVAX",
 ] as const;
 
-/** The four tickers Earn actually supports — see the `query_earn_position` route below. */
+/** The four tickers Earn actually supports - see the `query_earn_position` route below. */
 const EARN_POOL_ASSETS = new Set(["XLM", "BLUSDC", "AQUSDC", "SOUSDC"]);
 
 const ADDR_RE = /\b[GC][A-Z0-9]{55,56}\b/g;
@@ -54,7 +54,7 @@ const BARE_AMOUNT_RE = /(\d+(?:\.\d+)?)/;
 // directly followed by letters (e.g. "10×lm" where × is the letter X of XLM).
 const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*(?:x\b|×(?![a-zA-Z]))/i;
 /**
- * Taking a position out — THE vocabulary, so every venue's exit branch and the guard
+ * Taking a position out - THE vocabulary, so every venue's exit branch and the guard
  * that keeps such a sentence away from the position READS read the same words. Kept
  * whole-word and exit-only: entry verbs like "supply" and "deposit" belong to ordinary
  * holdings questions too ("what is my total supply in earn"), and reading those as
@@ -86,7 +86,7 @@ export function findAsset(text: string): string | null {
  * `findAsset` scans the ASSETS table longest-first, so "deposit 500 AQUSDC … borrow
  * XLM" returns AQUSDC no matter which side of the sentence it sits on. That is right
  * when a message names one asset and wrong the moment it names two for two different
- * slots — the second one is simply never seen. Alternation is still longest-first so
+ * slots - the second one is simply never seen. Alternation is still longest-first so
  * the USDC inside BLUSDC never matches on its own.
  */
 export function firstAssetByPosition(text: string): string | null {
@@ -106,8 +106,8 @@ const COLLATERAL_VERB = /\b(deposit|park|put|post|supply|lever(?:age)?d?|with|us
  * The asset the user wants to BORROW, when they named one.
  *
  * Independent of the collateral slot on purpose (product rule B): "deposit AQUSDC …
- * borrow XLM" borrows XLM. Collapsing the two — which every producer did, by passing
- * one `asset` for both legs — is what turned a stated XLM borrow into a "which USDC?"
+ * borrow XLM" borrows XLM. Collapsing the two - which every producer did, by passing
+ * one `asset` for both legs - is what turned a stated XLM borrow into a "which USDC?"
  * chip prompt.
  *
  * Returns null when the sentence names no borrow asset, which legitimately means "the
@@ -143,7 +143,7 @@ export function findCollateralAsset(text: string): string | null {
     const found = firstAssetByPosition(after);
     if (found) return found;
   }
-  // "borrow 20 XLM against my AQUSDC" — collateral follows the pivot instead.
+  // "borrow 20 XLM against my AQUSDC" - collateral follows the pivot instead.
   const pivot = cleaned.match(COLLATERAL_PIVOT);
   if (pivot && pivot.index != null) {
     const found = firstAssetByPosition(cleaned.slice(pivot.index + pivot[0].length));
@@ -155,12 +155,12 @@ export function findCollateralAsset(text: string): string | null {
 /**
  * An explicit borrow size, when the user gave one instead of (or beside) a multiple.
  *
- * Leverage is stripped first so "3x" never reads as a quantity — the same trap
+ * Leverage is stripped first so "3x" never reads as a quantity - the same trap
  * findAmount guards against for the deposit slot. Shorthand ("10k") is expanded the
- * same way findAmount expands it for a deposit — this used to skip that step, so
+ * same way findAmount expands it for a deposit - this used to skip that step, so
  * "borrow 10k XLM" read as 10, the substring before the "k" (15 Sep, findings C1/B1).
  *
- * Bare "borrow 3" (no asset) next to a deposit is leverage, not 3 tokens — see
+ * Bare "borrow 3" (no asset) next to a deposit is leverage, not 3 tokens - see
  * {@link findLeverage}. Returning 3 here is what sized a $3 loan instead of 3×.
  */
 export function findBorrowAmount(text: string): number | null {
@@ -185,13 +185,13 @@ export function findBorrowAmount(text: string): number | null {
   if (!m || m.index == null) return null;
   /**
    * A health-factor floor is not a size. `matchMinHealthFactor` is the shared, canonical
-   * detector for "keep/maintain/stays above N" phrasings — reused here rather than a
-   * second regex that could disagree with it — but it is DELIBERATELY narrow beyond
+   * detector for "keep/maintain/stays above N" phrasings - reused here rather than a
+   * second regex that could disagree with it - but it is DELIBERATELY narrow beyond
    * that: floor-anchored.test.ts documents "stays above" as a gap on purpose, because in
    * the main pipeline the MODEL reports the floor and its quote is verified against the
    * user's own words, not re-derived by widening this regex list. This function has no
-   * model to defer to, so for the one phrasing it cannot afford to miss — "floor" said
-   * immediately before a number, which is never a token quantity in ANY phrasing — the
+   * model to defer to, so for the one phrasing it cannot afford to miss - "floor" said
+   * immediately before a number, which is never a token quantity in ANY phrasing - the
    * check is local to this function rather than a change to the shared detector's scope.
    * Until both checks existed, "borrow BLUSDC to HF floor 1.40" read 1.40 as the borrow
    * size (findings C1, 15 Sep): the only number in `after` IS the floor.
@@ -215,9 +215,9 @@ export function findUnsupportedAsset(text: string): string | null {
 
 /**
  * "1,000" and "1k" both mean one thousand, but neither `AMOUNT_ASSET_RE` nor
- * `BARE_AMOUNT_RE` read past the comma or the suffix — "1,000 BLUSDC" asked for an
+ * `BARE_AMOUNT_RE` read past the comma or the suffix - "1,000 BLUSDC" asked for an
  * amount instead of parsing 1000 (safe, but not what G-07 wants), and "1k BLUSDC" (G-08)
- * silently parsed as 1, then actually borrowed 1 BLUSDC instead of 1000 — the one outcome
+ * silently parsed as 1, then actually borrowed 1 BLUSDC instead of 1000 - the one outcome
  * that spec explicitly rules out. Expanded once, before any amount pattern runs, so both
  * shapes read as a normal bare number from there on.
  */
@@ -239,8 +239,8 @@ export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null 
       /(?:keep|maintain|hold|stay|above|over|min(?:imum)?)\s*(?:my\s+)?(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?|of\s+)?\s*(\d+(?:\.\d+)?)/i,
     ) ||
     /**
-     * `floor` is how the product itself names this number — the approval card says
-     * "your 1.3 health-factor floor" — so a user echoing it back reads as a floor here
+     * `floor` is how the product itself names this number - the approval card says
+     * "your 1.3 health-factor floor" - so a user echoing it back reads as a floor here
      * too. Without it, "borrow BLUSDC to HF floor 1.40" matched no pattern at all, and
      * both halves of that failed at once: the stated floor was dropped (nothing
      * enforced it), and 1.40, the only number in the sentence, was left unclaimed for
@@ -457,7 +457,7 @@ export function findAmount(text: string, registry?: ClaimRegistry): number | nul
 }
 
 /**
- * Stated leverage multiple — same meaning as the margin UI slider.
+ * Stated leverage multiple - same meaning as the margin UI slider.
  *
  * Accepts:
  *   - "3x" / "3×" / "at 2 x"
@@ -466,7 +466,7 @@ export function findAmount(text: string, registry?: ClaimRegistry): number | nul
  *     follows (site users type this constantly; requiring the letter "x" made the
  *     plan path split into deposit + "how much to borrow?" after collateral settled).
  *
- * Does NOT treat "borrow 3 SOUSDC" as leverage — that is an explicit 3-token size.
+ * Does NOT treat "borrow 3 SOUSDC" as leverage - that is an explicit 3-token size.
  */
 export function findLeverage(text: string): number | null {
   const cleaned = stripAddresses(text);
@@ -513,7 +513,7 @@ export function findLeverage(text: string): number | null {
 function isBorrowBareLeverageShorthand(afterBorrow: string): boolean {
   const s = afterBorrow.trimStart();
   if (!s) return false;
-  // Explicit token amount — not leverage.
+  // Explicit token amount - not leverage.
   if (new RegExp(String.raw`^\d+(?:\.\d+)?\s*(${ASSET_ALT})\b`, "i").test(s)) return false;
   // "3" or "3x" then end / punctuation / keep HF / and then…
   return /^\d+(?:\.\d+)?\s*(?:x|×)?(?:\s*$|[\s,.;]|\band\b|\bkeep\b|\bwith\b|\bat\b|\bthen\b)/i.test(
@@ -553,13 +553,13 @@ function has(text: string, ...words: string[]): boolean {
 }
 
 /**
- * "Add 10 XLM and AqUSDC" / "Add 0.05 AqUSDC and XLM" — exactly ONE amount is stated,
+ * "Add 10 XLM and AqUSDC" / "Add 0.05 AqUSDC and XLM" - exactly ONE amount is stated,
  * attached to whichever token it is textually adjacent to; the second token is named
  * with no amount at all (left for the pool's live ratio to size).
  *
  * Reported live: the caller used to assume the lone amount was always XLM's
  * (`token_a: "XLM"` unconditionally whenever `parseDualAmounts` found only one number),
- * so "0.05 AqUSDC and XLM" silently attached 0.05 to XLM instead — the wrong token got
+ * so "0.05 AqUSDC and XLM" silently attached 0.05 to XLM instead - the wrong token got
  * the human-stated amount. This mirrors `parseDualAmounts`'s own "read it from the text"
  * approach for the two-amount case instead of guessing.
  */
@@ -602,11 +602,11 @@ function any(text: string, ...words: string[]): boolean {
  * One matcher, used by the plan-builder and `looksLikeMultiGoal`, so they cannot drift.
  *
  * The verb and "liquidity" are matched independently, not as an adjacent phrase.
- * "provide 20 XLM and AQUSDC liquidity on aquarius" — the catalogue's own documented
- * shape for this write — has the amounts sitting between "provide" and "liquidity",
+ * "provide 20 XLM and AQUSDC liquidity on aquarius" - the catalogue's own documented
+ * shape for this write - has the amounts sitting between "provide" and "liquidity",
  * so an adjacent-phrase check ("provide liquidity") never fires. Live, 21 Sep: that
  * exact prompt fell through to a different branch entirely, which built an LP step
- * naming BLUSDC — a token no Aquarius/Soroswap pool holds — and refused with a
+ * naming BLUSDC - a token no Aquarius/Soroswap pool holds - and refused with a
  * message about an asset the user never mentioned.
  */
 export function hasAmmLpIntent(text: string): boolean {
@@ -703,7 +703,7 @@ export function isMaxYieldInvestIntent(text: string): boolean {
     /\b(where|wherever).*(best|highest|max).*(yield|apy|return|profit)\b/.test(t) &&
     /\b(invest|put|supply|lend|farm|deposit)\b/.test(t)
   ) || (
-    // "max yield with my XLM" names no verb at all — just a superlative, an asset, and a
+    // "max yield with my XLM" names no verb at all - just a superlative, an asset, and a
     // possessive. Without this it fell through to clarify_capabilities, the generic
     // catch-all, on a request the other three clauses above already know how to answer.
     /\b(max|maximum|best|highest|most|optimal)\b/.test(t) &&
@@ -730,12 +730,12 @@ function tryMultiGoalPlan(
    */
   if (/\btvl\b|\btotal\s+value\s+locked\b/i.test(text)) return null;
   /**
-   * "post 200 XLM and borrow BLUSDC" executed a bare `borrow 200 BLUSDC` — no deposit
+   * "post 200 XLM and borrow BLUSDC" executed a bare `borrow 200 BLUSDC` - no deposit
    * leg at all, and "200" attached to the wrong noun. "post" is a plain synonym for
    * "deposit" (the note's own X-02 uses it), and it was in neither this count nor the
    * `any(text, "deposit")` checks below, so the sentence counted as ONE verb ("borrow"),
    * `multiGoalShape` never matched, `tryMultiGoalPlan` returned null, and the message
-   * fell through to the single-action borrow branch — which grabbed the only number in
+   * fell through to the single-action borrow branch - which grabbed the only number in
    * the sentence as the borrow amount, regardless of which asset it was next to. Real
    * consequence, not a wording nit: health factor dropped 2.30 → 1.83 borrowing an
    * amount nobody asked for, because the deposit leg that should have run first never
@@ -748,13 +748,13 @@ function tryMultiGoalPlan(
     multiVerbCount >= 1 ||
     any(text, "park", "allocate", "add liquidity", "remove liquidity");
 
-  // Prefer multi-leg whenever the user stacks actions — heavy production use case.
+  // Prefer multi-leg whenever the user stacks actions - heavy production use case.
   const multiGoalShape =
     (any(text, "park", "lend", "earn", "yield") && any(text, "farm", "blend", "deploy")) ||
     (any(text, "deposit", "post") && any(text, "borrow") && any(text, "blend", "farm", "supply")) ||
     (any(text, "repay") && any(text, "deposit", "lend", "borrow", "farm")) ||
     /**
-     * "Swap 10 XLM to AQUSDC and add liquidity in Aquarius" executed ONLY the swap —
+     * "Swap 10 XLM to AQUSDC and add liquidity in Aquarius" executed ONLY the swap -
      * this whole function bailed out at the very first gate, `multiGoalShape`, which
      * checked "swap" alongside lend/farm/deposit/supply/borrow but never alongside
      * "add liquidity"/"lp", so a swap-then-LP sentence never looked like a plan-worthy
@@ -822,7 +822,7 @@ function tryMultiGoalPlan(
   /**
    * "swap" alone never satisfies `multiVerbCount` (it does not count "add liquidity"
    * as a verb). Pair it with `hasAmmLpIntent` so swap-then-LP is a plan, not a
-   * single swap that silently drops the Farm LP leg. Adding, not removing — a
+   * single swap that silently drops the Farm LP leg. Adding, not removing - a
    * swap-then-EXIT reads as two different intents, so "remove" is excluded here.
    */
   const wantsLp = hasAmmLpIntent(text) && !any(text, "remove liquidity", "remove lp");
@@ -850,8 +850,8 @@ function tryMultiGoalPlan(
   }
 
   /**
-   * "...and add liquidity in Aquarius" — Farm LP/Multiple is XLM + the venue's
-   * USDC. Venue is the named AMM (LP clause first — "so swap bhi via soroswap hi
+   * "...and add liquidity in Aquarius" - Farm LP/Multiple is XLM + the venue's
+   * USDC. Venue is the named AMM (LP clause first - "so swap bhi via soroswap hi
    * hoga"), else the token's own venue. Bare USDC follows that venue. Amount on
    * the LP leg is left unsized: resume + pool-ratio auto-fill sizes it the same
    * way the Farm add-liquidity form does for a one-sided input.
@@ -878,7 +878,7 @@ function tryMultiGoalPlan(
     const venue = lpVenue ?? inferAmmVenue(raw, swapStepTokenOut);
     // Only rewrite a dollar ticker onto the AMM's own USDC when this plan is
     // actually going to LP. "swap to BLUSDC then farm Blend" must keep BLUSDC
-    // (and the existing static blocker) — that is not an Aquarius swap.
+    // (and the existing static blocker) - that is not an Aquarius swap.
     const tokenOut =
       wantsLp && (swapStepTokenOut === "USDC" || swapStepTokenOut === "BLUSDC")
         ? ammLpStable(venue)
@@ -937,7 +937,7 @@ function tryMultiGoalPlan(
      * Scoped to the clause introducing the farm leg, not the whole message.
      *
      * "swap 10 XLM to AQUSDC then farm Blend with 5 BLUSDC" names AQUSDC for the swap
-     * and BLUSDC for the farm leg — two different clauses, two different tokens. Scanning
+     * and BLUSDC for the farm leg - two different clauses, two different tokens. Scanning
      * `raw` let whichever variant matched first in the (blusdc, aqusdc, sousdc) checklist
      * win regardless of which clause it actually appeared in, so a swap destination could
      * silently become the farm leg's asset too. Same pattern the deposit branch above
@@ -961,8 +961,8 @@ function tryMultiGoalPlan(
       /**
        * NEVER invent leverage on a plain farm.
        *
-       * This was `leverage ?? 2`, so "swap 10 XLM to BLUSDC then farm it on Blend" —
-       * which asks to borrow nothing — came back as a plan to "Supply BLUSDC into Blend
+       * This was `leverage ?? 2`, so "swap 10 XLM to BLUSDC then farm it on Blend" -
+       * which asks to borrow nothing - came back as a plan to "Supply BLUSDC into Blend
        * at 2× leverage", i.e. deposit as collateral, TAKE A LOAN against it, and supply
        * the proceeds. Three transactions and a debt position, from a prompt that
        * mentioned neither. Unlevered supply is the honest reading of "farm it"; a user
@@ -989,7 +989,7 @@ function tryMultiGoalPlan(
       leverage: leverage ?? 2,
       args: {
         leverage: leverage ?? 2,
-        // Carried in args because a plan step is replayed verbatim after approval —
+        // Carried in args because a plan step is replayed verbatim after approval -
         // a borrow asset dropped here cannot be recovered downstream.
         borrow_asset: findBorrowAsset(raw),
       },
@@ -1019,7 +1019,7 @@ function tryMultiGoalPlan(
    * answer.
    *
    * Live, 22 Sep: "withdraw 30 XLM from blend and lend it in earn" came back as
-   * `lend 30 XLM` then `deploy_to_blend BLUSDC` — INTO Blend, in an asset never
+   * `lend 30 XLM` then `deploy_to_blend BLUSDC` - INTO Blend, in an asset never
    * mentioned, waiting on a signature. The Blend leg is pushed on the presence of the
    * word "blend" alone, so a sentence taking money OUT of Blend builds a leg putting
    * money in.
@@ -1027,7 +1027,7 @@ function tryMultiGoalPlan(
    * Refused whole rather than repaired: dropping the offending leg would leave a plan
    * missing something the user stated, and re-pointing it would be this same guessing
    * in the other direction. Refusing lets the single-leg route read the sentence,
-   * which it already does correctly — the direction is right, and the message is the
+   * which it already does correctly - the direction is right, and the message is the
    * user's own words rather than an inversion of them. Planning both legs faithfully
    * is the stated-action path's job, not this keyword builder's.
    */
@@ -1043,14 +1043,14 @@ function tryMultiGoalPlan(
     template_id: "multi_goal_strategy",
     summary: `Multi-step strategy: ${parts.join(" → ")}`,
     // "keep HF above 1.4" was read into `minHf` above only to keep it from being
-    // misparsed as a deposit amount, then thrown away — approval sends back
+    // misparsed as a deposit amount, then thrown away - approval sends back
     // `message: "approve plan"`, not this text, so runPlan's fallback parse found
     // nothing and the user's stated floor was silently dropped. Carrying it on the
     // plan is what makes it survive the round-trip.
     constraints:
       minHf != null ? { minHf, leverage: null, preferMaxYield: false, spans: [] } : undefined,
     steps: deduped.map((s) => {
-      // Preserve swap token_in/out etc. — do not replace args with only leverage.
+      // Preserve swap token_in/out etc. - do not replace args with only leverage.
       const args: Record<string, unknown> = {
         ...((s as { args?: Record<string, unknown> }).args || {}),
       };
@@ -1098,7 +1098,7 @@ export function routeMessage(message: string): RoutedIntent {
       template_id: "query_price",
     };
   }
-  // Collapsed once, here, so every exact-phrase `any(text, "...")` check below benefits —
+  // Collapsed once, here, so every exact-phrase `any(text, "...")` check below benefits -
   // "how   much    do i owe" (G-04) has the same words as "how much do i owe" but none of
   // the phrase lists match irregular whitespace, so it fell through to the generic
   // clarify_capabilities blurb instead of answering.
@@ -1112,11 +1112,11 @@ export function routeMessage(message: string): RoutedIntent {
   const leverage = findLeverage(raw);
 
   /**
-   * A bare asset name with no verb at all — "SOUSDC", "XLM" — named a real token in our
+   * A bare asset name with no verb at all - "SOUSDC", "XLM" - named a real token in our
    * domain but said nothing about what to do with it, so it fell through everything to
    * the generic capabilities blurb. Reported live: answering a swap's "which token did
    * you mean?" with just the token name landed here. Recognized in-domain input should
-   * always ask what to do with it, never read as gibberish — the blurb is for genuinely
+   * always ask what to do with it, never read as gibberish - the blurb is for genuinely
    * out-of-domain input only.
    */
   if (new RegExp(`^(${ASSET_ALT})$`, "i").test(text)) {
@@ -1144,34 +1144,25 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "restricted",
       reason:
         "Outbound asset transfers to external addresses are not supported. " +
-        "Copilot only manages smart accounts and protocol positions — use your wallet directly to send funds to another address.",
+        "Copilot only manages smart accounts and protocol positions - use your wallet directly to send funds to another address.",
       template_id: "unsupported_transfer",
     };
   }
 
   /**
-   * "What is Collateral Left Before Liquidation of my margin account?" was refused
-   * outright as a restricted keeper action — it contains "liquidation of", which the
-   * old bare-substring check could not tell apart from an actual command. A genuine
-   * liquidate instruction ("liquidate my account", "liquidate G...") does not open
-   * with a question word; a question about the user's OWN liquidation threshold
-   * always does. This is a read the margin snapshot already answers
-   * (`collateralLeftBeforeLiquidation`), not a keeper action to refuse.
+   * Liquidating another account is not a plan op and not an allowlisted write
+   * (`PLAN_OPS` / `workflow/allowlist.ts` `TOOLS`). There is nothing here to refuse
+   * by the word "liquidate": "liquidate my XLM position" goes to investigation.
+   * This flag only marks a question about the user's own threshold, which the
+   * margin-figure read below answers.
    */
   const asksAboutOwnLiquidationThreshold =
     /\b(what|how much|how many|show me)\b[\s\S]{0,40}\bliquidat/i.test(text) ||
     /\b(before|until|left before|distance to|buffer before)\b[\s\S]{0,10}\bliquidat/i.test(text);
-  if (!asksAboutOwnLiquidationThreshold && any(text, "liquidate", "liquidation of")) {
-    return {
-      kind: "restricted",
-      template_id: "liquidate",
-      reason: "Liquidation of other accounts is a restricted keeper/protocol action — the copilot won't run it.",
-    };
-  }
 
   /**
    * "I have to Faucet AQUSDC" (also matches the "Fucet" typo, a plausible dropped-letter
-   * slip) fell through to the generic capabilities blurb — testnet funding is a client-side
+   * slip) fell through to the generic capabilities blurb - testnet funding is a client-side
    * action (the "Faucet" button in the top nav), not an MCP tool, so no read/write branch
    * below ever recognised the word at all.
    */
@@ -1179,13 +1170,13 @@ export function routeMessage(message: string): RoutedIntent {
     return {
       kind: "clarify",
       message:
-        "Testnet funding is the Faucet button in the top nav, next to your wallet address — " +
+        "Testnet funding is the Faucet button in the top nav, next to your wallet address - " +
         "it isn't something I can trigger from here. Click it to fund your wallet with testnet XLM.",
       template_id: "faucet_guidance",
     };
   }
 
-  // ── G-wallet create/connect (client-side Privy/Freighter — NOT MCP) ──────
+  // ── G-wallet create/connect (client-side Privy/Freighter - NOT MCP) ──────
   // Must run before multi-goal / create_account so "create a wallet" never
   // becomes open-margin-account (C-address). MCP has no create_wallet tool.
   if (
@@ -1194,7 +1185,7 @@ export function routeMessage(message: string): RoutedIntent {
       "create wallet",
       "create a wallet",
       "create vanna wallet",
-      // Bare "vanna wallet" so "create a vanna wallet" matches too — the phrases here
+      // Bare "vanna wallet" so "create a vanna wallet" matches too - the phrases here
       // are substrings, so an article between the verb and the noun defeated them.
       // "what is a vanna wallet?" never reaches here: it is a concept question.
       "vanna wallet",
@@ -1213,7 +1204,7 @@ export function routeMessage(message: string): RoutedIntent {
       "get me a wallet",
     ) &&
     // These phrases are substring matches, so "new wallet" also fired on
-    // "what's in my new wallet?" — a balance question that opened the create dialog.
+    // "what's in my new wallet?" - a balance question that opened the create dialog.
     // Exclude possessive/interrogative framings rather than dropping the phrase, so a
     // plain "create a new wallet" still works.
     !any(text, "smart account", "margin account", "c-account", "c account") &&
@@ -1226,9 +1217,9 @@ export function routeMessage(message: string): RoutedIntent {
       template_id: "create_g_wallet",
       message:
         "Opening Create Vanna wallet…\n\n" +
-        "1. Choose Create Vanna wallet (email or Google) — Privy creates an embedded Stellar G-wallet for you.\n" +
+        "1. Choose Create Vanna wallet (email or Google) - Privy creates an embedded Stellar G-wallet for you.\n" +
         "2. Or connect Freighter if you already have an extension wallet.\n\n" +
-        "Keys stay in your browser (Privy/Freighter). MCP never creates G-wallets — only opens margin C-accounts after you connect.",
+        "Keys stay in your browser (Privy/Freighter). MCP never creates G-wallets - only opens margin C-accounts after you connect.",
     };
   }
 
@@ -1261,7 +1252,7 @@ export function routeMessage(message: string): RoutedIntent {
   if (earnLends) return earnLends;
 
   // ── writes (checked before reads that share words like "borrow") ────────
-  // C-account / margin smart account only — not G-wallet create (see client path above).
+  // C-account / margin smart account only - not G-wallet create (see client path above).
   if (
     any(
       text,
@@ -1290,11 +1281,11 @@ export function routeMessage(message: string): RoutedIntent {
    * This gate used to sit below the LP / swap / Blend branches, so it only ever saw the
    * writes that had already failed to match one of them. "Add liquidity to the XLM/BTC
    * pool" returned from the LP branch three checks earlier and was answered with "how
-   * much of each token?" — inviting the user to size a BTC leg that can never execute.
+   * much of each token?" - inviting the user to size a BTC leg that can never execute.
    * Ahead of every write branch it cannot be reached around, and no supported asset is
    * affected because the guard only fires when an unsupported ticker is actually named.
    *
-   * "what's the XLM/BTC pool" named no write verb at all — a plain read-style question —
+   * "what's the XLM/BTC pool" named no write verb at all - a plain read-style question -
    * so it missed every word above and fell through to the generic capabilities blurb
    * instead of this same specific refusal. "pool"/"price"/"rate"/"apy"/"stats"/"worth"
    * cover that shape without widening the gate to fire on a bad ticker mentioned only
@@ -1343,7 +1334,7 @@ export function routeMessage(message: string): RoutedIntent {
     }
   }
 
-  // DEX swap (margin account free balance) — website Trade: XLM ↔ USDC via Aquarius or Soroswap.
+  // DEX swap (margin account free balance) - website Trade: XLM ↔ USDC via Aquarius or Soroswap.
   // “swap 10 XLM to USDC via aquarius” / “swap 5 USDC to XLM on soroswap”
   const swapMatch = raw.match(
     /\bswap\s+(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA)\b(?:\s*(?:to|for|into|->|→)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA))?/i,
@@ -1351,13 +1342,13 @@ export function routeMessage(message: string): RoutedIntent {
   /**
    * A SHARE is a size, so it must open the swap branch too.
    *
-   * Both entry conditions required a number — the regex wants digits right after "swap",
-   * and the fallback wants `amount != null` — so "swap half my XLM to USDC" matched
+   * Both entry conditions required a number - the regex wants digits right after "swap",
+   * and the fallback wants `amount != null` - so "swap half my XLM to USDC" matched
    * neither and fell through to the generic clarify, even though Trade/Spot offers exactly
    * that as its 25 / 50 / 75 / Max meter.
    */
   const swapShare = findBalanceFraction(raw);
-  /** "X to Y" when no amount preceded it — the sized regex above cannot see this pair. */
+  /** "X to Y" when no amount preceded it - the sized regex above cannot see this pair. */
   const swapPair = raw.match(
     /\b(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA)\b\s*(?:to|for|into|->|→)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA)\b/i,
   );
@@ -1365,7 +1356,7 @@ export function routeMessage(message: string): RoutedIntent {
    * "Now Can you Perform Swap From XLM to SoUSDC in Soroswap" named both tokens and a venue
    * but no size at all, so it matched neither `swapMatch` (needs a number right after
    * "swap") nor the old fallback below (which also required `amount != null ||
-   * swapShare != null`) and fell through everything to the generic capabilities blurb —
+   * swapShare != null`) and fell through everything to the generic capabilities blurb -
    * a real swap instruction answered as though it were gibberish. The write branch below
    * already handles a null amount gracefully (`requires_amount: true`, same as every other
    * op in this router), so naming the pair is enough to recognise the instruction; the size
@@ -1376,7 +1367,7 @@ export function routeMessage(message: string): RoutedIntent {
     (any(text, "swap") &&
       !any(text, "liquidity") &&
       // "What is the current swap price of XLM to AQUSDC" (issue 11) named no amount at
-      // all and asked a plain market-data question — "swap price"/"spot price" belong
+      // all and asked a plain market-data question - "swap price"/"spot price" belong
       // here alongside the existing "swap rate" exclusion, for the same reason: a price
       // question must never be treated as a command to actually execute a swap.
       !any(text, "can i swap", "is swap", "swap available", "swap fee", "swap rate", "swap price", "spot price") &&
@@ -1390,7 +1381,7 @@ export function routeMessage(message: string): RoutedIntent {
       (tokenIn === "XLM" ? "USDC" : "XLM")
     ).toUpperCase();
     /**
-     * Null when the user named no venue — do NOT default it here.
+     * Null when the user named no venue - do NOT default it here.
      *
      * Defaulting to "aquarius" at the router made the venue indistinguishable from one the
      * user actually asked for, so "swap 10 XLM to SOUSDC" looked like an explicit request
@@ -1408,22 +1399,22 @@ export function routeMessage(message: string): RoutedIntent {
      * "swap 10 XLM to USDC" EXECUTED a real swap. No variant was ever asked for.
      *
      * `usdcOps` (in handle.ts) is the generic bare-USDC gate every other write goes
-     * through, and swap is deliberately excluded from it — on purpose, per the comment
+     * through, and swap is deliberately excluded from it - on purpose, per the comment
      * there, so a swap that already names a concrete variant (AQUSDC/BLUSDC/SOUSDC) is
      * never asked a redundant question. But that gate only ever looks at `action.asset`
      * and `action.borrow_asset`; a swap's destination lives in `token_b`, a field the
-     * shared gate has never seen. So a swap landing on bare "USDC" here — because the
-     * user typed it, or because the tokenIn/tokenOut fallback above chose it — passed
+     * shared gate has never seen. So a swap landing on bare "USDC" here - because the
+     * user typed it, or because the tokenIn/tokenOut fallback above chose it - passed
      * straight through with no ambiguity check at all and settled on-chain.
      *
      * Handled here rather than by teaching the shared gate a third field: `token_b` only
      * exists on this one action shape, and this is the one place that already knows
-     * whether it is genuinely unresolved. Returned as `kind: "clarify"` — the same router
-     * result the unsupported-asset case above uses — so nothing downstream builds a
+     * whether it is genuinely unresolved. Returned as `kind: "clarify"` - the same router
+     * result the unsupported-asset case above uses - so nothing downstream builds a
      * transaction for a token nobody named.
      */
     if (tokenOut === "USDC") {
-      // Swap only ever settles in a DEX-traded variant — AQUSDC (Aquarius) or SOUSDC
+      // Swap only ever settles in a DEX-traded variant - AQUSDC (Aquarius) or SOUSDC
       // (Soroswap). BLUSDC is refused a few lines below for the exact same reason, so
       // it must not appear as a pickable option here either.
       return {
@@ -1443,7 +1434,7 @@ export function routeMessage(message: string): RoutedIntent {
       token_a: tokenIn,
       token_b: tokenOut,
       amount_a: amountIn != null && Number.isFinite(amountIn) ? amountIn : null,
-      // "swap half my XLM to USDC" — the Trade/Spot page's 25/50/75/Max meter as language.
+      // "swap half my XLM to USDC" - the Trade/Spot page's 25/50/75/Max meter as language.
       // Sized against the smart account's free balance, which is what that page reads.
       fraction: amountIn == null ? swapShare : null,
       venue,
@@ -1452,7 +1443,7 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // Soft NL: “earn me yield from farm / invest for max profit” — handled in runWrite ranking.
+  // Soft NL: “earn me yield from farm / invest for max profit” - handled in runWrite ranking.
   if (isMaxYieldInvestIntent(text) || any(text, "earn me something", "earn me yield from farm", "invest in market pools")) {
     const minHf = parseMinHealthFactor(raw);
     /**
@@ -1461,7 +1452,7 @@ export function routeMessage(message: string): RoutedIntent {
      * market" answered "How much XLM do you want to supply to Blend?" (22 Sep, live),
      * and "invest all my USDC for max profit" did the same with "all my USDC" sitting
      * in it. `requires_amount` was hard `true` and no fraction was carried, so a stated
-     * share had nowhere to go — the Earn lend branch below already reads exactly this
+     * share had nowhere to go - the Earn lend branch below already reads exactly this
      * and sizes off the live balance.
      *
      * The ranking preference and the size are two separate instructions;
@@ -1486,19 +1477,19 @@ export function routeMessage(message: string): RoutedIntent {
   // Farm Blend with leverage MUST win over margin deposit_and_borrow.
   // Old guard `(leverage && blend)` routed "Farm Blend at 3x with 10 BLUSDC"
   // into deposit_and_borrow, which then asked for USDC chips or stuck after deposit.
-  // "5x Blend on 10 BLUSDC" names no verb at all — the leverage multiple plus "Blend"
+  // "5x Blend on 10 BLUSDC" names no verb at all - the leverage multiple plus "Blend"
   // is the only signal. Without this clause it fell through everything to
   // clarify_capabilities, silently dropping a valid leverage request.
   /**
    * "Can You Remove 50 BLUSDC fom Farm's Blend Pool" matched `isBlendFarmWrite` (the
    * literal substring "blend pool") AND the supply verb allowlist below (the possessive
    * "farm's" contains "farm" as a whole word, since `any()`'s boundary treats the
-   * apostrophe as a word edge) — with no check anywhere for which DIRECTION the money was
+   * apostrophe as a word edge) - with no check anywhere for which DIRECTION the money was
    * supposed to move, it staged "Supply 50 BLUSDC to Blend" for a message asking to take
    * money OUT. A removal verb here always means withdraw, whatever else the sentence
-   * shares with a supply — checked first so it can never fall through to the supply route.
+   * shares with a supply - checked first so it can never fall through to the supply route.
    * Declared before `isBlendFarmWrite` so its own venue detection can recognise a bare
-   * "withdraw ... Blend" (no "to"/"into"/"on" preposition a supply would use) too —
+   * "withdraw ... Blend" (no "to"/"into"/"on" preposition a supply would use) too -
    * "withdraw 20 XLM from Blend" named no supply verb at all and matched neither the
    * phrase list nor the supply-verb alternative below it, so it fell through everything.
    */
@@ -1523,7 +1514,7 @@ export function routeMessage(message: string): RoutedIntent {
     ) ||
     (any(text, "blend") && any(text, "add", "liquidity") && !any(text, "stats", "apy")) ||
     /**
-     * "position" excludes a READ from being mistaken for a write — but "remove my blend
+     * "position" excludes a READ from being mistaken for a write - but "remove my blend
      * position" is not a read, and this shut it out of the write too. With the guard on
      * the read side also missing the removal verbs, the sentence had nowhere left to go
      * and landed on the generic capabilities blurb (22 Sep, live). A removal verb
@@ -1556,7 +1547,7 @@ export function routeMessage(message: string): RoutedIntent {
       (!any(text, "position") || any(text, "add", "liquidity")))
   ) {
     /**
-     * "deploy my idle funds into blend" states its size — everything idle — and was
+     * "deploy my idle funds into blend" states its size - everything idle - and was
      * asked "How much XLM do you want to supply to Blend?" anyway (22 Sep, live),
      * because `requires_amount` was hard `true` here and no share was carried. Same
      * reading as the Earn lend branch below, so the two cannot disagree about what
@@ -1577,7 +1568,7 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // Aquarius / Soroswap LP — add liquidity (must beat bare deposit / lend).
+  // Aquarius / Soroswap LP - add liquidity (must beat bare deposit / lend).
   const dual = parseDualAmounts(raw);
   const single = dual ? null : parseSingleAmountToken(raw);
   // "remove liquidity" is its own branch below; hasAmmLpIntent recognises both
@@ -1589,20 +1580,23 @@ export function routeMessage(message: string): RoutedIntent {
   ) {
     const token_a = dual?.token_a ?? single?.token ?? "XLM";
     /**
-     * "Add liquidity 10 XLM in Aquarius" names only ONE ticker — `single` requires a
+     * "Add liquidity 10 XLM in Aquarius" names only ONE ticker - `single` requires a
      * SECOND ticker in the text to return anything (parseSingleAmountToken), so it comes
-     * back null here and this used to fall straight to the hardcoded "BLUSDC" default —
+     * back null here and this used to fall straight to the hardcoded "BLUSDC" default -
      * a token `staticStepBlocker`/every LP tool on this platform refuses outright for
      * add_liquidity, no matter which venue. Reported live: staged as "how much of each
      * token?" and never recovered, even though the message plainly named a real venue.
-     * A stated "aquarius"/"soroswap" is a far stronger signal than that blind default —
+     * A stated "aquarius"/"soroswap" is a far stronger signal than that blind default -
      * it names the exact pool the amount belongs to, which is enough on its own for the
      * ratio auto-fill below (`handle.ts`) to size the other side, the same way the real
      * Farm add-liquidity form auto-fills the paired amount from one input.
      */
     const venueOtherToken = any(text, "soroswap") ? "SOUSDC" : any(text, "aquarius") ? "AQUSDC" : null;
+    // A named venue outranks an asset the registry cannot pin to one token (bare "USDC"):
+    // the pool fixes the variant. With no venue the ambiguous form is kept, so it is asked.
+    const specificAsset = asset && asset !== "XLM" && resolveAssetDef(asset) ? asset : null;
     const token_b =
-      dual?.token_b ?? single?.otherToken ?? (asset && asset !== "XLM" ? asset : venueOtherToken) ?? "AQUSDC";
+      dual?.token_b ?? single?.otherToken ?? specificAsset ?? venueOtherToken ?? (asset && asset !== "XLM" ? asset : null) ?? "AQUSDC";
     return {
       kind: "write",
       op: "add_liquidity",
@@ -1622,11 +1616,11 @@ export function routeMessage(message: string): RoutedIntent {
   /**
    * Remove LP (half or explicit amount).
    *
-   * "remove 50% of my LP" reached Vertex instead of this branch — non-deterministically,
+   * "remove 50% of my LP" reached Vertex instead of this branch - non-deterministically,
    * since the SAME exact message answered differently on different turns ("which pool?"
    * once, the generic capability blurb another time). The outer gate only recognised the
    * word "half" as a fraction phrase; a few lines down, `half` itself already checks for
-   * "50%"/"50 %" too — the outer gate and the value it gates were never kept in sync, so
+   * "50%"/"50 %" too - the outer gate and the value it gates were never kept in sync, so
    * the more common phrasing ("50%") never got past the gate to reach the check that
    * already understood it.
    */
@@ -1636,7 +1630,7 @@ export function routeMessage(message: string): RoutedIntent {
       any(text, "liquidity", "lp", "xlm/usdc", "pool")) ||
     /**
      * "Can you remove 10 LP from farm Aquarius XLM and USDC Pool" named an amount, not
-     * "half"/"50%", and its verb+noun were never adjacent ("remove liquidity") — so this
+     * "half"/"50%", and its verb+noun were never adjacent ("remove liquidity") - so this
      * gate missed it entirely and it fell through everything to an LLM free-generating a
      * confused "collateral or check your position?" clarify with no deterministic route
      * to anchor it. `add_liquidity`'s own gate already accepts a bare `"add" + venue/"lp"`
@@ -1648,12 +1642,12 @@ export function routeMessage(message: string): RoutedIntent {
   ) {
     const half = any(text, "half", "50%", "50 %");
     /**
-     * "Remove my liquidity" — no number, no "half" — is an explicit whole-position
+     * "Remove my liquidity" - no number, no "half" - is an explicit whole-position
      * removal, the same reading `withdraw_from_blend` already gives "Remove my XLM
      * position from Blend": stating the position IS the size, not a request to be
      * asked. Live, this fell through to "Amount missing for 'remove liquidity'.
      * Include a size like '10 BLUSDC' or '20 XLM'" on a message that named no size
-     * because it meant all of it — the same clause that TRIGGERED this branch
+     * because it meant all of it - the same clause that TRIGGERED this branch
      * ("remove my liquidity", one of the phrases above) was never read as an answer.
      *
      * Only when nothing else stated a size: an explicit amount or "half" still wins.
@@ -1661,7 +1655,7 @@ export function routeMessage(message: string): RoutedIntent {
     const all = amount == null && !half;
     /**
      * Pair default XLM / USDC family from message. A named venue outranks a bare "USDC"
-     * — "remove 10 LP from Aquarius XLM and USDC Pool" says "USDC", not "AQUSDC", but
+     * - "remove 10 LP from Aquarius XLM and USDC Pool" says "USDC", not "AQUSDC", but
      * naming the venue explicitly already answers which USDC it means, same as `farm
      * Blend`/`add_liquidity`'s own venue-aware asset resolution elsewhere in this file.
      */
@@ -1687,13 +1681,13 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // Margin multi-leg only — never steal Blend farm or Aquarius LP.
+  // Margin multi-leg only - never steal Blend farm or Aquarius LP.
   if (
     ((has(text, "deposit") && any(text, "borrow")) ||
       any(text, "deposit and borrow", "deposit + borrow", "lever up", "leveraged position") ||
       (leverage != null &&
         leverage > 1 &&
-        // "open an 11x position on BLUSDC" names no "leverage"/"lever" word at all — just
+        // "open an 11x position on BLUSDC" names no "leverage"/"lever" word at all - just
         // a multiple plus "position". Without this it fell through to asksAboutHoldings
         // below (word "position" alone matches that), answering with a positions summary
         // instead of ever reaching the leverage-cap refusal in handle.ts.
@@ -1720,7 +1714,7 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   if (any(text, "repay", "pay back", "payback", "clear my loan", "pay off")) {
-    // "all" / "100%" / "half" are sizes, not missing amounts — same rungs as Margin's
+    // "all" / "100%" / "half" are sizes, not missing amounts - same rungs as Margin's
     // 10/25/50/100% chips. A bare "repay my XLM" keeps amount null so the executor
     // can offer those chips instead of a blank "how much?".
     const fraction = amount == null ? findAmountFraction(raw) : null;
@@ -1728,7 +1722,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "repay",
       template_id: "repay",
-      // Prefer the named debt asset (XLM). Do not default to USDC when they named one —
+      // Prefer the named debt asset (XLM). Do not default to USDC when they named one -
       // that is what turned "repay all my XLM" into a confused USDC path.
       asset: asset ?? null,
       amount,
@@ -1742,12 +1736,12 @@ export function routeMessage(message: string): RoutedIntent {
    * "is a 500 BLUSDC borrow safe" EXECUTED a real borrow.
    *
    * That sentence contains the word "borrow" and matched none of the exclusions below,
-   * so it fell into the write branch, built op:"borrow" asset:"BLUSDC" amount:500, and —
-   * with auto-sign on and this being a single-leg write — signed and submitted on testnet
+   * so it fell into the write branch, built op:"borrow" asset:"BLUSDC" amount:500, and -
+   * with auto-sign on and this being a single-leg write - signed and submitted on testnet
    * from what was a question, not an instruction. This is the one class of bug worse than
    * a wrong answer: real state changed because a question was misread as a command.
    *
-   * A fixed phrase list cannot cover this — "is X safe", "would X be safe", "is it safe to
+   * A fixed phrase list cannot cover this - "is X safe", "would X be safe", "is it safe to
    * X" all vary the words around "safe". A regex on the shape of the sentence is what these
    * three have in common: the word "safe" sitting near a question opener ("is"/"would"/
    * "will"/"should"), not a fixed string.
@@ -1755,7 +1749,7 @@ export function routeMessage(message: string): RoutedIntent {
   const asksIfSafe = /\b(is|would|will|should)\b[\s\S]{0,60}\bsafe\b/i.test(text);
   if (asksIfSafe && any(text, "borrow")) {
     /**
-     * Only the EXPLICIT bare "USDC" mention is ambiguous here — an assetless "is it
+     * Only the EXPLICIT bare "USDC" mention is ambiguous here - an assetless "is it
      * safe to borrow more?" has never named any USDC variant and stays on its existing
      * silent default, same as every other unscoped read in this file. `needsUsdcVariant`
      * already returns false for a null asset, so this only fires when the user actually
@@ -1784,7 +1778,7 @@ export function routeMessage(message: string): RoutedIntent {
   // "available to borrow" / "liquidity … to borrow" are pool-liquidity READS. Without
   // these exclusions the bare "borrow" match turned "how much liquidity is available to
   // borrow from the XLM pool?" into a borrow write that then asked "how much do you want
-  // to borrow?" — a question answered with a question.
+  // to borrow?" - a question answered with a question.
   if (
     any(text, "borrow") &&
     !asksIfSafe &&
@@ -1795,7 +1789,7 @@ export function routeMessage(message: string): RoutedIntent {
       "borrow apr",
       // Reported live: "What is Borrow APY of XLM Lending Pool?" matched none of these
       // (only "borrow apr" was excluded, not "borrow apy") and fell into the borrow
-      // write branch, which then asked "how much do you want to borrow?" — a market-data
+      // write branch, which then asked "how much do you want to borrow?" - a market-data
       // question about the pool's rate, answered as if it were an instruction to borrow.
       "borrow apy",
       "borrow rate",
@@ -1804,7 +1798,7 @@ export function routeMessage(message: string): RoutedIntent {
       "liquidity",
       // Capacity questions, not instructions. "How much borrow power do I have" is
       // answered by the credit read below; without these it became a borrow write that
-      // replied "how much do you want to borrow?" — a question answered with a question.
+      // replied "how much do you want to borrow?" - a question answered with a question.
       "borrow power",
       "buying power",
       "credit",
@@ -1812,7 +1806,7 @@ export function routeMessage(message: string): RoutedIntent {
   ) {
     /**
      * "borrow the max I can safely" names no asset word at all, yet `asset ?? "USDC"`
-     * below turned that into a literal USDC borrow — which then hit the bare-USDC
+     * below turned that into a literal USDC borrow - which then hit the bare-USDC
      * ambiguity gate in handle.ts and asked which USDC variant *before* ever asking
      * a size, since that gate runs on the manufactured default with no way to tell
      * it apart from a genuine "USDC". When nothing was named, ask for both amount
@@ -1820,16 +1814,16 @@ export function routeMessage(message: string): RoutedIntent {
      */
     /**
      * A sizing word IS a quantity. "Borrow the max I can safely" states how much without
-     * stating a number, so it is an instruction missing only its asset — the clarify
+     * stating a number, so it is an instruction missing only its asset - the clarify
      * below is the right answer for it, and the headroom read is not.
      */
     const sizedWithoutNumber = findAmountFraction(text) != null || findBalanceFraction(text) != null;
     if (asset == null && amount == null && !sizedWithoutNumber) {
       /**
-       * Neither a size nor an asset is not an instruction to borrow — there is nothing
+       * Neither a size nor an asset is not an instruction to borrow - there is nothing
        * to execute in it. "How much i can borrow" landed here (the exclusion list above
        * knows "can i borrow", not "i can borrow") and was answered with "How much do you
-       * want to borrow, and in which asset?" — the user's own question handed back.
+       * want to borrow, and in which asset?" - the user's own question handed back.
        *
        * Rather than growing that list by one more wording, the branch now asks what a
        * write actually needs: a write with no quantity and no asset has nothing to stage,
@@ -1866,7 +1860,7 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // "as collateral" on its own is not an instruction — "what can I use as collateral?"
+  // "as collateral" on its own is not an instruction - "what can I use as collateral?"
   // is asking for the accepted-collateral list, and it was becoming a deposit write
   // that then asked which USDC variant to deposit. Questions are excluded so they fall
   // through to the collateral-config read below.
@@ -1921,8 +1915,8 @@ export function routeMessage(message: string): RoutedIntent {
    * "can i pull out"), but it can never be reached while this branch matches first.
    *
    * "Transfer Collateral Margin to Wallet 20 XLM" is the same instruction as "withdraw
-   * 20 XLM collateral" — moving margin collateral back to the wallet is what withdrawing
-   * it means — but named none of "withdraw"/"take out"/"pull", so it fell through
+   * 20 XLM collateral" - moving margin collateral back to the wallet is what withdrawing
+   * it means - but named none of "withdraw"/"take out"/"pull", so it fell through
    * everything to the generic capabilities blurb. "transfer"/"move"/"send" are everyday
    * synonyms for the same verb here, not a new op.
    */
@@ -1956,7 +1950,7 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // Farm — supply / deploy / "farm Blend at Nx …".
+  // Farm - supply / deploy / "farm Blend at Nx …".
   // Write needs a real verb; rate questions stay reads.
   // "farm Blend at 3x with 10 BLUSDC" has no "to blend" but is still a write.
   const blendVenueNamed = any(
@@ -2017,7 +2011,7 @@ export function routeMessage(message: string): RoutedIntent {
     (blendVenueNamed || (any(text, "blend") && leverage != null && leverage > 1)) &&
     blendWriteVerb &&
     !blendRateRead &&
-    // Same removal-verb carve-out as the earlier Blend-write block — a second gate here
+    // Same removal-verb carve-out as the earlier Blend-write block - a second gate here
     // since this block is reachable independently for phrasing the first one misses.
     !blendRemoveVerb
   ) {
@@ -2036,7 +2030,7 @@ export function routeMessage(message: string): RoutedIntent {
 
   // Align with zip brain (direct.py): bare "deposit" → margin collateral.
   // Earn supply uses lend/supply/earn/pool phrasing (incl. "earn yield on my XLM").
-  // Do NOT match "supply APY" / "supply APR" — those are pool-stat reads.
+  // Do NOT match "supply APY" / "supply APR" - those are pool-stat reads.
   // Do NOT steal Blend/Farm writes ("supply 10 XLM to Blend").
   const isSupplyApyRead = any(text, "supply apy", "supply apr", "borrow apy", "borrow apr");
   const isBlendOrFarmVenue = any(text, "blend", "farm", "aquarius", "soroswap", "bToken", "btoken", "lp ");
@@ -2050,8 +2044,8 @@ export function routeMessage(message: string): RoutedIntent {
    * "what is my total supply in earn section" executed a lend write asking which
    * USDC variant, when it was a plain question about the user's own position.
    * The old exclusion list matched fixed phrases ("my supply", "total supplied")
-   * as exact substrings, so an adjective sitting between the words — "my TOTAL
-   * supply" — broke the match and the message fell straight into isLendWrite.
+   * as exact substrings, so an adjective sitting between the words - "my TOTAL
+   * supply" - broke the match and the message fell straight into isLendWrite.
    * A shape-based regex ("what"/"how much" near "supply", or "my" near "supply")
    * survives whatever sits in between.
    */
@@ -2061,7 +2055,7 @@ export function routeMessage(message: string): RoutedIntent {
     );
   /**
    * "What is my Overall Deposit in XLM Lending Pool" hit the exact same failure one
-   * word over, but ONLY for the deposit-write clause below — a BARE "how much have I
+   * word over, but ONLY for the deposit-write clause below - a BARE "how much have I
    * deposited?" (no pool/earn/vault word at all) is a MARGIN COLLATERAL question
    * (`query_collateral` already owns that shape) and must keep routing there, so this
    * check cannot fold into `asksAboutOwnSupply` itself without also catching that
@@ -2094,7 +2088,7 @@ export function routeMessage(message: string): RoutedIntent {
     }
     const minHf = parseMinHealthFactor(raw);
     // "supply 50% of the XLM in my wallet" states a size. Carried as a fraction and
-    // sized off the live wallet balance in handle.ts — same rungs as the Earn form.
+    // sized off the live wallet balance in handle.ts - same rungs as the Earn form.
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
@@ -2111,9 +2105,9 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   // Bare "deposit 5 XLM" (no "collateral" word) still means deposit_collateral in the
-  // production brain router — same as zip direct.py `_ROUTES`. But "What is my Overall
-  // Deposit in XLM Lending Pool" — a QUESTION about an existing pool position, not a
-  // command — has no "collateral" word either, and used to fall into this exact
+  // production brain router - same as zip direct.py `_ROUTES`. But "What is my Overall
+  // Deposit in XLM Lending Pool" - a QUESTION about an existing pool position, not a
+  // command - has no "collateral" word either, and used to fall into this exact
   // unconditional catch, asking "How much collateral?" for a question that named
   // neither collateral nor an amount. Same `asksAboutOwnPoolDeposit` guard the lend-
   // write clause above uses, so a possessive/question shape naming a pool/earn/vault
@@ -2145,7 +2139,7 @@ export function routeMessage(message: string): RoutedIntent {
   if (
     any(text, "redeem") ||
     // "remove my earn position" is the same instruction as "redeem", and only this
-    // branch's narrower verb list kept it out — Earn's exit reads the shared vocabulary
+    // branch's narrower verb list kept it out - Earn's exit reads the shared vocabulary
     // for the same reason Blend's does.
     (POSITION_EXIT_VERBS.test(text) && any(text, "pool", "supply", "earn", "from the pool", "my supply"))
   ) {
@@ -2196,10 +2190,10 @@ export function routeMessage(message: string): RoutedIntent {
     ) ||
     /\b(then|and)\s+(also\s+)?(farm|lend|borrow|deposit|supply|swap|invest)\b/i.test(text);
 
-  // "What am I holding?" — the single most common question this surface gets, and the
+  // "What am I holding?" - the single most common question this surface gets, and the
   // one that had no deterministic route at all. It reached an answer only through
   // Vertex, so on any machine whose `gcloud auth login` had lapsed it fell all the way
-  // through to the closing `clarify` and replied with the capability blurb — which is
+  // through to the closing `clarify` and replied with the capability blurb - which is
   // exactly the "hardcoded response" that got reported.
   //
   // Matched with a regex over the whole message rather than a keyword list because the
@@ -2212,21 +2206,21 @@ export function routeMessage(message: string): RoutedIntent {
     /\bwhat\s+(?:am\s+i|do\s+i)\s+(?:hold|have|own|farm(?:ing)?)\b/i.test(text) ||
     // "what's in my earn account" broke the old exact-adjacency version of this
     // pattern ("my" then immediately "account") the same way "my total supply"
-    // broke the exclusion list below — "earn" sits in between. Widened to a span.
+    // broke the exclusion list below - "earn" sits in between. Widened to a span.
     /\bwhat'?s\s+in\s+my\b[\s\S]{0,20}\b(?:account|portfolio|wallet)\b/i.test(text) ||
     // "what is my total supply in earn section" / "how much have I supplied" name
-    // no "position"/"holdings" word at all, so this branch never saw them — they
+    // no "position"/"holdings" word at all, so this branch never saw them - they
     // fell through everything to the generic capabilities blurb (or, before the
     // isLendWrite fix above, into a live lend write). Same question, phrased with
-    // "supply" instead of "position". Excludes `isSupplyApyRead` — "what's the
+    // "supply" instead of "position". Excludes `isSupplyApyRead` - "what's the
     // supply APY on XLM" is a pool-stat question, not a "what do I hold" one, and
     // matches the same "what ... supply" shape.
     (asksAboutOwnSupply && !isSupplyApyRead) ||
     /**
      * "how much do I have in farm", "show me my earn balance", "what's my total
-     * in farm", "how much am I earning in the earn section" — none of these name
+     * in farm", "how much am I earning in the earn section" - none of these name
      * "position"/"holdings"/"supply" at all, just some other everyday word for
-     * "how much is there". A fixed phrase list is whack-a-mole against this — the
+     * "how much is there". A fixed phrase list is whack-a-mole against this - the
      * shape is a personal-quantity question word, a first-person marker, a
      * quantity noun, and a named venue, in any order, with anything in between.
      */
@@ -2235,17 +2229,17 @@ export function routeMessage(message: string): RoutedIntent {
       /\b(balance|total|earned|earning|have)\b/i.test(text) &&
       any(text, "earn", "farm", "blend", "aquarius", "soroswap")) ||
     // "what's my net worth" / "what's my net value" / "what is my net asset value" name
-    // no "position"/"holdings"/"supply" word either — same underlying question (equity),
+    // no "position"/"holdings"/"supply" word either - same underlying question (equity),
     // a third everyday phrasing for it.
     /\bnet\s+(worth|value|assets?|asset\s+value)\b/i.test(text) ||
-    // "What is my TVL in Farm Section" — names none of position/holdings/supply/balance
+    // "What is my TVL in Farm Section" - names none of position/holdings/supply/balance
     // either. TVL is the Farm page's own label for this exact figure (`lib/constants/
     // farm/index.ts`'s "Your Deposit TVL" stat, computed from the same Blend + Soroswap-LP
-    // + Aquarius-LP gross total `farmPositionAnswer` already answers with) — a fourth
+    // + Aquarius-LP gross total `farmPositionAnswer` already answers with) - a fourth
     // everyday name for "how much is there", not a new question.
     /\btvl\b|\btotal\s+value\s+locked\b/i.test(text) ||
     // "tell me my margin account details" names none of "position"/"holdings"/"supply"
-    // either and fell through everything to the generic capabilities blurb — the whole
+    // either and fell through everything to the generic capabilities blurb - the whole
     // point of the ask ("account details") is the full picture this fan-out already
     // answers (HF, collateral, debt, net value, per-asset breakdown), not one figure.
     /\b(margin\s+)?account\s+details?\b/i.test(text);
@@ -2253,7 +2247,7 @@ export function routeMessage(message: string): RoutedIntent {
    * "Close my position" is an instruction, not a question, and must not be answered with a
    * summary as though it had been carried out. Every unambiguous write phrasing has already
    * returned above this point, so this only has to catch the verbs that act on a position
-   * *as a whole* — the ones no earlier branch looks for. Not `hasActionWriteIntent`: that
+   * *as a whole* - the ones no earlier branch looks for. Not `hasActionWriteIntent`: that
    * list contains "farm", which would swallow "what am I farming".
    */
   /**
@@ -2261,14 +2255,14 @@ export function routeMessage(message: string): RoutedIntent {
    *
    * Live, 22 Sep: "remove xlm blend position" answered with the position's balances and
    * "To remove or withdraw this position, initiate a withdrawal transaction through the
-   * Vanna interface" — a read, and a dead end, for a sentence whose first word is an
+   * Vanna interface" - a read, and a dead end, for a sentence whose first word is an
    * instruction. "remove my earn position" and "withdraw my entire blend position" did
    * the same. The read branches are guarded by `!actsOnPosition`, so the guard was
    * right and its verb list was short: it held `close`, `exit` and `unwind` but not
    * `remove` or `withdraw`, and the noun "position" then carried the sentence to a
    * read.
    *
-   * `remove my lp position` escaped only because the LP branch is ordered earlier —
+   * `remove my lp position` escaped only because the LP branch is ordered earlier -
    * the same sentence shape working for one venue and not the others is what gave the
    * missing vocabulary away.
    *
@@ -2281,7 +2275,7 @@ export function routeMessage(message: string): RoutedIntent {
 
   /**
    * Named single-figure margin questions ask for ONE specific number, not the whole
-   * positions card — "if a user wants to see the gross amount of anything it should
+   * positions card - "if a user wants to see the gross amount of anything it should
    * return only that, not extra info" (reported live, alongside the fixes below).
    *
    * "Net Available Collateral & Net amount Borrowed of my margin account" matched
@@ -2289,7 +2283,7 @@ export function routeMessage(message: string): RoutedIntent {
    * second clause) nor the "net worth/value" pattern (the word after "net" here is
    * "available"/"amount", not "worth"/"value") and fell all the way to the generic
    * capabilities blurb. Each figure is checked independently against the whole
-   * message — not proximity to one leading question word — so an "X & Y" compound
+   * message - not proximity to one leading question word - so an "X & Y" compound
    * question matches every figure it names, in whichever order.
    *
    * "Collateral Left Before Liquidation" reuses the same threshold check the
@@ -2318,7 +2312,7 @@ export function routeMessage(message: string): RoutedIntent {
     if (namedMarginFigures.length > 0) {
       return {
         kind: "read",
-        // Nominal tool — runRead resolves the real margin snapshot for query_margin_figure
+        // Nominal tool - runRead resolves the real margin snapshot for query_margin_figure
         // and reads only the requested field(s) off it, same as query_all_positions does.
         tool: "vanna_get_account_health",
         args: { figures: namedMarginFigures },
@@ -2330,30 +2324,30 @@ export function routeMessage(message: string): RoutedIntent {
 
   /**
    * "My Blend position" names one venue and already has a route below that answers it with
-   * that venue's own numbers. Only the unqualified question — "what are my positions" — wants
+   * that venue's own numbers. Only the unqualified question - "what are my positions" - wants
    * the whole-account fan-out, so a named venue defers to the specific read.
    *
    * "earn" and "farm" both belong in this list, for the same reason "blend"/"aquarius"/
-   * "soroswap" do — each names a specific thing with its own answer, not the general
+   * "soroswap" do - each names a specific thing with its own answer, not the general
    * "everything I own" question. "farm" used to be treated as the general fan-out's synonym
    * (the whole account, not one venue), on the theory that the fan-out's farm-overview call
-   * covered it — but that call only ever contributes a best-effort PROSE sentence, never
+   * covered it - but that call only ever contributes a best-effort PROSE sentence, never
    * structured facts, so "my farm position" answered with a MARGIN ACCOUNT card and a note
-   * admitting "Blend supplies and Aquarius LP shares stay on Farm" — the same class of bug
+   * admitting "Blend supplies and Aquarius LP shares stay on Farm" - the same class of bug
    * "my Earn positions" had before it got this same treatment.
    */
   const namesOneVenue = any(text, "blend", "aquarius", "soroswap", "btoken", "b-token", "vtoken", "earn", "farm");
   /**
-   * "Can you provide my Earn positions" / "what's my earn position" — same "named one
+   * "Can you provide my Earn positions" / "what's my earn position" - same "named one
    * venue" shape as Blend/Aquarius, so it must be checked before the generic fan-out below
    * (which `namesOneVenue` now defers on) or the question goes unanswered. Earn has no
    * per-asset breakdown tool the way Blend does, so this reports the vToken (Earn-supplied)
-   * balance for every asset Earn supports, not the margin account's collateral — a
+   * balance for every asset Earn supports, not the margin account's collateral - a
    * different pool, even when the underlying token is the same.
    */
   /**
-   * "What is my Overall Deposit in XLM Lending Pool" names no "earn" word at all —
-   * "lending pool" is what this question calls the same thing — so it satisfied
+   * "What is my Overall Deposit in XLM Lending Pool" names no "earn" word at all -
+   * "lending pool" is what this question calls the same thing - so it satisfied
    * neither this check nor `asksAboutHoldings` and fell through to the generic
    * blurb. `asksAboutOwnPoolDeposit` (checked above, against the write triggers it
    * needed to be excluded from) already recognises the identical shape and already
@@ -2369,7 +2363,7 @@ export function routeMessage(message: string): RoutedIntent {
      * "What is my Overall Deposit in XLM Lending Pool" named exactly one asset
      * (XLM), but the unscoped `args: {}` this used to send makes the answering
      * side fan out across every Earn asset (XLM/BLUSDC/AQUSDC/SOUSDC) regardless
-     * — reported live: the reply listed AQUSDC and SOUSDC too, even though the
+     * - reported live: the reply listed AQUSDC and SOUSDC too, even though the
      * question named only the XLM pool. Only scope down when the named ticker is
      * actually one Earn supports; a bare/generic "USDC" or an off-menu asset
      * (AQUA/EURC/USDT) is ambiguous across three different USDC pools, so those
@@ -2386,16 +2380,16 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
   /**
-   * "My farm position" / "what am I farming" — see farmPositionAnswer's own doc comment
+   * "My farm position" / "what am I farming" - see farmPositionAnswer's own doc comment
    * for why this reads on-chain Blend + Aquarius + Soroswap LP state directly instead of
    * the margin/farm fan-out's best-effort prose sentence.
    *
    * "Give my Soroswap Farm Position Details" / "...Aquarius Farm Position Details" used
    * to be EXCLUDED here on the theory that a named venue "already has its own more precise
-   * answer" — it didn't; no such per-venue route exists, so naming a venue just fell
+   * answer" - it didn't; no such per-venue route exists, so naming a venue just fell
    * through everything to the generic capabilities blurb. A named venue now narrows the
    * SAME farm-overview read to that one venue instead of deferring to a route that isn't
-   * there. Only "earn" still defers — it has its own vToken-based route above.
+   * there. Only "earn" still defers - it has its own vToken-based route above.
    */
   const farmVenue: "blend" | "aquarius" | "soroswap" | null = any(text, "blend")
     ? "blend"
@@ -2409,7 +2403,7 @@ export function routeMessage(message: string): RoutedIntent {
      * One venue and one asset is one position, and Blend publishes that read directly.
      *
      * "What is my current XLM Blend supply" went to the whole-farm overview, whose answer
-     * is the Farm page's Deposit TVL headline plus every venue's holdings — so a question
+     * is the Farm page's Deposit TVL headline plus every venue's holdings - so a question
      * about one reserve was headlined "Your Blend Deposit TVL is $0.00" with a dust row
      * under it. The overview is what answers "what am I farming"; a named venue AND a
      * named asset have already narrowed it to a position that has its own read.
@@ -2481,7 +2475,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "read",
       // Nominal tool for arg-building and smart-account resolution. `runRead` recognises
       // the template and fans out to the margin snapshot as well, because "all my
-      // positions" spans margin collateral/debt AND the farm venues — one tool answers
+      // positions" spans margin collateral/debt AND the farm venues - one tool answers
       // half the question.
       tool: "vanna_get_farm_overview",
       args: {},
@@ -2490,7 +2484,7 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // "whats my helth factr" (G-06) — a loose enough match to survive the common drop of a
+  // "whats my helth factr" (G-06) - a loose enough match to survive the common drop of a
   // vowel in either word ("helth", "factr") without turning into a real fuzzy matcher.
   const asksHealthFactorTypo = /\bh\w*lth\s+fact\w*\b/i.test(text);
   const isStrategyOrBuildIntent = /\b(strategy|strategize|build|create|optimize|optimise|plan|recommend|suggest)\b/i.test(text);
@@ -2513,10 +2507,10 @@ export function routeMessage(message: string): RoutedIntent {
 
   /**
    * "How much Interest accrued till date in BLUSDC" fell through everything to the
-   * generic capabilities blurb — it names neither "debt"/"owe"/"borrowed" (so
+   * generic capabilities blurb - it names neither "debt"/"owe"/"borrowed" (so
    * `asksAboutOwnDebt` below never saw it) nor any other recognised shape. No tool
-   * in this deployment tracks accrued interest separately from principal — the
-   * debt balance itself is the compounding figure — so this is answered honestly
+   * in this deployment tracks accrued interest separately from principal - the
+   * debt balance itself is the compounding figure - so this is answered honestly
    * with the current owed amount and a note, not fabricated.
    */
   if (/\b(accrued\s+interest|interest\s+accrued)\b/i.test(text)) {
@@ -2531,7 +2525,7 @@ export function routeMessage(message: string): RoutedIntent {
 
   /**
    * "how much debt do I have" fell through everything to the generic capabilities
-   * blurb — the fixed phrase list below matched "my debt" and "how much have i
+   * blurb - the fixed phrase list below matched "my debt" and "how much have i
    * borrowed" but not this word order. Same shape-based fix as the supply/holdings
    * questions above: a quantity-question word or "my"/"i" near "debt"/"owe"/
    * "borrowed", not an exact phrase. `any(text, "borrow")` elsewhere in this
@@ -2553,12 +2547,12 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   /**
-   * "How much collateral do I have?" — one of the product's own suggested prompts —
+   * "How much collateral do I have?" - one of the product's own suggested prompts -
    * matched none of "my collateral"/"collateral value"/"how much have i deposited": no
    * "my", no "deposited", no "value". Same shape-based fix as debt/supply above: a
    * quantity-question word or "my" near "collateral", not a fixed phrase.
    *
-   * "What is my XLM Balance in Margin account?" names no "collateral" at all — it's the
+   * "What is my XLM Balance in Margin account?" names no "collateral" at all - it's the
    * same question in "balance" clothing, scoped to the margin account specifically (not
    * Earn/Farm, which the generic holdings "balance" shape below already covers). Without
    * this, "<asset> balance ... margin account" fell through to `query_resolve` below,
@@ -2591,7 +2585,7 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   /**
-   * "How much credit do I have?" — the headline product question.
+   * "How much credit do I have?" - the headline product question.
    *
    * Undercollateralised credit is what Vanna sells, and there was no deterministic route
    * for asking about it: the phrasing people use ("available credit", "borrowing power",
@@ -2626,12 +2620,12 @@ export function routeMessage(message: string): RoutedIntent {
   if (any(text, "can i borrow", "how much can i borrow", "max borrow", "borrow allowed")) {
     /**
      * "Can I borrow 20 USDC?" answered "Yes, you can borrow 20 USDC" as if bare USDC
-     * were a real, resolvable token — reported live. There is no generic "USDC" a user
+     * were a real, resolvable token - reported live. There is no generic "USDC" a user
      * can actually hold or borrow on this platform, only BLUSDC/AQUSDC/SOUSDC; this read
      * silently picked one (the margin contract's own wire symbol for BLUSDC happens to
      * be literally "USDC") with no indication three other tokens exist, the exact write-
      * side ambiguity `ambiguousUsdcSlot` already guards against, never applied here.
-     * Scoped to an EXPLICIT "USDC" mention — a fully assetless "how much can I borrow?"
+     * Scoped to an EXPLICIT "USDC" mention - a fully assetless "how much can I borrow?"
      * keeps its existing behaviour.
      */
     if (needsUsdcVariant(asset)) {
@@ -2644,7 +2638,7 @@ export function routeMessage(message: string): RoutedIntent {
     }
     /**
      * `vanna_can_borrow` is a yes/no test on ONE amount. With no amount there is nothing
-     * for it to test, and it was still being called — `symbol: "USDC"`, no `amount` — so
+     * for it to test, and it was still being called - `symbol: "USDC"`, no `amount` - so
      * "how much can I borrow?" got a pass/fail on an unstated figure, which the composer
      * then wrote up as "You can borrow 1 USDC" against ~$1.8k of collateral and ~$36 of
      * debt. Headroom is a different read: `vanna_get_max_borrow`, the same one the credit
@@ -2654,7 +2648,7 @@ export function routeMessage(message: string): RoutedIntent {
      * reaches here without a figure is asking how much, whatever words it used.
      */
     if (amount == null) {
-      // No asset named means every asset — see the fan-out in handle-read.ts, which
+      // No asset named means every asset - see the fan-out in handle-read.ts, which
       // treats a missing symbol as the request for the whole range rather than
       // defaulting to a token the user never said.
       return {
@@ -2721,14 +2715,14 @@ export function routeMessage(message: string): RoutedIntent {
 
   /**
    * "Give me XLM Lending Pool Address" and "what is address of account manager and
-   * oracle" both fell through — the first to the generic capabilities blurb (the
+   * oracle" both fell through - the first to the generic capabilities blurb (the
    * trigger only recognised "protocol address"/"contract address", not "pool address" /
    * "lending pool address"), the second to `query_price` (misreading "oracle" as a
    * price-feed word instead of a contract name, since it named no phrase this trigger
    * knew at all). Widened to a bare "address(es)" alongside ANY of the specific things
-   * this tool can actually name — the individual contract roles ("oracle", "account
+   * this tool can actually name - the individual contract roles ("oracle", "account
    * manager", "registry", "risk engine", "rate model") as well as "pool"/"lending
-   * pool"/"protocol"/"contract" — since a user asking "address of X" for anything this
+   * pool"/"protocol"/"contract" - since a user asking "address of X" for anything this
    * tool covers means the same thing as "X address" or "X's contract address".
    */
   if (
@@ -2773,7 +2767,7 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   /**
-   * "What is Current Rate of bXLM?" names no "blend" word at all — bXLM/bUSDC ARE Blend's
+   * "What is Current Rate of bXLM?" names no "blend" word at all - bXLM/bUSDC ARE Blend's
    * own bToken symbols (a supplied position, Blend's own notation), so naming one already
    * means "about Blend" without needing the word. `\bxlm\b` alone can never match inside
    * "bXLM" either (no word-boundary between "b" and "X"), so the symbol has to be read
@@ -2782,7 +2776,7 @@ export function routeMessage(message: string): RoutedIntent {
   const bXlmNamed = /\bbxlm\b/i.test(text);
   const bUsdcNamed = /\bbusdc\b/i.test(text);
   /**
-   * "What is Statistics of XLM Lending Pool" fell to the generic capabilities blurb —
+   * "What is Statistics of XLM Lending Pool" fell to the generic capabilities blurb -
    * the trigger required the literal word "blend", but Blend IS the "Lending/Single
    * Assets" product on the Farm page's own tab label, so a user saying "lending pool"
    * means the same thing without ever saying "Blend". Same fix shape as the bXLM/bUSDC
@@ -2803,7 +2797,7 @@ export function routeMessage(message: string): RoutedIntent {
      * the regex for it matched fine. Tracking the two bTokens as independent booleans
      * (like the plain "XLM vs USDC" comparison right below already did) fixes both at once.
      */
-    // "XLM vs USDC" / "XLM or USDC" is a comparison — list both, never pick one symbol.
+    // "XLM vs USDC" / "XLM or USDC" is a comparison - list both, never pick one symbol.
     const namedBlend = [
       /\bxlm\b/i.test(raw) || bXlmNamed ? "XLM" : null,
       /\busdc\b/i.test(raw) || bUsdcNamed ? "USDC" : null,
@@ -2820,31 +2814,31 @@ export function routeMessage(message: string): RoutedIntent {
 
   /**
    * "What is XLM to SoUSDC Ratio in farm Soroswap pool?" fell through to the generic
-   * capabilities blurb — no route asked an AMM pool's live reserve ratio directly
+   * capabilities blurb - no route asked an AMM pool's live reserve ratio directly
    * (the only existing ratio math, `handle.ts`'s Aquarius pool-ratio hint, is Aquarius-
    * only and reachable only as a side note on an add_liquidity clarify, not from a plain
    * question). Answered live from the same reserve reads that hint and the LP pool pages
-   * themselves use — `SoroswapService.getPoolStats` / `AquariusService.getAquariusPoolStats`
-   * — never a guessed number.
+   * themselves use - `SoroswapService.getPoolStats` / `AquariusService.getAquariusPoolStats`
+   * - never a guessed number.
    */
   /**
    * "What are the pool stats of XLM AQUSDC pool in Aquarius" explicitly named the AMM
    * venue, but fell through to the generic "pool stats" trigger below, which only ever
-   * calls `vanna_get_pool_stats` — the Vanna EARN lending pool's tool (supply APY,
+   * calls `vanna_get_pool_stats` - the Vanna EARN lending pool's tool (supply APY,
    * borrow APR, utilization). The answer came back real but mislabeled: lending-market
    * numbers for the Earn AQUSDC pool, badged "AQUARIUS LP" because the message said
-   * "Aquarius" — not the actual Aquarius AMM pool's reserves/composition the user asked
+   * "Aquarius" - not the actual Aquarius AMM pool's reserves/composition the user asked
    * about. Explicitly naming "aquarius"/"soroswap" alongside a stats-shaped word now
    * routes to the real on-chain AMM reader (same one "ratio" already used), which
-   * reports both reserves and which two tokens make up the pool — not just the ratio.
+   * reports both reserves and which two tokens make up the pool - not just the ratio.
    */
   /**
-   * Deliberately NOT "liquidity" here — "how much liquidity is in the aquarius pool" is
+   * Deliberately NOT "liquidity" here - "how much liquidity is in the aquarius pool" is
    * pinned (tests/lib/collateral-keywordconfident-and-borrow-venue.test.ts,
    * tests/lib/supply-position-read.test.ts) to the Earn pool-stats read, since "liquidity"
    * already means something specific there (Earn's own "total liquidity available to
    * borrow" figure) and is genuinely ambiguous on its own. Only words that unambiguously
-   * ask about the AMM pool itself — its ratio, TVL, reserves, or which tokens it holds —
+   * ask about the AMM pool itself - its ratio, TVL, reserves, or which tokens it holds -
    * belong in this list.
    */
   if (
@@ -2860,16 +2854,16 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   /**
-   * Issue 11: "What is the current swap price of XLM to AQUSDC" — a plain market-data
-   * question, not a command — used to fall into the swap-WRITE branch above, which then
+   * Issue 11: "What is the current swap price of XLM to AQUSDC" - a plain market-data
+   * question, not a command - used to fall into the swap-WRITE branch above, which then
    * asked "How much do you want to swap?" as if the question were an instruction. The
    * write branch now excludes "swap price"/"spot price" phrasing (see its own comment),
    * but nothing on the read side ever answered it: the AMM pool's live ratio IS the spot
    * swap price (before fees/slippage) for whichever two tokens it holds, so this reuses
-   * the exact same on-chain reader as "pool ratio"/"pool stats" just above — inferring
+   * the exact same on-chain reader as "pool ratio"/"pool stats" just above - inferring
    * the venue from either an explicit venue name or the named USD variant (AQUSDC →
    * Aquarius, SOUSDC → Soroswap), the same inference the swap-write path itself already
-   * does for its own `venue` field. Deliberately NOT "exchange rate" — that phrase is
+   * does for its own `venue` field. Deliberately NOT "exchange rate" - that phrase is
    * already claimed a few lines down for Earn's vToken exchange rate, a different thing.
    */
   if (any(text, "swap price", "swap rate", "spot price", "spot swap")) {
@@ -2890,11 +2884,11 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // List / rank all Vanna earn pools (not Blend) — fan-out in runRead.
+  // List / rank all Vanna earn pools (not Blend) - fan-out in runRead.
   if (
     any(text, "all earn pools", "list all vanna earn", "earn pools with", "list earn pools") ||
     (any(text, "earn pool") && any(text, "list", "all", "every")) ||
-    // "How is the earn pool doing?" names no ticker — that is all four pools, not USDC.
+    // "How is the earn pool doing?" names no ticker - that is all four pools, not USDC.
     (any(text, "earn pool", "earn pools") &&
       any(text, "how is", "how are", "doing", "how's") &&
       !any(text, "blusdc", "aqusdc", "sousdc", "xlm")) ||
@@ -2914,12 +2908,12 @@ export function routeMessage(message: string): RoutedIntent {
     (any(text, "pool") && any(text, "stat", "apr", "apy", "liquidity", "tvl"))
   ) {
     /**
-     * "USDC pool stats" names bare "USDC" — on this platform that is genuinely
+     * "USDC pool stats" names bare "USDC" - on this platform that is genuinely
      * ambiguous among three separate deployments (BLUSDC/AQUSDC/SOUSDC, this session's
      * recurring "which USDC variant" theme for writes, via `ambiguousUsdcSlot`), yet the
      * read path picked one silently (the Vanna Earn pool's own wire symbol happens to be
      * bare "USDC") with no indication three other pools exist. Reported live: "it can
-     * show all the states or it should ask specific which one" — showing every Earn
+     * show all the states or it should ask specific which one" - showing every Earn
      * pool (the same answer `query_all_earn_pools` already gives) is the friendlier of
      * the two and requires no new backend call.
      */
@@ -2928,7 +2922,7 @@ export function routeMessage(message: string): RoutedIntent {
      * Ask rather than guessing the Earn lending pool (or the Blend reserve).
      *
      * But only when the question is about the SURFACE. "What is the XLM supply APY" names
-     * a figure the Earn pool read returns, and got the chip anyway — while the identical
+     * a figure the Earn pool read returns, and got the chip anyway - while the identical
      * sentence with the word "earn" in it answered straight away. A question that names
      * the figure has already said what it wants; the chip is for the one that has not.
      * See `namesEarnPoolMetric`, which reads that vocabulary off the read's own fields.
@@ -2943,16 +2937,16 @@ export function routeMessage(message: string): RoutedIntent {
       const venues =
         asset === "AQUSDC"
           ? [
-              { id: "earn", label: "Earn", description: "Lending pool — supply / borrow" },
+              { id: "earn", label: "Earn", description: "Lending pool - supply / borrow" },
               { id: "aquarius", label: "Farm · Aquarius", description: "LP (XLM / AQUSDC)" },
             ]
           : asset === "SOUSDC"
             ? [
-                { id: "earn", label: "Earn", description: "Lending pool — supply / borrow" },
+                { id: "earn", label: "Earn", description: "Lending pool - supply / borrow" },
                 { id: "soroswap", label: "Farm · Soroswap", description: "LP (XLM / SOUSDC)" },
               ]
             : [
-                { id: "earn", label: "Earn", description: "Lending pool — supply / borrow" },
+                { id: "earn", label: "Earn", description: "Lending pool - supply / borrow" },
                 { id: "blend", label: "Farm · Blend", description: "Single-asset supply on Farm" },
               ];
       return {
@@ -2996,7 +2990,7 @@ export function routeMessage(message: string): RoutedIntent {
    *
    * The word "price" sent it to `vanna_get_price`, which answered with the XLM spot rate
    * and then said a liquidation price was unavailable "as no position data was provided"
-   * — to a user whose account holds collateral and debt. The position was never fetched
+   * - to a user whose account holds collateral and debt. The position was never fetched
    * because the route had already decided this was an oracle question.
    *
    * Checked before the price branch, and requires a possessive ("my"/"our") or an explicit
@@ -3015,7 +3009,7 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // “price of XLM and USDC” / dual-oracle asks — always batch when 2+ assets named
+  // “price of XLM and USDC” / dual-oracle asks - always batch when 2+ assets named
   if (any(text, "price", "trading at", "how much is", "rate", "oracle")) {
     const named: string[] = [];
     if (/\bxlm\b/i.test(raw)) named.push("XLM");
@@ -3058,16 +3052,16 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // Standing risk preference without a write verb — still answer with guidance.
+  // Standing risk preference without a write verb - still answer with guidance.
   const minHfOnly = parseMinHealthFactor(raw);
   /**
    * A health read answers a prompt whose whole content is a health question. A stated HF
    * floor is a CONSTRAINT on something, and the thing it constrains is the rest of the
-   * sentence — so this branch may only claim the prompt when there is no rest.
+   * sentence - so this branch may only claim the prompt when there is no rest.
    *
    * Live, 22 Sep: "Deploy XLM into farm to maximize returns while maintaining health
-   * factor above 1.4." was answered with a bare account-health read. The deploy clause —
-   * the entire request — was discarded because the floor clause matched first.
+   * factor above 1.4." was answered with a bare account-health read. The deploy clause -
+   * the entire request - was discarded because the floor clause matched first.
    *
    * The sibling health branch above already gets this right: it gates on
    * `!hasActionWriteIntent` as well as `!isStrategyOrBuildIntent`. This branch was
@@ -3092,7 +3086,7 @@ export function routeMessage(message: string): RoutedIntent {
 
   // Nothing matched. Tagged so `handleChat` can tell this apart from a clarification the
   // router chose deliberately: when the model was ALSO unreachable, replying with the
-  // capability list is misleading — it reads as "I understood you and this is my answer"
+  // capability list is misleading - it reads as "I understood you and this is my answer"
   // when the truth is that the only component that could have understood never ran.
   return {
     kind: "clarify",

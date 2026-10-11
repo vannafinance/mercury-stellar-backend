@@ -14,7 +14,7 @@ describe("sizeLegs without a user floor", () => {
     if (result.ok) expect(Number(result.finalHealthFactor)).toBeCloseTo(1.6546, 3);
   });
 
-  it("refuses to size a max borrow — a max needs a floor the user chose", () => {
+  it("refuses to size a max borrow - a max needs a floor the user chose", () => {
     const result = sizeLegs(base, [{ op: "borrow", label: "borrow", amountUsd: "max" }], null);
     expect(result).toMatchObject({ ok: false, reason: "floor_required_for_max", failingLeg: "borrow" });
   });

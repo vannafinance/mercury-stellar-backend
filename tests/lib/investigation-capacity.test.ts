@@ -21,6 +21,7 @@ vi.mock("@/lib/copilot/investigation/contract-health", async (importOriginal) =>
 import {
   computeBorrowCapacity,
   computeSizingBasis,
+  computeAccountPosition,
   parseLiquidationSnapshot,
   reconcileSizingBasis,
 } from "@/lib/copilot/investigation/capacity";
@@ -43,6 +44,13 @@ beforeEach(() => {
 });
 
 describe("borrow capacity", () => {
+  it("anchors a post-settlement account read without changing ordinary sizing reads", async () => {
+    snapshot(100, 20);
+    await computeAccountPosition(ACCOUNT, undefined, "final-confirmed-hash");
+    expect(mocks.computeMarginSnapshot).toHaveBeenLastCalledWith(ACCOUNT, { freshAfter: "final-confirmed-hash" });
+    await computeAccountPosition(ACCOUNT);
+    expect(mocks.computeMarginSnapshot).toHaveBeenLastCalledWith(ACCOUNT, undefined);
+  });
   it("sizes headroom from the contract snapshot when it agrees with the app", async () => {
     snapshot(4219.36, 1736.19);
     const capacity = await computeBorrowCapacity(
@@ -163,6 +171,18 @@ describe("borrow capacity", () => {
     });
   });
 
+  it("sizes an explicit maximum borrow above the protocol line without a user floor", async () => {
+    snapshot(4219.36, 1736.19);
+    const capacity = await computeBorrowCapacity(ACCOUNT, ["Take the largest BLUSDC loan"], undefined, undefined,
+      { ...contract(4219.36, 1736.19), useProtocolFloor: true });
+    expect(Number(capacity?.floor)).toBeCloseTo(1.1);
+    expect(BigInt(capacity!.floor.replace(".", ""))).toBeGreaterThan(BigInt("1100000000000000000"));
+    expect(capacity?.floorSource).toBe("protocol_minimum");
+    const higher = await computeBorrowCapacity(ACCOUNT, ["Keep HF above 1.7"], undefined, undefined,
+      { ...contract(4219.36, 1736.19), useProtocolFloor: true });
+    expect(higher?.floor).toBe("1.7");
+  });
+
   it("takes the latest floor the user gave, not the first", async () => {
     snapshot(4219.36, 1736.19);
     const capacity = await computeBorrowCapacity(ACCOUNT, [
@@ -234,6 +254,17 @@ describe("reconcileSizingBasis", () => {
 });
 
 describe("computeSizingBasis", () => {
+  it("awaits a basis already in flight this turn instead of reading the snapshot and the contract again", async () => {
+    mocks.computeMarginSnapshot.mockClear();
+    const inFlight = { grossCollateralUsd: "4219.36", debtUsd: "1736.19", source: "contract" as const, issue: null,
+      app: { grossCollateralUsd: "4219.36", debtUsd: "1736.19" }, contract: { grossCollateralUsd: "4219.36", debtUsd: "1736.19" } };
+    const mcp = { call: vi.fn() };
+    const basis = await computeSizingBasis(ACCOUNT, null, { basis: Promise.resolve(inFlight), mcp });
+    expect(basis).toBe(inFlight);
+    expect(mocks.computeMarginSnapshot).not.toHaveBeenCalled();
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
+
   it("uses the RiskEngine basis when the app snapshot times out", async () => {
     mocks.computeMarginSnapshot.mockRejectedValue(new Error("snapshot timed out"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

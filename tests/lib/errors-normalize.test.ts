@@ -179,7 +179,7 @@ describe('on-chain "rejected"/"declined" failures are not mistaken for a wallet 
 });
 
 // Regression: a genuine insufficient-margin-account-balance repay confirmed
-// live as `HostError: Error(WasmVm, InvalidAction)` — collect_from returns
+// live as `HostError: Error(WasmVm, InvalidAction)` - collect_from returns
 // false, then AccountManager still calls remove_borrowed_token_balance,
 // which underflows and panics. None of that detail is in the headline; it's
 // only in the "Event log" section, which every normalizer's `compact` cuts

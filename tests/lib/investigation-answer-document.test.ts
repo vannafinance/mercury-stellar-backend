@@ -59,7 +59,7 @@ describe("investigationAnswerDocument", () => {
   it("does not dump facts when the investigation could not finish", () => {
     const answer = investigationAnswerDocument(result(DUMP, {
       status: "incomplete",
-      message: "The investigation could not be completed from the reads it made. Nothing was executed — please try again.",
+      message: "The investigation could not be completed from the reads it made. Nothing was executed - please try again.",
     }));
     expect(answer.headline).toMatch(/could not be completed/);
     expect(answer.facts).toEqual([]);

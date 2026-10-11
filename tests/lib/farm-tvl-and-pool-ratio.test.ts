@@ -1,13 +1,13 @@
 /**
  * Reported live, three related routing gaps under "everyday phrasing had no route":
  *
- * 1. "What is my TVL in Farm Section" fell through to the generic capabilities blurb —
+ * 1. "What is my TVL in Farm Section" fell through to the generic capabilities blurb -
  *    TVL is the Farm page's own label ("Your Deposit TVL") for the same gross Blend +
  *    Aquarius/Soroswap-LP total `farmPositionAnswer` already answers with; only the
  *    synonym was missing from `asksAboutHoldings`.
- * 2. "What is XLM to SoUSDC Ratio in farm Soroswap pool?" fell through entirely — no
+ * 2. "What is XLM to SoUSDC Ratio in farm Soroswap pool?" fell through entirely - no
  *    route ever asked an AMM pool's live reserve ratio directly.
- * 3. "What is Current Rate of bXLM?" was REJECTED by the domain firewall as off-topic —
+ * 3. "What is Current Rate of bXLM?" was REJECTED by the domain firewall as off-topic -
  *    bXLM is Blend's own bToken symbol for a supplied XLM position, a real in-domain
  *    concept the firewall's vocabulary list never recognised.
  */
@@ -79,7 +79,7 @@ describe("'bXLM' is a recognised in-domain concept, not off-topic chat", () => {
 
   it("THE LIVE BUG: never classified as a conceptual explainer question", () => {
     // A THIRD independent asset-recognition list (concept.ts's ASSET_SYMBOL) had the same
-    // gap — "rate" satisfies MARKET_NOUN, but `\bXLM\b` can't match inside "bXLM", so the
+    // gap - "rate" satisfies MARKET_NOUN, but `\bXLM\b` can't match inside "bXLM", so the
     // live-data override never fired and this was answered by the generic Guide explainer
     // ("bXLM is a tokenized representation...") instead of the actual current rate.
     expect(isAssistantChat("What is Current Rate of bXLM?")).toBe(false);

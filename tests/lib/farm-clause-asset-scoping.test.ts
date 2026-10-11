@@ -1,6 +1,6 @@
 /**
  * The farm leg's asset was scanned across the WHOLE message, not scoped to its own
- * clause — "swap 10 XLM to AQUSDC then farm Blend with 5 BLUSDC" names AQUSDC for the
+ * clause - "swap 10 XLM to AQUSDC then farm Blend with 5 BLUSDC" names AQUSDC for the
  * swap and BLUSDC for the farm leg, but whichever variant matched first in the
  * (blusdc, aqusdc, sousdc) checklist won regardless of which clause it actually
  * appeared in. Contributed to a live bug where a swap leg's resolved token leaked into

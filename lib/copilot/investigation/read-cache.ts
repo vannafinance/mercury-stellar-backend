@@ -17,7 +17,7 @@ const HEALTH_ASK =
 const PRICE_ASK =
   /\b(?:price|oracle|worth|trading at|value)\b/i;
 
-/** Assets the margin account accepts, from the registry — the fast path must not keep its own list. */
+/** Assets the margin account accepts, from the registry - the fast path must not keep its own list. */
 const WITHDRAW_PATTERN = new RegExp(`\\bwithdraw\\s+(\\d+(?:\\.\\d{1,18})?)\\s+(${allAssets().filter((a) => a.marginSymbol).map((a) => a.id).join("|")})\\b`, "i");
 const WITHDRAW_ELIGIBILITY =
   /\b(can i|could i|may i|is it (?:ok|safe)|without (?:getting )?liquidat|would .{0,40}liquidat|allowed to)\b/i;

@@ -1,5 +1,0 @@
-{
-  "title": "copilot-workflows-only",
-  "description": "App workflow records in the dedicated Copilot database only",
-  "expression": "resource.name == 'projects/vanna-mcp/databases/copilot-workflows'"
-}

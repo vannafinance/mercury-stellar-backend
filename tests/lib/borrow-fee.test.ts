@@ -19,7 +19,7 @@ describe("netOfOriginationFee", () => {
 });
 
 describe("capToFreeBalance", () => {
-  it("caps requested above free balance — the live #10 bug", () => {
+  it("caps requested above free balance - the live #10 bug", () => {
     const r = capToFreeBalance(10, 9.965);
     expect(r.capped).toBe(true);
     expect(r.amount).toBeLessThanOrEqual(9.965);

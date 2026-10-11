@@ -19,7 +19,7 @@
  *   borrow USDC / amount null       ← size implied by leverage, asset defaulted away
  *
  * Which the user saw as "amount to be confirmed USDC", a "which USDC?" chip for a token
- * they never named, and — after the deposit had settled on chain — a prompt asking them
+ * they never named, and - after the deposit had settled on chain - a prompt asking them
  * to type a size the backend could compute. Debt stayed $0, HF stayed ∞.
  *
  * So a unit test on the write path cannot protect this. These tests assert the PLAN
@@ -40,7 +40,7 @@ import { actionFromExpanded, expandPlanWrites, materializeLeverageWrites } from 
 import { ambiguousUsdcSlot } from "@/lib/copilot/mcp-write";
 import type { RoutedIntent } from "@/lib/copilot/types";
 
-/** The oracle's answer, not a guess — same feed the sibling suite uses. */
+/** The oracle's answer, not a guess - same feed the sibling suite uses. */
 const PRICES = { XLM: 0.11, AQUA: 0.004 };
 
 /** The two strings the operator ran on localhost, verbatim. */
@@ -67,12 +67,12 @@ const writeSteps = (r: RoutedIntent) =>
   r.kind === "plan" ? r.steps.filter((s) => s.kind === "write") : [];
 
 describe.each(REPRO)(
-  "levered deposit+borrow survives the plan path — $message",
+  "levered deposit+borrow survives the plan path - $message",
   ({ message, collateralAsset, collateralAmount, leverage }) => {
     it("THE LIVE BUG: never becomes a borrow leg with no amount", () => {
       const steps = extractPlanIR(message).steps;
       const borrowLegs = steps.filter((s) => s.op === "borrow");
-      // Live, this was `borrow USDC / amount null` — unexecutable, and the reason the
+      // Live, this was `borrow USDC / amount null` - unexecutable, and the reason the
       // run stopped after the deposit with "Amount missing for Borrow USDC".
       for (const b of borrowLegs) {
         expect(b.amount, "a borrow leg reached the plan with no size").toBeTruthy();
@@ -101,7 +101,7 @@ describe.each(REPRO)(
     it("does not clobber the router's already-correct deposit_and_borrow", () => {
       // The regression mechanism: a 2-step extracted plan outranked the single correct
       // write. Merged back to one step, it drops below the two-step bar and the route
-      // survives — so this prompt reaches runWrite's oracle sizing.
+      // survives - so this prompt reaches runWrite's oracle sizing.
       const routed = routeMessage(message);
       const after = preferExtractedPlan(routed!, message);
       expect(after.kind).toBe("write");
@@ -122,7 +122,7 @@ describe.each(REPRO)(
       ).toBeNull();
     });
 
-    it("expands and sizes to a concrete XLM borrow — no clarification", () => {
+    it("expands and sizes to a concrete XLM borrow - no clarification", () => {
       const step = extractPlanIR(message).steps[0];
       const expanded = expandPlanWrites([
         {
@@ -133,7 +133,7 @@ describe.each(REPRO)(
           args: step.args,
         },
       ]);
-      // Cross-asset stays whole so the executor — which has the oracle — prices it.
+      // Cross-asset stays whole so the executor - which has the oracle - prices it.
       expect(expanded).toHaveLength(1);
       const action = actionFromExpanded(expanded[0], {
         smartAccount: null,
@@ -219,7 +219,7 @@ describe("the merge is narrow on purpose", () => {
   });
 
   it("leaves the pair alone when no leverage was stated", () => {
-    // Nothing to size from, so asking is the honest outcome — not a guessed multiplier.
+    // Nothing to size from, so asking is the honest outcome - not a guessed multiplier.
     const steps = coalesceLeveragedDepositBorrow(
       [
         { kind: "write", op: "deposit_collateral", asset: "BLUSDC", amount: 100 },
@@ -259,11 +259,11 @@ describe("the merge is narrow on purpose", () => {
 /**
  * The approve round-trip is a second, separate place the borrow asset was lost.
  *
- * The plan CARD was correct — "Deposit 500 AQUSDC as collateral and borrow XLM at 3×
- * leverage" — and execution still ran `Borrow 1000 AQUSDC`, failing on chain with
+ * The plan CARD was correct - "Deposit 500 AQUSDC as collateral and borrow XLM at 3×
+ * leverage" - and execution still ran `Borrow 1000 AQUSDC`, failing on chain with
  * HostError #13. Both facts are consistent: `freezePlan` never carried `borrow_asset`
  * into `PlanStepView`, so the client had nothing to echo back, `verifyApprovedPlan`
- * rebuilt the step without it, and `expandPlanWrites` read the position as same-asset —
+ * rebuilt the step without it, and `expandPlanWrites` read the position as same-asset -
  * borrowing collateral-amount × (L−1) = 1000 in AQUSDC units, which is the DOLLAR size
  * of the debt spent as the wrong token.
  *
@@ -418,7 +418,7 @@ describe("the approve round-trip preserves the borrow asset", () => {
     const levered = p.warnings.find((w) => /leverage, so it runs as/.test(w));
     expect(levered).toBeTruthy();
     expect(levered).toMatch(/2 transactions/);
-    // It used to promise a third leg — "then supply" — that a margin deposit_and_borrow
+    // It used to promise a third leg - "then supply" - that a margin deposit_and_borrow
     // never runs, on the card whose job is to say what will run.
     expect(levered).not.toMatch(/then supply/);
     expect(levered).toMatch(/borrow XLM against it/);

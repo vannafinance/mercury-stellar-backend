@@ -37,7 +37,7 @@ describe("step-extractor", () => {
   it("decomposes a delta-neutral carry with no 'then' separator", () => {
     // This exact prompt has no clause-split marker ("then"/"after that"/";"), so it used
     // to arrive at clauseToStep as ONE clause, whose first matching rule (bare "deposit")
-    // collapsed the whole strategy to a single deposit_collateral write — the borrow and
+    // collapsed the whole strategy to a single deposit_collateral write - the borrow and
     // lend legs were silently dropped, and the run finished after one transaction.
     const p = extractOrderedPlan(
       "Deposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health",
@@ -46,7 +46,7 @@ describe("step-extractor", () => {
     expect(p?.template_id).toBe("delta_neutral_carry");
     expect(p!.steps.map((s) => s.op)).toEqual(["deposit_collateral", "borrow", "lend"]);
     expect(p!.steps[0]).toMatchObject({ asset: "BLUSDC", amount: 50 });
-    // The carry asset is XLM, not BLUSDC — borrowing the deposited asset back would not
+    // The carry asset is XLM, not BLUSDC - borrowing the deposited asset back would not
     // be delta-neutral. This is the second bug already seen on this exact prompt.
     expect(p!.steps[1]).toMatchObject({ op: "borrow", asset: "XLM" });
     expect(p!.steps[2]).toMatchObject({ op: "lend", asset: "XLM" });
@@ -72,7 +72,7 @@ describe("step-extractor", () => {
     expect(p!.steps.some((s) => s.op === "borrow")).toBe(false);
     expect(p!.steps.some((s) => s.op === "lend")).toBe(false);
     // It IS two instructions, and both are now kept: the deposit, then the question.
-    // This previously asserted `null`, which recorded a limitation rather than a rule —
+    // This previously asserted `null`, which recorded a limitation rather than a rule -
     // the extractor could only emit write legs, so the trailing read was dropped and a
     // one-write extraction was discarded wholesale. Half the prompt went unanswered.
     expect(p?.kind).toBe("plan");
@@ -114,7 +114,7 @@ describe("step-extractor", () => {
 
   it("reads a thousands-separated amount at full magnitude", () => {
     // Regression: the amount matcher's \d+ could not span "1,240", so the scan slid to
-    // the tail and produced 240 — a silent 10x error on a real borrow, with no
+    // the tail and produced 240 - a silent 10x error on a real borrow, with no
     // clarification raised. Asserted on its own because a wrong amount that still
     // executes is worse than a parse failure.
     const p = extractOrderedPlan("deposit 10,000 BLUSDC, borrow 1,240 XLM");

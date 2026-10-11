@@ -5,14 +5,14 @@
  * it, and `identity_wallet_bindings` ties that `did:privy:…` to a G-address.
  * Freighter never mints that token. The navbar still shows the G-address because
  * that store is client-only, so investigation used to arrive as `subject=guest`
- * with a wallet in the body — which `resolveInvestigationScope` correctly refuses
+ * with a wallet in the body - which `resolveInvestigationScope` correctly refuses
  * as an unsigned session, or anyone could impersonate any wallet.
  *
  * This module is the missing third identity anchor. The wallet signs a
  * single-use challenge (SEP-53). The signature is verified here, then sealed
  * into an httpOnly cookie. Investigation reads that cookie as `sub=stellar:<G>`
  * and treats that G as the trader. Privy and WorkOS are tried first and are
- * unchanged. No assertion is forwarded to the Sign Service — Freighter cannot
+ * unchanged. No assertion is forwarded to the Sign Service - Freighter cannot
  * auto-sign; writes still fall back to wallet-sign in the extension.
  */
 

@@ -1,5 +1,5 @@
 /**
- * A deterministic read route is only actually deterministic if it is TRUSTED — every bug
+ * A deterministic read route is only actually deterministic if it is TRUSTED - every bug
  * this test guards against had the router already producing the right answer, with
  * Vertex re-deciding the message from scratch anyway and occasionally landing somewhere
  * else ("swap 10 XLM to USDC" losing its own "which USDC?" clarify; "What is Balance of
@@ -7,11 +7,11 @@
  * for the identical question worked).
  *
  * This used to be an opt-IN allowlist (`KEYWORD_CONFIDENT_READ_TEMPLATES`), and this
- * exact test — checking that list against what the router actually produces — found
+ * exact test - checking that list against what the router actually produces - found
  * five more reads in the same broken state in one pass. An opt-in list finds gaps one
  * at a time forever, because "forgot to add the new route" leaves no trace. The
  * allowlist was flipped to an opt-OUT one (`VERTEX_REVIEWED_READ_TEMPLATES`,
- * `lib/copilot/intent-confidence.ts`) — every deterministic read is trusted by default now, so this
+ * `lib/copilot/intent-confidence.ts`) - every deterministic read is trusted by default now, so this
  * test's job changed from "is this template on the list" to "has anyone put this
  * template back on Vertex's-review list without meaning to."
  *
@@ -58,14 +58,14 @@ describe("every representative read phrase is trusted outright, never silently r
       expect(r.template_id, message).toBe(expectedTemplate);
       expect(
         VERTEX_REVIEWED_READ_TEMPLATES.includes(r.template_id),
-        `"${message}" routes to "${r.template_id}", which is on VERTEX_REVIEWED_READ_TEMPLATES — ` +
+        `"${message}" routes to "${r.template_id}", which is on VERTEX_REVIEWED_READ_TEMPLATES - ` +
           `it can be silently re-decided by Vertex, the exact bug class this test exists to catch.`,
       ).toBe(false);
     });
   }
 
   it("the opt-out list itself stays empty unless a future read is deliberately marked fuzzy", () => {
-    // Not a ban on ever adding to it — a tripwire. If this fails, it means someone did
+    // Not a ban on ever adding to it - a tripwire. If this fails, it means someone did
     // add an entry; the failure is a prompt to confirm that was deliberate, not silent.
     expect(VERTEX_REVIEWED_READ_TEMPLATES).toEqual([]);
   });

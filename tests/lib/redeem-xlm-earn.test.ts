@@ -3,7 +3,7 @@ import { findAsset, firstAssetByPosition, routeMessage } from "@/lib/copilot/rou
 import { ambiguousUsdcSlot } from "@/lib/copilot/mcp-write";
 import { handleChat } from "@/lib/copilot/handle";
 
-describe("redeem XLM from earn — multiplication sign normalization and missing asset handling", () => {
+describe("redeem XLM from earn - multiplication sign normalization and missing asset handling", () => {
   it("resolves XLM when user typed a standard 'x' with space", () => {
     expect(findAsset("redeem 10 xlm from earn")).toBe("XLM");
     expect(firstAssetByPosition("redeem 10 xlm from earn")).toBe("XLM");

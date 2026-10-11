@@ -3,9 +3,9 @@
  *
  * Found live 2026-08-10: "remove half my liquidity from the XLM/USDC pool" sent
  * `fraction` / `share_fraction`, which MCP has never taken. It returned `invalid_input`
- * and the copilot showed the user MCP's own API guidance —
+ * and the copilot showed the user MCP's own API guidance -
  * "liquidity is required for a partial remove (human string, e.g. liquidity=\"50\")…
- * Never pass raw share integers." — which is documentation, not an answer.
+ * Never pass raw share integers." - which is documentation, not an answer.
  */
 import { describe, expect, it } from "vitest";
 import { mapOpToMcpStep } from "@/lib/copilot/mcp-write";
@@ -18,7 +18,7 @@ const CTX = {
 const remove = (params: Record<string, unknown>) =>
   mapOpToMcpStep("remove_liquidity", params as never, CTX);
 
-describe("remove_liquidity — arguments MCP accepts, never a fraction", () => {
+describe("remove_liquidity - arguments MCP accepts, never a fraction", () => {
   it("a full exit becomes remove_all", () => {
     const r = remove({ fraction: 1, token_b: "AQUSDC" });
     expect(r.blocker).toBeUndefined();

@@ -6,7 +6,7 @@ import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 /**
  * One composer, and EVERY prompt is investigated.
  *
- * This hook used to ask the server to pick one handler — investigate XOR action — so a
+ * This hook used to ask the server to pick one handler - investigate XOR action - so a
  * concrete instruction skipped investigation entirely and a strategy request could never
  * reach the executor. Both halves were wrong: understanding the account is what makes an
  * action safe, so a write has to be the consequence of an investigation. The contract
@@ -22,18 +22,13 @@ const options = () => ({
 });
 
 describe("single composer entry", () => {
-  it("routes plain actions directly, strategies and swaps to investigation", async () => {
+  // Investigate-first (2ca1c3c, 22 Sep): plain actions and reads go through the investigation
+  // too; its fast path answers reads without the loop, and a stated action becomes a direct
+  // action there. Only a settled refusal is delivered directly (entry-lane.ts).
+  it("routes plain actions, reads, strategies and swaps to investigation", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
-    for (const message of ["deposit 5 XLM as collateral", "what is my health factor?"]) {
-      const input = options();
-      const { result } = renderHook(() => useCopilotEntry(input));
-      await act(async () => result.current.run(message));
-      expect(input.onDirect).toHaveBeenCalledWith(message, expect.any(AbortSignal));
-      expect(input.onInvestigate).not.toHaveBeenCalled();
-      expect(result.current.loading).toBe(false);
-    }
-    for (const message of ["build me a strategy", "swap 10 XLM to AQUSDC"]) {
+    for (const message of ["deposit 5 XLM as collateral", "what is my health factor?", "build me a strategy", "swap 10 XLM to AQUSDC"]) {
       const input = options();
       const { result } = renderHook(() => useCopilotEntry(input));
       await act(async () => result.current.run(message));
@@ -141,7 +136,7 @@ describe("single composer entry", () => {
  * The composer's controller is what `onInvestigate` receives as its abort signal, and the
  * effect that cancels it on a wallet change also returned `cancel` as its cleanup. React
  * runs a cleanup on unmount too, so navigating to any other route aborted the in-flight
- * fetch and cancelled the server request with it — the investigation did not pause, it
+ * fetch and cancelled the server request with it - the investigation did not pause, it
  * died, and returning to the page showed nothing.
  *
  * What is pinned here is which events may stop a run: an explicit cancel, the deadline, a

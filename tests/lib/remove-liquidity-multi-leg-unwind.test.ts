@@ -1,5 +1,5 @@
 /**
- * "Remove everything" — a full account unwind — must not ask for a number by
+ * "Remove everything" - a full account unwind - must not ask for a number by
  * leaving the box blank when the user's own words already gave the answer.
  *
  * Live, 21 Sep: "remove everything: remove my liquidity, exit blend, redeem from
@@ -8,14 +8,14 @@
  *   "Amount missing for 'remove liquidity'. Include a size like '10 BLUSDC' or
  *   '20 XLM'."
  *
- * A confirm-before-removing pause is `handle.ts`'s deliberate design for EVERY
- * `remove_liquidity` call — even a literal "remove 10 LP" pauses once, on the
- * first message, for the same reason a swap review card shows before signing.
- * That pause is not what this fixes.
+ * The confirm pause this was written against is gone: since d0176f0 a stated full removal
+ * resolves its amount and goes straight to the signature (HANDOFF rule 10, a direct action
+ * gets no extra stop). What still has to hold is the number itself: the live balance, never
+ * a placeholder and never more than is held.
  *
  * What was broken: "remove my liquidity" named no number, so the pause's input box
  * had nothing to prefill and fell back to a generic "10 BLUSDC"/"20 XLM" placeholder
- * — the user had to type their own exact LP balance from memory. The message
+ * - the user had to type their own exact LP balance from memory. The message
  * "meant all of it" and the pause never read that. See
  * remove-liquidity-all-position.test.ts for the isolated router unit; this is the
  * same fix exercised through the real message-handling pipeline this message
@@ -56,17 +56,17 @@ describe("THE LIVE BUG: 'remove my liquidity' prefills the pause with the live b
       const res = await handleChat({ ...base, message: "remove everything: remove my liquidity" }) as {
         kind: string;
         message: string;
-        data?: { lp_input?: { held?: number; amount?: number | null } };
-        intent?: { slots?: { lp?: number } };
+        preview?: { slots?: { lp_held?: number }; action?: { op?: string; amount?: number } };
       };
       // The old failure, named verbatim so a regression here fails loudly: a
       // generic placeholder rather than the account's own balance.
       expect(res.message).not.toMatch(/Include a size like/i);
       expect(res.message).toMatch(/42\.5/);
-      // The number is not just mentioned in prose — it prefills the input.
-      expect(res.data?.lp_input?.held).toBe(42.5);
-      expect(res.data?.lp_input?.amount).toBe(42.5);
-      expect(res.intent?.slots?.lp).toBe(42.5);
+      // The number is not just mentioned in prose - it sizes the write that is signed.
+      expect(res.kind).toBe("needs_wallet_sign");
+      expect(res.preview?.action?.op).toBe("remove_liquidity");
+      expect(res.preview?.slots?.lp_held).toBe(42.5);
+      expect(res.preview?.action?.amount).toBe(42.5);
     } finally {
       delete process.env.MCP_MODE;
       resetMcpClient();
@@ -95,11 +95,11 @@ describe("THE LIVE BUG: 'remove my liquidity' prefills the pause with the live b
     mocks.getUserLpBalance.mockResolvedValue("5.2");
     try {
       const res = await handleChat({ ...base, message: "remove my liquidity" }) as {
-        data?: { lp_input?: { held?: number; amount?: number | null } };
+        preview?: { slots?: { lp_held?: number }; action?: { amount?: number } };
       };
-      expect(res.data?.lp_input?.held).toBe(5.2);
-      expect(res.data?.lp_input?.amount).toBe(5.2);
-      expect(res.data?.lp_input?.amount).not.toBeGreaterThan(res.data?.lp_input?.held ?? 0);
+      expect(res.preview?.slots?.lp_held).toBe(5.2);
+      expect(res.preview?.action?.amount).toBe(5.2);
+      expect(res.preview?.action?.amount).not.toBeGreaterThan(res.preview?.slots?.lp_held ?? 0);
     } finally {
       delete process.env.MCP_MODE;
       resetMcpClient();

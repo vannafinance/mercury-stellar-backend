@@ -7,10 +7,10 @@
 
 import { copilotConfig } from "./config";
 import { factsForUi } from "./explain";
+import { acceptedTestnetBudget, defaultTestnetBudget } from "./auto-approve-budget";
 import { getMcpClient, type MCPClient } from "./mcp-client";
 import {
   enableAutoSign,
-  defaultCapUsdFromMcp,
 } from "./mcp-write";
 import {
   registerWalletBind,
@@ -19,6 +19,15 @@ import {
   resolvePrivySignerId,
 } from "./wallet-bind";
 import type { ChatRequest, ChatResponse, CopilotAction } from "./types";
+
+/** Presentation labels must not rename the fields used by signing controls. */
+function autoSignData(raw: Record<string, unknown>): Record<string, unknown> {
+  const data = factsForUi(raw);
+  for (const key of ["enabled", "status", "error", "cap_unit", "network", "token_caps_enforced", "max_per_tx_tokens", "max_per_day_tokens", "default_per_tx_tokens", "default_per_day_tokens", "maximum_per_tx_tokens", "maximum_per_day_tokens", "spent_today_tokens", "spend_resets_at", "expires_at"]) {
+    if (raw[key] !== undefined) data[key] = raw[key];
+  }
+  return data;
+}
 
 type ResumeWrite = (
   action: CopilotAction,
@@ -64,7 +73,7 @@ function isWalletNotBound(r: Record<string, unknown> | null | undefined): boolea
  * assertion's `sub` onto the pending connect request at /wallets/connect/start, and
  * that stored sub is what becomes the `identity_wallet_bindings` row when the user
  * finishes. Called without the assertion the flow still returns a working link and
- * still connects the wallet — and still writes no binding, so auto-sign keeps
+ * still connects the wallet - and still writes no binding, so auto-sign keeps
  * failing with the same 403. A connect that cannot bind is the trap this replaces.
  *
  * `retry` is the user's original request, carried through the detour so it can be
@@ -77,10 +86,10 @@ async function startWalletBind(
   request_id: string,
   retry: {
     action?: "use_defaults" | "custom" | "disable" | null;
-    max_per_tx_usd?: number | string | null;
-    max_per_day_usd?: number | string | null;
+    max_per_tx_tokens?: number | string | null;
+    max_per_day_tokens?: number | string | null;
   },
-  /** Why we are here, in the user's terms — prepended to the instruction. May be "". */
+  /** Why we are here, in the user's terms - prepended to the instruction. May be "". */
   because: string,
 ): Promise<ChatResponse> {
   /** Join the optional preamble without leaving a leading space when there is none. */
@@ -94,7 +103,7 @@ async function startWalletBind(
       kind: "needs_wallet_bind",
       message: lead(
         `Vanna needs your permission to sign for this wallet, but the consent link ` +
-          `could not be created (${msg}). Nothing changed — every write still asks ` +
+          `could not be created (${msg}). Nothing changed - every write still asks ` +
           `for your signature.`,
       ),
       wallet_bind: { status: "unavailable", wallet_address: trader },
@@ -111,7 +120,7 @@ async function startWalletBind(
       kind: "needs_wallet_bind",
       message: lead(
         `Vanna needs your permission to sign for this wallet, but the signing service ` +
-          `could not issue a consent link (${why}). Writes still work — they will ask ` +
+          `could not issue a consent link (${why}). Writes still work - they will ask ` +
           `for your signature each time.`,
       ),
       wallet_bind: { status: "unavailable", wallet_address: trader },
@@ -138,7 +147,7 @@ async function startWalletBind(
   return {
     kind: "needs_wallet_bind",
     message: lead(
-      `Your wallet is connected, but Vanna is not yet authorized to sign for it — ` +
+      `Your wallet is connected, but Vanna is not yet authorized to sign for it - ` +
         `those are two separate permissions, which is why reconnecting your wallet ` +
         `does not fix it. Approving Vanna as an additional signer on your own wallet ` +
         `finishes it. You keep custody; Vanna is only added alongside your own key, ` +
@@ -157,8 +166,8 @@ async function startWalletBind(
       poll_schedule_seconds: schedule?.length ? schedule : null,
       wallet_address: trader,
       retry_action: retry.action ?? null,
-      max_per_tx_usd: retry.max_per_tx_usd ?? null,
-      max_per_day_usd: retry.max_per_day_usd ?? null,
+      max_per_tx_tokens: retry.max_per_tx_tokens ?? null,
+      max_per_day_tokens: retry.max_per_day_tokens ?? null,
     },
     data: factsForUi(started),
     request_id,
@@ -175,7 +184,7 @@ async function startWalletBind(
  *
  * It does NOT trust the browser's word that the consent happened. Register makes the
  * main Sign Service re-verify quorum-is-signer against Privy and write the binding,
- * and the enable that follows is the same gated call as ever — so a page that lied
+ * and the enable that follows is the same gated call as ever - so a page that lied
  * about `addSigners` gets a `quorum_not_signer` refusal here, not a session.
  */
 async function handleBindRegister(
@@ -198,52 +207,29 @@ async function handleBindRegister(
   }
 
   const origin = resolveConnectOrigin(requestId);
-  if (!origin) {
-    // The start hop's origin is gone (different instance, or expired). The link
-    // fallback still completes the same consent, so offer that rather than fail.
-    return {
-      kind: "needs_wallet_bind",
-      message:
-        "The authorization could not be completed automatically. Finish it with the " +
-        "link below and auto-sign will be applied as soon as you do.",
-      wallet_bind: {
-        status: "expired",
-        wallet_address: walletAddress,
-        retry_action: retryAction,
-        max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
-        max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
-      },
-      request_id,
-    };
-  }
-
-  const registered = await registerWalletBind({ requestId, walletAddress, origin });
+  const registered = await registerWalletBind(
+    mcp,
+    { requestId, walletAddress, origin },
+    userId,
+  );
   if (!registered.ok) {
     // `already_used` means a concurrent poll or a second click already consumed the
-    // request — the binding may well exist, so fall through to the status check
+    // request - the binding may well exist, so fall through to the status check
     // rather than reporting a failure the user would not recognise.
     if (registered.code !== "already_used") {
-      // `origin_not_allowed` is the one failure here that is pure deployment config:
-      // the Connect Gateway's CONNECT_ORIGIN_ALLOWLIST is set and does not include
-      // this app. Naming it saves the next person the trace, because from the browser
-      // it is indistinguishable from the consent itself having failed.
-      const hint =
-        registered.code === "origin_not_allowed"
-          ? " (the wallet-authorization service is not configured to accept requests " +
-            "from this app — CONNECT_ORIGIN_ALLOWLIST)"
-          : "";
       return {
         kind: "needs_wallet_bind",
         message:
-          `Vanna could not finish authorizing this wallet (${registered.message})${hint}. ` +
-          `Nothing changed — writes still ask for your signature each time.` +
+          `Vanna could not finish authorizing this wallet. ` +
+          `Nothing changed - writes still ask for your signature each time.` +
           (registered.expired ? " The authorization request expired; start it again." : ""),
         wallet_bind: {
           status: registered.expired ? "expired" : "unavailable",
+          request_id: requestId,
           wallet_address: walletAddress,
           retry_action: retryAction,
-          max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
-          max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
+          max_per_tx_tokens: req.auto_sign?.max_per_tx_tokens ?? null,
+          max_per_day_tokens: req.auto_sign?.max_per_day_tokens ?? null,
         },
         request_id,
       };
@@ -260,7 +246,7 @@ async function handleBindRegister(
  *
  * The retry is done here rather than left to the client on purpose. `connected` from
  * the connect flow means the quorum is now a signer on the wallet AND the binding row
- * was written — it does NOT mean auto-sign is on; that still needs a policy session,
+ * was written - it does NOT mean auto-sign is on; that still needs a policy session,
  * which is the call that 403'd in the first place. Reporting "connected" and stopping
  * would leave the user exactly one unexplained step short of what they asked for,
  * looking at a success message and a still-broken toggle.
@@ -299,8 +285,8 @@ async function handleBindStatus(
         status: "expired",
         wallet_address: trader,
         retry_action: retryAction,
-        max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
-        max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
+        max_per_tx_tokens: req.auto_sign?.max_per_tx_tokens ?? null,
+        max_per_day_tokens: req.auto_sign?.max_per_day_tokens ?? null,
       },
       data: factsForUi(st),
       request_id,
@@ -318,8 +304,8 @@ async function handleBindStatus(
         request_id: pollId,
         wallet_address: trader,
         retry_action: retryAction,
-        max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
-        max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
+        max_per_tx_tokens: req.auto_sign?.max_per_tx_tokens ?? null,
+        max_per_day_tokens: req.auto_sign?.max_per_day_tokens ?? null,
       },
       data: factsForUi(st),
       request_id,
@@ -331,7 +317,7 @@ async function handleBindStatus(
     return {
       kind: "answer",
       message:
-        "Vanna is now authorized to sign for this wallet. Auto-sign is not on yet — " +
+        "Vanna is now authorized to sign for this wallet. Auto-sign is not on yet - " +
         "enable it with your spend limits when you want hands-free writes.",
       data: factsForUi(st),
       request_id,
@@ -343,11 +329,11 @@ async function handleBindStatus(
       ...req,
       auto_sign: {
         action: retryAction,
-        ...(req.auto_sign?.max_per_tx_usd != null
-          ? { max_per_tx_usd: req.auto_sign.max_per_tx_usd }
+        ...(req.auto_sign?.max_per_tx_tokens != null
+          ? { max_per_tx_tokens: req.auto_sign.max_per_tx_tokens }
           : {}),
-        ...(req.auto_sign?.max_per_day_usd != null
-          ? { max_per_day_usd: req.auto_sign.max_per_day_usd }
+        ...(req.auto_sign?.max_per_day_tokens != null
+          ? { max_per_day_tokens: req.auto_sign.max_per_day_tokens }
           : {}),
       },
     },
@@ -357,14 +343,14 @@ async function handleBindStatus(
   );
 
   // A second wallet_not_bound after a completed consent is not a UX problem to loop
-  // on — it means the binding did not land for the subject the assertion carries.
+  // on - it means the binding did not land for the subject the assertion carries.
   if (retried.kind === "needs_wallet_bind") {
     return {
       ...retried,
       message:
         "You completed the authorization, but the signing service still reports this " +
         "wallet as unbound. That is a server-side fault, not something you can fix by " +
-        "reconnecting — please report it. Writes still work with a signature each time.",
+        "reconnecting - please report it. Writes still work with a signature each time.",
       wallet_bind: { ...(retried.wallet_bind ?? {}), status: "unavailable", wallet_address: trader },
     };
   }
@@ -411,18 +397,19 @@ export async function handleAutoSignAction(
 
     if (action === "status") {
       // Read-only. A silent poll on wallet connect must not mint a connect
-      // request, open the bind UI, or create a session — it only tells the
+      // request, open the bind UI, or create a session - it only tells the
       // Autonomy card whether GET /sessions is already enforcing.
       const r = await mcp.call("vanna_auto_sign_status", { wallet_address: trader }, userId);
-      const tx = Number(r.max_per_tx_usd);
-      const day = Number(r.max_per_day_usd);
-      const enabled = r.enabled === true || r.status === "enabled";
+      const tx = Number(r.max_per_tx_tokens);
+      const day = Number(r.max_per_day_tokens);
+      const serverEnabled = r.enabled === true || r.status === "enabled";
+      const enabled = serverEnabled && !!acceptedTestnetBudget(r);
       const facts = {
-        ...factsForUi(r),
+        ...autoSignData(r),
         enabled,
-        status: r.status ?? (enabled ? "enabled" : "disabled"),
-        max_per_tx_usd: Number.isFinite(tx) ? tx : r.max_per_tx_usd ?? null,
-        max_per_day_usd: Number.isFinite(day) ? day : r.max_per_day_usd ?? null,
+        status: serverEnabled && !enabled ? "legacy_budget" : r.status ?? (enabled ? "enabled" : "disabled"),
+        max_per_tx_tokens: Number.isFinite(tx) ? tx : r.max_per_tx_tokens ?? null,
+        max_per_day_tokens: Number.isFinite(day) ? day : r.max_per_day_tokens ?? null,
         session_id: r.session_id ?? null,
         error: r.error ?? null,
       };
@@ -451,7 +438,7 @@ export async function handleAutoSignAction(
       return {
         kind: "answer",
         message:
-          (r.summary as string) ||
+          (serverEnabled && !enabled ? "Testnet auto-approve is off. Choose enforced testnet amount limits." : r.summary as string) ||
           (r.message as string) ||
           (enabled ? "Auto-sign is on." : "Auto-sign is off."),
         data: facts,
@@ -476,25 +463,27 @@ export async function handleAutoSignAction(
         );
       }
       return {
-        kind: "answer",
-        message: (r.summary as string) || (r.message as string) || "Auto-sign disabled.",
-        data: factsForUi(r),
+        kind: r.error ? "error" : "answer",
+        message: (r.summary as string) || (r.message as string) || (r.error ? "The signer did not confirm revocation." : "Auto-sign disabled."),
+        data: autoSignData(r),
         request_id,
       };
     }
 
     if (action === "start") {
-      // Bare call → MCP returns needs_confirmation with two options + default_cap_usd
+      // Bare call → MCP returns needs_confirmation with two options + independent signer defaults
       const r = await enableAutoSign(mcp, { wallet: trader, userId: userId || trader });
       const st = String(r.status || "");
-      const defCap = defaultCapUsdFromMcp(r);
+      const defaults = defaultTestnetBudget(r);
+      const defaultLabel = defaults ? `${defaults.tx} units per transaction · ${defaults.day} units per day` : "Defaults are unavailable until the signer confirms its testnet policy";
       // Ask for the missing consent BEFORE asking for spend caps. Caps chosen now
-      // cannot be applied — the 403 lands before any session is created — so showing
+      // cannot be applied - the 403 lands before any session is created - so showing
       // the cap picker first collects an answer only to throw it away, and the user
       // reads the failure that follows as "my limits were rejected".
       if (isWalletNotBound(r)) {
         return startWalletBind(mcp, trader, userId, request_id, { action: "use_defaults" }, "");
       }
+      if (r.error) return { kind: "error", message: String(r.message ?? r.error), data: autoSignData(r), request_id };
       if (st === "needs_confirmation" || !r.enabled) {
         return {
           kind: "needs_auto_sign",
@@ -502,21 +491,20 @@ export async function handleAutoSignAction(
             (r.question as string) ||
             (r.message as string) ||
             (r.summary as string) ||
-            `Enable auto-approve / auto-sign. MCP default is $${defCap}/tx and $${defCap}/day ` +
-              `(testnet stand-in; Sign Service may clamp). Pick defaults or custom USD caps.`,
+            `Choose defaults or custom testnet token caps. ${defaultLabel}.`,
           auto_sign: {
             status: "needs_confirmation",
-            message: `Choose spend limits (MCP default_cap_usd=$${defCap}):`,
+            message: "Choose testnet amount limits:",
             options: [
               {
                 id: "use_defaults",
                 label: "Use defaults",
-                description: `$${defCap} per transaction · $${defCap} per day (from MCP)`,
+                description: defaultLabel,
               },
               {
                 id: "custom",
                 label: "Set my own limits",
-                description: "Choose per-tx and daily USD caps (day can differ from tx)",
+                description: "Choose per-tx and daily token caps (day can differ from tx)",
               },
             ],
             pending_write: req.pending_write
@@ -529,20 +517,20 @@ export async function handleAutoSignAction(
               : null,
             raw: r,
           },
-          data: factsForUi(r),
+          data: autoSignData(r),
           request_id,
         };
       }
       return {
         kind: "answer",
         message: (r.summary as string) || "Auto-sign enabled.",
-        data: factsForUi(r),
+        data: autoSignData(r),
         request_id,
       };
     }
 
     if (action === "use_defaults") {
-      // Only use_default_caps — do not also send max_per_tx_usd (MCP then applies SS defaults).
+      // Only use_default_caps - do not also send max_per_tx_tokens (MCP then applies SS defaults).
       const r = await enableAutoSign(mcp, {
         wallet: trader,
         userId: userId || trader,
@@ -551,16 +539,12 @@ export async function handleAutoSignAction(
       if (isWalletNotBound(r)) {
         return startWalletBind(mcp, trader, userId, request_id, { action: "use_defaults" }, "");
       }
-      const defCap = defaultCapUsdFromMcp(r);
-      const msg =
-        (r.summary as string) ||
-        (r.message as string) ||
-        `Auto-sign / auto-approve enabled with MCP default caps (≈ $${defCap}/tx · $${defCap}/day).` +
-          (r.error
-            ? ` (MCP note: ${String(r.error)} — wallet session signing may still work for in-app approve.)`
-            : "");
+      const accepted = acceptedTestnetBudget(r);
+      const msg = accepted
+        ? String(r.summary ?? r.message ?? `Auto-sign enabled: ${accepted.tx} units/tx · ${accepted.day} units/day.`)
+        : String(r.message ?? r.error ?? "The signer has not confirmed enforced testnet amount limits. Auto-approve remains off.");
       // Resume pending write if any
-      if (req.pending_write?.op && (r.status === "enabled" || r.enabled === true || !r.error)) {
+      if (req.pending_write?.op && (r.status === "enabled" || r.enabled === true) && !!acceptedTestnetBudget(r)) {
         const resumed = await resumeWrite?.(
           {
             op: req.pending_write.op,
@@ -582,22 +566,24 @@ export async function handleAutoSignAction(
           return {
             ...resumed,
             message: `${msg}\n\n${resumed.message}`,
+            data: { ...resumed.data, ...autoSignData(r) },
           };
         }
       }
       return {
-        kind: r.error ? "error" : "answer",
+        kind: r.error || !accepted ? "error" : "answer",
         message: msg,
-        data: factsForUi(r),
+        data: autoSignData(r),
         request_id,
       };
     }
 
     if (action === "custom") {
-      const tx = req.auto_sign?.max_per_tx_usd;
+      const tx = req.auto_sign?.max_per_tx_tokens;
       if (tx == null || tx === "") {
-        // Probe MCP for default_cap_usd so UI numbers are not invented.
-        let defCap = 1000;
+        // Probe MCP for independent signer defaults so UI numbers are not invented.
+        let defaults: ReturnType<typeof defaultTestnetBudget> = null;
+        let policy: Record<string, unknown> | null = null;
         try {
           const probe = await enableAutoSign(mcp, { wallet: trader, userId: userId || trader });
           // Same reason as the `start` branch: consent before caps, so the numbers the
@@ -605,7 +591,8 @@ export async function handleAutoSignAction(
           if (isWalletNotBound(probe)) {
             return startWalletBind(mcp, trader, userId, request_id, { action: "custom" }, "");
           }
-          defCap = defaultCapUsdFromMcp(probe);
+          policy = probe;
+          defaults = defaultTestnetBudget(probe);
         } catch {
           /* keep fallback */
         }
@@ -613,8 +600,8 @@ export async function handleAutoSignAction(
           kind: "needs_auto_sign",
           message:
             "Set your auto-approve / auto-sign spend caps (same as MCP Sign Service).\n" +
-            `MCP default_cap_usd is $${defCap} per tx and per day (you may set a higher day cap).\n` +
-            "Pick defaults, enter custom USD limits, or say e.g. “set auto-sign cap to 500 per tx and 2000 per day”.",
+            (defaults ? `Defaults: ${defaults.tx} units/tx and ${defaults.day} units/day.\n` : "The signer must confirm its testnet policy before enabling.\n") +
+            "Pick defaults, enter custom testnet token limits, or say e.g. “set auto-sign cap to 500 per tx and 2000 per day”.",
           auto_sign: {
             status: "needs_confirmation",
             message: "Choose spend limits:",
@@ -622,7 +609,7 @@ export async function handleAutoSignAction(
               {
                 id: "use_defaults",
                 label: "Use defaults",
-                description: `$${defCap} per transaction · $${defCap} per day (MCP)`,
+                description: defaults ? `${defaults.tx} units per transaction · ${defaults.day} units per day` : "Awaiting signer defaults",
               },
               {
                 id: "custom",
@@ -631,18 +618,18 @@ export async function handleAutoSignAction(
               },
             ],
             pending_write: null,
-            raw: null,
+            raw: policy,
           },
           request_id,
         };
       }
       // If user only sets per-tx, omit day so MCP mirrors (sign_tools: day = tx).
-      const dayRaw = req.auto_sign?.max_per_day_usd;
+      const dayRaw = req.auto_sign?.max_per_day_tokens;
       const r = await enableAutoSign(mcp, {
         wallet: trader,
         userId: userId || trader,
-        maxPerTxUsd: tx,
-        ...(dayRaw != null && dayRaw !== "" ? { maxPerDayUsd: dayRaw } : {}),
+        maxPerTxTokens: tx,
+        ...(dayRaw != null && dayRaw !== "" ? { maxPerDayTokens: dayRaw } : {}),
       });
       if (isWalletNotBound(r)) {
         // Carry the caps through the consent detour so they are applied on the retry
@@ -652,23 +639,18 @@ export async function handleAutoSignAction(
           trader,
           userId,
           request_id,
-          { action: "custom", max_per_tx_usd: tx, max_per_day_usd: dayRaw ?? tx },
+          { action: "custom", max_per_tx_tokens: tx, max_per_day_tokens: dayRaw ?? tx },
           "",
         );
       }
-      const dayShown = dayRaw != null && dayRaw !== "" ? dayRaw : tx;
+      const accepted = acceptedTestnetBudget(r);
       return {
-        kind: r.error ? "error" : "answer",
+        kind: r.error || !accepted ? "error" : "answer",
         message:
           (r.summary as string) ||
           (r.message as string) ||
-          `Auto-sign / auto-approve enabled with your caps: $${tx} per tx · $${dayShown} per day.`,
-        data: factsForUi({
-          ...r,
-          max_per_tx_usd: tx,
-          max_per_day_usd: dayShown,
-          default_cap_usd: defaultCapUsdFromMcp(r),
-        }),
+          (accepted ? `Auto-sign enabled: ${accepted.tx} units per transaction · ${accepted.day} units per day.` : "The signer has not confirmed enforced testnet amount limits. Auto-approve remains off."),
+        data: autoSignData(r),
         request_id,
       };
     }
@@ -682,4 +664,3 @@ export async function handleAutoSignAction(
 
   return { kind: "error", message: "Unknown auto-sign action.", request_id };
 }
-

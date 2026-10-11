@@ -6,7 +6,7 @@ import { routeMessage } from "@/lib/copilot/router";
  *
  * These asks reached an answer only through Vertex. On a machine whose `gcloud auth login`
  * had lapsed, the model call threw, the keyword router had no rule for the word "position",
- * and the turn fell through to the closing `clarify` — so the reply was the capability
+ * and the turn fell through to the closing `clarify` - so the reply was the capability
  * blurb ("I can help with market data…"), which reads like a hardcoded response because
  * from the user's side that is exactly what it is.
  *
@@ -40,7 +40,7 @@ describe("position / portfolio reads route without the LLM", () => {
     });
   }
 
-  it("is confident enough to skip the model — the template is on the fast-path allowlist", () => {
+  it("is confident enough to skip the model - the template is on the fast-path allowlist", () => {
     // Mirrors the allowlist in handleChat. If the two ever diverge, the route exists but
     // still waits on Vertex, which is the bug this whole change is about.
     const routed = routeMessage("show my positions");
@@ -69,7 +69,7 @@ describe("position / portfolio reads route without the LLM", () => {
 describe("the position route does not steal other intents", () => {
   it("leaves a named venue to that venue's own read", () => {
     // Naming Blend means the answer should be Blend's numbers, not a whole-account roll-up.
-    // The router itself does not resolve this one (it never did — `handleChat`'s blendRead
+    // The router itself does not resolve this one (it never did - `handleChat`'s blendRead
     // override turns it into query_blend_position, deterministically, with no model). What
     // matters here is that the new rule does not claim it first.
     for (const ask of [
@@ -118,7 +118,7 @@ describe("the generic fallback is tagged so it can be told apart from a real ans
     const routed = routeMessage("qwerty zxcvb asdfg");
     expect(routed.kind).toBe("clarify");
     if (routed.kind !== "clarify") return;
-    // handleChat replaces this one — and only this one — with an explicit
+    // handleChat replaces this one - and only this one - with an explicit
     // "could not reach the model" when the Vertex call also failed.
     expect(routed.template_id).toBe("clarify_capabilities");
   });

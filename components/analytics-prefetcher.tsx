@@ -2,9 +2,10 @@
 
 import { useUserStore } from "@/store/user";
 import { useAnalyticsSnapshot } from "@/hooks/use-analytics";
+import { usePathname } from "next/navigation";
 
 /**
- * Keeps the Analytics protocol snapshot warm app-wide, mounted once at the
+ * Keeps the Analytics protocol snapshot warm outside Copilot, mounted once at the
  * layout level (like MarginAccountHydrator) instead of only inside
  * /analytics/overview2. `useAnalyticsSnapshot` is a plain React Query
  * `useQuery` call — mounting it here subscribes to the SAME cache entry the
@@ -15,6 +16,14 @@ import { useAnalyticsSnapshot } from "@/hooks/use-analytics";
  * accounts from Soroban…" spinner on every fresh app load.
  */
 export function AnalyticsPrefetcher() {
+  const pathname = usePathname();
+  // Protocol-wide scans are unrelated to Copilot and can occupy its request connections.
+  // Other routes retain the same shared-cache preload and ledger subscriptions.
+  if (pathname === "/copilot") return null;
+  return <ConnectedAnalyticsPrefetcher />;
+}
+
+function ConnectedAnalyticsPrefetcher() {
   const address = useUserStore((s) => s.address);
   useAnalyticsSnapshot(address);
   return null;

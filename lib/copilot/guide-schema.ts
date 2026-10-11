@@ -2,21 +2,21 @@
  * Structured Guide answers.
  *
  * The Guide explains; the Copilot acts. It answers "what is a health factor?", "what am
- * I looking at on this page?" — long-form prose where the *structure* is the value:
+ * I looking at on this page?" - long-form prose where the *structure* is the value:
  * a summary, then sections, some with a formula, some with a list, a glossary of terms
  * it used, and follow-up questions.
  *
  * runPageAgent returned one flat prose blob, so none of that structure survived: a
  * formula was a line of text in a paragraph, and the terms it leaned on went undefined.
  * The Claude Design Guide panel binds to fields (sections, formula, terms, followUps),
- * which is why this contract exists — same reasoning as answer-schema.ts, applied to a
+ * which is why this contract exists - same reasoning as answer-schema.ts, applied to a
  * reading surface rather than a figure surface.
  */
 
 export interface GuideSection {
   heading: string;
   body: string;
-  /** Rendered as its own monospace block — formulas are what people re-read. */
+  /** Rendered as its own monospace block - formulas are what people re-read. */
   formula?: string;
   bullets?: string[];
 }
@@ -41,7 +41,7 @@ export interface GuideAnswer {
    * affordance. Null when there was no page context or nothing relevant on it.
    */
   pageRef?: { label: string; elementId: string } | null;
-  /** True when the Guide genuinely does not know — rendered as an honest state. */
+  /** True when the Guide genuinely does not know - rendered as an honest state. */
   unknown?: boolean;
 }
 
@@ -66,7 +66,7 @@ export const GUIDE_RESPONSE_SCHEMA = {
             type: "STRING",
             description:
               "A formula in plain text if one genuinely clarifies this section, e.g. " +
-              "'health factor = collateral / debt'. Omit otherwise — do not invent one.",
+              "'health factor = collateral / debt'. Omit otherwise - do not invent one.",
           },
           bullets: {
             type: "ARRAY",
@@ -102,7 +102,7 @@ export const GUIDE_RESPONSE_SCHEMA = {
       type: "BOOLEAN",
       description:
         "True when you cannot answer from Vanna product knowledge or the page context. " +
-        "Say so rather than guessing — a confident wrong explanation of a risk mechanic " +
+        "Say so rather than guessing - a confident wrong explanation of a risk mechanic " +
         "is worse than admitting the gap.",
     },
   },
@@ -110,8 +110,8 @@ export const GUIDE_RESPONSE_SCHEMA = {
   propertyOrdering: ["question", "summary", "sections", "terms", "followUps", "unknown"],
 } as const;
 
-export const GUIDE_SYSTEM = `You are Vanna Assist. You EXPLAIN Vanna Finance on Stellar/Soroban. You never transact — the Copilot does that, and you must never imply you have acted or can act.
-Never call yourself Vanna Guide or Vanna Assistant — your name is Vanna Assist.
+export const GUIDE_SYSTEM = `You are Vanna Assist. You EXPLAIN Vanna Finance on Stellar/Soroban. You never transact - the Copilot does that, and you must never imply you have acted or can act.
+Never call yourself Vanna Guide or Vanna Assistant - your name is Vanna Assist.
 
 You return DATA, not prose layout. The interface renders your fields. Never write markdown, asterisks, bullet characters or headings inside a field; they are shown literally and read as a bug.
 
@@ -142,7 +142,7 @@ Accuracy rules that override everything above:
 - Health factor on Vanna is gross collateral divided by debt. Liquidation happens at or below 1.10. There is no threshold haircut on the collateral side.
 - Earn, Farm and Margin are different products. Never blur them: Earn is Vanna's own lending pools, Farm is external venues (Blend, Aquarius/Soroswap LP), Margin is the smart account that holds collateral and debt.
 - There are three distinct USDC tokens (BLUSDC, AQUSDC, SOUSDC) and they are not interchangeable.
-- Never quote a live figure — a balance, an APY, a health factor — unless the page context contains it. You explain mechanics; the Copilot reports numbers.
+- Never quote a live figure - a balance, an APY, a health factor - unless the page context contains it. You explain mechanics; the Copilot reports numbers.
 - If the question is outside Vanna, or you are not confident, set unknown true and say what you would need. Do not fill the gap with plausible-sounding detail.`;
 
 /** Normalise a model answer, dropping malformed parts rather than trusting them. */

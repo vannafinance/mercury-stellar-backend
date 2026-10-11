@@ -3,8 +3,8 @@
  *
  * Display and sizing are different jobs:
  *
- * 1. **Display** ("your health factor is 3.90") uses the app snapshot —
- *    `computeAccountPosition` / `computeMarginSnapshot` — so the copilot matches
+ * 1. **Display** ("your health factor is 3.90") uses the app snapshot -
+ *    `computeAccountPosition` / `computeMarginSnapshot` - so the copilot matches
  *    the Margin page.
  *
  * 2. **Sizing** ("you can borrow $X before breaching 1.30") uses the contract
@@ -32,6 +32,9 @@ import { LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad } from "./sizing";
 import type { ResearchCapacity } from "./view";
 import { copilotConfig } from "../config";
 
+/** The smallest representable floor above the exclusive protocol liquidation line. */
+export const PROTOCOL_MAX_BORROW_FLOOR = formatWad(LIQUIDATION_THRESHOLD_WAD + BigInt(1));
+
 /** Two decimals is the precision the rest of the surface shows USD at. */
 function usd(value: number): string {
   if (!Number.isFinite(value) || value < 0) throw new Error("invalid_usd");
@@ -55,13 +58,22 @@ export type SizingOptions = {
   floor?: string | null;
   /** Use the configured safety floor when no user floor was stated. */
   useConfiguredFloor?: boolean;
+  /** Explicit maximum credit uses the protocol line; the sizer adds its rounding margin. */
+  useProtocolFloor?: boolean;
   /**
    * The app snapshot when the caller already attempted it: a snapshot, or `null` meaning
-   * "tried and unavailable — do not read again". Undefined means read it here. Mirrors
+   * "tried and unavailable - do not read again". Undefined means read it here. Mirrors
    * `contract`. Propose reads it once, bounded; reading it twice unbounded took a
    * propose past the browser's 90s (13 Sep).
    */
   app?: MarginSnapshot | null;
+  /**
+   * A basis already being computed this turn. Headroom, plan sizing and the position note all need
+   * the same figures, and each used to read them again: two to three full reads of a slow snapshot
+   * and the contract in one turn (7 Oct, live: ~9s each, one of them timing out at 12s). The turn starts
+   * it once, while the investigation loop runs, and every consumer awaits that one.
+   */
+  basis?: Promise<SizingBasis | null>;
 };
 
 /** Absolute USD band that still counts as WAD / rounding noise. */
@@ -75,12 +87,12 @@ export const SIZING_DRIFT_REL = 0.005;
  * Observed live within one minute on the same account, while the Soroban RPC was returning
  * repeated `ECONNRESET`: collateral read $4,211.63, then $2,425.78, then **$10.43**, with
  * debt steady at $1,732.61 throughout. The third one rendered as "AT RISK · health factor
- * 0.01". Nothing had executed — `computeMarginSnapshot` runs the borrow and collateral scans
+ * 0.01". Nothing had executed - `computeMarginSnapshot` runs the borrow and collateral scans
  * as two independent calls (`account-snapshot.ts:164`), and when the collateral side
  * partially fails its total collapses while the debt total survives.
  *
- * The protocol does not let an account sit with debt and no collateral — it would already
- * have been liquidated — so that combination is a failed read, not a position. The copilot
+ * The protocol does not let an account sit with debt and no collateral - it would already
+ * have been liquidated - so that combination is a failed read, not a position. The copilot
  * must not seed it as evidence or size a plan against it: headroom computed on $10.43 of
  * collateral is not conservative, it is wrong, and "your health factor is 0.01" is a false
  * alarm that would push someone into an unnecessary repay.
@@ -122,7 +134,7 @@ function withinDrift(app: number, contract: number): boolean {
 
 /**
  * App snapshot vs contract liquidation_snapshot. Agreement means we may size from
- * the contract numbers. Disagreement is unavailable — never a silent preference.
+ * the contract numbers. Disagreement is unavailable - never a silent preference.
  */
 export function reconcileSizingBasis(
   app: { grossCollateralValue: number; totalBorrowedValue: number },
@@ -154,7 +166,7 @@ export function parseLiquidationSnapshot(data: unknown): ContractLiquidationBasi
     collateralUsd: collateral,
     debtUsd: debt,
     // New MCP names the third tuple unpriceable_plain. Old MCP sent the same
-    // bool as liquidatable — keep that key so a stale server still parses.
+    // bool as liquidatable - keep that key so a stale server still parses.
     unpriceablePlain:
       typeof data.unpriceable_plain === "boolean"
         ? data.unpriceable_plain === true
@@ -209,7 +221,7 @@ export async function computeBorrowCapacity(
   signal?: AbortSignal,
   /**
    * A snapshot already read this turn. `computeMarginSnapshot` costs 5-7s against the live
-   * RPC (measured), and the position reader and this one both need the same figures — paying
+   * RPC (measured), and the position reader and this one both need the same figures - paying
    * for it twice per turn was enough on its own to push the route past its 75s deadline,
    * which the user saw as "the connection closed before the investigation finished".
    */
@@ -219,10 +231,12 @@ export async function computeBorrowCapacity(
   if (!smartAccount) return null;
 
   const stated = options?.floor ?? statedFloorFrom(messages);
-  const configured = stated === null && options?.useConfiguredFloor === true
+  const protocol = stated === null && options?.useProtocolFloor === true
+    ? PROTOCOL_MAX_BORROW_FLOOR : null;
+  const configured = stated === null && protocol === null && options?.useConfiguredFloor === true
     ? configuredSafetyFloor()
     : null;
-  const floor = stated ?? configured;
+  const floor = stated ?? protocol ?? configured;
   if (floor === null) return null;
   const floorWad = decimalWad(floor);
   // A floor at or below the liquidation threshold is not headroom, it is a breach.
@@ -231,7 +245,7 @@ export async function computeBorrowCapacity(
   const basis = await computeSizingBasis(smartAccount, shared ?? null, options, signal);
   if (!basis) throw new Error("position_read_inconsistent");
   if (basis.issue) throw new Error(basis.issue);
-  return capacityFromBasis(basis, formatWad(floorWad), configured !== null ? "configured_safety_buffer" : undefined);
+  return capacityFromBasis(basis, formatWad(floorWad), protocol !== null ? "protocol_minimum" : configured !== null ? "configured_safety_buffer" : undefined);
 }
 
 /** The configured fallback is policy, not a user constraint, and must stay above liquidation. */
@@ -270,9 +284,9 @@ export function capacityFromBasis(
  * The position a plan may be sized against, independent of any floor.
  *
  * The contract's liquidation snapshot is the number that decides liquidation, so sizing
- * uses it — but only once the app snapshot agrees with it within the drift band. When
+ * uses it - but only once the app snapshot agrees with it within the drift band. When
  * the two disagree (tokens sitting in the account unposted count for the Margin page and
- * not for the risk engine — see OWNER-collateral-definition.md) the contract figures are
+ * not for the risk engine - see OWNER-collateral-definition.md) the contract figures are
  * still returned, with the disagreement carried as data, so a caller can refuse to size
  * anything that lowers health while still projecting a deposit honestly. Null when the
  * position could not be read at all.
@@ -294,6 +308,7 @@ export async function computeSizingBasis(
   options?: SizingOptions,
   signal?: AbortSignal,
 ): Promise<SizingBasis | null> {
+  if (options?.basis) return options.basis;
   let snapshot = shared ?? null;
   if (!snapshot && !(options && Object.prototype.hasOwnProperty.call(options, "app"))) {
     try {
@@ -335,7 +350,7 @@ export async function computeSizingBasis(
  * The account's authoritative position, independent of any stated floor.
  *
  * Split out because a health question is not a sizing question. `computeBorrowCapacity`
- * returns null without a user-stated floor — correctly, since headroom needs one — but that
+ * returns null without a user-stated floor - correctly, since headroom needs one - but that
  * left "what's my health factor?" dependent on the MCP `account_health` read, and when that
  * read came back without a scalar ratio the copilot reported the value as unavailable while
  * the Margin page rendered 2.43 from this very snapshot. Refusing to invent a number was
@@ -347,13 +362,14 @@ export async function computeSizingBasis(
 export async function computeAccountPosition(
   smartAccount: string | null,
   signal?: AbortSignal,
+  freshAfter?: string | null,
 ): Promise<
   { grossCollateralUsd: string; debtUsd: string; healthFactor: string | null; snapshot: MarginSnapshot } | null
 > {
   if (!smartAccount) return null;
   let snapshot: MarginSnapshot;
   try {
-    snapshot = await computeMarginSnapshot(smartAccount);
+    snapshot = await computeMarginSnapshot(smartAccount, freshAfter ? { freshAfter } : undefined);
   } catch (error) {
     if (error instanceof SnapshotTimeoutError) {
       console.warn("[copilot] account snapshot timed out", { smartAccount, message: error.message });

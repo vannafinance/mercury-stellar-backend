@@ -1,7 +1,7 @@
 /**
- * Reported live, 21 Sep: "provide 20 XLM and AQUSDC liquidity on aquarius" — the
+ * Reported live, 21 Sep: "provide 20 XLM and AQUSDC liquidity on aquarius" - the
  * catalogue's own documented shape for this write (docs/Vanna_Copilot_Test_Prompt_Catalogue,
- * row L1) — refused with "BLUSDC is the Blend-side USDC SAC... Aquarius AMM LP is a
+ * row L1) - refused with "BLUSDC is the Blend-side USDC SAC... Aquarius AMM LP is a
  * different pool that spends AQUSDC, not BLUSDC", naming a token the user never
  * mentioned.
  *
@@ -10,10 +10,10 @@
  * "provide liquidity"). In "provide 20 XLM and AQUSDC liquidity on aquarius" the
  * amounts sit between "provide" and "liquidity", so the phrase never matched, the
  * message fell through to a different branch, and that branch's own fallback resolved
- * the unstated second token to the BLUSDC default — which `staticStepBlocker` then
+ * the unstated second token to the BLUSDC default - which `staticStepBlocker` then
  * correctly (but confusingly) refused, since BLUSDC is never valid on an AMM.
  *
- * The fix does not touch that fallback or the refusal — both are correct once a
+ * The fix does not touch that fallback or the refusal - both are correct once a
  * message actually reaches them. It stops "provide ... liquidity" from reaching them
  * in the first place, by matching the verb and "liquidity" independently rather than
  * as a fixed phrase.

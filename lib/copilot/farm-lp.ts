@@ -1,5 +1,5 @@
 /**
- * Live AMM LP share count — the same read Farm's LP page uses.
+ * Live AMM LP share count - the same read Farm's LP page uses.
  *
  * Farm Aquarius shows `AquariusService.getUserLpBalance` (pool `get_user_shares`
  * when the Registry tracking token is empty). MCP `vanna_farm_lp` looks up

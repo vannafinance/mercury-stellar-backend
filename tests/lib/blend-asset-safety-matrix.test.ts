@@ -5,14 +5,14 @@
  * silently coerced AQUSDC/SOUSDC into Blend's own USDC reserve instead of refusing, so a
  * swap-then-farm strategy that paused on a blocked BLUSDC swap could resume with a
  * corrected token and still end up depositing into the WRONG venue. The fix was a
- * per-op asset allowlist (`blendCompatible` in `mapOpToMcpStep`'s Blend cases) — this
+ * per-op asset allowlist (`blendCompatible` in `mapOpToMcpStep`'s Blend cases) - this
  * test is the "never again" version: it enumerates every asset the registry knows about
  * against every Blend-family op, so adding a new asset to the registry tomorrow without
  * ALSO teaching Blend's compatibility check about it fails a test immediately, instead
  * of silently moving a future user's funds to the wrong place.
  *
  * Only XLM and BLUSDC are real Blend reserves (confirmed live and in
- * `docs/copilot/TEST-RUN-FINDINGS.md`) — everything else must be refused with a real
+ * `docs/copilot/TEST-RUN-FINDINGS.md`) - everything else must be refused with a real
  * `blocker` message, never accepted with a built `step`.
  */
 import { describe, expect, it } from "vitest";

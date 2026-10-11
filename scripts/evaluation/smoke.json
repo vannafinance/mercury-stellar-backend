@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "baseUrl": { "$env": "COPILOT_EVAL_BASE_URL" },
+  "timeoutMs": 90000,
+  "scenarios": [
+    {
+      "id": "service-and-live-research",
+      "steps": [
+        {
+          "id": "health",
+          "path": "/api/copilot",
+          "assert": [
+            { "path": "/status", "op": "eq", "value": 200 },
+            { "path": "/body/health/status", "op": "eq", "value": "ok" },
+            { "path": "/body/health/mcp_mode", "op": "eq", "value": "live" }
+          ]
+        },
+        {
+          "id": "research",
+          "method": "POST",
+          "path": "/api/copilot/investigate",
+          "body": { "message": { "$env": "COPILOT_EVAL_READ_PROMPT" } },
+          "assert": [
+            { "path": "/status", "op": "eq", "value": 200 },
+            { "path": "/body/type", "op": "eq", "value": "result" },
+            { "path": "/body/result/status", "op": "eq", "value": "researched" },
+            { "path": "/body/result/facts/0/value", "op": "exists" },
+            { "path": "/body/result/executionAllowed", "op": "eq", "value": false }
+          ]
+        }
+      ]
+    }
+  ]
+}
