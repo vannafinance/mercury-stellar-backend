@@ -277,6 +277,52 @@ describe("composing the words above plan cards", () => {
     expect(planFacts(strategy()).notUsed).toEqual([]);
   });
 
+  it("carries both LP outputs, verified same-asset rates and the actual supply scope", async () => {
+    const original = strategy({ rateComparisons: [
+      { asset: "XLM", earnSupplyApr: "8", blendSupplyApr: "12", evidenceIds: ["rates-xlm"] },
+      { asset: "SOUSDC", earnSupplyApr: "5", blendSupplyApr: null, evidenceIds: ["rates-so"] },
+      { asset: "BLUSDC", earnSupplyApr: "90", blendSupplyApr: "100", evidenceIds: ["irrelevant"] },
+    ], candidates: { feasible: [plan({ steps: [
+      { id: "removal", op: "remove_liquidity", asset: "SOUSDC" },
+      { op: "supply_blend", asset: "XLM", sizing: { basis: "settled_payout", fromStep: "removal", asset: "XLM" } },
+    ] })], rejected: [] } } as unknown as Partial<ResearchView>);
+    const context = planFacts(original);
+    expect(context.plans[0].liquidityOutputs).toEqual([
+      { asset: "XLM", supplyPrepared: true, marketRates: [
+        { venue: "earn", factId: "planA:output0:XLM:earn" },
+        { venue: "blend", factId: "planA:output0:XLM:blend" },
+      ] },
+      { asset: "SOUSDC", supplyPrepared: false, marketRates: [
+        { venue: "earn", factId: "planA:output0:SOUSDC:earn" },
+      ] },
+    ]);
+    const marketFacts = context.facts.filter(fact => fact.id.includes(":output"));
+    expect(marketFacts).toHaveLength(3);
+    expect(marketFacts.every(fact => fact.unit === "% APY")).toBe(true);
+    expect(marketFacts.some(fact => fact.label.includes("BLUSDC"))).toBe(false);
+    expect(Number(marketFacts.find(fact => fact.venue === "blend")!.value)).toBeGreaterThan(12);
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", segments: [
+      { type: "text", text: "Blend quotes " }, { type: "fact", factId: "planA:output0:XLM:blend" },
+      { type: "text", text: ". SOUSDC reinvestment is not prepared." },
+    ] }] }));
+    const out = await composeReply(original, new AbortController().signal, generate);
+    expect(out.message).toContain("% APY");
+    expect(out.candidates).toBe(original.candidates);
+    expect(out.proposalCandidateId).toBe(original.proposalCandidateId);
+  });
+
+  it("never treats an exit alone or a preceding supply as prepared reinvestment", () => {
+    const original = strategy({ candidates: { feasible: [plan({ steps: [
+      { op: "supply_blend", asset: "XLM" },
+      { id: "removal", op: "remove_liquidity", asset: "AQUSDC" },
+      { op: "lend", asset: "AQUSDC" },
+    ] })], rejected: [] } } as unknown as Partial<ResearchView>);
+    expect(planFacts(original).plans[0].liquidityOutputs).toEqual([
+      { asset: "XLM", supplyPrepared: false, marketRates: [] },
+      { asset: "AQUSDC", supplyPrepared: false, marketRates: [] },
+    ]);
+  });
+
   it("offers the model only the plans' own figures, lettered as the cards are", () => {
     const { facts, plans, lead } = planFacts(strategy());
     expect(plans.map((p) => p.plan)).toEqual(["A", "B"]);

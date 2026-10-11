@@ -5,7 +5,7 @@ import { formatFactValue } from "./answer-prose";
 import { bindReplyBlocks, plainReply, REPLY_SCHEMA, replyFactContext } from "./reply-contract";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { OP_FLOW, type WorkflowOp, type WorkflowView } from "../workflow/types";
-import { resolveAssetDef, venueTable, venueSpellings, venueUsdc } from "../registry/assets";
+import { lpPairs, resolveAssetDef, venueTable, venueSpellings, venueUsdc } from "../registry/assets";
 import { pct, shownApyPct } from "./apy";
 import type { RateComparison } from "./rate-comparison";
 import { doneClause } from "./completion";
@@ -52,6 +52,7 @@ ${CHAT_STYLE}`;
 const PLANS_SYSTEM = `You write the reply shown above a set of plan cards in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). The cards already show every step and figure; your words help the user choose, the way a thoughtful analyst would explain options in a chat app.
 You are given the user's request and PLANS, each with facts computed by the sizer. A plan's non-null letter is the label shown on its card. If its letter is null, there is only one card: refer to its title or the proposed action without adding an option letter or comparing alternatives.
 Each plan's movements states the operation's source and destination pocket. account means the margin account; wallet means the spendable wallet. Describe destinations from these movements, not from the user's requested outcome or a plan title. An exit into the margin account is not a transfer to the wallet. When context.openPoint is present, distinguish the prepared portion from the unresolved portion; do not claim the whole request is covered.
+When a plan has liquidityOutputs, those are the registered assets its removal returns. Their market rates are verified research comparisons, not rates earned by the exit itself. For a request to reinvest, lead with the relevant same-asset yield comparison and then state which outputs have no prepared supply step. An exit-only card does not prepare reinvestment. Do not imply that a quoted venue is included merely because its rate is higher. If the request only asks to remove liquidity, omit unrelated yield comparisons. Never explain a yield preference merely as using an already held token.
 Explain the leading plan using the supplied sizer reason (already_held means an already held token; thin_margin means rates are within noise; net_return means the best computed return at this size). CONSIDERED lists other tokens the user holds that were compared for the same job, with their rates; say they were checked and how the leading plan's token compares, using only those facts, when the list is there. NOT_USED names operations the user said you may use that none of the plans uses; when it is not empty, say in one clause that none of the plans used them, giving the reason when one is supplied and no other. Lay it out as one short lead sentence naming the leading plan and why, then bullets, one parallel point each (what else was compared, operations that were not used, how the other plans differ), each a single short sentence. No paragraph longer than two sentences; the cards already show every step and figure, so do not walk through them. Describe useful differences without inventing a ranking. These are options awaiting approval, not executed transactions. Do not invent risks or reasons.
 ${PRESENTATION}
 ${CHAT_STYLE}`;
@@ -123,7 +124,7 @@ export function composablePlans(view: ResearchView): boolean {
  */
 export function planFacts(view: ResearchView): {
   facts: ResearchFact[];
-  plans: Array<{ plan: string | null; borrows: boolean; movements: Array<{ op: WorkflowOp; from: string; to: string }>; facts: Array<{ id: string; label: string; shown: string }> }>;
+  plans: Array<{ plan: string | null; borrows: boolean; movements: Array<{ op: WorkflowOp; from: string; to: string }>; liquidityOutputs: Array<{ asset: string; supplyPrepared: boolean; marketRates: Array<{ venue: string; factId: string }> }>; facts: Array<{ id: string; label: string; shown: string }> }>;
   considered: Array<{ id: string; label: string; shown: string }>;
   /** Operations the user allowed that no plan uses, by name. Empty when every one is used. */
   notUsed: Array<{ operation: string; reason: string | null }>;
@@ -145,9 +146,34 @@ export function planFacts(view: ResearchView): {
     add("hf_before", "health factor before", candidate.initialHealthFactor ?? candidate.healthFactorBefore, "HF");
     if (candidate.repaysAllDebt) add("hf_after", "health factor after", "no debt left", "");
     else add("hf_after", "health factor after", candidate.finalHealthFactor, "HF");
+    const liquidityOutputs = (candidate.steps ?? []).flatMap((step, removalIndex) => {
+      const flow = OP_FLOW[step.op];
+      if (flow.from !== "lp" || flow.to !== "account") return [];
+      const pair = lpPairs().find(pair => pair.tokens.includes(step.asset as never));
+      if (!pair) return [];
+      return pair.tokens.map(asset => {
+        const comparison = view.rateComparisons?.find(row => row.asset === asset);
+        const marketRates = ([
+          ["earn_supply", "earnSupplyApr", "earn"],
+          ["blend_supply", "blendSupplyApr", "blend"],
+        ] as const).flatMap(([kind, field, venue]) => {
+          const apr = comparison?.[field];
+          if (apr == null || !Number.isFinite(Number(apr))) return [];
+          const factId = `plan${letter}:output${removalIndex}:${asset}:${venue}`;
+          own.push({ id: factId, label: `${asset} ${venue} observed supply APY`,
+            value: pct(shownApyPct(kind, apr)), unit: "% APY", venue,
+            evidenceId: comparison!.evidenceIds.join(","), sourcePath: field, readAt: 0 });
+          return [{ venue, factId }];
+        });
+        const supplyPrepared = (candidate.steps ?? []).slice(removalIndex + 1).some(later => later.asset === asset
+          && later.sizing?.basis === "settled_payout" && later.sizing.fromStep === step.id && later.sizing.asset === asset
+          && (OP_FLOW[later.op].rate === "earn_supply" || OP_FLOW[later.op].rate === "blend_supply"));
+        return { asset, supplyPrepared, marketRates };
+      });
+    });
     facts.push(...own);
     const movements = (candidate.steps ?? []).map((step) => ({ op: step.op, from: OP_FLOW[step.op].from, to: OP_FLOW[step.op].to }));
-    return { plan: feasible.length > 1 ? letter : null, borrows: candidate.borrows, movements, facts: own.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact) })) };
+    return { plan: feasible.length > 1 ? letter : null, borrows: candidate.borrows, movements, liquidityOutputs, facts: own.map((fact) => ({ id: fact.id, label: fact.label, shown: formatFactValue(fact) })) };
   });
   // What else was compared for the leading plan's job (the other held tokens priced as the same dollar), as facts the
   // reply may cite, so "why this token" is an answer from the reads and not a silence.
