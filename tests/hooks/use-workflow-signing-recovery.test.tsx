@@ -45,6 +45,22 @@ describe("workflow return and signing recovery", () => {
     expect(result.current.view?.id).toBe(ID); expect(result.current.error).toContain("plan is saved");
     expect(result.current.loading).toBe(false); expect(fetch).toHaveBeenCalledTimes(2);
   });
+  it("preserves a signing safety refusal and never submits the old envelope", async () => {
+    const message = "The current fee would breach your liquid reserve. Request and approve a smaller plan. Nothing was submitted.";
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => init?.method === "POST"
+      ? new Response(JSON.stringify({ code: "wallet_reserve_fee_shortfall", message }), { status: 409 })
+      : reply(view()));
+    vi.stubGlobal("fetch", fetch); localStorage.setItem(`vanna-workflow:${WALLET}`, ID);
+    const { result } = renderHook(() => useWorkflow(WALLET));
+    await waitFor(() => expect(result.current.view).not.toBeNull());
+    await act(async () => { expect(await result.current.prepareSign()).toBeNull(); });
+    expect(result.current.error).toBe(message);
+    expect(result.current.view?.id).toBe(ID);
+    expect(result.current.loading).toBe(false);
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      `/api/copilot/workflow/${ID}`, `/api/copilot/workflow/${ID}/prepare-sign`,
+    ]);
+  });
   it("discards a late preparation result after leaving the chat", async () => {
     let resolve!: (response: Response) => void;
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => init?.method === "POST"

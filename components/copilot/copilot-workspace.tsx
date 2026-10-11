@@ -3089,9 +3089,9 @@ export function CopilotWorkspace() {
       const freshStep = refreshed?.steps.find(entry => entry.id === step.id && entry.status === "awaiting_signature");
       if (!freshStep?.unsignedXdr) {
         if (auto) releaseDispatch(address, signKey);
-        // A click that ends in nothing reads as a dead button. No view back means the refresh
-        // itself failed (a token that did not arrive, a request that did not answer).
-        else if (!refreshed) toast.error("The transaction could not be refreshed for signing. Press Sign in wallet again.");
+        // prepareSign exposes the server's recovery instructions on the workflow card.
+        // A missing refreshed view can mean a reserve or safety refusal, so a generic
+        // retry toast would contradict those instructions and invite repeated signing.
         return;
       }
       const result = await signWorkflowTransaction(freshStep.unsignedXdr, { networkPassphrase: "Test SDF Network ; September 2015", address: address ?? undefined });
