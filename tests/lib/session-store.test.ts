@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -221,6 +221,67 @@ describe.each(BACKENDS)("copilot conversation store (%s backend)", (backend) => 
     const { id } = await store.appendSessionTurn({ subject: "carol", user: "t0", result: view("r0") });
     for (let i = 1; i < 12; i += 1) await store.appendSessionTurn({ subject: "carol", conversationId: id, user: `t${i}`, result: view(`r${i}`) });
     expect((await store.readConversation("carol", id))?.turns).toHaveLength(store.TURN_LIMIT);
+  });
+
+  it("erases expired chat content, keeps pins, and does not change a pin's activity time", async () => {
+    const clock = vi.spyOn(Date, "now");
+    const start = Date.now();
+    clock.mockReturnValue(start);
+    try {
+      const expired = await store.appendDirectSessionTurn({ subject: "alice", user: "old private prompt", assistant: "old reply" });
+      const pinned = await store.appendDirectSessionTurn({ subject: "alice", user: "important", assistant: "keep" });
+      expect(await store.pinConversation("bob", pinned.id, true)).toBe(false);
+      expect(await store.pinConversation("alice", pinned.id, true)).toBe(true);
+      clock.mockReturnValue(start + 31 * 24 * 60 * 60_000);
+      const list = await store.listConversations("alice");
+      expect(list.conversations.map((entry) => entry.id)).toEqual([pinned.id]);
+      expect(await store.readConversation("alice", expired.id)).toBeNull();
+      expect((await store.readConversation("alice", pinned.id))?.updatedAt).toBe(start);
+      expect(await store.pinConversation("alice", pinned.id, false)).toBe(true);
+      expect((await store.listConversations("alice")).conversations).toEqual([]);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("protects an unresolved workflow after its receipt falls outside the transcript window", async () => {
+    const start = Date.now();
+    const first = await store.appendSessionTurn({ subject: "alice", user: "swap", result: view("sign"), executionReceipt: receipt("uncertain", "uncertain") });
+    for (let i = 0; i < 12; i++) await store.appendDirectSessionTurn({ subject: "alice", conversationId: first.id, user: `question ${i}`, assistant: "answer" });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(start + 31 * 24 * 60 * 60_000);
+    try {
+      expect((await store.listConversations("alice")).conversations).toEqual([expect.objectContaining({ id: first.id, pending: true })]);
+      expect(await store.deleteConversation("alice", first.id)).toBe(false);
+      expect((await store.readConversation("alice", first.id))?.turns.some((turn) => turn.executionReceipt)).toBe(false);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("erases overflow records rather than only trimming their index entries", async () => {
+    const first = await store.appendDirectSessionTurn({ subject: "alice", user: "overflow", assistant: "private" });
+    for (let i = 0; i < store.CONVERSATION_LIMIT; i++) await store.appendDirectSessionTurn({ subject: "alice", user: `new ${i}`, assistant: "reply" });
+    expect((await store.listConversations("alice")).conversations).toHaveLength(store.CONVERSATION_LIMIT);
+    expect(await store.readConversation("alice", first.id)).toBeNull();
+    if (backend === "file") {
+      const files = await readdir(join(process.cwd(), ".local/copilot-conversations"));
+      expect(files.filter((file) => file.startsWith(first.id + "."))).toHaveLength(1);
+      expect(await readdir(join(process.cwd(), ".local/copilot-conversation-index"))).toHaveLength(1);
+    }
+  });
+
+  it("uses the authoritative journal instead of a stale completed browser receipt, then retains the settled journal after cleanup", async () => {
+    const { workflowStore } = await import("@/lib/copilot/workflow/store");
+    const journal = workflowStore<WorkflowRecord>(SECRET);
+    const id = "b54b036b-5b36-4c89-9436-f58f570b63fb";
+    const running = { proposal: { scope: { subject: "alice" } }, status: "running", steps: [{ status: "submitted" }] } as WorkflowRecord;
+    expect(await journal.write(id, null, running)).toBe(true);
+    const first = await store.appendSessionTurn({ subject: "alice", user: "swap", result: view("pending"),
+      executionReceipt: { ...receipt("completed", "settled", 100), workflowId: id } });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 24 * 60 * 60_000);
+    try {
+      expect((await store.listConversations("alice")).conversations[0]).toMatchObject({ id: first.id, pending: true });
+      const stored = await journal.read(id);
+      expect(await journal.write(id, stored!.version, { ...running, status: "completed", steps: [{ id: "step", status: "settled" }] })).toBe(true);
+      expect((await store.listConversations("alice")).conversations).toEqual([]);
+      expect((await journal.read(id))?.value.status).toBe("completed");
+    } finally { clock.mockRestore(); }
   });
 
   it("persists a structured receipt and updates it idempotently without changing prose", async () => {

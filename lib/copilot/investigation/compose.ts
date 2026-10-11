@@ -66,7 +66,12 @@ ${PRESENTATION}
 ${CHAT_STYLE}`;
 
 type Generate = (system: string, user: string, signal: AbortSignal) => Promise<unknown>;
-type ReplyLane = "answer" | "plans" | "completion" | "refusal";
+type ReplyLane = "answer" | "conceptual" | "plans" | "completion" | "refusal";
+
+const CONCEPTUAL_SYSTEM = `Rewrite the supplied conceptual draft for a DeFi chat. Preserve its meaning and answer the latest request's presentation instructions, including the requested number of bullets or sentences. Do not add account observations, protocol guarantees, recommendations or transaction claims. Keep each sentence under twenty-five words and each bullet to one short point. Use familiar words and direct verbs; avoid dense phrases such as dynamically updating, variable rate dynamics or supplied pool capital. Preserve qualifications about whether a venue compounds interest; do not turn a possibility into a guarantee. Omit examples and background detail when the request asks for a short summary. For conceptual examples, express numbers in words; these are illustrations, never observed account facts.
+${PRESENTATION}
+${CHAT_STYLE}
+There are no observed facts to cite. Use text segments only. If the user asks for bullets, return a bullets block directly without an introductory paragraph.`;
 
 const REFUSAL_SYSTEM = `You explain why a requested borrow could not be prepared. Lead with the requested amount versus the current protocol ceiling. Both figures must come from supplied fact references. Explain a limiting factor only when one was supplied; do not invent a collateral, liquidity or health-factor cause. The rejected plan was not submitted. Describe the ceiling as an observed protocol limit, not a promise that a smaller loan will pass all checks. Do not invent a replacement plan or change execution authority.
 ${PRESENTATION}
@@ -296,7 +301,8 @@ async function boundReply(system: string, user: string, facts: readonly Research
         budget.addEventListener("abort", onAbort, { once: true });
       }),
     ]);
-    let bound = bindBlocks(await ask(user), facts);
+    const mode = lane === "conceptual" ? "conceptual" : "factual";
+    let bound = bindReplyBlocks(await ask(user), facts, mode);
     if (!bound.ok) {
       /**
        * A refused reply is told why, once: the validator's reason is a fixed sentence ("reply contains a figure the
@@ -309,7 +315,7 @@ async function boundReply(system: string, user: string, facts: readonly Research
         feedback = JSON.stringify({ ...JSON.parse(user), previousReplyRefused: `${bound.reason}. Write the reply again: type no digit in any text segment, and take every figure from a fact reference.` });
       } catch { feedback = null; }
       // A second attempt that cannot finish inside the budget only spends it: ask again only when the first came back early.
-      if (feedback && !budget.aborted && performance.now() - start < composeBudgetMs() / 2) bound = bindBlocks(await ask(feedback), facts);
+      if (feedback && !budget.aborted && performance.now() - start < composeBudgetMs() / 2) bound = bindReplyBlocks(await ask(feedback), facts, mode);
     }
     if (!bound.ok) {
       compositionEvent(lane, "refused", performance.now() - start, [], `invalid_output:${bound.reason}`);
@@ -370,6 +376,13 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
     facts = refusal.facts;
     user = JSON.stringify({ request, facts: facts.map(replyFactContext), rejections: refusal.rejections,
       context: { category: "refusal", status: view.status, executionSubmitted: false }, draft: view.message });
+  } else if (view.status === "researched" && view.understanding?.intent === "answer" && !view.facts.length
+    && view.message.trim() && !view.question && !view.questionnaire && !view.pendingWrite && !view.choices?.length
+    && !view.candidates?.feasible?.length && !view.proposalCandidateId && !view.directAction && !view.executionAllowed) {
+    lane = "conceptual";
+    system = CONCEPTUAL_SYSTEM;
+    facts = [];
+    user = JSON.stringify({ request, draft: view.message, context: { category: "conceptual", warnings: view.warnings } });
   } else if (composable(view) || composableUnpreparedStrategy(view)) {
     lane = "answer";
     system = SYSTEM;

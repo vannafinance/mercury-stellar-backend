@@ -12,6 +12,7 @@
 
 import type { ResearchView } from "./view";
 import type { ExecutionReceiptSnapshot } from "../execution-receipt";
+import { retainedChatList } from "../chat-retention";
 
 export type ThreadTurn = {
   role: "user" | "assistant";
@@ -76,7 +77,7 @@ export type StoredThread = {
 };
 
 /** What the conversation list shows for each conversation. */
-export type ConversationSummary = { id: string; title: string; createdAt: number; updatedAt: number };
+export type ConversationSummary = { id: string; title: string; createdAt: number; updatedAt: number; pinned?: boolean; pending?: boolean };
 
 export function threadStorageKey(wallet: string): string {
   return `${STORAGE_PREFIX}${wallet}`;
@@ -108,12 +109,12 @@ export function readStoredConversations(wallet: string | null): ConversationSumm
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((entry): entry is ConversationSummary =>
+    return retainedChatList(parsed.filter((entry): entry is ConversationSummary =>
       !!entry && typeof entry === "object"
       && typeof (entry as ConversationSummary).id === "string"
       && typeof (entry as ConversationSummary).title === "string"
       && typeof (entry as ConversationSummary).createdAt === "number"
-      && typeof (entry as ConversationSummary).updatedAt === "number");
+      && typeof (entry as ConversationSummary).updatedAt === "number"));
   } catch {
     return [];
   }
@@ -122,7 +123,7 @@ export function readStoredConversations(wallet: string | null): ConversationSumm
 export function writeStoredConversations(wallet: string | null, items: readonly ConversationSummary[]): void {
   if (!wallet || typeof sessionStorage === "undefined") return;
   try {
-    sessionStorage.setItem(conversationsStorageKey(wallet), JSON.stringify(items.slice(0, 30)));
+    sessionStorage.setItem(conversationsStorageKey(wallet), JSON.stringify(retainedChatList(items)));
   } catch { /* quota - the live thread still works */ }
 }
 
@@ -131,7 +132,8 @@ export function upsertConversation(
   items: readonly ConversationSummary[],
   entry: ConversationSummary,
 ): ConversationSummary[] {
-  return [entry, ...items.filter((item) => item.id !== entry.id)].sort((a, b) => b.updatedAt - a.updatedAt);
+  return [entry, ...items.filter((item) => item.id !== entry.id)]
+    .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt - a.updatedAt);
 }
 
 export function readStoredThread(wallet: string | null): StoredThread | null {

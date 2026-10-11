@@ -5840,6 +5840,7 @@ export function CopilotWorkspace() {
             onOpen={openConversation}
             onRename={(id, title) => { void investigation.rename(id, title); }}
             onDelete={(id) => { void investigation.remove(id); }}
+            onPin={(id, pinned) => { void investigation.pin(id, pinned); }}
           />
         }
         railMini={
@@ -5866,6 +5867,7 @@ export function CopilotWorkspace() {
             onOpen={openConversation}
             onRename={(id, title) => { void investigation.rename(id, title); }}
             onDelete={(id) => { void investigation.remove(id); }}
+            onPin={(id, pinned) => { void investigation.pin(id, pinned); }}
           />
         }
         thread={

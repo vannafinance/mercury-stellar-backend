@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import { receiptKey, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
@@ -77,12 +77,37 @@ function server(results: Array<{ result: ResearchView; conversationId?: string }
   return calls;
 }
 
+afterEach(() => vi.restoreAllMocks());
+
 beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(5_000);
   sessionStorage.clear();
   mocks.consume.mockReset();
 });
 
 describe("useInvestigation - conversations", () => {
+  it("keeps the saved title and pin visible while a follow-up is in flight", async () => {
+    server([{ conversationId: "c-newer", result: view("Answer") }]);
+    const original = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const response = await original(url, init);
+      if (url !== "/api/copilot/session" || (init?.method ?? "GET") !== "GET") return response;
+      const payload = await response.json();
+      return { ...response, json: async () => ({ ...payload, conversations: payload.conversations.map((item: { id: string }) => item.id === "c-newer" ? { ...item, pinned: true } : item) }) } as Response;
+    }));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const settle = mocks.consume.getMockImplementation()!;
+    mocks.consume.mockImplementation(async (res: unknown, emit: (event: unknown) => void) => { await held; await settle(res, emit); });
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await waitFor(() => expect(result.current.conversations[0]?.pinned).toBe(true));
+    await act(async () => { await result.current.open("c-newer"); });
+    let reply!: Promise<void>;
+    act(() => { reply = result.current.run("Another question"); });
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    expect(result.current.conversations[0]).toMatchObject({ id: "c-newer", pinned: true, title: "repay 25% of my debt" });
+    await act(async () => { release(); await reply; });
+  });
   it("opens existing chats without changing their activity order or timestamps", async () => {
     server([]);
     const { result } = renderHook(() => useInvestigation(WALLET));

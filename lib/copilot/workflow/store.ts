@@ -8,6 +8,8 @@ export interface RecordStore<T> {
   read(id: string): Promise<Stored<T> | null>;
   /** null means create-if-absent. False means another request already won. */
   write(id: string, expected: string | null, value: T): Promise<boolean>;
+  /** Local encrypted revisions can retain deleted content. Only chat stores use this. */
+  compact?(id: string, throughVersion: string): Promise<void>;
 }
 /**
  * What a document id may look like. Records keyed by a UUID (the workflow journal, one
@@ -63,7 +65,13 @@ export class LocalRecordStore<T> implements RecordStore<T> {
       .map((file) => Number(file.split(".")[1])).filter(Number.isSafeInteger);
     if (!versions.length) return null;
     const version = String(Math.max(...versions));
-    const sealed = await readFile(join(this.directory, `${id}.${version}.json`), "utf8");
+    let sealed: string;
+    try { sealed = await readFile(join(this.directory, `${id}.${version}.json`), "utf8"); }
+    catch (error) {
+      // Chat compaction may remove the revision after enumeration. Read the current one.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return this.read(id);
+      throw error;
+    }
     return { version, value: this.codec.open<T>(`${id}:${version}`, sealed) };
   }
   async write(id: string, expected: string | null, value: T): Promise<boolean> {
@@ -85,6 +93,17 @@ export class LocalRecordStore<T> implements RecordStore<T> {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
       throw error;
     } finally { await unlink(temporary).catch(() => {}); }
+  }
+  async compact(id: string, throughVersion: string): Promise<void> {
+    check(this.idRule, id);
+    const version = Number(throughVersion);
+    if (!Number.isSafeInteger(version) || version < 0) throw new Error("invalid_record_version");
+    // Keep the tombstone and any concurrent newer revisions. CAS versioning remains intact.
+    const files = (await readdir(this.directory)).filter((file) => file.startsWith(`${id}.`) && /\.\d+\.json$/.test(file)
+      && Number(file.split(".")[1]) < version);
+    await Promise.all(files.map((file) => unlink(join(this.directory, file)).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    })));
   }
 }
 

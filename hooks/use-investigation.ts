@@ -91,7 +91,7 @@ interface ConversationPayload {
 
 /** The list is only ever sorted by last activity, newest first. */
 function sortedByActivity(items: readonly ConversationSummary[]): ConversationSummary[] {
-  return [...items].sort((a, b) => b.updatedAt - a.updatedAt);
+  return [...items].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt - a.updatedAt);
 }
 
 /**
@@ -139,7 +139,9 @@ export function useInvestigation(wallet: string | null) {
         entryId === LIVE_CONVERSATION_ID ? previous : previous.filter((item) => item.id !== LIVE_CONVERSATION_ID),
         {
           id: entryId,
-          title: titleFromTurns(turns),
+          title: existing?.title ?? titleFromTurns(turns),
+          ...(existing?.pinned ? { pinned: true } : {}),
+          ...(existing?.pending ? { pending: true } : {}),
           createdAt: existing?.createdAt ?? Date.now(),
           updatedAt: Date.now(),
         },
@@ -486,6 +488,18 @@ export function useInvestigation(wallet: string | null) {
   const remove = useCallback(async (id: string) => {
     const owner = activeWallet.current;
     if (!owner) return;
+    if (!isLocalConversationId(id)) {
+      try {
+        const headers = await requestHeaders(AbortSignal.timeout(8_000), owner);
+        const response = await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, { method: "DELETE", headers, cache: "no-store" });
+        if (!response.ok) throw new Error("delete_failed");
+      } catch {
+        if (activeWallet.current === owner) setState((previous) => ({ ...previous,
+          error: "The chat could not be deleted. Finish any pending transaction, then try again." }));
+        return;
+      }
+      if (activeWallet.current !== owner) return;
+    }
     setConversations((items) => {
       const next = items.filter((item) => item.id !== id);
       writeStoredConversations(owner, next);
@@ -501,11 +515,24 @@ export function useInvestigation(wallet: string | null) {
       clearStoredLocalThread(owner, id);
       return;
     }
+  }, [applyBlank]);
+
+  /** Pin a conversation so ordinary age and count cleanup cannot remove it. */
+  const pin = useCallback(async (id: string, pinned: boolean) => {
+    const owner = activeWallet.current;
+    if (!owner || isLocalConversationId(id)) return;
     try {
       const headers = await requestHeaders(AbortSignal.timeout(8_000), owner);
-      await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, { method: "DELETE", headers, cache: "no-store" });
-    } catch { /* it is gone from the list; the server copy goes on the next successful delete or expiry */ }
-  }, [applyBlank]);
+      const response = await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, {
+        method: "PATCH", headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned }), cache: "no-store",
+      });
+      if (!response.ok) throw new Error("pin_failed");
+      await refreshConversations(owner);
+    } catch {
+      if (activeWallet.current === owner) setState((previous) => ({ ...previous, error: "The chat could not be pinned. Try again." }));
+    }
+  }, [refreshConversations]);
 
   /** Rename a conversation. The transcript and journal stay; only the list title changes. */
   const rename = useCallback(async (id: string, title: string) => {
@@ -811,5 +838,5 @@ export function useInvestigation(wallet: string | null) {
   // Do not expose the previous wallet's state during the render before its effect resets.
   const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null, resultOrigin: "restored" as const };
   /** `reset` keeps its name for the workspace: it is "new chat" now, not "wipe the thread". */
-  return { ...visible, conversations, run, cancel, recordDirect, reset: newChat, newChat, open, remove, rename, updateExecutionReceipt, updateLastAssistantText, updateWorkflowCompletion };
+  return { ...visible, conversations, run, cancel, recordDirect, reset: newChat, newChat, open, remove, rename, pin, updateExecutionReceipt, updateLastAssistantText, updateWorkflowCompletion };
 }

@@ -138,7 +138,7 @@ describe("an LP exit feeds the next leg in that token", () => {
       { op: "lend", asset: "AQUSDC", sizing: { kind: "previous_leg" } },
     ], true, [request]);
     expect(rejected).toEqual([]);
-    expect(candidates[0]?.steps.map(step => [step.op, step.amount])).toEqual([
+    expect(candidates[0]?.steps?.map(step => [step.op, step.amount])).toEqual([
       ["remove_liquidity", "1"], ["supply_blend", "10"], ["withdraw_collateral", "2"], ["lend", "2"],
     ]);
     expect(candidates[0]?.amountUsd).toBe("4");

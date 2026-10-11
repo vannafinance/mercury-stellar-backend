@@ -8,7 +8,7 @@ import { StrKey } from "@stellar/stellar-sdk";
 import { MarginAccountService } from "@/lib/margin-utils";
 import type { ResearchView } from "./view";
 import { resolveInvestigationScope, ResearchError } from "./scope";
-import { researchCodec } from "./continuation";
+import { compactResearchMessages, researchCodec } from "./continuation";
 import { boundedLimits, runInvestigation, interruptible } from "./runtime";
 import { strategyReply } from "./answer";
 import { normalizeResearchFacts } from "./normalize";
@@ -304,6 +304,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       prior = codec.open(input.continuation, scope);
     } catch (error) {
       if (input.answers || !(error instanceof ResearchError) || error.code !== "context_expired") throw error;
+      try { prior = codec.renew(input.continuation, scope); } catch { /* Different account or invalid token starts fresh. */ }
       logPhase("thread_expired", {});
     }
   }
@@ -327,6 +328,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     (observation) => observation.capability === "account_position" && observation.status === "ok",
   );
   let messages = [...prior?.messages ?? [], input.answers?.summary ?? input.message];
+  if (messages.length > 8) messages = compactResearchMessages(messages);
   const sealedConditionalMessage = input.answers
     ? futureConditionRefusal(answeredQuestionnaire?.trigger, messages)
     : null;

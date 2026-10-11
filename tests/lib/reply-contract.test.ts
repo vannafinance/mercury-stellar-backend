@@ -78,9 +78,9 @@ describe("adaptive reply contract", () => {
     try {
       await composeReply(view(), new AbortController().signal, async () => ({ blocks: [paragraph([fact()])] }));
       await composeReply(view({ warnings: ["private upstream detail"] }), new AbortController().signal, async () => ({ blocks: [paragraph([fact()])] }));
-      await composeReply(view({ facts: [], warnings: ["private upstream detail"] }), new AbortController().signal, vi.fn());
+      await composeReply(view({ status: "blocked", facts: [], warnings: ["private upstream detail"] }), new AbortController().signal, vi.fn());
       const events = log.mock.calls.filter((call) => call[0] === "[copilot] reply composition").map((call) => call[1]);
-      expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ outcome: "composed", lane: "answer" }), expect.objectContaining({ outcome: "skipped", reason: "no_facts" })]));
+      expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ outcome: "composed", lane: "answer" }), expect.objectContaining({ outcome: "skipped", reason: "response_state" })]));
       expect(JSON.stringify(events)).not.toContain("private upstream detail");
       expect(JSON.stringify(events)).not.toContain("sensitive-wallet");
       expect(JSON.stringify(events)).not.toContain("14.25");

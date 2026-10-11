@@ -8,6 +8,22 @@ import { AutoApproveMenu, type AutoApproveMenuProps } from "@/components/copilot
 afterEach(() => vi.useRealTimers());
 
 describe("compact rail presentation", () => {
+  it("offers pinning for saved chats and prevents deleting a pending transaction's chat", () => {
+    const onPin = vi.fn(), onDelete = vi.fn();
+    const props = { hasWallet: true, healthFactor: null, positions: [], activeId: "saved",
+      conversations: [{ id: "saved", title: "Important plan", createdAt: 1, updatedAt: 1, pending: true }],
+      onOpen: vi.fn(), onRename: vi.fn(), onDelete, onPin };
+    const { rerender } = render(<CopilotRailBody {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Chat actions" }));
+    expect((screen.getByRole("menuitem", { name: "Delete" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin chat" }));
+    expect(onPin).toHaveBeenCalledWith("saved", true);
+    expect(onDelete).not.toHaveBeenCalled();
+    rerender(<CopilotRailBody {...props} conversations={[{ ...props.conversations[0], pinned: true }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Chat actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unpin chat" }));
+    expect(onPin).toHaveBeenLastCalledWith("saved", false);
+  });
   it("does not describe a loading or failed account read as an empty portfolio", () => {
     const props = { hasWallet: true, healthFactor: null, positions: [], conversations: [], activeId: null, onOpen: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), onRetryAccount: vi.fn() };
     const { rerender } = render(<CopilotRailBody {...props} accountLoading />);

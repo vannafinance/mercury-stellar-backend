@@ -56,7 +56,7 @@ const record = (x: unknown): x is Record<string, unknown> => x !== null && typeo
 const only = (x: Record<string, unknown>, keys: string[]) => Object.keys(x).every((key) => keys.includes(key));
 
 /** Validate generated blocks and bind figures before they reach the browser. */
-export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[]): BoundReply {
+export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[], mode: "factual" | "conceptual" = "factual"): BoundReply {
   if (!record(raw) || !only(raw, ["blocks"]) || !Array.isArray(raw.blocks)
     || !raw.blocks.length || raw.blocks.length > REPLY_LIMITS.blocks) return { ok: false, reason: "no usable blocks" };
   const byId = new Map(facts.map((fact) => [fact.id, fact]));
@@ -136,7 +136,7 @@ export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[]): B
     } else return { ok: false, reason: "unknown block" };
   }
   if (facts.some(fact => fact.requiredInReply && !citedIds.has(fact.id))) return { ok: false, reason: "reply omits a required answer figure" };
-  return citations ? { ok: true, blocks } : { ok: false, reason: "reply cites no fact" };
+  return citations || (mode === "conceptual" && !facts.length) ? { ok: true, blocks } : { ok: false, reason: "reply cites no fact" };
 }
 
 const textOf = (segments: readonly ReplySegment[]) => segments.map((segment) => segment.text).join("");

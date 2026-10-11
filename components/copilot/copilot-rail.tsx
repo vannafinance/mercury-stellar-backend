@@ -2,6 +2,7 @@
 
 import { useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Pin } from "lucide-react";
 import { AutoApproveMenu, type AutoApproveMenuProps } from "./auto-approve-menu";
 import { zoneOf, zoneLabel } from "./health-dial";
 import type { ConversationSummary } from "@/lib/copilot/investigation/thread";
@@ -170,6 +171,7 @@ export function CopilotRailBody({
   onOpen,
   onRename,
   onDelete,
+  onPin,
 }: {
   hasWallet: boolean;
   /** Null when there is no account to read, which the rail says rather than showing 0. */
@@ -183,6 +185,7 @@ export function CopilotRailBody({
   onOpen: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
+  onPin?: (id: string, pinned: boolean) => void;
 }) {
   const [positionsOpen, setPositionsOpen] = useState(true);
   const [recentsOpen, setRecentsOpen] = useState(true);
@@ -277,6 +280,7 @@ export function CopilotRailBody({
         onOpen={onOpen}
         onRename={onRename}
         onDelete={onDelete}
+        onPin={onPin}
       />
     </div>
   );
@@ -290,6 +294,7 @@ function RecentsList({
   onOpen,
   onRename,
   onDelete,
+  onPin,
 }: {
   recentsOpen: boolean;
   onToggle: () => void;
@@ -298,6 +303,7 @@ function RecentsList({
   onOpen: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
+  onPin?: (id: string, pinned: boolean) => void;
 }) {
   return (
     <RailFlyout order={5} label="Recents" icon={<RecentIcon size={18} />} heading={
@@ -308,7 +314,7 @@ function RecentsList({
         className="cp-rail-row cp-icon-button flex w-full cursor-pointer items-center gap-2.5 text-vgray-900 transition-colors"
       >
         <RecentIcon size={14} />
-        <span className="flex-1 text-left text-[14px] leading-[21px] font-semibold">Recents</span>
+        <span title="Chats expire after 30 days of inactivity. Pinned chats and pending transactions are protected." className="flex-1 text-left text-[14px] leading-[21px] font-semibold">Recents</span>
         <Caret open={recentsOpen} />
       </button>
       }>
@@ -322,10 +328,13 @@ function RecentsList({
                 key={c.id}
                 id={c.id}
                 title={c.title}
+                pinned={c.pinned}
+                pending={c.pending}
                 active={c.id === activeId}
                 onOpen={onOpen}
                 onRename={onRename}
                 onDelete={onDelete}
+                onPin={onPin}
               />
             ))
           )}
@@ -343,16 +352,22 @@ function RecentRow({
   id,
   title,
   active,
+  pinned,
+  pending,
   onOpen,
   onRename,
   onDelete,
+  onPin,
 }: {
   id: string;
   title: string;
   active: boolean;
+  pinned?: boolean;
+  pending?: boolean;
   onOpen: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
+  onPin?: (id: string, pinned: boolean) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -438,7 +453,7 @@ function RecentRow({
           active ? "font-semibold text-vgray-900" : "text-vgray-700"
         }`}
       >
-        {title}
+        {pinned && <Pin size={12} className="mr-1 inline-block text-violet-500" aria-label="Pinned chat" />}{title}
       </button>
       <button
         ref={menuTrigger}
@@ -469,9 +484,16 @@ function RecentRow({
           >
             Rename
           </button>
+          {onPin && !id.startsWith("local:") && <button
+            type="button" role="menuitem"
+            onClick={() => { setMenuOpen(false); onPin(id, !pinned); }}
+            className="flex w-full cursor-pointer px-3 py-2 text-left text-[13px] text-vgray-800 hover:bg-vgray-50"
+          >{pinned ? "Unpin chat" : "Pin chat"}</button>}
           <button
             type="button"
             role="menuitem"
+            disabled={pending}
+            title={pending ? "Finish or cancel the pending transaction first" : undefined}
             onClick={() => { setMenuOpen(false); onDelete(id); }}
             className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-[13px] text-[var(--z-danger)] hover:bg-vgray-50"
           >
@@ -501,6 +523,7 @@ export function CopilotRailMini({
   onOpen,
   onRename,
   onDelete,
+  onPin,
 }: {
   onExpand: () => void;
   onNewChat: () => void;
@@ -511,6 +534,7 @@ export function CopilotRailMini({
   onOpen: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
+  onPin?: (id: string, pinned: boolean) => void;
 }) {
   const [recentsOpen, setRecentsOpen] = useState(false);
   const recentTrigger = useRef<HTMLButtonElement | null>(null);
@@ -584,10 +608,13 @@ export function CopilotRailMini({
                 key={conversation.id}
                 id={conversation.id}
                 title={conversation.title}
+                pinned={conversation.pinned}
+                pending={conversation.pending}
                 active={conversation.id === activeId}
                 onOpen={(id) => { setRecentsOpen(false); onOpen(id); }}
                 onRename={onRename}
                 onDelete={onDelete}
+                onPin={onPin}
               />
             ))}
           </div>

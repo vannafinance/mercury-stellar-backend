@@ -110,6 +110,31 @@ describe("binding the model's blocks", () => {
 });
 
 describe("composing a reply", () => {
+  it("formats a conceptual answer with no account facts using the user's requested layout", async () => {
+    const original = view({ facts: [], originalRequest: "Summarize the same compounding and utilization discussion in two short bullets. Read-only, with no transaction.", message: "Utilization is the borrowed share of supplied capital. Compounding and changing rates affect returns." });
+    const generate = vi.fn(async () => ({ blocks: [{ type: "bullets", items: [
+      [{ type: "text", text: "Utilization is the share of pool funds borrowed; repayments lower it." }],
+      [{ type: "text", text: "Compounding grows returns, while changing rates affect future yield." }],
+    ] }] }));
+    const out = await composeReply(original, new AbortController().signal, generate);
+    expect(out.replyBlocks?.[0].type).toBe("bullets");
+    expect(out.message.split("\n")).toHaveLength(2);
+    const payload = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
+    expect(payload.request).toBe(original.originalRequest);
+    expect(payload.context.category).toBe("conceptual");
+    expect(out.executionAllowed).toBe(false);
+    expect(out.facts).toEqual([]);
+  });
+
+  it("keeps the conceptual draft if composition invents an observed figure or unavailable citation", async () => {
+    const original = view({ facts: [], message: "Rates can change with utilization." });
+    for (const segments of [[{ type: "text", text: "Your yield is 20%." }], [{ type: "fact", factId: "unread:yield" }]]) {
+      const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", segments }] }));
+      expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
+    }
+    expect(bindBlocks({ blocks: [{ type: "paragraph", segments: [{ type: "text", text: "Rates can change." }] }] }, []).ok).toBe(false);
+  });
+
   it("composes completed strategy research without turning a comparison into a prepared plan", async () => {
     const original = view({ originalRequest: "Move my pool proceeds to the higher-paying venue",
       understanding: { intent: "strategy", objective: "Reinvest proceeds", constraints: [], borrowing: "forbidden" },
