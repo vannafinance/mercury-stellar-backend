@@ -138,6 +138,28 @@ beforeEach(() => {
   mcp.call.mockClear();
 });
 
+it("offers and proposes the same measured reserve allocation without losing its fee budget", async () => {
+  const message = "optimize my yield but keep 100 XLM liquid";
+  const feeMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+    if (tool === "vanna_preview_earn") return args.include_fee_quote
+      ? { fee_quote: { status: "quoted", maximum_fee_stroops: "15000000", source: SCOPE.trader, operation: args.operation, symbol: args.symbol, amount: args.amount, contract: "registered-pool" } }
+      : { allowed: true, reason: "Permitted" };
+    return mcp.call(tool, args);
+  }) };
+  const view = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {
+    subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: feeMcp, signal: new AbortController().signal,
+    model: async () => ({ kind: "research_complete", goal: { intent: "strategy", relation: "new", objective: message, constraints: [], borrowing: "forbidden", walletReserves: [{ asset: "XLM", amount: "100", sourceQuote: "keep 100 XLM liquid" }] }, findings: [{ summary: "The observed wallet balance can fund Earn while preserving the requested reserve.", evidenceIds: [] }], openQuestions: [], plans: [{ title: "Earn allocation", rationale: "Observed yield", evidenceIds: [], legs: [{ op: "lend", asset: "XLM", sizing: { kind: "all_wallet" } }] }] }),
+  });
+  const candidate = view.candidates?.feasible[0];
+  expect(candidate, JSON.stringify({ message: view.message, candidates: view.candidates })).toBeTruthy();
+  expect(candidate!.steps![0].amount).toBe("10105.3356118");
+  expect(feeMcp.call.mock.calls.filter(row => row[1].fee_quote_only)).toHaveLength(2);
+  feeMcp.call.mockClear();
+  const proposal = await proposeWorkflow({ continuation: view.continuation, candidateId: candidate!.id, subject: SCOPE.subject, secret: SECRET, server: "mcp-test", network: "testnet", mcp: feeMcp, signal: new AbortController().signal });
+  expect(proposal.steps.map(step => [step.op, step.asset, step.amount])).toEqual(candidate!.steps!.map(step => [step.op, step.asset, step.amount]));
+  expect(feeMcp.call).not.toHaveBeenCalled();
+});
+
 it.each([
   { asset: "XLM", amount: "30", symbol: "XLM", literalLend: false },
   { asset: "BLUSDC", amount: "7.3", symbol: "USDC", literalLend: false },

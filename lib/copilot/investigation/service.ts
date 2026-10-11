@@ -32,6 +32,7 @@ import { requestsMaximumCredit, directMaximumCreditPlan } from "./max-credit";
 import { directPositionPlan } from "./direct-position";
 import { drawsNewDebt } from "../leg-direction";
 import { simulateCandidates } from "./simulate";
+import { sizePlansWithFees } from "./fee-sizing";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
 import { appendDiagnostics } from "./diagnostics-log";
@@ -1257,6 +1258,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   let planComparisons = rateComparisons;
   let resolvedPlanShapes: ProposedPlan[] = [];
+  let walletFeeBudgets: Record<string, string> = {};
   if (modelPlans.length) {
     const mandatoryOps = requestedOperations(outcome.kind === "research_complete" ? outcome.goal : null, messages);
     logPhase("requested_operations", { required: mandatoryOps });
@@ -1391,6 +1393,15 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       logPhase("plans_unrepaired", { reasons: unrepaired.map((entry) => `${entry.title}: ${entry.reason}`) });
       resolved = { ...resolved, rejected: resolved.rejected.filter((entry) => !entry.repairable) };
     }
+    // Fee measurement and the existing protocol preview share one bounded phase.
+    const previewSignal = walletReserves.some(row => row.asset === "XLM")
+      ? AbortSignal.any([dependencies.signal, AbortSignal.timeout(15_000)]) : dependencies.signal;
+    if (walletReserves.some(row => row.asset === "XLM") && resolved.candidates.length) {
+      const measured = await sizePlansWithFees(resolved.plans ?? [], planContext, scopedMcp, previewSignal);
+      walletFeeBudgets = measured.walletFeeBudgets;
+      resolved = { ...measured, rejected: [...resolved.rejected, ...measured.rejected] };
+      logPhase("fee_sizing", { measured: Object.keys(walletFeeBudgets).length, offered: resolved.candidates.length });
+    }
     resolvedPlanShapes = resolved.plans ?? [];
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, shapes: resolved.candidates.map((candidate) => candidate.id), rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     // Fixed options only for the assets the user named; the model's composed plans are untouched.
@@ -1403,7 +1414,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
      * judge is shown as not simulated.
      */
     if (candidates.feasible.some((c) => c.steps?.length)) {
-      candidates = await simulateCandidates(candidates, scope, scopedMcp, dependencies.signal);
+      candidates = await simulateCandidates(candidates, scope, scopedMcp, previewSignal);
       logPhase("simulation", { options: candidates.feasible.map((c) => `${c.id}: ${c.simulation?.verdict ?? "not simulated"}`), refused: candidates.rejected.filter((r) => /^The protocol refuses/.test(r.reason)).map((r) => r.reason) });
       /**
        * A borrow the preview refused on a pool limit is not a dead plan: the protocol states its own ceiling, and the plan
@@ -1420,7 +1431,13 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           if (ceilings.some((observation) => observation.status === "ok")) {
             result.observations.push(...ceilings);
             observedNow = Date.now();
-            const again = capToOneApproval(resolvePlans(modelPlans, { ...planContext, observations: result.observations, now: observedNow }), MAX_WORKFLOW_STEPS);
+            const resizeContext = { ...planContext, observations: result.observations, now: observedNow };
+            let again = capToOneApproval(resolvePlans(modelPlans, resizeContext), MAX_WORKFLOW_STEPS);
+            if (walletReserves.some(row => row.asset === "XLM")) {
+              const measured = await sizePlansWithFees(again.plans ?? [], resizeContext, scopedMcp, resizeSignal);
+              walletFeeBudgets = measured.walletFeeBudgets;
+              again = { ...measured, rejected: [...again.rejected, ...measured.rejected] };
+            }
             resolvedPlanShapes = again.plans ?? [];
             candidates = await simulateCandidates(mergeCandidateSets(scopedFixed, enforceRequestedOperations(again, mandatoryOps), borrowing), scope, scopedMcp, resizeSignal);
             logPhase("pool_resize", { assets: poolLimited, offered: candidates.feasible.length, ms: Date.now() - resizeStarted });
@@ -1592,6 +1609,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
     evidence.floor = statedFloor;
     if (walletReserves.length) evidence.walletReserves = walletReserves;
+    if (Object.keys(walletFeeBudgets).length) evidence.walletFeeBudgets = walletFeeBudgets;
     if (statedBorrow) evidence.statedBorrow = statedBorrow;
     if (strategyGoal) evidence.strategyGoal = true;
   }

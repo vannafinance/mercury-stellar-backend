@@ -64,6 +64,8 @@ export interface PlanContext {
    * figure. Sealed onto the evidence so a re-propose keeps it.
    */
   walletReserves?: readonly { asset: string; amount: string }[];
+  /** Additional native fees measured for this exact shape, above the wallet read's fee hint. */
+  walletFeeBudgets?: Readonly<Record<string, string>>;
   /**
    * The asset the user attached to an operation in their own quoted words (`namedOpAssets`). A leg of
    * that op in another asset is held to it: when the venue cannot take the asset the user named, the
@@ -657,17 +659,16 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
      * When that asset can be withdrawn first, that path is offered too - shown, not silent.
      */
     const bridged = withLendPocketBridge(plan, ctx);
-    let bridgedResolved = false;
     if (bridged) {
-      try { remember(resolvePlan(bridged, ctx), bridged); bridgedResolved = true; }
+      try { remember(resolvePlan(bridged, ctx), bridged); }
       catch (error) {
         if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...rejectionDetails(error) });
         else rejected.push({ title: bridged.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
       }
     }
-    // A successful pocket bridge is the offered workflow. Also retaining the plain
-    // shape can auto-select it and spend unrelated wallet funds instead of the exit.
-    if (bridgedResolved) continue;
+    // The required pocket bridge owns this plan's outcome, including a refusal.
+    // Trying the plain shape afterward can use unrelated funds or duplicate the refusal.
+    if (bridged) continue;
     const accountCheck = independentAccountCheck(plan, ctx);
     if (accountCheck) {
       const candidatePlan = { ...plan, legs: accountCheck.legs };
@@ -690,9 +691,6 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
       remember(resolvePlan(candidatePlan, ctx), candidatePlan);
       if (partial && !bridged) rejected.push(...partial.rejected.map((entry) => ({ title: plan.title, ...entry })));
     } catch (error) {
-      // The bridged path already answers this plan's unfunded leg; its plain attempt failing
-      // for want of those same funds is not a second outcome (shape matrix: 1 plan, 2 results).
-      if (bridgedResolved) continue;
       if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}), ...(error.accountRequired ? { accountRequired: error.accountRequired } : {}), ...rejectionDetails(error) });
       else rejected.push({ title: plan.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
     }
@@ -887,7 +885,9 @@ function spendableAfter(asset: string, ctx: PlanContext, earlierLegs: boolean): 
 }
 
 function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
-  const holdings = holdingsAfterReserves(spendableWalletHoldingsFrom(ctx.observations, ctx.now), ctx.walletReserves);
+  const extraFee = ctx.walletFeeBudgets?.[planCandidateId(plan)];
+  const reserves = [...(ctx.walletReserves ?? []), ...(extraFee ? [{ asset: "XLM", amount: extraFee }] : [])];
+  const holdings = holdingsAfterReserves(spendableWalletHoldingsFrom(ctx.observations, ctx.now), reserves);
   const dust = dustWalletHoldingsFrom(ctx.observations, ctx.now);
   const txFloor = transactionFloorUsdWad(ctx.observations, ctx.now);
   const prices = freshPrices(ctx.observations, ctx.now);

@@ -203,7 +203,7 @@ describe("what the table decides downstream", () => {
     expect(result.rejected[0]?.reason).toBe("only 56 XLM is spendable in the wallet");
   });
 
-  it("keeps a funded Earn sibling when another lend asks for an asset held only in margin", () => {
+  it("keeps both requested Earn lends together when one needs margin funding", () => {
     const multiAsset = [
       obs("w", "wallet_balances", {
         assets: [
@@ -224,13 +224,12 @@ describe("what the table decides downstream", () => {
       { op: "lend", asset: "AQUSDC", sizing: { kind: "literal", amount: "10", sourceQuote: "lend 10 AQUSDC" } },
     ])], ctx(multiAsset, ["lend 10 XLM", "lend 10 AQUSDC"]));
     const shapes = result.candidates.map((candidate) => candidate.steps?.map((step) => [step.op, step.asset]));
-    expect(shapes).toEqual(expect.arrayContaining([
-      [["lend", "XLM"]],
+    expect(shapes).toEqual([
       [["lend", "XLM"], ["withdraw_collateral", "AQUSDC"], ["lend", "AQUSDC"]],
-    ]));
+    ]);
   });
 
-  it("offers withdraw-then-lend when the Earn asset sits in the margin account, and still keeps the funded sibling", () => {
+  it("offers the complete bridged plan without a sibling that omits a requested lend", () => {
     const multiAsset = [
       obs("w", "wallet_balances", {
         assets: [
@@ -251,10 +250,18 @@ describe("what the table decides downstream", () => {
       { op: "lend", asset: "AQUSDC", sizing: { kind: "literal", amount: "10", sourceQuote: "lend 10 AQUSDC" } },
     ])], ctx(multiAsset, ["lend 10 XLM", "lend 10 AQUSDC"]));
     const shapes = candidates.map((candidate) => candidate.steps?.map((step) => [step.op, step.asset]));
-    expect(shapes).toEqual(expect.arrayContaining([
-      [["lend", "XLM"]],
+    expect(shapes).toEqual([
       [["lend", "XLM"], ["withdraw_collateral", "AQUSDC"], ["lend", "AQUSDC"]],
-    ]));
+    ]);
+  });
+
+  it("returns one refusal when a required account-to-wallet bridge cannot preserve health", () => {
+    const result = resolvePlans([plan([
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "100 XLM" } },
+      { op: "lend", asset: "XLM", sizing: { kind: "previous_leg" } },
+    ])], { ...ctx(rows("500", "0", "300"), ["100 XLM deposit then lend"]), capacity: { grossCollateralUsd: "0", debtUsd: "54", floor: "1.3" } });
+    expect(result.candidates).toEqual([]);
+    expect(result.rejected).toHaveLength(1);
   });
 
   it("a stated Blend supply is funded from the account's own balance, without a deposit before it", () => {

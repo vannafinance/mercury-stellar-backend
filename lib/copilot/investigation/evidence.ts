@@ -60,6 +60,8 @@ export interface ResearchEvidence {
   slippageAccepted?: boolean;
   /** Amounts the user said to keep in the wallet, anchored when sealed, so a re-propose sizes around them too. */
   walletReserves?: { asset: string; amount: string }[];
+  /** Candidate-specific additional native fees measured before the option was shown. */
+  walletFeeBudgets?: Record<string, string>;
   /**
    * The request named a goal, not an instruction, when it was sized (no stated plan): a bare "USDC" then covers every held
    * variant and only a variant a leg would ACQUIRE needs the user's choice. Carried so approving the plan sizes it under the
@@ -247,6 +249,7 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
         balance: row.balance,
         ...(row.decimals !== undefined ? { decimals: row.decimals } : {}),
         ...(row.spendable !== undefined ? { spendable: row.spendable } : {}),
+        ...(row.min_balance !== undefined ? { min_balance: row.min_balance } : {}),
         ...(row.status !== undefined ? { status: row.status } : {}),
         ...(row.error !== undefined ? { error: row.error } : {}),
       }];

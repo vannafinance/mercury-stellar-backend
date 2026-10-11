@@ -18,6 +18,7 @@ import { collectStrategyReads, readsForPlans, STRATEGY_READS } from "./strategy-
 import { parseCandidateId, requiresMarginAccount, REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { statedFloorFrom } from "./floor";
 import { planCandidateId, resolvePlans } from "./plan";
+import { sizePlansWithFees } from "./fee-sizing";
 import { enforcePortfolioExit, portfolioExitCoverage } from "./portfolio-exit";
 import { missingPositionReads } from "./position-coverage";
 import { compareObservedRates } from "./rate-comparison";
@@ -266,10 +267,20 @@ export async function proposeWorkflow(input: {
          */
         goal: prior.evidence?.slippageAccepted ? { slippageAccepted: { accepted: true, sourceQuote: "" } } : undefined,
         walletReserves,
+        walletFeeBudgets: prior.evidence?.walletFeeBudgets,
         // Sized under the same reading it was shown under: a goal, not an instruction (see `evidence.strategyGoal`).
         ...(prior.evidence?.strategyGoal ? { strategyGoal: true } : {}),
       })
     : null;
+  if (sealedPlan && resolved && !reused && walletReserves?.some(row => row.asset === "XLM")) {
+    resolved = await sizePlansWithFees([sealedPlan], {
+      scope, observations, now, messages: prior.messages, capacity: planPosition,
+      borrowing: "allowed", comparisons, walletReserves,
+      walletFeeBudgets: prior.evidence?.walletFeeBudgets,
+      strategyGoal: prior.evidence?.strategyGoal,
+      goal: prior.evidence?.slippageAccepted ? { slippageAccepted: { accepted: true, sourceQuote: "" } } : undefined,
+    }, input.mcp, AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]));
+  }
   if (resolved && sealedPlan && prior.evidence?.portfolioExit) resolved = enforcePortfolioExit(resolved, [sealedPlan], portfolioExitCoverage(observations, now, planPosition));
   const candidate = resolved
     ? resolved.candidates.find((entry) => entry.id === input.candidateId)

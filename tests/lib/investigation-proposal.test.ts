@@ -126,6 +126,21 @@ beforeEach(() => {
 });
 
 describe("proposeWorkflow evidence reuse", () => {
+  it("keeps the measured allocation budget through sealing and the approval card", async () => {
+    const plan: ProposedPlan = { title: "Earn allocation", rationale: "Yield", evidenceIds: ["wallet", "earn"], legs: [{ op: "lend", asset: "XLM", sizing: { kind: "all_wallet" } }] };
+    const observations = [
+      observation({ id: "wallet", capability: "wallet_balances", data: { assets: [{ symbol: "XLM", balance: "1000", min_balance: "3", decimals: 7, status: "ok" }], fee_reserve_xlm: "0.5" } }),
+      observation({ id: "price", capability: "asset_price", args: { asset: "XLM" }, data: { price_usd: "0.18" } }),
+      observation({ id: "earn", capability: "earn_market", args: { asset: "XLM" }, data: { supply_apr_pct: "5", borrow_apr_pct: "8" } }),
+    ];
+    const evidence = compactResearchEvidence(observations, null, NOW);
+    Object.assign(evidence, { plans: [plan], strategyGoal: true, walletReserves: [{ asset: "XLM", amount: "100" }], walletFeeBudgets: { [planCandidateId(plan)]: "1" }, allowedCandidateIds: [planCandidateId(plan)] });
+    const mcp = { call: vi.fn() };
+    const view = await proposeWorkflow({ continuation: researchCodec(SECRET, SERVER, () => NOW).seal(SCOPE, ["optimize yield and keep 100 XLM liquid"], null, evidence), candidateId: planCandidateId(plan), subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network, mcp, signal: new AbortController().signal, now: NOW });
+    expect(view.steps[0].amount).toBe("895.5");
+    expect(mcp.call).not.toHaveBeenCalled();
+    expect((await harness.store.read(""))?.value.proposal.walletReserves).toEqual([{ asset: "XLM", amount: "100" }]);
+  });
   it("preserves the researched protocol-limited borrow through sealing without another read", async () => {
     const message = "build a leveraged blend strategy with my XLM, health factor no lower than 1.3";
     const plan: ProposedPlan = { title: "Leveraged Blend", rationale: "Observed positive carry", evidenceIds: ["blend"], legs: [
