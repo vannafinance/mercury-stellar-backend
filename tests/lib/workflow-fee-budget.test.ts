@@ -13,6 +13,11 @@ const account = (balance = "3.9634782", liabilities = "0") => ({ account_id: wal
 const ledger = { base_reserve_in_stroops: 5_000_000 };
 
 describe("prepared transaction fee affordability", () => {
+  it("preserves the ongoing fee allowance as well as the user's spendable reserve", () => {
+    const reserves = [{ asset: "XLM", amount: "100" }];
+    expect(() => assertNativeFeeBudget(envelope("1000000"), supply, account("104.0"), ledger, reserves, "0.5")).toThrow("another 0.1 XLM");
+    expect(() => assertNativeFeeBudget(envelope("1000000"), supply, account("104.1"), ledger, reserves, "0.5")).not.toThrow();
+  });
   it("keeps the user's liquid reserve above the network minimum after the maximum fee", () => {
     const debit = { ...supply, op: "deposit_collateral" as const, amount: "5" };
     const reserves = [{ asset: "XLM", amount: "100", sourceQuote: "keep 100 XLM liquid" }];

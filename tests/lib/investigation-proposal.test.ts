@@ -140,6 +140,7 @@ describe("proposeWorkflow evidence reuse", () => {
     expect(view.steps[0].amount).toBe("895.5");
     expect(mcp.call).not.toHaveBeenCalled();
     expect((await harness.store.read(""))?.value.proposal.walletReserves).toEqual([{ asset: "XLM", amount: "100" }]);
+    expect((await harness.store.read(""))?.value.proposal.walletFeeReserveXlm).toBe("0.5");
   });
   it("preserves the researched protocol-limited borrow through sealing without another read", async () => {
     const message = "build a leveraged blend strategy with my XLM, health factor no lower than 1.3";
@@ -179,7 +180,7 @@ describe("proposeWorkflow evidence reuse", () => {
       { op: "borrow", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "borrow 1 BLUSDC" } },
       { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
     ] };
-    const evidence = compactResearchEvidence(evidenceObservations(), null, NOW);
+    const evidence = compactResearchEvidence([...evidenceObservations(), observation({ id: "wallet", capability: "wallet_balances", data: { assets: [{ symbol: "XLM", balance: "1000", status: "ok" }], fee_reserve_xlm: "0.5" } })], null, NOW);
     evidence.plans = [plan];
     evidence.floor = "1.7";
     evidence.walletReserves = [{ asset: "XLM", amount: "17.25" }];
@@ -413,7 +414,7 @@ describe("proposeWorkflow requested_actions", () => {
    */
   it("carries the sealed slippage acceptance into the stored proposal", async () => {
     const codec = researchCodec(SECRET, SERVER, () => NOW);
-    const evidence = compactResearchEvidence([], null, NOW);
+    const evidence = compactResearchEvidence([observation({ id: "wallet", capability: "wallet_balances", data: { assets: [{ symbol: "XLM", balance: "1000", status: "ok" }], fee_reserve_xlm: "0.5" } })], null, NOW);
     evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
     evidence.slippageAccepted = true;
     evidence.walletReserves = [{ asset: "XLM", amount: "100" }];

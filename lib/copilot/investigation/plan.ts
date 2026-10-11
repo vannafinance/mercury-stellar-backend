@@ -64,7 +64,7 @@ export interface PlanContext {
    * figure. Sealed onto the evidence so a re-propose keeps it.
    */
   walletReserves?: readonly { asset: string; amount: string }[];
-  /** Additional native fees measured for this exact shape, above the wallet read's fee hint. */
+  /** Native transaction fees for this exact shape, additional to the ongoing wallet allowance. */
   walletFeeBudgets?: Readonly<Record<string, string>>;
   /**
    * The asset the user attached to an operation in their own quoted words (`namedOpAssets`). A leg of

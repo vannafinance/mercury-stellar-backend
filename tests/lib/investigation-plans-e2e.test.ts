@@ -152,7 +152,7 @@ it("offers and proposes the same measured reserve allocation without losing its 
   });
   const candidate = view.candidates?.feasible[0];
   expect(candidate, JSON.stringify({ message: view.message, candidates: view.candidates })).toBeTruthy();
-  expect(candidate!.steps![0].amount).toBe("10105.3356118");
+  expect(candidate!.steps![0].amount).toBe("10104.8356118");
   expect(feeMcp.call.mock.calls.filter(row => row[1].fee_quote_only)).toHaveLength(2);
   feeMcp.call.mockClear();
   const proposal = await proposeWorkflow({ continuation: view.continuation, candidateId: candidate!.id, subject: SCOPE.subject, secret: SECRET, server: "mcp-test", network: "testnet", mcp: feeMcp, signal: new AbortController().signal });

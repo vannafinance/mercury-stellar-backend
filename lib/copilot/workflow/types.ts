@@ -304,6 +304,8 @@ export interface WorkflowProposal {
   floor: string | null;
   /** User-owned wallet floors, copied from anchored sealed research and covered by the approval digest. */
   walletReserves?: { asset: string; amount: string }[];
+  /** Observed ongoing native fee allowance, kept in addition to user spendable reserves. */
+  walletFeeReserveXlm?: string;
   /**
    * The user accepted a fill far below fair value, in their own words. Carried from the
    * sealed research so the decision survives to approval - the pre-write re-quote lowers

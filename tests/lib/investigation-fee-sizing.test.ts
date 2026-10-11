@@ -3,6 +3,7 @@ import { sizePlansWithFees } from "@/lib/copilot/investigation/fee-sizing";
 import { planCandidateId, resolvePlans, type PlanContext } from "@/lib/copilot/investigation/plan";
 import { compareObservedRates } from "@/lib/copilot/investigation/rate-comparison";
 import type { Observation, ProposedPlan } from "@/lib/copilot/investigation/types";
+import { decimalWad } from "@/lib/copilot/investigation/fixed";
 
 const now = 1700000000000;
 const scope = { subject: "user", network: "testnet", trader: "GBH5G2WPAAFZ5MS76GDJ4HKHYXSRGF2MBLYDIRQOHGVS4HPU6NNOFIHA", smartAccount: "CCKITLMKA2VKSWGOTFABSUFA3RMOZHRP5YNP6HLG73JSWMMUUNCTHDMC" };
@@ -23,19 +24,21 @@ describe("measured whole-plan fee sizing", () => {
     const mcp = client();
     const result = await sizePlansWithFees([earn], ctx, mcp, new AbortController().signal);
     expect(result.rejected).toEqual([]);
-    expect(result.candidates[0].steps![0].amount).toBe("895.5");
-    expect(result.walletFeeBudgets[planCandidateId(earn)]).toBe("1");
+    expect(result.candidates[0].steps![0].amount).toBe("895");
+    expect(result.walletFeeBudgets[planCandidateId(earn)]).toBe("1.5");
+    const afterFees = decimalWad("1000") - decimalWad(result.candidates[0].steps![0].amount) - decimalWad("1.5");
+    expect(afterFees - decimalWad("3") - decimalWad("0.5")).toBe(decimalWad("100"));
     const rebuilt = resolvePlans(result.plans!, { ...ctx, walletFeeBudgets: result.walletFeeBudgets });
     expect(rebuilt.candidates[0].steps).toEqual(result.candidates[0].steps);
     expect(mcp.call).toHaveBeenCalledTimes(2);
-    expect(mcp.call.mock.calls.map(row => row[1].amount)).toEqual(["896.5", "895.5"]);
+    expect(mcp.call.mock.calls.map(row => row[1].amount)).toEqual(["896.5", "895"]);
   });
   it("reserves fees for later account operations as well as the native wallet deposit", async () => {
     const plan: ProposedPlan = { ...earn, legs: [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } }, { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } }] };
     const result = await sizePlansWithFees([plan], ctx, client(), new AbortController().signal);
     expect(result.rejected).toEqual([]);
-    expect(result.candidates[0].steps!.map(row => row.amount)).toEqual(["894", "894"]);
-    expect(result.walletFeeBudgets[planCandidateId(plan)]).toBe("2.5");
+    expect(result.candidates[0].steps!.map(row => row.amount)).toEqual(["893.5", "893.5"]);
+    expect(result.walletFeeBudgets[planCandidateId(plan)]).toBe("3");
   });
   it.each([{ status: "unavailable" }, { maximum_fee_stroops: "0" }, { source: "different-wallet" }, { amount: "99" }, { symbol: "SOUSDC" }])("does not allocate from an unbound or absent fee quote %j", async alter => {
     const result = await sizePlansWithFees([earn], ctx, client("15000000", alter), new AbortController().signal);
@@ -49,12 +52,12 @@ describe("measured whole-plan fee sizing", () => {
     expect(result.candidates[0].steps![0].amount).toBe("5");
     expect(mcp.call).not.toHaveBeenCalled();
   });
-  it("keeps the existing wallet hint when it already covers the measured whole fee", async () => {
+  it("preserves the ongoing allowance even when the measured transaction fee is smaller", async () => {
     const mcp = client("2000000");
     const result = await sizePlansWithFees([earn], ctx, mcp, new AbortController().signal);
-    expect(result.candidates[0].steps![0].amount).toBe("896.5");
-    expect(result.walletFeeBudgets[planCandidateId(earn)]).toBe("0");
-    expect(mcp.call).toHaveBeenCalledTimes(1);
+    expect(result.candidates[0].steps![0].amount).toBe("896.3");
+    expect(result.walletFeeBudgets[planCandidateId(earn)]).toBe("0.2");
+    expect(mcp.call).toHaveBeenCalledTimes(2);
     expect(mcp.call.mock.calls[0][1].fee_quote_only).toBe(true);
   });
   it("withholds a plan when the final sized transaction requires a higher fee", async () => {

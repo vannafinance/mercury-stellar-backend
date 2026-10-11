@@ -6,8 +6,22 @@ import { decimalWad, formatWad, WAD, ZERO } from "./fixed";
 import { isRecord } from "./decision";
 import { interruptible } from "./runtime";
 import { planCandidateId, resolvePlans, type PlanContext, type ResolvedPlans } from "./plan";
-import type { ProposedPlan } from "./types";
+import type { Observation, ProposedPlan } from "./types";
+import { ResearchError } from "./scope";
 import { holdingsAfterReserves, spendableWalletHoldingsFrom } from "./candidates";
+
+/** Keep the wallet's ongoing fee allowance after the approved plan has paid its fees. */
+export function walletFeeReserveFor(reserves: PlanContext["walletReserves"], observations: readonly Observation[]): string | undefined {
+  if (!reserves?.some(row => row.asset === "XLM")) return undefined;
+  const wallet = [...observations].reverse().find(row => row.capability === "wallet_balances" && row.status === "ok");
+  try {
+    const amount = decimalWad(String(wallet?.data?.fee_reserve_xlm));
+    if (amount < ZERO) throw new Error();
+    return formatWad(amount);
+  } catch {
+    throw new ResearchError("wallet_fee_reserve_unavailable", "The wallet's ongoing fee reserve could not be verified. Refresh the wallet balance before preparing this reserve plan.");
+  }
+}
 
 function delegated(plan: ProposedPlan): boolean {
   return plan.legs.some(leg => leg.sizing.kind === "all_wallet" ||
@@ -54,9 +68,10 @@ export async function sizePlansWithFees(plans: readonly ProposedPlan[], ctx: Pla
       const total = await quote(candidate.steps, ctx, mcp, signal);
       if (total === null) { refuse(); continue; }
       const wallet = [...ctx.observations].reverse().find(row => row.capability === "wallet_balances" && row.status === "ok" && ctx.now - row.observedAt <= 60_000);
-      let hint: bigint;
-      try { hint = decimalWad(String(wallet?.data?.fee_reserve_xlm)); } catch { refuse(); continue; }
-      const extra = total > hint ? total - hint : ZERO;
+      try { walletFeeReserveFor(ctx.walletReserves, wallet ? [wallet] : []); } catch { refuse(); continue; }
+      // Spendable holdings already exclude the ongoing allowance. Transaction fees
+      // must be additional so the same spendable floor survives settlement.
+      const extra = total;
       const nativeHoldings = spendableWalletHoldingsFrom(ctx.observations, ctx.now);
       const nativeReserve = ctx.walletReserves!.filter(row => row.asset === "XLM").reduce((sum, row) => sum + decimalWad(row.amount), ZERO);
       if (!nativeHoldings.XLM || decimalWad(nativeHoldings.XLM.tokens) < nativeReserve) { refuse(); continue; }
@@ -69,7 +84,7 @@ export async function sizePlansWithFees(plans: readonly ProposedPlan[], ctx: Pla
       // A recompile that left every argument unchanged needs no duplicate measurement.
       const checked = JSON.stringify(next.steps.map(row => [row.op, row.args])) === JSON.stringify(candidate.steps.map(row => [row.op, row.args]))
         ? total : await quote(next.steps, ctx, mcp, signal);
-      if (checked === null || checked > hint + extra) { refuse(); continue; }
+      if (checked === null || checked > extra) { refuse(); continue; }
       output.candidates.push(next); output.plans!.push(shape); output.walletFeeBudgets[candidate.id] = formatWad(extra);
     }
     output.rejected.push(...initial.rejected);

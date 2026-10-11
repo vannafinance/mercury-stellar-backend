@@ -18,7 +18,7 @@ import { collectStrategyReads, readsForPlans, STRATEGY_READS } from "./strategy-
 import { parseCandidateId, requiresMarginAccount, REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { statedFloorFrom } from "./floor";
 import { planCandidateId, resolvePlans } from "./plan";
-import { sizePlansWithFees } from "./fee-sizing";
+import { sizePlansWithFees, walletFeeReserveFor } from "./fee-sizing";
 import { enforcePortfolioExit, portfolioExitCoverage } from "./portfolio-exit";
 import { missingPositionReads } from "./position-coverage";
 import { compareObservedRates } from "./rate-comparison";
@@ -121,6 +121,7 @@ export async function proposeWorkflow(input: {
       assumptions: ["Amounts are the literal token amounts in your request. No automatic resizing is allowed."],
       constraints: [...(floor ? [`Health factor at or above ${floor}`] : []), ...reserveConstraints(prior.evidence?.walletReserves)], floor, steps,
       walletReserves: prior.evidence?.walletReserves,
+      walletFeeReserveXlm: walletFeeReserveFor(prior.evidence?.walletReserves, prior.evidence?.observations ?? []),
       slippageAccepted: prior.evidence?.slippageAccepted === true };
     /**
      * Propose holds the compiled plan for the card. Live prices and balances are
@@ -334,6 +335,7 @@ export async function proposeWorkflow(input: {
       scope, candidateId: input.candidateId, server: input.server, objective: candidate.label, messages: prior.messages,
       assumptions, constraints: [...(proposalFloor ? [`Health factor at or above ${proposalFloor}`] : []), ...reserveConstraints(walletReserves)],
       walletReserves,
+      walletFeeReserveXlm: walletFeeReserveFor(walletReserves, observations),
       floor: proposalFloor, steps: compiled.steps,
       slippageAccepted: prior.evidence?.slippageAccepted === true,
     });

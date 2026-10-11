@@ -29,7 +29,7 @@ const tx = () => new TransactionBuilder(new Account(wallet.publicKey(), "1"), { 
 beforeEach(() => { h.rows.clear(); h.scope.mockResolvedValue(scope); h.fee.mockReset().mockResolvedValue(undefined); h.refresh.mockReset().mockImplementation(async xdr => xdr); });
 async function fixture(waiting = true) {
   const journal = new WorkflowJournal(h.store);
-  const record = await journal.create({ ...identity, objective: "Deposit", messages: [], assumptions: [], constraints: [], floor: null, walletReserves: reserves,
+  const record = await journal.create({ ...identity, objective: "Deposit", messages: [], assumptions: [], constraints: [], floor: null, walletReserves: reserves, walletFeeReserveXlm: "0.5",
     steps: [{ id: "one", op: "deposit_collateral", asset: "XLM", amount: "5", label: "Deposit", tool: "vanna_deposit_collateral",
       args: { amount: "5", symbol: "XLM", trader: scope.trader, smart_account: scope.smartAccount } }] });
   const id = record.proposal.id; const envelope = tx();
@@ -43,7 +43,7 @@ describe("sealed wallet reserve across execution", () => {
   it("checks the sealed floor before opening the wallet and leaves approval and envelope intact on refusal", async () => {
     const f = await fixture(); h.fee.mockRejectedValue(new Error("reserve fee shortfall"));
     await expect(prepareWorkflowSigning(f.input)).rejects.toThrow("reserve fee shortfall");
-    expect(h.fee).toHaveBeenCalledWith(f.envelope.toXDR(), f.record.proposal.steps[0], fetch, reserves);
+    expect(h.fee).toHaveBeenCalledWith(f.envelope.toXDR(), f.record.proposal.steps[0], fetch, reserves, "0.5");
     const row = (await f.journal.read(f.id, identity)).value;
     expect(row.proposal).toEqual(f.record.proposal); expect(row.status).toBe("awaiting_signature");
     expect(row.steps[0].unsignedXdr).toBe(f.envelope.toXDR()); expect(f.input.mcp.call).not.toHaveBeenCalled();
@@ -52,7 +52,7 @@ describe("sealed wallet reserve across execution", () => {
     const f = await fixture(); f.envelope.sign(wallet); h.fee.mockRejectedValue(new Error("reserve fee shortfall"));
     const sendTx = vi.fn();
     await expect(submitWorkflow({ ...f.input, signedXdr: f.envelope.toXDR(), sendTx })).rejects.toThrow("reserve fee shortfall");
-    expect(h.fee).toHaveBeenCalledWith(f.envelope.toXDR(), f.record.proposal.steps[0], fetch, reserves);
+    expect(h.fee).toHaveBeenCalledWith(f.envelope.toXDR(), f.record.proposal.steps[0], fetch, reserves, "0.5");
     expect(sendTx).not.toHaveBeenCalled(); expect((await f.journal.read(f.id, identity)).value.steps[0].txHash).toBeUndefined();
   });
   it.each([{ enabled: true }, {}, { enabled: false, error: "unavailable" }])("refuses a delegated or unverifiable signer before the MCP write: %j", async status => {
