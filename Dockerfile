@@ -61,7 +61,10 @@ COPY server-vary-patch.cjs ./
 
 # next/image needs sharp in production. It is NOT in package.json, so install it
 # explicitly into the standalone node_modules (glibc build for this base image).
-RUN npm install --no-save sharp@^0.34.0 \
+# npm 10 crashes here too ("Cannot read properties of null (reading
+# 'edgesOut')") on the traced standalone tree, so pin npm 11 as in deps.
+RUN npm i -g npm@11 \
+ && npm install --no-save sharp@^0.34.0 \
  && npm cache clean --force \
  && chown -R nextjs:nodejs /app
 
