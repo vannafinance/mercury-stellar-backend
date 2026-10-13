@@ -20,7 +20,7 @@ import { anchoredVenueOps, anchoredVenueRows, enforceRequestedOperations, reques
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, spendableWalletAfterReserves, onlyNamedAssets, spendableWalletUsdFrom, spendableWalletByAssetUsdFrom, spendableWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
-import { askForUnstatedAmounts, askForUnstatedPlanAmounts } from "./unstated-amount";
+import { askForUnchosenActionAssets, askForUnstatedAmounts, askForUnstatedPlanAmounts } from "./unstated-amount";
 import { namedOpAssets } from "./named-op-assets";
 import { unsupportedAssetFacts } from "./unsupported-asset";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
@@ -647,7 +647,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         openQuestions: [] as string[],
       }
     : result.outcome;
-  const outcome = askForUnstatedPlanAmounts(askForUnstatedAmounts(decided, messages), messages);
+  const outcome = askForUnstatedPlanAmounts(askForUnchosenActionAssets(askForUnstatedAmounts(decided, messages), messages), messages);
   const fullPortfolioExit = outcome.kind === "research_complete" && requestsPortfolioExit(outcome.goal, messages);
   /**
    * A conditional or future action is refused as soon as the outcome is known, before any

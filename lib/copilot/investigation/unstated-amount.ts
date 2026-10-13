@@ -1,6 +1,7 @@
 import type { QuestionnaireMissing } from "./questionnaire";
 import type { CarriedGoal, GoalUnderstanding, PlanLeg, ResearchDecision, StatedAction } from "./types";
-import { verbOf } from "./plan";
+import { unchosenUsdcVariant, USDC_QUESTION, verbOf } from "./plan";
+import { answerForKnownSizing } from "./questionnaire-sizing";
 
 type Decided = ResearchDecision & { kind: "clarify" | "blocked" | "research_complete" };
 
@@ -29,6 +30,41 @@ function carriedOf(goal: GoalUnderstanding): CarriedGoal | null {
 function userSizedWallet(sizing: PlanLeg["sizing"], messages: readonly string[]): boolean {
   return sizing.kind === "all_wallet" && Boolean(sizing.sourceQuote?.trim())
     && messages.some((message) => message.includes(sizing.sourceQuote!));
+}
+
+/** Route unresolved assets on stated actions through the same sealed questionnaire as missing amounts. */
+export function askForUnchosenActionAssets<T extends { kind: string }>(input: T, messages: readonly string[]): T {
+  if (input.kind !== "clarify" && input.kind !== "research_complete") return input;
+  const outcome = input as unknown as Decided;
+  if (outcome.kind === "clarify") {
+    const missing = outcome.missing?.map(entry => entry.asset && !entry.inputAsset
+      && entry.sourceQuote && messages.some(message => message.includes(entry.sourceQuote!))
+      && unchosenUsdcVariant({ asset: entry.asset, op: entry.op }, messages)
+      ? { ...entry, asset: "USDC", slots: [...new Set<QuestionnaireMissing["slots"][number]>(["asset", ...entry.slots])] }
+      : entry);
+    return { ...outcome, ...(missing ? { missing } : {}) } as unknown as T;
+  }
+  if (outcome.kind !== "research_complete" || outcome.goal.intent !== "strategy") return input;
+  const missing: QuestionnaireMissing[] = [];
+  const kept: StatedAction[] = [];
+  for (const action of outcome.goal.actions ?? []) {
+    // Paired-asset operations retain their existing clarification path; do not drop their second asset.
+    if (action.assetOut || !action.sourceQuote?.trim()
+      || !messages.some(message => message.includes(action.sourceQuote))
+      || !unchosenUsdcVariant(action, messages)) {
+      kept.push(action);
+      continue;
+    }
+    const sizingAnchored = action.sizing.kind !== "all_wallet" || userSizedWallet(action.sizing, messages);
+    if (sizingAnchored && !answerForKnownSizing(action.sizing)) return input;
+    missing.push({ op: action.op, asset: "USDC", sourceQuote: action.sourceQuote,
+      slots: sizingAnchored ? ["asset"] : ["asset", "amount"],
+      ...(sizingAnchored ? { knownSizing: action.sizing } : {}) });
+  }
+  if (!missing.length) return input;
+  return { kind: "clarify", intent: "action", question: USDC_QUESTION, missing, actions: kept,
+    ...(outcome.goal.trigger ? { trigger: outcome.goal.trigger } : {}),
+    ...(carriedOf(outcome.goal) ? { carried: carriedOf(outcome.goal) } : {}) } as unknown as T;
 }
 
 /**
