@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext, useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Pin } from "lucide-react";
 import { AutoApproveMenu, type AutoApproveMenuProps } from "./auto-approve-menu";
@@ -372,10 +372,48 @@ function RecentRow({
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title);
-  const [menuPosition, setMenuPosition] = useState({ left: 302, top: 0 });
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; maxHeight?: number; maxWidth?: number }>({ left: 0, top: 0 });
   const row = useRef<HTMLDivElement | null>(null);
   const menu = useRef<HTMLDivElement | null>(null);
   const menuTrigger = useRef<HTMLButtonElement | null>(null);
+  const canPin = Boolean(onPin && !id.startsWith("local:"));
+
+  useLayoutEffect(() => {
+    if (!menuOpen || !menu.current || !menuTrigger.current) return;
+    const place = () => {
+      if (!menu.current || !menuTrigger.current) return;
+      const anchor = menuTrigger.current.getBoundingClientRect();
+      const measured = menu.current.getBoundingClientRect();
+      const viewport = window.visualViewport;
+      const inset = 8;
+      const gap = 10;
+      const startX = (viewport?.offsetLeft ?? 0) + inset;
+      const startY = (viewport?.offsetTop ?? 0) + inset;
+      const maxWidth = Math.max(0, (viewport?.width ?? document.documentElement.clientWidth) - inset * 2);
+      const maxHeight = Math.max(0, (viewport?.height ?? document.documentElement.clientHeight) - inset * 2);
+      const width = Math.min(measured.width, maxWidth);
+      const height = Math.min(measured.height, maxHeight);
+      const preferredLeft = anchor.right + gap + width <= startX + maxWidth ? anchor.right + gap : anchor.left - gap - width;
+      const next = {
+        left: Math.max(startX, Math.min(preferredLeft, startX + maxWidth - width)),
+        top: Math.max(startY, Math.min(anchor.top, startY + maxHeight - height)),
+        maxWidth,
+        maxHeight,
+      };
+      setMenuPosition(current => current.left === next.left && current.top === next.top && current.maxWidth === maxWidth && current.maxHeight === maxHeight ? current : next);
+    };
+    place();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+    observer?.observe(menu.current);
+    const viewport = window.visualViewport;
+    viewport?.addEventListener("resize", place);
+    viewport?.addEventListener("scroll", place);
+    return () => {
+      observer?.disconnect();
+      viewport?.removeEventListener("resize", place);
+      viewport?.removeEventListener("scroll", place);
+    };
+  }, [menuOpen, canPin]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -383,7 +421,10 @@ function RecentRow({
       const target = event.target as Node;
       if (!row.current?.contains(target) && !menu.current?.contains(target)) setMenuOpen(false);
     };
-    const closeOnViewportMove = () => setMenuOpen(false);
+    const closeOnViewportMove = (event: Event) => {
+      if (event.target instanceof Node && menu.current?.contains(event.target)) return;
+      setMenuOpen(false);
+    };
     document.addEventListener("pointerdown", close);
     window.addEventListener("resize", closeOnViewportMove);
     window.addEventListener("scroll", closeOnViewportMove, true);
@@ -398,14 +439,6 @@ function RecentRow({
     if (menuOpen) {
       setMenuOpen(false);
       return;
-    }
-    const rect = menuTrigger.current?.getBoundingClientRect();
-    if (rect) {
-      const menuHeight = 82;
-      setMenuPosition({
-        left: Math.min(rect.right + 10, window.innerWidth - 160),
-        top: Math.max(8, Math.min(rect.top, window.innerHeight - menuHeight - 8)),
-      });
     }
     setMenuOpen(true);
   };
@@ -473,7 +506,8 @@ function RecentRow({
         <div
           ref={menu}
           role="menu"
-          className="cp-root fixed z-[100] w-[150px] overflow-hidden rounded-r2 border border-vgray-100 bg-surface py-1 shadow-lg"
+          aria-label="Chat actions"
+          className="cp-root fixed z-[100] w-[150px] overflow-y-auto rounded-r2 border border-vgray-100 bg-surface py-1 shadow-lg"
           style={menuPosition}
         >
           <button

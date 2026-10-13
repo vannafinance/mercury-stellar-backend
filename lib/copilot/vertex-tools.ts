@@ -605,6 +605,9 @@ export const ROUTER_TOOLS: ToolEntry[] = [
           ),
           max_per_tx_tokens: num("Testnet token amount limit per transaction; never reinterpret dollars as tokens."),
           max_per_day_tokens: num("Testnet daily token amount limit; never reinterpret dollars as tokens."),
+          cap_unit: str("Use testnet_usd for explicitly requested dollar limits, token_units for quantities. Omit when no unit was specified; the signer supplies its policy.", ["testnet_usd", "token_units"]),
+          max_per_tx_usd: num("Requested per-transaction dollar limit using testnet valuation. Requires separate explicit approval before enabling."),
+          max_per_day_usd: num("Requested daily dollar limit using testnet valuation. Never put dollar values into token quantity fields."),
         },
         ["action"],
       ),
@@ -617,6 +620,9 @@ export const ROUTER_TOOLS: ToolEntry[] = [
           ? action
           : "start") as "start" | "use_defaults" | "custom" | "disable",
         template_id: "auto_sign",
+        ...(a.cap_unit === "testnet_usd" || a.cap_unit === "token_units" ? { cap_unit: a.cap_unit } : {}),
+        ...(asAmount(a.max_per_tx_usd) != null ? { max_per_tx_usd: asAmount(a.max_per_tx_usd)! } : {}),
+        ...(asAmount(a.max_per_day_usd) != null ? { max_per_day_usd: asAmount(a.max_per_day_usd)! } : {}),
         ...(asAmount(a.max_per_tx_tokens) != null ? { max_per_tx_tokens: asAmount(a.max_per_tx_tokens)! } : {}),
         ...(asAmount(a.max_per_day_tokens) != null ? { max_per_day_tokens: asAmount(a.max_per_day_tokens)! } : {}),
       };

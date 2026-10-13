@@ -1,5 +1,5 @@
 import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
-import { acceptedTestnetBudget } from "@/lib/copilot/auto-approve-budget";
+import { acceptedTestnetBudget, type TestnetBudget } from "@/lib/copilot/auto-approve-budget";
 
 /**
  * Shared controls for server-enforced approval and wallet request dispatch.
@@ -205,10 +205,14 @@ export function signServiceFromSessionRead(res: {
   status: SignServiceRailStatus;
   reason: string | null;
   authoritative?: boolean;
-  caps?: { tx: number; day: number };
+  caps?: TestnetBudget;
 } {
   const facts = (res.data ?? {}) as Record<string, unknown>;
   const err = facts.error == null ? "" : String(facts.error);
+  if (facts.status === "disabled") return { status: "unknown", reason: null };
+  if (facts.status === "policy_unavailable") {
+    return { status: "unavailable", authoritative: true, reason: "The signer is not enforcing this budget. Sign in your wallet." };
+  }
   if (res.kind === "needs_wallet_bind" || err === "wallet_not_bound") {
     return { status: "unbound", reason: null };
   }
@@ -248,6 +252,9 @@ export function signServiceFromSessionRead(res: {
  * silently would walk around that refusal, so it waits for an explicit click. A step that was
  * simply never auto-signed carries no refusal and may follow the session's signing mode.
  */
-export function mayAutoSignJournalStep(step: { signRefusal?: string }): boolean {
+export function mayAutoSignJournalStep(step: { signRefusal?: string }, policy?: { status: string; budgetUnit?: string }): boolean {
+  // USD auto-signing must pass the authoritative service reservation. Client
+  // signing cannot inherit a newly enabled budget for an older unsigned step.
+  if (policy && (policy.status !== "awaiting_signature" || (policy.budgetUnit !== undefined && policy.budgetUnit !== "token_units"))) return false;
   return !step.signRefusal;
 }

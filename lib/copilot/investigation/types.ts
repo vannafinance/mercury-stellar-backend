@@ -57,6 +57,7 @@ export interface InvestigationRequest {
 import type { WorkflowOp } from "../workflow/types";
 
 export interface GoalUnderstanding {
+  signingPolicy?: import("./signing-policy-request").SigningPolicyRequest;
   /** Full portfolio closure to the spendable wallet, anchored to the user's own request. */
   portfolioExit?: { destination: "wallet"; sourceQuote: string };
   /** Optional scope for answer-only coverage; uncertain requests retain full coverage. */

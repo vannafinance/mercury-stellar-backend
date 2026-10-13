@@ -1,4 +1,5 @@
 import type { MCPClient } from "../mcp-client";
+import { anchoredSigningPolicyRequest } from "./signing-policy-request";
 import { reuseTerminalReadFailures } from "./terminal-read-cache";
 import type { ResearchModel, InvestigationProgress, InvestigationLimits, Observation, ProposedPlan, ResearchTask } from "./types";
 import { inheritsThread, shownPlans } from "./thread-context";
@@ -1686,6 +1687,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     // Not rendered. Why a run stopped, a plan was dropped or a read failed, readable from the response (23 Sep).
     ...(diagnostics ? { diagnostics } : {}),
     pendingWrite: lifecycleOp && scope.trader ? { op: lifecycleOp } : null,
+    ...(outcome.kind === "research_complete" && anchoredSigningPolicyRequest(outcome.goal.signingPolicy, input.message)
+      ? { signingPolicy: anchoredSigningPolicyRequest(outcome.goal.signingPolicy, input.message)! } : {}),
   };
 }
 

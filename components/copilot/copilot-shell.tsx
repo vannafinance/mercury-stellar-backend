@@ -62,6 +62,8 @@ export interface CopilotShellProps {
   conversationId?: string | null;
   /** When the user has just submitted a prompt, forces scrolling to bottom unconditionally. */
   justSubmitted?: boolean;
+  /** A typed settings review may open the panel on narrow screens as well. */
+  panelOpenRequest?: number;
 }
 
 export function CopilotShell({
@@ -76,6 +78,7 @@ export function CopilotShell({
   scrollKey,
   conversationId,
   justSubmitted,
+  panelOpenRequest,
 }: CopilotShellProps) {
   const shell = useRef<HTMLDivElement | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -97,6 +100,10 @@ export function CopilotShell({
     query.addEventListener("change", update);
     return () => query.removeEventListener("change", update);
   }, []);
+
+  useEffect(() => {
+    if (panelOpenRequest && window.matchMedia("(max-width: 860px)").matches) setDrawerOpen(true);
+  }, [panelOpenRequest]);
 
   useEffect(() => {
     if (!narrow || !drawerOpen) return;

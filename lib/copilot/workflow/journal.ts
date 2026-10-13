@@ -255,7 +255,7 @@ export class WorkflowJournal {
   async acceptSubmittedHash(id: string, identity: Identity, stepId: string, txHash: string) {
     const record = await this.read(id, identity);
     const step = record.value.steps.find(s => s.id === stepId);
-    if (!step || step.status !== "awaiting_signature") throw new WorkflowConflict("step_changed");
+    if (record.value.status !== "awaiting_signature" || !step || step.status !== "awaiting_signature") throw new WorkflowConflict("step_changed");
     if (!/^[a-f0-9]{64}$/i.test(txHash)) throw new Error("invalid_transaction_hash");
     if (!step.unsignedXdr || record.value.proposal.scope.network !== "testnet") throw new WorkflowConflict("transaction_mismatch");
     const expectedHash = TransactionBuilder.fromXDR(step.unsignedXdr, Networks.TESTNET).hash().toString("hex");
@@ -280,7 +280,7 @@ export class WorkflowJournal {
   async acceptSignedEnvelope(id: string, identity: Identity, stepId: string, signedXdr: string) {
     const record = await this.read(id, identity);
     const step = record.value.steps.find(s => s.id === stepId);
-    if (!step || step.status !== "awaiting_signature" || !step.unsignedXdr || signedXdr.length > 100_000)
+    if (record.value.status !== "awaiting_signature" || !step || step.status !== "awaiting_signature" || !step.unsignedXdr || signedXdr.length > 100_000)
       throw new WorkflowConflict("step_changed");
     if (identity.scope.network !== "testnet") throw new WorkflowConflict("transaction_mismatch");
     const unsigned = TransactionBuilder.fromXDR(step.unsignedXdr, Networks.TESTNET);

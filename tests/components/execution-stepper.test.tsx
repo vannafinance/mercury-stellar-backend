@@ -5,6 +5,19 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ExecutionStepper } from "@/components/copilot/execution-stepper";
 
 describe("ExecutionStepper", () => {
+  it("stops signing animation after an unsigned approval is cancelled, but retains uncertain outcomes", () => {
+    const { rerender } = render(<ExecutionStepper currentStepIndex={0} autoApprove cancelled onSign={vi.fn()}
+      steps={[{ id: "s", op: "withdraw_collateral", label: "Withdraw 1 AQUSDC", asset: "AQUSDC", amount: "1", status: "signing" }]} />);
+    expect(screen.getByText("Cancelled")).toBeTruthy();
+    expect(screen.getByText("Not submitted")).toBeTruthy();
+    expect(screen.queryByLabelText("In progress")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in wallet" })).toBeNull();
+    expect(screen.queryByText("Signing…")).toBeNull();
+    rerender(<ExecutionStepper currentStepIndex={0} autoApprove cancelled
+      steps={[{ id: "s", op: "withdraw_collateral", label: "Withdraw 1 AQUSDC", asset: "AQUSDC", amount: "1", status: "uncertain", txHash: "ab".repeat(32) }]} />);
+    expect(screen.getByText("Outcome unknown")).toBeTruthy();
+    expect(screen.queryByText("Not submitted")).toBeNull();
+  });
   it("tells the user why auto-approve stopped and still offers manual signing", () => {
     const onSign = vi.fn();
     render(

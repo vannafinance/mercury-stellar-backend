@@ -1191,7 +1191,8 @@ PLAN (complex / multi-step strategy - e.g. park for yield THEN farm, keep HF, re
 ]}
 
 AUTO_SIGN:
-{"kind":"auto_sign","action":"start"|"use_defaults"|"custom"|"disable","template_id":"auto_sign","max_per_tx_tokens":null,"max_per_day_tokens":null}
+{"kind":"auto_sign","action":"start"|"use_defaults"|"custom"|"disable","template_id":"auto_sign","cap_unit":"testnet_usd"|"token_units"|null,"max_per_tx_usd":null,"max_per_day_usd":null,"max_per_tx_tokens":null,"max_per_day_tokens":null}
+Use dollar fields only for dollar-valued limits, and quantity fields only for token units. Never convert one unit into the other. Dollar approval is a separate owner confirmation handled by the control flow.
 
 RESTRICTED:
 {"kind":"restricted","reason":"...","template_id":"liquidate"}
@@ -1340,6 +1341,9 @@ function normalizeRoute(data: Record<string, unknown>): RoutedIntent {
       template_id: "auto_sign",
       max_per_tx_tokens: (data.max_per_tx_tokens as any) ?? undefined,
       max_per_day_tokens: (data.max_per_day_tokens as any) ?? undefined,
+      ...(data.cap_unit === "testnet_usd" || data.cap_unit === "token_units" ? { cap_unit: data.cap_unit } : {}),
+      max_per_tx_usd: (data.max_per_tx_usd as any) ?? undefined,
+      max_per_day_usd: (data.max_per_day_usd as any) ?? undefined,
     };
   }
 

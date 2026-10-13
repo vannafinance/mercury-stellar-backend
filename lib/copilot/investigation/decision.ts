@@ -1,5 +1,6 @@
 import { lpPairs, lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
 import { parseQuestionnaireMissingList } from "./questionnaire";
+import { parseSigningPolicyRequest } from "./signing-policy-request";
 import { ASSET_OUT_OPS, MAX_WORKFLOW_STEPS, OP_FLOW, WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { LIFECYCLE_WRITES, isLifecycleWriteOp } from "../workflow/lifecycle";
 import type { GoalUnderstanding, PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision, StatedAction } from "./types";
@@ -103,7 +104,11 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return refuse(`unknown kind or keys: kind=${String(raw.kind)} keys=${Object.keys(raw).join(",")}`);
   }
   const goal = raw.goal;
-  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "portfolioExit") ? ["portfolioExit"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "venuesAllowed") ? ["venuesAllowed"] : []), ...(Object.hasOwn(goal, "reading") ? ["reading"] : []), ...(Object.hasOwn(goal, "namedOps") ? ["namedOps"] : []), ...(Object.hasOwn(goal, "allocationRequest") ? ["allocationRequest"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
+  const signingPolicy = isRecord(goal) && goal.signingPolicy !== undefined ? parseSigningPolicyRequest(goal.signingPolicy) : null;
+  if (isRecord(goal) && goal.signingPolicy !== undefined && (!signingPolicy || goal.intent !== "answer" || goal.write ||
+    goal.portfolioExit !== undefined || goal.allocationRequest !== undefined ||
+    (Array.isArray(goal.actions) && goal.actions.length) || (Array.isArray(raw.plans) && raw.plans.length))) return refuse("signingPolicy: review only, cannot be combined with execution");
+  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "signingPolicy") ? ["signingPolicy"] : []), ...(Object.hasOwn(goal, "positionReadScope") ? ["positionReadScope"] : []), ...(Object.hasOwn(goal, "portfolioExit") ? ["portfolioExit"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : []), ...(Object.hasOwn(goal, "walletReserves") ? ["walletReserves"] : []), ...(Object.hasOwn(goal, "venuesAllowed") ? ["venuesAllowed"] : []), ...(Object.hasOwn(goal, "reading") ? ["reading"] : []), ...(Object.hasOwn(goal, "namedOps") ? ["namedOps"] : []), ...(Object.hasOwn(goal, "allocationRequest") ? ["allocationRequest"] : []), ...(Object.hasOwn(goal, "planRelation") ? ["planRelation"] : []), ...(Object.hasOwn(goal, "trigger") ? ["trigger"] : [])]) ||
     (goal.relation !== undefined && !["new", "refine", "side"].includes(String(goal.relation))) ||
     (goal.intent !== undefined && !["answer", "strategy"].includes(String(goal.intent))) ||
     !text(goal.objective) || !texts(goal.constraints) ||
@@ -242,6 +247,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
         ? { positionReadScope: { kind: goal.positionReadScope.kind as "all" | "selected", capabilities: [...goal.positionReadScope.capabilities], sourceQuote: goal.positionReadScope.sourceQuote } } : {}),
       ...(isRecord(goal.portfolioExit) && exactKeys(goal.portfolioExit, ["destination", "sourceQuote"]) && goal.portfolioExit.destination === "wallet" && text(goal.portfolioExit.sourceQuote) ? { portfolioExit: { destination: "wallet" as const, sourceQuote: goal.portfolioExit.sourceQuote } } : {}),
       ...(goal.intent ? { intent: goal.intent as "answer" | "strategy" } : {}),
+      ...(signingPolicy ? { signingPolicy } : {}),
       ...(goal.relation ? { relation: goal.relation as "new" | "refine" | "side" } : {}),
       ...(validActions.length ? { actions: structuredClone(validActions) as NonNullable<Extract<ResearchDecision, { kind: "research_complete" }>["goal"]["actions"]> } : {}),
       ...(write ? { write } : {}),

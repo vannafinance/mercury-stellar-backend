@@ -13,11 +13,19 @@ export interface AutoApproveMenuProps {
   customDay: string;
   defaultTx: number | null;
   defaultDay: number | null;
+  capUnit?: "token_units" | "testnet_usd";
+  maximumDay?: number | null;
   walletSigningRequired?: boolean;
   onToggle: () => void;
   onCapsMode: (mode: "defaults" | "custom") => void;
   onCustomTx: (value: string) => void;
   onCustomDay: (value: string) => void;
+  activeLimits?: string | null;
+  draftChanged?: boolean;
+  draftError?: string | null;
+  onApplyLimits?: () => void;
+  reviewRequest?: number;
+  onReviewOpened?: () => void;
   /**
    * Where this control is mounted, which is the only thing that differs between the two
    * call sites: `pill` is the header chip, `rail` is a full-width row in the left panel
@@ -36,11 +44,15 @@ function CapField({
   aria,
   value,
   onChange,
+  unit = "units",
+  maximum,
 }: {
   label: string;
   aria: string;
   value: string;
   onChange?: (value: string) => void;
+  unit?: string;
+  maximum?: number;
 }) {
   const locked = onChange == null;
   return (
@@ -53,12 +65,13 @@ function CapField({
             : "border-vgray-100 focus-within:border-violet-400"
         }`}
       >
-        <span className="shrink-0 whitespace-nowrap text-[12.5px] text-vgray-400">units</span>
+        <span className="shrink-0 whitespace-nowrap text-[12.5px] text-vgray-400">{unit}</span>
         <input
           type={locked ? "text" : "number"}
           step="any"
           inputMode="decimal"
           min="0"
+          max={maximum}
           value={value}
           readOnly={locked}
           tabIndex={locked ? -1 : undefined}
@@ -91,13 +104,30 @@ export function AutoApproveMenu({
   walletSigningRequired = false,
   defaultTx,
   defaultDay,
+  capUnit = "token_units",
+  maximumDay,
   onToggle,
   onCapsMode,
   onCustomTx,
   onCustomDay,
+  activeLimits,
+  draftChanged,
+  draftError,
+  onApplyLimits,
+  reviewRequest,
+  onReviewOpened,
   variant = "pill",
 }: AutoApproveMenuProps) {
   const [open, setOpen] = useState(false);
+  const reviewedRequest = useRef(0);
+  useEffect(() => {
+    if (!reviewRequest || reviewRequest === reviewedRequest.current) return;
+    reviewedRequest.current = reviewRequest;
+    const rect = trigger.current?.getBoundingClientRect();
+    if (rect) setFlyoutPos({ top: Math.max(8, Math.min(rect.top, window.innerHeight - 300)), left: Math.max(8, Math.min(rect.right + 10, window.innerWidth - 256)) });
+    setOpen(true);
+    onReviewOpened?.();
+  }, [reviewRequest, onReviewOpened]);
   const [flyoutPos, setFlyoutPos] = useState({ top: 0, left: 0 });
   const container = useRef<HTMLDivElement | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
@@ -233,11 +263,13 @@ export function AutoApproveMenu({
             </button>
           </div>
 
-          {!walletSigningRequired && <p className="mt-2 text-xs text-vgray-500">Testnet amount limits, not dollar values. Different assets count by quantity.</p>}
+          {!walletSigningRequired && <p className="mt-2 text-xs text-vgray-500">{capUnit === "testnet_usd"
+            ? `Testnet dollar valuation, including fees.${maximumDay != null ? ` Daily maximum: $${maximumDay}.` : ""} Over the limit? Sign in your wallet.`
+            : "Testnet amount limits, not dollar values. Different assets count by quantity."}</p>}
           {!walletSigningRequired && capsMode === "defaults" && (
             <div className="mt-2.5 grid grid-cols-2 gap-2">
-              <CapField label="per tx" aria="Default per transaction cap in token units" value={defaultTx == null ? "-" : String(defaultTx)} />
-              <CapField label="per day" aria="Default per day cap in token units" value={defaultDay == null ? "-" : String(defaultDay)} />
+              <CapField label="per tx" aria={`Default per transaction cap in ${capUnit === "testnet_usd" ? "testnet USD" : "token units"}`} unit={capUnit === "testnet_usd" ? "$" : "units"} value={defaultTx == null ? "-" : String(defaultTx)} />
+              <CapField label="per day" aria={`Default per day cap in ${capUnit === "testnet_usd" ? "testnet USD" : "token units"}`} unit={capUnit === "testnet_usd" ? "$" : "units"} value={defaultDay == null ? "-" : String(defaultDay)} />
             </div>
           )}
 
@@ -245,16 +277,30 @@ export function AutoApproveMenu({
             <div className="mt-2.5 grid grid-cols-2 gap-2">
               <CapField
                 label="per tx"
-                aria="Per transaction cap in token units"
+                aria={`Per transaction cap in ${capUnit === "testnet_usd" ? "testnet USD" : "token units"}`}
+                unit={capUnit === "testnet_usd" ? "$" : "units"}
                 value={customTx}
                 onChange={onCustomTx}
               />
               <CapField
                 label="per day"
-                aria="Per day cap in token units"
+                aria={`Per day cap in ${capUnit === "testnet_usd" ? "testnet USD" : "token units"}`}
+                unit={capUnit === "testnet_usd" ? "$" : "units"}
+                maximum={capUnit === "testnet_usd" && maximumDay != null ? maximumDay : undefined}
                 value={customDay}
                 onChange={onCustomDay}
               />
+            </div>
+          )}
+          {!walletSigningRequired && on && onApplyLimits && (
+            <div className="mt-3 space-y-2 border-t border-vgray-100 pt-3">
+              <p className="text-xs text-vgray-500">Active: {activeLimits || "Checking server limits"}</p>
+              {draftChanged && <p className="text-xs text-vgray-500">Draft changes apply only after confirmation. Active limits stay in effect.</p>}
+              {draftError && <p role="alert" className="text-xs text-red-500">{draftError}</p>}
+              <button type="button" disabled={busy || !draftChanged || Boolean(draftError)} onClick={onApplyLimits}
+                className="w-full rounded-full border border-vgray-100 px-3 py-2 text-xs font-semibold text-vgray-900 disabled:cursor-not-allowed disabled:opacity-50">
+                {busy ? "Applying limits…" : "Apply limits"}
+              </button>
             </div>
           )}
     </div>

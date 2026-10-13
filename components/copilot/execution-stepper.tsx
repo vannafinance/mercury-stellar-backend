@@ -57,6 +57,10 @@ export function ExecutionStepper({
   cancelled = false,
 }: ExecutionStepperProps) {
   const total = steps.length;
+  // Cancellation does not erase submitted or uncertain outcomes. Only a step
+  // still waiting for an unsigned wallet approval is no longer in progress.
+  const presentedSteps = cancelled ? steps.map(step => step.status === "signing" && !step.txHash
+    ? { ...step, status: "pending" as const } : step) : steps;
   const freshIds = useFreshlySettled(steps);
   const settled = steps.filter((step) => step.status === "settled").length;
   const failedIndex = steps.findIndex((step) => step.status === "failed");
@@ -107,7 +111,7 @@ export function ExecutionStepper({
           )}
         </div>
         <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, total)}, minmax(0, 1fr))` }} aria-hidden="true">
-          {steps.map((step, index) => (
+          {presentedSteps.map((step, index) => (
             <div key={step.id || index} className="h-1 overflow-hidden rounded-full bg-[var(--bar-track)]">
               {step.status === "settled" && (
                 <div className="cp-exec-fill h-full w-full rounded-full bg-[var(--cp-emerald)]" style={{ animationDelay: `${index * STAGGER_MS}ms` }} />
@@ -121,7 +125,7 @@ export function ExecutionStepper({
       </div>
 
       <ol className="flex flex-col">
-        {steps.map((step, index) => {
+        {presentedSteps.map((step, index) => {
           const label = step.label || `${step.op} ${step.amount} ${step.asset}`;
           const isSettled = step.status === "settled";
           const isFailed = step.status === "failed";

@@ -167,6 +167,10 @@ export interface ChatRequest {
       | "bind_register";
     max_per_tx_tokens?: number | string;
     max_per_day_tokens?: number | string;
+    cap_unit?: "token_units" | "testnet_usd";
+    max_per_tx_usd?: number | string;
+    max_per_day_usd?: number | string;
+    usd_budget_approved?: boolean;
     /** `bind_status` / `bind_register` - the connect request to complete or poll. */
     request_id?: string;
     /** `bind_register` only - the G-address the browser authorized the quorum on. */
@@ -459,6 +463,10 @@ export interface WalletBindPrompt {
   /** Caps to replay with `retry_action = "custom"`. */
   max_per_tx_tokens?: number | string | null;
   max_per_day_tokens?: number | string | null;
+  cap_unit?: "token_units" | "testnet_usd";
+  max_per_tx_usd?: number | string | null;
+  max_per_day_usd?: number | string | null;
+  usd_budget_approved?: boolean;
 }
 
 export interface ClarifyOption {
@@ -716,6 +724,9 @@ export type RoutedIntent =
       action: "start" | "use_defaults" | "custom" | "disable";
       max_per_tx_tokens?: number | string;
       max_per_day_tokens?: number | string;
+      cap_unit?: "token_units" | "testnet_usd";
+      max_per_tx_usd?: number | string;
+      max_per_day_usd?: number | string;
       template_id: string;
     }
   | {
