@@ -1,13 +1,19 @@
 import type { Metadata } from "next";
-import Sidebar from "@/components/analytics/Sidebar";
+import "@/components/analytics/v3/analytics.css";
+import { AnalyticsShell } from "@/components/analytics/v3/shell";
 import AnalyticsThemeProvider from "@/components/analytics/ThemeProvider";
 import { LiteModeGuard } from "@/components/lite-mode-guard";
 
 export const metadata: Metadata = {
-  title: "Vanna Risk Monitor",
-  description: "Real-time DeFi risk monitoring dashboard by Vanna Finance",
+  title: "Risk Analytics",
+  description: "Live risk analytics for Vanna on Stellar: margin accounts, health, collateral, lending pools and prices, read from Soroban.",
 };
 
+/**
+ * `v3` carries the site's design tokens (light + `html.dark`); the analytics shell (sidebar, status bar,
+ * tooltips) sits inside it. The theme provider keeps the older Recharts-based tools (Risk Explorer,
+ * scenarios, advanced positions) in step with the site theme.
+ */
 export default function AnalyticsLayout({
   children,
 }: {
@@ -16,11 +22,8 @@ export default function AnalyticsLayout({
   return (
     <LiteModeGuard>
       <AnalyticsThemeProvider>
-        <div className="flex h-[calc(100vh-64px)] overflow-hidden bg-base-platinum">
-          <Sidebar />
-          <main className="flex-1 overflow-y-auto bg-base-platinum scrollbar-thin">
-            {children}
-          </main>
+        <div className="v3">
+          <AnalyticsShell>{children}</AnalyticsShell>
         </div>
       </AnalyticsThemeProvider>
     </LiteModeGuard>

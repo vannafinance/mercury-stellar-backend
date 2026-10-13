@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { OverviewView } from "@/components/analytics/v3/views/overview";
 
-export default function RootPage() {
-  redirect("/analytics/overview2");
+export default function AnalyticsOverviewPage() {
+  return <OverviewView />;
 }

@@ -121,9 +121,9 @@ export default function SingleAssetSimPage() {
     <div className="p-6 w-full max-w-[1400px] mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <Link href="/analytics/overview2" className="flex items-center gap-1.5 text-[11px] text-vgray-400 hover:text-violet-600 transition-colors">
+        <Link href="/analytics/risk-explorer" className="flex items-center gap-1.5 text-[11px] text-vgray-400 hover:text-violet-600 transition-colors">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7L9 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
-          Risk Command Center
+          Risk Explorer
         </Link>
         <span className="text-vgray-200">/</span>
         <span className="text-[11px] text-vgray-600 font-semibold">Single Asset Risk Explorer</span>
@@ -205,7 +205,7 @@ export default function SingleAssetSimPage() {
           <div className={cn("bg-surface rounded-r4 border shadow-vanna p-5 transition-all", hasRun ? "border-violet-200" : "border-vgray-100")}>
             <div className="flex items-center justify-between mb-4">
               <p className="text-xs font-semibold uppercase tracking-wider text-vgray-500">Simulation Results</p>
-              {!hasRun && <span className="text-[10px] text-vgray-300 italic">Click "Run Simulation" to see results</span>}
+              {!hasRun && <span className="text-[10px] text-vgray-300 italic">Click &quot;Run Simulation&quot; to see results</span>}
               {hasRun && <span className="flex items-center gap-1 text-[10px] font-semibold text-electric-700"><span className="w-1.5 h-1.5 rounded-full bg-electric-500 animate-pulse" />Live Preview</span>}
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">

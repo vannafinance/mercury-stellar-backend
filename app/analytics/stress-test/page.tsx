@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/** Stress testing UI lives on Risk Explorer (preset stress tests). */
+/** Stress testing lives on the What-if Calculator (with Risk Explorer for preset stress tests). */
 export default function StressTestRedirectPage() {
-  redirect("/risk-explorer");
+  redirect("/analytics/what-if");
 }
