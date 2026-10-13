@@ -105,6 +105,17 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
       type: "object",
       properties: {
         intent: { type: "string", enum: ["answer", "strategy"] },
+        signingPolicy: {
+          type: "object", description: "Request review of auto-approve settings in the existing owner-confirmed form. Never changes limits, enables signing or grants consent. Use only for a standalone settings request, with intent=answer and no financial actions/plans.",
+          properties: {
+            action: { type: "string", enum: ["configure", "inspect", "disable"] },
+            mode: { type: "string", enum: ["defaults", "custom"] },
+            unit: { type: "string", enum: ["testnet_usd", "token_units", "unspecified"] },
+            maxPerTx: { type: "string", description: "Only the user's stated per-transaction amount, as a decimal." },
+            maxPerDay: { type: "string", description: "Only the user's stated daily amount, as a decimal." },
+            sourceQuote: { type: "string", description: "Exact substring of the latest user message requesting this review and containing any stated amounts." },
+          }, required: ["action", "unit", "sourceQuote"],
+        },
         portfolioExit: {
           type: "object",
           description: "Only when the user requests closing every position, repaying all debt and withdrawing everything to their spendable wallet. Not an Earn-only redemption or a selected venue exit. Preserve this scope even if your proposed plan covers only part of it; sourceQuote is their exact request.",
@@ -331,6 +342,7 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
     borrowing: source.borrowing,
   };
   if (source.intent !== undefined) goal.intent = source.intent;
+  if (source.signingPolicy !== undefined) goal.signingPolicy = source.signingPolicy;
   if (source.relation !== undefined) goal.relation = source.relation;
   if (source.positionReadScope !== undefined) goal.positionReadScope = source.positionReadScope;
   if (source.portfolioExit !== undefined) goal.portfolioExit = source.portfolioExit;

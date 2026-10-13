@@ -493,6 +493,7 @@ function AssistantTurn({
               currentStepIndex={Math.max(0, receipt.steps.findIndex((step) => step.status !== "settled"))}
               network={receipt.network}
               autoApprove={sessionSigning}
+              cancelled={receipt.status === "cancelled"}
             />
           </div>
         ) : null}

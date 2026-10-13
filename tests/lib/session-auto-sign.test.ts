@@ -357,6 +357,12 @@ it("Freighter dispatch opens only explicitly permitted wallet requests without b
 });
 
 describe("mayAutoSignJournalStep", () => {
+  it("keeps cancelled workflows and USD budget signing out of silent client dispatch", () => {
+    expect(mayAutoSignJournalStep({}, { status: "cancelled" })).toBe(false);
+    expect(mayAutoSignJournalStep({}, { status: "awaiting_signature", budgetUnit: "testnet_usd" })).toBe(false);
+    expect(mayAutoSignJournalStep({}, { status: "awaiting_signature", budgetUnit: "unknown" })).toBe(false);
+    expect(mayAutoSignJournalStep({}, { status: "awaiting_signature", budgetUnit: "token_units" })).toBe(true);
+  });
   it("never signs silently a step the Sign Service refused, whatever the reason said", () => {
     expect(mayAutoSignJournalStep({ signRefusal: "Over your per-transaction limit." })).toBe(false);
     expect(mayAutoSignJournalStep({ signRefusal: "The session has lapsed." })).toBe(false);

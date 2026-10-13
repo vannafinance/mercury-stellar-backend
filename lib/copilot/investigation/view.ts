@@ -199,6 +199,8 @@ export interface ResearchView {
    */
   pendingWrite?: { op: import("../workflow/lifecycle").LifecycleWriteOp } | null;
   executionAllowed: false;
+  /** Opens the existing settings form; only an explicit owner gesture may apply it. */
+  signingPolicy?: import("./signing-policy-request").SigningPolicyRequest;
   /** Server wall time for this turn. Optional so older clients stay valid. */
   elapsedMs?: number;
   /** The reply as the model wrote it around audited figures; `message` is its plain-text form. */

@@ -33,7 +33,7 @@ import { setAutoApprove, useCopilotSettingsStore } from "@/store/copilot-setting
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
-import { acceptedTestnetBudget, defaultTestnetBudget } from "@/lib/copilot/auto-approve-budget";
+import { acceptedTestnetBudget, defaultTestnetBudget, testnetBudgetLabel, testnetBudgetDraft, readStoredTestnetBudget, storedTestnetBudget, type TestnetBudget } from "@/lib/copilot/auto-approve-budget";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import type { Simulation as ServerSimulation } from "@/lib/copilot/types";
 import { liveUsdLabel, oracleSwapRateLabel } from "@/lib/copilot/swap-quote";
@@ -214,6 +214,10 @@ interface ChatResponse {
     retry_action?: "use_defaults" | "custom" | "disable" | null;
     max_per_tx_tokens?: number | string | null;
     max_per_day_tokens?: number | string | null;
+    cap_unit?: "token_units" | "testnet_usd";
+    max_per_tx_usd?: number | string | null;
+    max_per_day_usd?: number | string | null;
+    usd_budget_approved?: boolean;
   } | null;
   mcp?: {
     tool?: string | null;
@@ -518,15 +522,11 @@ const AUTO_CAPS_KEY = "vanna_copilot_auto_caps";
  * the value written after MCP replies cannot drift apart - brief §6.5: two numbers about
  * the same thing must never disagree.
  */
-function readAutoCaps(): { tx: number; day: number } | null {
+function readAutoCaps(): TestnetBudget | null {
   try {
     const raw = localStorage.getItem(AUTO_CAPS_KEY);
     if (!raw) return null;
-    const c = JSON.parse(raw) as { max_per_tx_tokens?: number; max_per_day_tokens?: number };
-    const tx = Number(c.max_per_tx_tokens);
-    const day = Number(c.max_per_day_tokens);
-    if (!Number.isFinite(tx) || tx <= 0) return null;
-    return { tx, day: Number.isFinite(day) && day > 0 ? day : tx };
+    return readStoredTestnetBudget(JSON.parse(raw) as Record<string, unknown>);
   } catch {
     return null;
   }
@@ -1559,9 +1559,19 @@ export function CopilotWorkspace() {
   const [customDay, setCustomDay] = useState("2000");
   const [showCustom, setShowCustom] = useState(false);
   const [railCapsMode, setRailCapsMode] = useState<"defaults" | "custom">("defaults");
-  const [savedCaps, setSavedCaps] = useState<{ tx: number; day: number } | null>(null);
+  const [budgetReviewRequest, setBudgetReviewRequest] = useState(0);
+  const [savedCaps, setSavedCaps] = useState<TestnetBudget | null>(null);
   /** MCP `independent signer defaults` - shown under Default, never guessed from a custom session. */
-  const [mcpDefaultCaps, setMcpDefaultCaps] = useState<{ tx: number; day: number } | null>(null);
+  const [mcpDefaultCaps, setMcpDefaultCaps] = useState<TestnetBudget | null>(null);
+  const budgetPolicy = defaultTestnetBudget((response?.auto_sign?.raw ?? {}) as Record<string, unknown>) ?? mcpDefaultCaps;
+  const dollarBudget = budgetPolicy?.unit === "testnet_usd";
+  useEffect(() => {
+    const raw = response?.auto_sign?.raw as Record<string, unknown> | null | undefined;
+    if (raw?.cap_unit === "testnet_usd" && raw.requested_per_tx_usd != null && raw.requested_per_day_usd != null) {
+      setCustomTx(String(raw.requested_per_tx_usd));
+      setCustomDay(String(raw.requested_per_day_usd));
+    }
+  }, [response?.auto_sign?.raw]);
   const [log, setLogRaw] = useState<LogEntry[]>([]);
 
   /**
@@ -1986,6 +1996,11 @@ export function CopilotWorkspace() {
 
   /** Whether auto-approve is toggled on in the UI by the user. */
   const autoApproveUiOn = Boolean(address) && storedAutoApprove;
+  const railBudgetDraft = testnetBudgetDraft({
+    tx: railCapsMode === "custom" ? customTx : String(mcpDefaultCaps?.tx ?? ""),
+    day: railCapsMode === "custom" ? customDay || customTx : String(mcpDefaultCaps?.day ?? ""),
+    dollar: dollarBudget, maximumDay: budgetPolicy?.maximumDay, active: savedCaps,
+  });
 
   // The browser value is the user's intent. The Sign Service session is the
   // authority, so a switch changed by MCP or remote session sync updates the store.
@@ -2054,15 +2069,12 @@ export function CopilotWorkspace() {
           try {
             localStorage.setItem(
               AUTO_CAPS_KEY,
-              JSON.stringify({
-                max_per_tx_tokens: next.caps.tx,
-                max_per_day_tokens: next.caps.day,
-              }),
+              JSON.stringify(storedTestnetBudget(next.caps)),
             );
           } catch {
             /* ignore */
           }
-          setSavedCaps({ tx: next.caps.tx, day: next.caps.day });
+          setSavedCaps(next.caps);
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -2681,19 +2693,14 @@ export function CopilotWorkspace() {
          * account's real limit until the user happened to click Edit. Synced here, once,
          * off whatever MCP actually reports, so the chip can never drift from it.
          */
-        const reportedTx = Number((d as { max_per_tx_tokens?: unknown } | null)?.max_per_tx_tokens);
-        const reportedDay = Number((d as { max_per_day_tokens?: unknown } | null)?.max_per_day_tokens);
-        if (Number.isFinite(reportedTx) && reportedTx > 0) {
-          const caps = {
-            max_per_tx_tokens: reportedTx,
-            max_per_day_tokens: Number.isFinite(reportedDay) && reportedDay > 0 ? reportedDay : reportedTx,
-          };
+        const caps = d ? acceptedTestnetBudget(d) : null;
+        if (caps) {
           try {
-            localStorage.setItem(AUTO_CAPS_KEY, JSON.stringify(caps));
+            localStorage.setItem(AUTO_CAPS_KEY, JSON.stringify(storedTestnetBudget(caps)));
           } catch {
             /* ignore */
           }
-          setSavedCaps({ tx: caps.max_per_tx_tokens, day: caps.max_per_day_tokens });
+          setSavedCaps(caps);
         }
 
         /**
@@ -2708,10 +2715,10 @@ export function CopilotWorkspace() {
          * directions, so this can't drift from whichever path changed it.
          */
         if (address) {
-          if (/\bauto-sign disabled\b/i.test(data.message || "")) {
+          if (d?.status === "disabled" && !d?.error) {
             setAutoApprove(address, false);
             setSignServiceState({ address, status: "unknown", reason: null });
-          } else if (/\bauto-sign (?:already active|enabled)\b/i.test(data.message || "")) {
+          } else if (caps && (d?.enabled === true || d?.status === "enabled") && !d?.error) {
             setSignServiceState({ address, status: "ok", reason: null });
             setAutoApprove(address, true);
           }
@@ -2897,13 +2904,30 @@ export function CopilotWorkspace() {
     setSubmitted(text);
     setIntentText("");
     await investigate(text, signal, undefined, (reply) => {
+      if (reply.signingPolicy) {
+        const requested = reply.signingPolicy;
+        const compatible = requested.unit === "unspecified" || requested.unit === (dollarBudget ? "testnet_usd" : "token_units");
+        if (!compatible) {
+          toast.error("The request uses different units from the active policy. Review the settings before choosing limits.");
+        } else if (requested.action === "configure") {
+          if (requested.mode) setRailCapsMode(requested.mode);
+          if (requested.mode === "custom") {
+            if (requested.maxPerTx != null) setCustomTx(requested.maxPerTx);
+            else if (savedCaps) setCustomTx(String(savedCaps.tx));
+            if (requested.maxPerDay != null) setCustomDay(requested.maxPerDay);
+            else if (savedCaps) setCustomDay(String(savedCaps.day));
+          }
+        }
+        setRailCollapsed(false);
+        setBudgetReviewRequest(Date.now());
+      }
       if (!bringsItsOwnPlan(reply)) return;
       setSigningJournal(false);
       resetWorkflow();
       resetStrategyAccumulator();
       setResponse(null);
     });
-  }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result, workflow.view]);
+  }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result, workflow.view, dollarBudget, savedCaps]);
   const runDirect = useCallback(async (text: string, signal: AbortSignal) => {
     // A direct write is a new action of its own, so it takes the old plan's place; an open question is answered in place.
     if (!investigation.result?.question) {
@@ -3073,12 +3097,12 @@ export function CopilotWorkspace() {
 
   const signJournalXdr = useCallback(async (auto = false) => {
     const view = workflow.view;
-    if (!view || workflow.loading || signingJournal) return;
+    if (!view || view.status !== "awaiting_signature" || workflow.loading || signingJournal) return;
     const step = view.steps.find((entry) => entry.status === "awaiting_signature" && entry.unsignedXdr);
     if (!step?.unsignedXdr) return;
     // The Sign Service refused this step under auto-approve (a cap, a lapsed session). Silent
     // client signing would walk around that refusal, so it waits for an explicit click.
-    if (auto && !mayAutoSignJournalStep(step)) return;
+    if (auto && !mayAutoSignJournalStep(step, { status: view.status, budgetUnit: savedCaps?.unit ?? (savedCaps ? "token_units" : "unknown") })) return;
     const signKey = `sign:${view.id}:${step.id}`;
     if (auto && !claimDispatch(address, signKey)) return;
     setSigningJournal(true);
@@ -3086,7 +3110,7 @@ export function CopilotWorkspace() {
     try {
       const refreshed = await prepareWorkflowSign();
       if (signAttemptRef.current !== attempt || useUserStore.getState().address !== address) return;
-      const freshStep = refreshed?.steps.find(entry => entry.id === step.id && entry.status === "awaiting_signature");
+      const freshStep = refreshed?.status === "awaiting_signature" ? refreshed.steps.find(entry => entry.id === step.id && entry.status === "awaiting_signature") : undefined;
       if (!freshStep?.unsignedXdr) {
         if (auto) releaseDispatch(address, signKey);
         // prepareSign exposes the server's recovery instructions on the workflow card.
@@ -3108,7 +3132,7 @@ export function CopilotWorkspace() {
     } finally {
       if (signAttemptRef.current === attempt) { signAttemptRef.current = null; setSigningJournal(false); }
     }
-  }, [workflow.view, workflow.loading, prepareWorkflowSign, signingJournal, address, confirmWorkflow]);
+  }, [workflow.view, workflow.loading, prepareWorkflowSign, signingJournal, address, confirmWorkflow, savedCaps]);
 
   /**
    * Auto-approve ON means the journal should not wait for a second click.
@@ -3183,9 +3207,9 @@ export function CopilotWorkspace() {
     // A failed refresh sets `error`. Without this guard the effect re-fires at once and loops;
     // a manual click still retries, because prepareSign clears the error.
     if (!view || workflow.loading || workflow.error || signingJournal || workflow.restored) return;
-    if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr && mayAutoSignJournalStep(step))) return;
+    if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr && mayAutoSignJournalStep(step, { status: view.status, budgetUnit: savedCaps?.unit ?? (savedCaps ? "token_units" : "unknown") }))) return;
     void signJournalXdr(true);
-  }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.restored, signingJournal, signJournalXdr]);
+  }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.restored, signingJournal, signJournalXdr, savedCaps]);
 
   const run = useCallback(async (text: string) => {
     if (signing) return;
@@ -3297,7 +3321,10 @@ export function CopilotWorkspace() {
         toast.success("Auto-approve off");
         return;
       }
-      if (data.kind === "needs_auto_sign") return;
+      if (data.kind === "needs_auto_sign") {
+        setMcpDefaultCaps(defaultTestnetBudget((data.auto_sign?.raw ?? data.data ?? {}) as Record<string, unknown>));
+        return;
+      }
 
       const facts = data.data ?? {};
       const accepted = acceptedTestnetBudget(facts);
@@ -3322,12 +3349,12 @@ export function CopilotWorkspace() {
       try {
         localStorage.setItem(
           AUTO_CAPS_KEY,
-          JSON.stringify({ max_per_tx_tokens: txCap, max_per_day_tokens: dayCap }),
+          JSON.stringify(storedTestnetBudget(accepted)),
         );
       } catch {
         /* ignore */
       }
-      setSavedCaps({ tx: txCap, day: dayCap });
+      setSavedCaps(accepted);
 
       const arm = shouldArmAutoApprove({ mcpEnabled, sessionSigningAvailable });
       if (!arm.arm) {
@@ -3341,7 +3368,7 @@ export function CopilotWorkspace() {
         return;
       }
       setAutoApprove(address, true);
-      toast.success(`Auto-approve on · ${txCap} units/tx · ${dayCap} units/day`);
+      toast.success(`Auto-approve on · ${testnetBudgetLabel(accepted)}`);
     },
     [address, sessionSigningAvailable],
   );
@@ -3406,6 +3433,7 @@ export function CopilotWorkspace() {
             action: "bind_register",
             request_id: wb.request_id,
             wallet_address: authorized.address,
+            ...(wb.cap_unit === "testnet_usd" ? { cap_unit: wb.cap_unit, max_per_tx_usd: wb.max_per_tx_usd ?? undefined, max_per_day_usd: wb.max_per_day_usd ?? undefined, usd_budget_approved: wb.usd_budget_approved } : {}),
             ...(wb.retry_action ? { retry_action: wb.retry_action } : {}),
             ...(wb.max_per_tx_tokens != null ? { max_per_tx_tokens: wb.max_per_tx_tokens } : {}),
             ...(wb.max_per_day_tokens != null ? { max_per_day_tokens: wb.max_per_day_tokens } : {}),
@@ -3427,7 +3455,7 @@ export function CopilotWorkspace() {
   const enableAutoSign = useCallback(
     async (
       action: "start" | "use_defaults" | "custom" | "disable",
-      opts?: { quiet?: boolean },
+      opts?: { quiet?: boolean; updateExisting?: boolean },
     ) => {
       const label =
         action === "disable"
@@ -3435,7 +3463,7 @@ export function CopilotWorkspace() {
           : action === "use_defaults"
             ? "Enable auto-sign (MCP defaults)"
             : action === "custom"
-              ? `Enable auto-sign (${customTx}/${customDay || customTx} units)`
+              ? `Apply auto-approve limits (${dollarBudget ? "$" : ""}${customTx}/${dollarBudget ? "$" : ""}${customDay || customTx}${dollarBudget ? "" : " units"})`
               : "Enable auto-sign";
       if (!opts?.quiet) setSubmitted(submitted ?? label);
       const data = await postCopilot(
@@ -3450,8 +3478,10 @@ export function CopilotWorkspace() {
                   : "enable auto-sign",
           auto_sign: {
             action,
+            ...(dollarBudget && (action === "custom" || action === "use_defaults") ? { cap_unit: "testnet_usd" as const, usd_budget_approved: true } : {}),
             ...(action === "custom"
-              ? { max_per_tx_tokens: customTx, max_per_day_tokens: customDay || customTx }
+              ? dollarBudget ? { max_per_tx_usd: customTx, max_per_day_usd: customDay || customTx }
+                : { max_per_tx_tokens: customTx, max_per_day_tokens: customDay || customTx }
               : {}),
           },
           pending_write: response?.auto_sign?.pending_write
@@ -3467,6 +3497,24 @@ export function CopilotWorkspace() {
         // toggle instead of holding `autoApprovePending` forever.
         opts?.quiet ? { background: true, signal: AbortSignal.timeout(AUTO_SIGN_SWITCH_TIMEOUT_MS) } : undefined,
       );
+      if (opts?.updateExisting && !(data?.kind === "answer" && acceptedTestnetBudget(data.data ?? {}))) {
+        // A failed update is not a revoke. Reconcile the active policy instead of
+        // displaying Off or treating the unconfirmed draft as accepted.
+        const live = await postCopilot({ message: "check active auto-approve limits", auto_sign: { action: "status" } }, "Check active limits",
+          { background: true, signal: AbortSignal.timeout(AUTO_SIGN_SWITCH_TIMEOUT_MS) });
+        if (live) {
+          const next = signServiceFromSessionRead(live);
+          setMcpDefaultCaps(defaultTestnetBudget(live.data ?? {}));
+          setSignServiceState(current => ({ address, ...preserveLastConclusiveSignState(current.address === address ? current : { status: "unknown", reason: null }, next) }));
+          if (address && (next.status === "ok" || next.authoritative)) setAutoApprove(address, next.status === "ok");
+          if (next.caps) {
+            setSavedCaps(next.caps);
+            try { localStorage.setItem(AUTO_CAPS_KEY, JSON.stringify(storedTestnetBudget(next.caps))); } catch { /* Display-only storage. */ }
+          }
+        }
+        toast.error("The limit update was not confirmed. Check the active limits before continuing.");
+        return;
+      }
       // Sync local auto-approve with the Sign Service session. Caps that only
       // live in this browser are not a policy - applyAutoSignOutcome refuses to
       // arm unless MCP actually enabled a server-side session.
@@ -3493,12 +3541,29 @@ export function CopilotWorkspace() {
       customTx,
       customDay,
       response,
+      dollarBudget,
       submitted,
       address,
       applyAutoSignOutcome,
       completeWalletBindInApp,
     ],
   );
+
+  const handleApplyAutoApproveLimits = useCallback(() => {
+    const blocked = autoApproveToggleBlock({ switching: autoApprovePending, replyRunning: loading, hasWallet: Boolean(address) });
+    if (blocked || !address || !sessionSigningAvailable || !capsEnforced) {
+      toast.error(blocked?.message ?? "Wait for the active signing policy to be confirmed.");
+      return;
+    }
+    if (railBudgetDraft.error || !railBudgetDraft.value) {
+      toast.error(railBudgetDraft.error ?? "Choose valid limits first.");
+      return;
+    }
+    if (!railBudgetDraft.changed) return;
+    setAutoApprovePending(true);
+    void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults", { quiet: true, updateExisting: true })
+      .finally(() => setAutoApprovePending(false));
+  }, [autoApprovePending, loading, address, sessionSigningAvailable, capsEnforced, railBudgetDraft, railCapsMode, enableAutoSign]);
 
   const handleAutoApproveToggle = useCallback(() => {
     /**
@@ -3542,7 +3607,7 @@ export function CopilotWorkspace() {
     if (capsEnforced) {
       setAutoApprove(address, true);
       toast.success(
-        savedCaps ? `Auto-approve on · ${savedCaps.tx} units/tx · ${savedCaps.day} units/day` : "Auto-approve on",
+        savedCaps ? `Auto-approve on · ${testnetBudgetLabel(savedCaps)}` : "Auto-approve on",
       );
       return;
     }
@@ -3551,6 +3616,10 @@ export function CopilotWorkspace() {
       const day = customDay.trim() ? Number(customDay) : tx;
       if (!customTx.trim() || !Number.isFinite(tx) || !Number.isFinite(day) || tx <= 0 || day < tx) {
         toast.error("Enter a positive per-transaction limit and a daily limit at least as large.");
+        return;
+      }
+      if (dollarBudget && budgetPolicy?.maximumDay != null && day > budgetPolicy.maximumDay) {
+        toast.error(`Daily limit cannot exceed $${budgetPolicy.maximumDay}.`);
         return;
       }
     }
@@ -3572,6 +3641,8 @@ export function CopilotWorkspace() {
     customTx,
     customDay,
     enableAutoSign,
+    dollarBudget,
+    budgetPolicy,
   ]);
 
   /**
@@ -3591,6 +3662,7 @@ export function CopilotWorkspace() {
           auto_sign: {
             action: "bind_status",
             request_id: wb.request_id,
+            ...(wb.cap_unit === "testnet_usd" ? { cap_unit: wb.cap_unit, max_per_tx_usd: wb.max_per_tx_usd ?? undefined, max_per_day_usd: wb.max_per_day_usd ?? undefined, usd_budget_approved: wb.usd_budget_approved } : {}),
             ...(wb.retry_action ? { retry_action: wb.retry_action } : {}),
             ...(wb.max_per_tx_tokens != null ? { max_per_tx_tokens: wb.max_per_tx_tokens } : {}),
             ...(wb.max_per_day_tokens != null ? { max_per_day_tokens: wb.max_per_day_tokens } : {}),
@@ -5803,6 +5875,7 @@ export function CopilotWorkspace() {
     <div className="cp-root">
       <CopilotShell
         collapsed={railCollapsed}
+        panelOpenRequest={budgetReviewRequest}
         onToggleCollapsed={() => setRailCollapsed((v) => !v)}
         empty={stageEmpty}
         conversationId={investigation.conversationId}
@@ -5820,10 +5893,18 @@ export function CopilotWorkspace() {
               walletSigningRequired: walletKind === "freighter",
               defaultTx: mcpDefaultCaps?.tx ?? null,
               defaultDay: mcpDefaultCaps?.day ?? null,
+              capUnit: dollarBudget ? "testnet_usd" : "token_units",
+              maximumDay: budgetPolicy?.maximumDay,
               onToggle: handleAutoApproveToggle,
               onCapsMode: setRailCapsMode,
               onCustomTx: setCustomTx,
               onCustomDay: setCustomDay,
+              activeLimits: capsEnforced && savedCaps ? testnetBudgetLabel(savedCaps) : null,
+              draftChanged: railBudgetDraft.changed,
+              draftError: railBudgetDraft.error,
+              onApplyLimits: handleApplyAutoApproveLimits,
+              reviewRequest: budgetReviewRequest,
+              onReviewOpened: () => setBudgetReviewRequest(0),
             }}
           />
         }
@@ -5856,10 +5937,16 @@ export function CopilotWorkspace() {
               walletSigningRequired: walletKind === "freighter",
               defaultTx: mcpDefaultCaps?.tx ?? null,
               defaultDay: mcpDefaultCaps?.day ?? null,
+              capUnit: dollarBudget ? "testnet_usd" : "token_units",
+              maximumDay: budgetPolicy?.maximumDay,
               onToggle: handleAutoApproveToggle,
               onCapsMode: setRailCapsMode,
               onCustomTx: setCustomTx,
               onCustomDay: setCustomDay,
+              activeLimits: capsEnforced && savedCaps ? testnetBudgetLabel(savedCaps) : null,
+              draftChanged: railBudgetDraft.changed,
+              draftError: railBudgetDraft.error,
+              onApplyLimits: handleApplyAutoApproveLimits,
             }}
             healthFactor={liveHf}
             conversations={investigation.conversations}
@@ -6402,7 +6489,7 @@ export function CopilotWorkspace() {
                               try {
                                 const raw = response?.auto_sign?.raw as Record<string, unknown> | null;
                                 const defaults = raw ? defaultTestnetBudget(raw) : null;
-                                if (defaults) return `Defaults (${defaults.tx} units / ${defaults.day} units)`;
+                                if (defaults) return `Defaults (${testnetBudgetLabel(defaults)})`;
                               } catch {
                                 /* ignore */
                               }
@@ -6422,7 +6509,7 @@ export function CopilotWorkspace() {
                         {showCustom && (
                           <div className="mt-4 grid gap-3 sm:grid-cols-2">
                             <label className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">
-                              max per tx token units
+                              max per tx {dollarBudget ? "testnet USD" : "token units"}
                               <input
                                 value={customTx}
                                 onChange={(e) => setCustomTx(e.target.value)}
@@ -6430,7 +6517,7 @@ export function CopilotWorkspace() {
                               />
                             </label>
                             <label className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">
-                              max per day token units
+                              max per day {dollarBudget ? "testnet USD" : "token units"}
                               <input
                                 value={customDay}
                                 onChange={(e) => setCustomDay(e.target.value)}

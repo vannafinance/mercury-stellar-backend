@@ -46,6 +46,19 @@ function response(hash: string, status: rpc.Api.SendTransactionStatus): rpc.Api.
   return { hash, status, latestLedger: 100, latestLedgerCloseTime: 1000 };
 }
 describe("wallet submission acknowledgement", () => {
+  it("rejects a late signature for a cancelled workflow before checking or broadcasting", async () => {
+    const f = await fixture(); await f.journal.cancel(f.id, identity);
+    await expect(f.run()).rejects.toThrow("step_changed");
+    expect(f.checkEnvelope).not.toHaveBeenCalled(); expect(f.sendTx).not.toHaveBeenCalled();
+    expect((await f.journal.read(f.id, identity)).value.status).toBe("cancelled");
+  });
+  it("does not broadcast when cancellation wins during the signing preconditions check", async () => {
+    const f = await fixture();
+    f.checkEnvelope.mockImplementation(async () => { await f.journal.cancel(f.id, identity); });
+    await expect(f.run()).rejects.toThrow("step_changed");
+    expect(f.sendTx).not.toHaveBeenCalled();
+    expect((await f.journal.read(f.id, identity)).value.steps[0].txHash).toBeUndefined();
+  });
   it("leaves the unsigned step available when chain preconditions changed during wallet signing", async () => {
     const f = await fixture(); f.checkEnvelope.mockRejectedValue(new Error("sequence changed"));
     await expect(f.run()).rejects.toThrow("sequence changed");

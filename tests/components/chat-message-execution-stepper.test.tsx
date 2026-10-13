@@ -35,6 +35,18 @@ const turns: ThreadTurn[] = [
 ];
 
 describe("ChatTurns - the execution card makes no signing claim of its own", () => {
+  it("restores a cancelled unsigned run without reporting execution or signing", () => {
+    render(<ChatTurns sessionSigning turns={[{ role: "assistant", text: "Withdrawal cancelled", executionReceipt: {
+      workflowId: "wf-cancelled", status: "cancelled", network: "testnet", steps: [
+        { operation: "withdraw_collateral", label: "Withdraw 1 AQUSDC", asset: "AQUSDC", amount: "1", status: "awaiting_signature" },
+      ],
+    } }]} />);
+    expect(screen.getByText("Cancelled")).toBeTruthy();
+    expect(screen.getByText("Not submitted")).toBeTruthy();
+    expect(screen.queryByText("Executing")).toBeNull();
+    expect(screen.queryByText("Signing…")).toBeNull();
+    expect(screen.queryByLabelText("In progress")).toBeNull();
+  });
   // The footer line that used to name the signing state ("Nothing is sent without your signature."
   // / "Signed within your auto-approve limits.") was removed by design: the header, the wallet mark
   // and the Sign button already say who acts next. What must never come back is the 21 Sep bug,

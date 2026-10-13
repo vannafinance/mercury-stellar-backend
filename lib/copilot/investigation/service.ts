@@ -1,4 +1,5 @@
 import type { MCPClient } from "../mcp-client";
+import { anchoredSigningPolicyRequest } from "./signing-policy-request";
 import { reuseTerminalReadFailures } from "./terminal-read-cache";
 import type { ResearchModel, InvestigationProgress, InvestigationLimits, Observation, ProposedPlan, ResearchTask } from "./types";
 import { inheritsThread, shownPlans } from "./thread-context";
@@ -19,7 +20,7 @@ import { anchoredVenueOps, anchoredVenueRows, enforceRequestedOperations, reques
 import { anchoredGoalFloor, anchoredPlanParts, anchoredSlippageAccepted, anchoredWalletReserves, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, spendableWalletAfterReserves, onlyNamedAssets, spendableWalletUsdFrom, spendableWalletByAssetUsdFrom, spendableWalletByAssetTokensFrom, mergeCandidateSets, plansBorrow, rankingBorrowing, requestedBorrowFrom, statedBorrowFrom, type CandidateSet } from "./candidates";
-import { askForUnstatedAmounts, askForUnstatedPlanAmounts } from "./unstated-amount";
+import { askForUnchosenActionAssets, askForUnstatedAmounts, askForUnstatedPlanAmounts } from "./unstated-amount";
 import { namedOpAssets } from "./named-op-assets";
 import { unsupportedAssetFacts } from "./unsupported-asset";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
@@ -646,7 +647,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         openQuestions: [] as string[],
       }
     : result.outcome;
-  const outcome = askForUnstatedPlanAmounts(askForUnstatedAmounts(decided, messages), messages);
+  const outcome = askForUnstatedPlanAmounts(askForUnchosenActionAssets(askForUnstatedAmounts(decided, messages), messages), messages);
   const fullPortfolioExit = outcome.kind === "research_complete" && requestsPortfolioExit(outcome.goal, messages);
   /**
    * A conditional or future action is refused as soon as the outcome is known, before any
@@ -1686,6 +1687,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     // Not rendered. Why a run stopped, a plan was dropped or a read failed, readable from the response (23 Sep).
     ...(diagnostics ? { diagnostics } : {}),
     pendingWrite: lifecycleOp && scope.trader ? { op: lifecycleOp } : null,
+    ...(outcome.kind === "research_complete" && anchoredSigningPolicyRequest(outcome.goal.signingPolicy, input.message)
+      ? { signingPolicy: anchoredSigningPolicyRequest(outcome.goal.signingPolicy, input.message)! } : {}),
   };
 }
 

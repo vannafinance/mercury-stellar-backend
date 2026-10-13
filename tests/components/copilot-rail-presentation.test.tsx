@@ -5,9 +5,36 @@ import { CopilotRailPresentation } from "@/components/copilot/copilot-shell";
 import { CopilotRailBody } from "@/components/copilot/copilot-rail";
 import { AutoApproveMenu, type AutoApproveMenuProps } from "@/components/copilot/auto-approve-menu";
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("compact rail presentation", () => {
+  it.each([true, false])("keeps the last chat's complete menu inside the viewport (pin available: %s)", (pinAvailable) => {
+    const height = pinAvailable ? 132 : 92;
+    vi.stubGlobal("visualViewport", { width: 390, height: 620, offsetLeft: 0, offsetTop: 0, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute("role") === "menu"
+        ? new DOMRect(0, 0, 150, height) : new DOMRect(350, 594, 24, 24);
+    });
+    render(<CopilotRailBody hasWallet healthFactor={null} positions={[]} conversations={[{ id: "saved", title: "Last chat", createdAt: 1, updatedAt: 1 }]} activeId="saved" onOpen={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} onPin={pinAvailable ? vi.fn() : undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Chat actions" }));
+    const menu = screen.getByRole("menu", { name: "Chat actions" });
+    expect(Number.parseFloat(menu.style.top) + height).toBeLessThanOrEqual(620);
+    expect(Number.parseFloat(menu.style.left) + 150).toBeLessThanOrEqual(390);
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeTruthy();
+  });
+  it("allows scrolling an oversized actions menu without closing it", () => {
+    vi.stubGlobal("visualViewport", { width: 390, height: 90, offsetLeft: 0, offsetTop: 0, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute("role") === "menu"
+        ? new DOMRect(0, 0, 150, 132) : new DOMRect(350, 70, 24, 24);
+    });
+    render(<CopilotRailBody hasWallet healthFactor={null} positions={[]} conversations={[{ id: "saved", title: "Last chat", createdAt: 1, updatedAt: 1 }]} activeId="saved" onOpen={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} onPin={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Chat actions" }));
+    const menu = screen.getByRole("menu", { name: "Chat actions" });
+    expect(Number.parseFloat(menu.style.maxHeight)).toBeLessThan(90);
+    fireEvent.scroll(menu);
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeTruthy();
+  });
   it("offers pinning for saved chats and prevents deleting a pending transaction's chat", () => {
     const onPin = vi.fn(), onDelete = vi.fn();
     const props = { hasWallet: true, healthFactor: null, positions: [], activeId: "saved",

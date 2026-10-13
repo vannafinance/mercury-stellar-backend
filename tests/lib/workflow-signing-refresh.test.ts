@@ -46,6 +46,22 @@ async function fixture(twoSteps = false) {
   return { journal, id, old, refreshEnvelope, mcp, lookupTx, run };
 }
 describe("safe signing recovery", () => {
+  it("refuses a cancelled signing attempt and rejects its late signature or hash", async () => {
+    const f = await fixture();
+    await f.journal.cancel(f.id, identity);
+    await expect(f.run()).rejects.toThrow("workflow_cancelled");
+    const signed = envelope(true); signed.sign(wallet);
+    await expect(f.journal.acceptSignedEnvelope(f.id, identity, "one", signed.toXDR())).rejects.toThrow("step_changed");
+    await expect(f.journal.acceptSubmittedHash(f.id, identity, "one", signed.hash().toString("hex"))).rejects.toThrow("step_changed");
+    expect(f.refreshEnvelope).not.toHaveBeenCalled();
+    expect((await f.journal.read(f.id, identity)).value.status).toBe("cancelled");
+  });
+  it("refuses a refresh when cancellation wins while preparing the envelope", async () => {
+    const f = await fixture();
+    f.refreshEnvelope.mockImplementation(async () => { await f.journal.cancel(f.id, identity); return envelope().toXDR(); });
+    await expect(f.run()).rejects.toThrow("step_changed");
+    expect((await f.journal.read(f.id, identity)).value.steps[0].unsignedXdr).toBe(f.old);
+  });
   it("shares the hours-long approval policy", () => { expect(PROPOSAL_TTL_MS).toBe(PLAN_TTL_MS); expect(PROPOSAL_TTL_MS).toBeGreaterThan(60 * 60_000); });
   it("refreshes an expired unsigned step without calling a write or changing its approval", async () => {
     const f = await fixture();

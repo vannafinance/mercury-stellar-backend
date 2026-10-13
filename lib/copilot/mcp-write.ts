@@ -519,6 +519,8 @@ export function mapOpToMcpStep(
     use_default_caps?: boolean | null;
     max_per_tx_tokens?: number | string | null;
     max_per_day_tokens?: number | string | null;
+    max_per_tx_usd?: number | string | null;
+    max_per_day_usd?: number | string | null;
   },
   ctx: AccountCtx,
 ): { step?: WriteStep; blocker?: string } {
@@ -1103,6 +1105,8 @@ export function mapOpToMcpStep(
             ...(params.use_default_caps != null ? { use_default_caps: params.use_default_caps } : {}),
             ...(params.max_per_tx_tokens != null ? { max_per_tx_tokens: params.max_per_tx_tokens } : {}),
             ...(params.max_per_day_tokens != null ? { max_per_day_tokens: params.max_per_day_tokens } : {}),
+            ...(params.max_per_tx_usd != null ? { max_per_tx_usd: params.max_per_tx_usd } : {}),
+            ...(params.max_per_day_usd != null ? { max_per_day_usd: params.max_per_day_usd } : {}),
           },
           label: "Enable auto-sign",
         },
@@ -1821,9 +1825,8 @@ export async function executeMcpWrite(
 /**
  * Enable Sign Service auto-sign.
  *
- * MCP `use_default_caps=true` must NOT also send max_per_tx_tokens - the MCP server
- * then applies `DEFAULT_CAP_USD_PER_TX` and `DEFAULT_CAP_USD_PER_DAY`.
- * Custom path sends only USD fields; if only per-tx is set, MCP mirrors it to day.
+ * Defaults come from the live signer policy. Dollar policy requires explicit
+ * approval and separate fields so legacy token limits cannot change units.
  */
 export async function enableAutoSign(
   mcp: MCPClient,
@@ -1833,17 +1836,23 @@ export async function enableAutoSign(
     useDefaultCaps?: boolean;
     maxPerTxTokens?: number | string;
     maxPerDayTokens?: number | string;
+    maxPerTxUsd?: number | string;
+    maxPerDayUsd?: number | string;
+    usdBudgetApproved?: boolean;
   },
 ): Promise<Record<string, unknown>> {
   const args: Record<string, unknown> = {
     wallet_address: opts.wallet,
     user_id: opts.userId || opts.wallet,
   };
+  if (opts.usdBudgetApproved === true) args.usd_budget_approved = true;
   if (opts.useDefaultCaps) {
     args.use_default_caps = true;
   } else {
     if (opts.maxPerTxTokens != null) args.max_per_tx_tokens = opts.maxPerTxTokens;
     if (opts.maxPerDayTokens != null) args.max_per_day_tokens = opts.maxPerDayTokens;
+    if (opts.maxPerTxUsd != null) args.max_per_tx_usd = opts.maxPerTxUsd;
+    if (opts.maxPerDayUsd != null) args.max_per_day_usd = opts.maxPerDayUsd;
   }
   return mcp.call("vanna_enable_auto_sign", args, opts.userId);
 }

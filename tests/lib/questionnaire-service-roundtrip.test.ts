@@ -70,6 +70,30 @@ const mcp = {
 };
 
 describe("questionnaire round trip through researchTurn", () => {
+  it.each(["clarify", "research_complete"] as const)("asks the same USDC questionnaire from %s and retains the supplied amount", async (kind) => {
+    harness.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    harness.computeAccountPosition.mockResolvedValue(null);
+    harness.computeBorrowCapacity.mockResolvedValue(null);
+    const message = "lend 5 usdc to earn";
+    const sizing = { kind: "literal", amount: "5", sourceQuote: message };
+    const model = vi.fn(async () => kind === "clarify"
+      ? { kind, intent: "action", question: "Which USDC?", missing: [{ op: "lend", asset: "USDC", slots: ["asset"], knownSizing: sizing, sourceQuote: message }] }
+      : { kind, goal: { intent: "strategy", objective: message, constraints: [], borrowing: "forbidden", actions: [{ op: "lend", asset: "BLUSDC", sizing, sourceQuote: message }] }, findings: [{ summary: "The asset needs a user selection.", evidenceIds: [] }], openQuestions: [] });
+    const stableMcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => tool === "vanna_get_wallet_balance"
+      ? { assets: ["BLUSDC", "AQUSDC", "SOUSDC"].map(symbol => ({ symbol, balance: "20", decimals: 7, status: "ok" })), fee_reserve_xlm: "0.5" }
+      : mcp.call(tool, args)) };
+    const asked = await researchTurn({ message, wallet: SCOPE.trader, continuation: null }, {
+      subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: stableMcp, signal: new AbortController().signal, model,
+    });
+    const section = asked.questionnaire?.sections?.[0];
+    expect(section).toBeTruthy();
+    expect(section?.op).toBe("lend");
+    expect(section?.knownSizing).toEqual(sizing);
+    expect(section?.steps.find(step => step.slot === "asset")?.options.map(option => option.id).sort()).toEqual(["AQUSDC", "BLUSDC", "SOUSDC"]);
+    expect(section?.steps.some(step => step.slot === "amount")).toBe(false);
+    expect(asked.proposalCandidateId).toBeFalsy();
+    expect(stableMcp.call.mock.calls.some(([tool]) => tool.includes("unsigned") || tool.includes("submit"))).toBe(false);
+  });
   it("includes the Margin health factor when a model-led health read has only LTV", async () => {
     harness.resolveInvestigationScope.mockResolvedValue(SCOPE);
     harness.computeAccountPosition.mockResolvedValue({ grossCollateralUsd: "200", debtUsd: "50", healthFactor: "4", snapshot: { grossCollateralValue: 200, totalBorrowedValue: 50, collateralBalances: {}, borrowedBalances: {} } });

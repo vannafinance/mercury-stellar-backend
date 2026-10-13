@@ -624,6 +624,7 @@ export async function prepareWorkflowSigning(input: {
     input.mcp, input.signal);
   const identity = { scope, server: input.server };
   const record = (await journal.read(input.id, identity)).value;
+  if (record.status === "cancelled") throw new WorkflowConflict("workflow_cancelled");
   const waiting = record.steps.find(s => s.status === "awaiting_signature");
   if (record.status !== "awaiting_signature" || !waiting?.unsignedXdr) {
     return workflowView(await settleSubmitted(journal, input.id, identity, input.lookupTx ?? lookupTransaction));
@@ -1020,6 +1021,7 @@ export async function submitWorkflow(input: {
     AbortSignal.any([input.signal, AbortSignal.timeout(20_000)]));
   const identity = { scope, server: input.server };
   const checked = await journal.read(input.id, identity);
+  if (checked.value.status !== "awaiting_signature") throw new WorkflowConflict("step_changed");
   const waiting = checked.value.steps.find(s => s.status === "awaiting_signature");
   const step = expected.steps.find(s => s.id === waiting?.id);
   if (!waiting || !step) throw new ResearchError("step_changed", "This plan is not waiting for a signature.");
