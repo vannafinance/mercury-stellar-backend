@@ -140,6 +140,8 @@ type SortKey = "hf" | "velocity" | "distToLiq" | "debt" | "leverage" | "age";
 type SortDir = "asc" | "desc";
 
 function PositionsTable({ positions }: { positions: AdvancedPosition[] }) {
+  // Render-stable "now" for position ages (read once on mount, not on every render).
+  const [now] = useState(() => Date.now());
   const [page, setPage] = useState(1);
   const [ageFilter, setAgeFilter] = useState<AgeCategory | "all">("all");
   const [collTypeFilter, setCollTypeFilter] = useState<CollateralType | "all">("all");
@@ -184,7 +186,7 @@ function PositionsTable({ positions }: { positions: AdvancedPosition[] }) {
   };
 
   const formatAge = (openedAt: number) => {
-    const hrs = (Date.now() - openedAt) / (1000 * 60 * 60);
+    const hrs = (now - openedAt) / (1000 * 60 * 60);
     if (hrs < 1) return `${Math.floor(hrs * 60)}m`;
     if (hrs < 24) return `${Math.floor(hrs)}h`;
     return `${Math.floor(hrs / 24)}d`;

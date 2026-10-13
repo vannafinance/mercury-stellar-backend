@@ -130,9 +130,9 @@ export default function WhaleWithdrawalPage() {
   return (
     <div className="p-6 w-full max-w-[1400px] mx-auto space-y-6">
       <div className="flex items-center gap-3">
-        <Link href="/analytics/overview2" className="flex items-center gap-1.5 text-[11px] text-vgray-400 hover:text-violet-600 transition-colors">
+        <Link href="/analytics/risk-explorer" className="flex items-center gap-1.5 text-[11px] text-vgray-400 hover:text-violet-600 transition-colors">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7L9 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
-          Risk Command Center
+          Risk Explorer
         </Link>
         <span className="text-vgray-200">/</span>
         <span className="text-[11px] text-vgray-600 font-semibold">Whale Withdrawal Risk</span>
@@ -220,7 +220,7 @@ export default function WhaleWithdrawalPage() {
           {/* APR Utilization Curve */}
           <div className="bg-surface rounded-r4 border border-vgray-100 shadow-vanna p-4">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-vgray-500 mb-1">APR Utilization Kink Curve</p>
-            <p className="text-[9px] text-vgray-400 mb-3">Borrow APR jumps sharply past 80% utilization — whale exit can push protocol into the "kink zone"</p>
+            <p className="text-[9px] text-vgray-400 mb-3">Borrow APR jumps sharply past 80% utilization — whale exit can push protocol into the &quot;kink zone&quot;</p>
             <ResponsiveContainer width="100%" height={160}>
               <LineChart data={aprCurve}>
                 <XAxis dataKey="util" tick={{ fontSize: 9, fill: cc.axisText }} axisLine={false} tickLine={false} interval={3} />

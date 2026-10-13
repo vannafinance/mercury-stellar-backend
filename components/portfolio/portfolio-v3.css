@@ -1,0 +1,327 @@
+/*
+ * Portfolio screen — design index.html css 2271–2594
+ */
+/* ==== screens/portfolio.css ==== */
+/* Portfolio — sizes from live test.solana.vanna.finance/portfolio (computed styles at 1440/1280, 7 Oct 2026) and the
+   Tailwind classes of the deployed bundle for the connected states (Lender Stats, Margin stats, Positions, Perps, Farm).
+   Header = V1's three cards restyled to the live AccountStats sizes (label 13/500, icon 28, value 26/700). */
+.v3{
+  --pf-k:#777777; --pf-desc:#a7a7a7; --pf-up:#16a34a; --pf-tab-off:#a7a7a7; --pf-card-bd:#e2e2e2;
+  --pf-sub-bg:#ffffff; --pf-sub-bd:#e8e8e8; --pf-sub-hv:#f7f7f7; --pf-sub-on-bg:#f1ebfd; --pf-sub-on-fg:#703ae6;
+  --pf-ms-bd:#e8e8e8; --pf-ms-k:#777777; --pf-cnt-bg:#f1ebfd; --pf-cnt-fg:#703ae6;
+  --pf-nav2-bg:#ffffff; --pf-nav2-bd:#e5e7eb; --pf-nav2-off:#9ca3af;
+  --pf-mth:#464545; --pf-mrow-bg:#f7f7f7; --pf-mrow-bd:#e2e2e2; --pf-sub2:#76737b; --pf-zero:#a0a0a0;
+  --pf-hf-ok:#22c55e; --pf-hf-mid:#e6a23c; --pf-hf-bad:#fc5457; --pf-long:#24a0a9; --pf-short:#fc5457;
+  --pf-pt-bg:#f7f7f7; --pf-pt-bd:#e2e2e2; --pf-pth:#919191; --pf-pth-bd:#e8e8e8; --pf-btn-bg:#ffffff; --pf-btn-bd:#e2e2e2;
+  --pf-ps-bg:#ffffff; --pf-ps-bd:#e8e8e8; --pf-ps-k:#777777; --pf-allf:#5c5b5b;
+  --pf-c-w:#a7a7a7; --pf-c-l:#3fc0a3; --pf-c-m:#703ae6;
+  --pf-imp-bd:rgba(112,58,230,.22); --pf-imp-ic:#ffffff; --pf-beta-on:rgba(112,58,230,.14);
+  /* badge colours used by the live margin history (same in both themes on the live app) */
+  --pf-b-red-bg:#fee2e2; --pf-b-red:#dc2626; --pf-b-green-bg:#dcfce7; --pf-b-green:#16a34a; --pf-b-amber-bg:#fef3c7; --pf-b-amber:#b45309;
+  --pf-b-rose-bg:#ffe4e6; --pf-b-rose:#be123c; --pf-b-purple-bg:#f3e8ff; --pf-b-purple:#7e22ce; --pf-b-blue-bg:#dbeafe; --pf-b-blue:#2563eb;
+}
+
+html.dark .v3{
+  --pf-k:#919191; --pf-desc:#777777; --pf-tab-off:#ffffff; --pf-card-bd:#333333;
+  --pf-sub-bg:#1a1a1a; --pf-sub-bd:#333333; --pf-sub-hv:#333333;
+  --pf-ms-bd:#2d2d2d; --pf-ms-k:#a0a0a0;
+  --pf-nav2-bg:#111111; --pf-nav2-bd:#333333; --pf-nav2-off:#999999;
+  --pf-mth:#999999; --pf-mrow-bg:#222222; --pf-mrow-bd:#333333; --pf-sub2:#919191; --pf-zero:#666666;
+  --pf-pt-bg:#222222; --pf-pt-bd:#333333; --pf-pth-bd:#333333; --pf-btn-bg:#222222; --pf-btn-bd:#333333;
+  --pf-ps-bg:#1a1a1a; --pf-ps-bd:#333333; --pf-allf:#919191;
+  --pf-c-w:#6b6b6b; --pf-imp-bd:rgba(154,114,240,.30); --pf-imp-ic:#1a1a1a;
+}
+
+/* page: title 24/36 bold, 20px to the header, 16px between blocks (live gap-5 / gap-4) */
+.v3 .pf{display:flex;flex-direction:column;gap:16px;min-width:0}
+.v3 .pf-title{line-height:36px;margin-bottom:4px}
+@media (max-width:639px){.v3 .pf-title{font-size:22px;line-height:33px}}
+
+/* ---- header: three cards ---- */
+.v3 .pf-hd{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
+@media (min-width:1024px){.v3 .pf-hd{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1fr)}}
+.v3 .pf-card{background:var(--strip-bg);border:1px solid var(--pf-card-bd);border-radius:16px;padding:20px 24px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.v3 .pf-k{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;line-height:16px;color:var(--strip-label)}
+.v3 .pf-ic{width:28px;height:28px;border-radius:50%;background:var(--strip-ic);display:grid;place-items:center;color:var(--violet);flex:none}
+.v3 .pf-big{font-size:26px;font-weight:700;line-height:26px;color:var(--text);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.v3 .pf-big.pos{color:var(--ok)} .v3 .pf-big.neg{color:var(--danger)}
+.v3 .pf-big.z-ok{color:var(--ok)} .v3 .pf-big.z-caution{color:var(--caution)} .v3 .pf-big.z-warn{color:var(--warn)} .v3 .pf-big.z-danger{color:var(--danger)}
+.v3 .pf-split{display:flex;height:8px;border-radius:99px;overflow:hidden;background:var(--track);gap:2px}
+.v3 .pf-split i{display:block;height:100%}
+.v3 .pf-c-w{background:var(--pf-c-w)} .v3 .pf-c-l{background:var(--pf-c-l)} .v3 .pf-c-m{background:var(--pf-c-m)}
+.v3 .pf-parts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.v3 .pf-parts > div{min-width:0}
+.v3 .pf-parts small{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;line-height:18px;color:var(--label);margin-bottom:4px;white-space:nowrap}
+.v3 .pf-parts b{display:block;font-size:16px;font-weight:600;line-height:22px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v3 .pf-dot{width:8px;height:8px;border-radius:2px;flex:none;display:inline-block}
+.v3 .pf-chips{display:flex;flex-wrap:wrap;gap:6px}
+.v3 .pf-chip{font-size:12px;font-weight:600;line-height:18px;padding:3px 8px;border-radius:6px;background:var(--chip);color:var(--chip-fg);white-space:nowrap}
+.v3 .pf-chip.pf-ok{background:var(--ok-bg);color:var(--ok)} .v3 .pf-chip.pf-bad{background:var(--short-soft);color:var(--danger)}
+.v3 .pf-pill{font-size:12px;font-weight:600;line-height:18px;padding:2px 8px;border-radius:6px;background:var(--chip)}
+.v3 .pf-pill.z-ok{background:var(--ok-bg)} .v3 .pf-pill.z-caution{background:var(--long-soft)} .v3 .pf-pill.z-warn{background:var(--warn-bg)} .v3 .pf-pill.z-danger{background:var(--short-soft)}
+.v3 .pf-hfbar{margin:4px 0 2px}
+.v3 .pf-hfbar.pf-off{opacity:.3}
+.v3 .pf-liqt{position:absolute;top:-4px;width:2px;height:14px;border-radius:1px;background:var(--danger);transform:translateX(-1px)}
+
+/* ---- Lender | Trader underline tabs (live AnimatedTabs: 120 x 44, 14/600) ---- */
+.v3 .pf-side{display:flex;flex-direction:column;min-width:0}
+.v3 .pf-tabs{display:flex;width:fit-content}
+.v3 .pf-tabs button{width:120px;height:44px;padding:10px 12px;font-size:14px;font-weight:600;line-height:21px;color:var(--pf-tab-off);border-bottom:2px solid transparent;text-align:center;transition:color .15s}
+.v3 .pf-tabs button:hover{color:var(--violet)}
+.v3 .pf-tabs button.on{color:var(--violet);border-bottom-color:var(--violet)}
+@media (max-width:639px){.v3 .pf-tabs button{width:100px;height:40px;font-size:13px}}
+.v3 .pf-login{height:260px;border-radius:0 0 20px 20px;background:var(--strip-bg);display:grid;place-items:center}
+.v3 .pf-login-b{width:70px;height:34px;border-radius:8px;background:var(--violet);color:#fff;font-size:12px;font-weight:600;line-height:18px}
+.v3 .pf-login-b:hover{filter:brightness(1.08)}
+.v3 .pf-body{padding-top:16px;display:flex;flex-direction:column;gap:16px;min-width:0}
+
+/* ---- sub-tabs (live trader selector: r8, p4, gap4; buttons 101 wide, py10, 12/600; on #f1ebfd / #703ae6) ---- */
+.v3 .pf-subbar{display:flex;align-items:center;justify-content:space-between;gap:12px 16px;flex-wrap:wrap}
+.v3 .pf-sub{display:flex;align-items:center;gap:4px;padding:4px;border:1px solid var(--pf-sub-bd);border-radius:8px;background:var(--pf-sub-bg);max-width:100%;overflow-x:auto;scrollbar-width:none}
+.v3 .pf-sub::-webkit-scrollbar{display:none}
+.v3 .pf-sub button{min-width:101px;padding:10px 12px;border-radius:8px;font-size:12px;font-weight:600;line-height:18px;color:var(--text);display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;transition:background .15s}
+.v3 .pf-sub button:hover{background:var(--pf-sub-hv)}
+.v3 .pf-sub button.on{background:var(--pf-sub-on-bg);color:var(--pf-sub-on-fg)}
+.v3 .pf-sub-s button{min-width:0;padding:10px 16px}
+.v3 .pf-beta{font-size:10px;font-weight:700;line-height:14px;letter-spacing:.02em;text-transform:uppercase;padding:1px 5px;border-radius:4px;background:var(--violet-soft);color:var(--violet-ink)}
+.v3 .pf-sub button.on .pf-beta{background:var(--pf-beta-on);color:var(--pf-sub-on-fg)}
+@media (max-width:639px){.v3 .pf-sub{width:100%}.v3 .pf-sub button{flex:1 0 auto;min-width:0;padding:10px 8px;font-size:11px}}
+
+/* Flash repay: gradient like the live Repay buttons, beside the sub-tabs on every Trader view */
+.v3 .pf-fr{display:flex;align-items:center;gap:12px;margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
+.v3 .pf-fr-k{font-size:12px;font-weight:500;line-height:18px;color:var(--label)}
+.v3 .pf-fr-b{display:inline-flex;align-items:center;gap:6px;height:40px;padding:0 16px;border-radius:8px;background:var(--grad);color:#fff;font-size:13px;font-weight:600;white-space:nowrap}
+.v3 .pf-fr-b:hover{filter:brightness(1.06)}
+.v3 .pf-fr-b:disabled{background:var(--btn-off-bg);color:var(--btn-off-fg);cursor:not-allowed;filter:none}
+@media (max-width:639px){.v3 .pf-fr{margin-left:0;width:100%;justify-content:space-between}}
+
+/* ---- Lender Stats / Farming Info card (w 422, r12, #F7F7F7) + the chart card beside it ---- */
+.v3 .pf-row2{display:flex;flex-direction:column;gap:16px;min-width:0}
+@media (min-width:1024px){.v3 .pf-row2{flex-direction:row;align-items:stretch}}
+.v3 .pf-info{width:100%;flex:none;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;background:var(--strip-bg);overflow:hidden}
+@media (min-width:1024px){.v3 .pf-info{width:422px}}
+.v3 .pf-info h3{padding:20px 20px 16px;border-bottom:1px solid var(--line);font-size:16px;font-weight:700;line-height:24px;color:var(--title)}
+.v3 .pf-info-b{padding:0 20px 20px;display:flex;flex-direction:column}
+.v3 .pf-kv{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0}
+.v3 .pf-kv > span{display:inline-flex;align-items:center;gap:4px;font-size:14px;font-weight:500;line-height:21px;color:var(--pf-k)}
+.v3 .pf-kv b{font-size:14px;font-weight:600;line-height:21px;color:var(--text);flex:none;text-align:right}
+.v3 .pf-kv b.pf-up,.v3 .pf-up{color:var(--pf-up)}
+.v3 .pf-chart{flex:1;min-width:0;min-height:180px;border:1px solid var(--line);border-radius:16px;background:var(--card);padding:20px;display:flex;flex-direction:column;gap:12px}
+.v3 .pf-chart-h{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.v3 .pf-chart-t{display:block;font-size:14px;font-weight:600;line-height:21px;color:var(--text);margin-bottom:2px}
+.v3 .pf-chart-h b{font-size:20px;font-weight:700;line-height:28px;color:var(--text)}
+.v3 .pf-chart-s{font-size:12px;font-weight:600;line-height:18px;color:var(--chip-fg);background:var(--chip);border-radius:6px;padding:3px 8px;white-space:nowrap}
+.v3 .pf-chart-b{flex:1;display:flex;flex-direction:column;justify-content:flex-end;min-width:0}
+.v3 .pf-chart-e{flex:1;min-height:96px;display:grid;place-items:center;border:1px dashed var(--line-2);border-radius:12px;font-size:13px;font-weight:500;color:var(--label)}
+
+/* ---- live Earn "Positions Table" ---- */
+.v3 .pf-tbl{display:flex;flex-direction:column;gap:16px;min-width:0}
+.v3 .pf-tblh{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.v3 .pf-tblh h2{font-size:16px;font-weight:600;line-height:24px;color:var(--text)}
+.v3 .pf-tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.v3 .pf-tbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.v3 .pf-seg{display:inline-flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:12px;background:var(--field)}
+.v3 .pf-seg button{padding:6px 12px;border-radius:8px;font-size:14px;font-weight:500;line-height:21px;color:var(--seg-off);white-space:nowrap;transition:color .15s}
+.v3 .pf-seg button:hover{color:var(--chip-fg)}
+.v3 .pf-seg button.on{background:var(--violet);color:#fff;font-weight:600}
+@media (max-width:639px){.v3 .pf-seg{width:100%}.v3 .pf-seg button{flex:1}}
+.v3 .pf-allf{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;color:var(--pf-allf)}
+.v3 .pf-allf b{font-weight:600}
+.v3 .pf-allf button{display:grid;place-items:center;width:22px;height:22px;color:var(--text)}
+.v3 .pf-cust{display:inline-flex;align-items:center;gap:6px;height:36px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--field);font-size:13px;font-weight:600;color:var(--text)}
+.v3 .pf-ftools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.v3 .pf-search{width:200px;height:36px}
+.v3 .pf-flex{flex:1}
+.v3 .pf-count{font-size:13px;font-weight:500;line-height:20px;color:var(--label)}
+.v3 .pf-lnk{color:var(--violet-ink);font-size:13px;font-weight:600;line-height:20px;white-space:nowrap}
+.v3 .pf-lnk:hover{text-decoration:underline}
+
+.v3 .pf-grid{display:flex;flex-direction:column;gap:4px;min-width:0}
+.v3 .pf-th{display:grid;gap:16px;padding:12px 16px;font-size:13px;font-weight:500;line-height:20px;color:var(--pf-desc)}
+.v3 .pf-th > span{display:flex;align-items:center;gap:4px;white-space:nowrap;min-width:0}
+.v3 .pf-sort{display:inline-grid;place-items:center;width:20px;height:20px;opacity:.5;font-style:normal}
+.v3 .pf-tb{display:flex;flex-direction:column;gap:6px}
+.v3 .pf-tr{display:grid;gap:16px;align-items:center;padding:12px 16px;border:1px solid var(--line-row);background:var(--tile);border-radius:12px;width:100%;text-align:left;transition:background .15s;color:var(--text)}
+.v3 button.pf-tr:hover,.v3 .pf-tr.pf-click:hover{background:var(--row-hover)}
+.v3 .pf-tr.pf-click{cursor:pointer}
+.v3 .pf-pool{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:500;line-height:21px;color:var(--text)}
+.v3 .pf-pool:hover{text-decoration:underline}
+.v3 .pf-acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;width:100%}
+.v3 .pf-btn{height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--line-2);background:var(--field);color:var(--text);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
+.v3 .pf-btn:hover{border-color:var(--violet);color:var(--violet-ink)}
+.v3 .pf-td{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0}
+.v3 .pf-ct{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:500;line-height:21px;color:var(--text);min-width:0;overflow-wrap:anywhere}
+.v3 .pf-cd{font-size:12px;font-weight:500;line-height:18px;color:var(--pf-desc)}
+.v3 .pf-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+.v3 .pf-tag{display:inline-block;padding:2px 6px;border-radius:6px;font-size:11px;font-weight:600;line-height:16px;background:var(--chip);color:var(--chip-fg);white-space:nowrap}
+.v3 .pf-tag.pf-t-on{background:var(--violet);color:#fff}
+.v3 .pf-tag.pf-t-yes{background:var(--yes-bg);color:var(--yes-fg)} .v3 .pf-tag.pf-t-no{background:var(--no-bg);color:var(--no-fg)}
+.v3 .pf-tag.pf-t-long{background:var(--long-soft);color:var(--long-fg)} .v3 .pf-tag.pf-t-short{background:var(--short-soft);color:var(--short-fg)}
+.v3 .pf-tag.pf-t-warn{background:var(--warn-bg);color:var(--warn)}
+.v3 .pf-th .info-i{margin-left:2px}
+.v3 .pf-badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;line-height:16px;white-space:nowrap}
+.v3 .pf-badge.pf-ok{background:var(--ok-bg);color:var(--ok)} .v3 .pf-badge.pf-warn{background:var(--warn-bg);color:var(--warn)} .v3 .pf-badge.pf-bad{background:var(--short-soft);color:var(--danger)}
+.v3 .pf-tx{display:inline-flex;align-items:center;gap:6px;font-size:14px;font-weight:500;line-height:21px;color:var(--text);text-decoration:none}
+.v3 .pf-tx i{display:grid;place-items:center;width:20px;height:20px;color:var(--label)}
+.v3 .pf-tx:hover{text-decoration:underline}
+.v3 .pf .pf-i16{width:16px;height:16px;flex:none;display:block}
+.v3 .pf .pf-i20{width:20px;height:20px;flex:none;display:block}
+.v3 .pf-none{height:260px;border:1px solid var(--line-row);border-radius:16px;background:var(--tile);display:grid;place-items:center;font-size:14px;font-weight:500;color:var(--pf-desc);text-align:center;padding:16px}
+.v3 .pf-emptyc{border:1px solid var(--line);border-radius:16px;background:var(--strip-bg);padding:40px 20px;text-align:center;font-size:14px;font-weight:500;line-height:21px;color:var(--label);display:flex;flex-direction:column;align-items:center;gap:8px}
+/* below xl the live table turns rows into cards; same here, labels from data-l */
+@media (max-width:1279px){
+  .v3 .pf-th{display:none}
+  .v3 .pf-tr{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:12px 16px;padding:14px 16px;align-items:start}
+  .v3 .pf-td:first-child{grid-column:1/-1}
+  .v3 .pf-td:not(:first-child)::before{content:attr(data-l);font-size:11px;font-weight:500;line-height:16px;color:var(--pf-desc)}
+}
+
+/* ---- Trader > Margin: live margin stats (2 x 4 cells, label 13/500, value 20/700) ---- */
+.v3 .pf-ms{border:1px solid var(--pf-ms-bd);border-radius:16px;background:var(--strip-bg);min-width:0}
+.v3 .pf-ms-r{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+@media (min-width:1024px){.v3 .pf-ms-r{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.v3 .pf-ms-c{display:flex;flex-direction:column;justify-content:space-between;gap:8px;padding:16px 20px;min-width:0}
+.v3 .pf-ms-k{display:block;font-size:13px;font-weight:500;line-height:17px;color:var(--pf-ms-k)}
+.v3 .pf-ms-k .info-i{vertical-align:-2px;margin-left:4px}
+.v3 .pf-ms-v{font-size:20px;font-weight:700;line-height:25px;color:var(--text);overflow-wrap:anywhere}
+.v3 .pf-ms-v small{font-size:14px;font-weight:500;color:var(--pf-ms-k)}
+.v3 .pf-liq{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;padding:16px 20px 18px;border-top:1px solid var(--pf-ms-bd)}
+@media (min-width:768px){.v3 .pf-liq{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 40px;align-items:start}.v3 .pf-liq-m{grid-column:1/-1}}
+@media (min-width:1280px){.v3 .pf-liq{grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr);align-items:center}.v3 .pf-liq-m{grid-column:auto}}
+.v3 .pf-liq-m{display:flex;flex-direction:column;gap:10px;min-width:0}
+.v3 .pf-meter{position:relative;padding:22px 0 24px}
+.v3 .pf-meter .hfbar{margin:0}
+.v3 .pf-ml{position:absolute;white-space:nowrap;font-size:12px;font-weight:500;line-height:18px;color:var(--label)}
+.v3 .pf-ml-t{top:0;color:var(--text);font-weight:600} .v3 .pf-ml-b{bottom:0}
+.v3 .pf-liq-n{display:flex;flex-direction:column;gap:6px;min-width:0}
+.v3 .pf-liq-n b{font-size:20px;font-weight:700;line-height:25px;color:var(--text)}
+.v3 .pf-liq-n > span{font-size:12px;font-weight:500;line-height:18px;color:var(--label)}
+
+/* live margin "Positions" table */
+.v3 .pf-mp{display:flex;flex-direction:column;gap:12px;min-width:0}
+.v3 .pf-mh{display:flex;align-items:center;gap:12px}
+.v3 .pf-mh h2{font-size:20px;font-weight:700;line-height:30px;color:var(--text)}
+.v3 .pf-cnt{padding:3px 10px;border-radius:99px;background:var(--pf-cnt-bg);color:var(--pf-cnt-fg);font-size:13px;font-weight:600;line-height:20px}
+.v3 .pf-nav2{display:flex;gap:4px;padding:4px;border:1px solid var(--pf-nav2-bd);border-radius:12px;background:var(--pf-nav2-bg);width:fit-content;max-width:100%}
+.v3 .pf-nav2 button{padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;line-height:20px;color:var(--pf-nav2-off);white-space:nowrap}
+.v3 .pf-nav2 button.on{background:var(--violet);color:#fff}
+.v3 .pf-mt{display:flex;flex-direction:column;gap:8px;min-width:0}
+.v3 .pf-mth{display:grid;font-size:13px;font-weight:500;line-height:20px;color:var(--pf-mth)}
+.v3 .pf-mth span{padding:11px 12px 12px}
+.v3 .pf-mrow{display:grid;border:1px solid var(--pf-mrow-bd);border-radius:12px;background:var(--pf-mrow-bg)}
+.v3 .pf-mc{padding:16px 12px;display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;line-height:18px;color:var(--text);min-width:0}
+.v3 .pf-stack{flex-direction:column;align-items:flex-start;justify-content:center;gap:6px}
+.v3 .pf-strong{font-size:14px;font-weight:600}
+.v3 .pf-asset{display:flex;align-items:center;gap:4px 8px;flex-wrap:wrap}
+.v3 .pf-asset b{display:flex;align-items:center;gap:4px;font-size:13px;font-weight:500;line-height:16px;color:var(--text);white-space:nowrap}
+.v3 .pf-asset small{display:block;font-size:11px;font-weight:500;line-height:16px;color:var(--pf-sub2)}
+.v3 .pf-share{padding:1px 6px;border-radius:4px;background:var(--pf-cnt-bg);color:var(--pf-cnt-fg);font-size:10px;font-weight:500;line-height:15px}
+.v3 .pf-idle{font-size:11px;font-weight:500;line-height:16px;color:var(--pf-sub2);padding-left:28px}
+.v3 .pf-idle .info-i{margin-left:4px;vertical-align:-2px}
+.v3 .pf-hf-ok{color:var(--pf-hf-ok)} .v3 .pf-hf-mid{color:var(--pf-hf-mid)} .v3 .pf-hf-bad{color:var(--pf-hf-bad)}
+.v3 .pf-repay{padding:8px 12px;border-radius:8px;background:var(--grad);color:#fff;font-size:12px;font-weight:600;line-height:18px}
+.v3 .pf-repay:hover{filter:brightness(1.06)}
+.v3 .pf-repay:disabled{opacity:.5;cursor:not-allowed}
+.v3 .pf-mempty{height:260px;border:1px solid var(--pf-mrow-bd);border-radius:8px;background:var(--pf-mrow-bg);display:grid;place-items:center;font-size:14px;font-weight:500;color:var(--pf-sub2)}
+.v3 .pf-ghost{padding:8px 14px;border-radius:8px;border:1px solid var(--violet);color:var(--violet-ink);font-size:12px;font-weight:600;line-height:18px}
+.v3 .pf-mdate{color:var(--pf-sub2)}
+.v3 .pf-mb{border-radius:4px;padding:2px 8px;font-size:11px;font-weight:600;line-height:16px;white-space:nowrap}
+.v3 .pf-mb-red{background:var(--pf-b-red-bg);color:var(--pf-b-red)} .v3 .pf-mb-green{background:var(--pf-b-green-bg);color:var(--pf-b-green)} .v3 .pf-mb-amber{background:var(--pf-b-amber-bg);color:var(--pf-b-amber)}
+.v3 .pf-mb-rose{background:var(--pf-b-rose-bg);color:var(--pf-b-rose)} .v3 .pf-mb-purple{background:var(--pf-b-purple-bg);color:var(--pf-b-purple)} .v3 .pf-mb-blue{background:var(--pf-b-blue-bg);color:var(--pf-b-blue)}
+@media (max-width:1279px){
+  .v3 .pf-mth{display:none}
+  .v3 .pf-mrow{grid-template-columns:repeat(2,minmax(0,1fr))!important;padding:6px 4px}
+  .v3 .pf-mc{flex-direction:column;align-items:flex-start;gap:6px;padding:10px 12px}
+  .v3 .pf-mc::before{content:attr(data-l);font-size:11px;font-weight:500;line-height:16px;color:var(--pf-sub2)}
+}
+
+/* ---- Trader > Spot / Perps: live perps stats card (white, r16, p20, label 12/500, value 20/700) ---- */
+.v3 .pf-ps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;padding:20px;border:1px solid var(--pf-ps-bd);border-radius:16px;background:var(--pf-ps-bg)}
+@media (min-width:640px){.v3 .pf-ps{grid-template-columns:repeat(var(--n,4),minmax(0,1fr))}}
+.v3 .pf-ps > div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.v3 .pf-ps > div > span{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:500;line-height:18px;color:var(--pf-ps-k)}
+.v3 .pf-ps b{font-size:20px;font-weight:700;line-height:30px;color:var(--text)}
+.v3 .pf-long{color:var(--pf-long)} .v3 .pf-short{color:var(--pf-short)}
+.v3 .pf .pos{color:var(--ok)} .v3 .pf .neg{color:var(--danger)}
+.v3 .pf .z-ok{color:var(--ok)} .v3 .pf .z-caution{color:var(--caution)} .v3 .pf .z-warn{color:var(--warn)} .v3 .pf .z-danger{color:var(--danger)}
+.v3 .pf-pbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.v3 .pf-pt{padding:8px;border-radius:8px;border:1px solid var(--pf-pt-bd);background:var(--pf-pt-bg);min-width:0}
+.v3 .pf-pt-s{max-height:340px;overflow:auto;scrollbar-width:thin}
+.v3 .pf-pt table{min-width:100%;border-collapse:separate;border-spacing:0 4px}
+.v3 .pf-pt th{position:sticky;top:0;z-index:1;background:var(--pf-pt-bg);height:32px;padding:4px 8px;font-size:12px;font-weight:500;line-height:18px;color:var(--pf-pth);white-space:nowrap;border-bottom:1px solid var(--pf-pth-bd);text-align:left}
+.v3 .pf-pt td{padding:8px;font-size:12px;font-weight:500;line-height:18px;color:var(--text);white-space:nowrap;text-align:left}
+.v3 .pf-pt .pf-r{text-align:right}
+.v3 .pf-pt td.pf-s-long{border-left:2px solid var(--pf-long)} .v3 .pf-pt td.pf-s-short{border-left:2px solid var(--pf-short)}
+.v3 .pf-pt b{font-weight:600}
+.v3 .pf-pt th .info-i{margin-left:4px;vertical-align:-2px}
+.v3 .pf-sm{font-size:11px;opacity:.75;font-weight:500}
+.v3 .pf-2l{display:flex;flex-direction:column;gap:2px}
+.v3 .pf-close{display:inline-flex;align-items:center;border:.75px solid var(--pf-btn-bd);border-radius:6px;padding:6px 12px;font-size:12px;font-weight:500;line-height:18px;background:var(--pf-btn-bg);color:var(--text)}
+.v3 .pf-close:hover{color:var(--violet)}
+.v3 .pf-pnone{min-height:200px;padding:8px;border-radius:8px;border:1px solid var(--pf-pt-bd);background:var(--pf-pt-bg);display:grid;place-items:center;font-size:12px;font-weight:500;color:var(--pf-pth)}
+.v3 .pf-txl{color:var(--violet);text-decoration:underline}
+.v3 .pf-mutedb{color:var(--pf-pth)}
+@media (max-width:1279px){
+  .v3 .pf-pt-s{max-height:none;overflow:visible}
+  .v3 .pf-pt table,.v3 .pf-pt tbody,.v3 .pf-pt tr,.v3 .pf-pt td{display:block}
+  .v3 .pf-pt thead{display:none}
+  .v3 .pf-pt tr{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px 16px;padding:14px;margin-bottom:8px;border:1px solid var(--pf-pt-bd);border-radius:8px;background:var(--card)}
+  .v3 .pf-pt tr:last-child{margin-bottom:0}
+  .v3 .pf-pt td{padding:0;white-space:normal}
+  .v3 .pf-pt td.pf-s-long,.v3 .pf-pt td.pf-s-short{border-left:0}
+  .v3 .pf-pt td::before{content:attr(data-l);display:block;font-size:11px;font-weight:500;color:var(--pf-desc);margin-bottom:2px}
+  .v3 .pf-pt .pf-r{text-align:left}
+}
+
+/* ---- Lender > Predict: import prompt (positions held elsewhere, not earning yet) ---- */
+.v3 .pf-imps{display:flex;flex-direction:column;gap:8px}
+.v3 .pf-imp{display:flex;align-items:center;gap:14px;padding:12px 16px;border:1px solid var(--line);border-radius:12px;background:var(--tile);flex-wrap:wrap}
+.v3 .pf-imp.pf-hot{border-color:var(--pf-imp-bd);background:var(--violet-soft)}
+.v3 .pf-imp-ic{width:36px;height:36px;border-radius:10px;background:var(--pf-imp-ic);color:var(--violet);display:grid;place-items:center;flex:none}
+.v3 .pf-imp-t{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1 1 260px}
+.v3 .pf-imp-t b{font-size:14px;font-weight:600;line-height:21px;color:var(--text)}
+.v3 .pf-imp-s{display:flex;align-items:center;gap:6px 8px;flex-wrap:wrap;font-size:12px;font-weight:500;line-height:18px;color:var(--label)}
+.v3 .pf-imp-mut{color:var(--label)}
+.v3 .pf-src{font-size:11px;font-weight:600;line-height:16px;padding:2px 6px;border-radius:6px;background:var(--pf-imp-ic);color:var(--chip-fg);border:1px solid var(--line)}
+.v3 .pf-imp-apy{font-size:12px;font-weight:600;line-height:18px;color:var(--ok);margin-left:2px}
+.v3 .pf-imp-b{height:36px;padding:0 16px;border-radius:8px;background:var(--violet);color:#fff;font-size:13px;font-weight:600;white-space:nowrap}
+.v3 .pf-imp-b:hover{filter:brightness(1.08)}
+
+/* ---- Round 3: working dropdowns, logos, info in chips ---- */
+.v3 .pf-dd{position:relative;display:inline-flex}
+.v3 .pf-allf{height:36px;padding:0 6px}
+.v3 .pf-allf:hover{color:var(--violet-ink)}
+.v3 .pf-allv{font-size:13px;font-weight:600;color:var(--text)}
+.v3 .pf-allf .pf-i16{margin-left:2px}
+.v3 .pf-pop{min-width:220px}
+.v3 .pf-pop .mi{gap:10px;font-weight:600;color:var(--text)}
+.v3 .pf-pop-h{padding:6px 10px 4px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--label)}
+.v3 .pf-mi-ic{width:20px;height:20px;display:grid;place-items:center;color:var(--label);flex:none}
+.v3 .pf-mi-ok{margin-left:auto;color:var(--violet);display:grid}
+.v3 .pf-cb{width:18px;height:18px;border-radius:5px;border:1.5px solid var(--line-2);display:grid;place-items:center;color:transparent;flex:none}
+.v3 .pf-cb.on{background:var(--violet);border-color:var(--violet);color:#fff}
+.v3 .pf-cb svg{width:12px;height:12px}
+.v3 .pf .pf-i14{width:14px;height:14px;flex:none;display:inline-block;vertical-align:-2px}
+.v3 .pf-ven{display:inline-flex;align-items:center;gap:6px}
+.v3 .pf-ven .pf-i16 + .pf-i16{margin-left:-10px;box-shadow:0 0 0 1.5px var(--tile);border-radius:50%}
+.v3 .pf-mk{display:inline-flex;align-items:center;gap:8px}
+.v3 .pf-src{display:inline-flex;align-items:center;gap:4px}
+.v3 .pf-chip .info-i{margin-left:4px;vertical-align:-2px}
+.v3 .pf-fr-k .info-i{margin-left:6px;vertical-align:-2px}
+.v3 .pf-repay{display:inline-flex;align-items:center;gap:6px}
+.v3 .pf-repay .pf-i14{box-shadow:0 0 0 1.5px rgba(255,255,255,.7);border-radius:50%}
+.v3 .pf-mh + .pf-tbar{margin-top:-4px}
+.v3 .pf-ms-k .pf-i16{display:inline-block;vertical-align:-3px;margin-right:6px}
+.v3 .pf-tag.pf-t-ic{display:inline-flex;align-items:center;gap:4px}
+.v3 .pf .pf-i12{width:12px;height:12px;flex:none;display:block}
+
+/* The liquidation card now holds only the health factor meter: full width. */
+.v3 .pf-liq{grid-template-columns:minmax(0,1fr)!important}
+
+/* Portfolio → Balances (balances.tsx): three summary tiles in the strip style. */
+.v3 .pf-bal-sum{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+@media (max-width:767px){.v3 .pf-bal-sum{grid-template-columns:minmax(0,1fr)}}
+.v3 .pf-bal-t{display:flex;flex-direction:column;gap:6px;padding:20px 24px;border:1px solid var(--line);border-radius:12px;background:var(--strip-bg)}
+.v3 .pf-bal-t span{font-size:14px;font-weight:500;line-height:21px;color:var(--pf-desc)}
+.v3 .pf-bal-t b{font-size:24px;font-weight:700;line-height:32px;color:var(--text)}
+.v3 .pf-bal-t small{font-size:12px;font-weight:500;line-height:18px;color:var(--pf-desc)}

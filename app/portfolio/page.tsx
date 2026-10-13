@@ -1,37 +1,26 @@
 "use client";
 
-import { PortfolioSection } from "@/components/portfolio/portfolio-section";
+import { useEffect } from "react";
+import { PortfolioV3 } from "@/components/portfolio/portfolio-v3";
 import { useWallet } from "@/hooks/use-wallet";
 import { useUserStore } from "@/store/user";
-import { useTheme } from "@/contexts/theme-context";
-import { useEffect } from "react";
 
+/**
+ * Portfolio route: the V3 design page (components/portfolio/portfolio-v3.tsx).
+ */
 export default function PortfolioPage() {
-  const { isDark } = useTheme();
   const { refreshBalances } = useWallet();
   const userAddress = useUserStore((s) => s.address);
 
-  // Load the connected wallet's token balances so "Wallet Balance" is real on a
+  // Load the connected wallet's token balances so "Wallet" is real on a
   // direct Portfolio visit (the margin page normally triggers this).
   useEffect(() => {
     if (userAddress) refreshBalances(userAddress).catch(() => {});
   }, [userAddress, refreshBalances]);
 
   return (
-    <div className="px-4 sm:px-10 lg:px-30 pt-4 sm:pt-6 pb-8 lg:pb-0 w-full h-fit">
-      <div className="flex flex-col gap-4 sm:gap-5 w-full h-fit">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row justify-between w-full gap-3 sm:items-center">
-          <div className="flex items-center gap-3">
-            <div className="w-1 h-6 sm:hidden rounded-full bg-[#703AE6]" />
-            <h1 className={`text-[22px] sm:text-[24px] font-bold ${isDark ? "text-white" : "text-black"}`}>
-              Portfolio
-            </h1>
-          </div>
-        </div>
-
-        <PortfolioSection />
-      </div>
+    <div className="v3 page">
+      <PortfolioV3 />
     </div>
   );
 }

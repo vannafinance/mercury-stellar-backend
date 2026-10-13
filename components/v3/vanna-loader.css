@@ -1,0 +1,43 @@
+/*
+ * VannaLoader (components/v3/vanna-loader.tsx). Unscoped on purpose: the root route loader
+ * (app/loading.tsx) renders outside any `.v3` wrapper. Theme-neutral: the mark and arc use the
+ * brand gradient, the caption inherits a muted tone that works on light and dark surfaces.
+ */
+.vl{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;color:inherit;font-size:13px;line-height:1.4}
+.vl-block{padding:32px 16px;width:100%}
+.vl-page{min-height:60vh;padding:48px 16px;width:100%;gap:16px}
+.vl-inline{display:inline-flex;flex-direction:row;gap:6px;vertical-align:middle;padding:0;font-size:inherit}
+
+.vl-orb{position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:44px;height:44px}
+.vl-page .vl-orb{width:72px;height:72px}
+.vl-inline .vl-orb{width:16px;height:16px}
+
+/* Arc: a conic brand gradient masked to a thin ring, with a faint full track behind it. */
+.vl-ring{position:absolute;inset:0;border-radius:50%;
+  background:conic-gradient(from 0deg,rgba(112,58,230,0) 0deg,rgba(112,58,230,0) 110deg,#fc5457 250deg,#703ae6 360deg);
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2.5px));
+  mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2.5px))}
+.vl-ring::before{content:"";position:absolute;inset:0;border-radius:50%;background:rgba(127,127,140,.18)}
+.vl-page .vl-ring{-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3.5px));mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3.5px))}
+.vl-inline .vl-ring{-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 1.5px));mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 1.5px))}
+
+.vl-mark{display:block;width:52%;height:52%}
+.vl-inline .vl-mark{width:56%;height:56%}
+
+.vl-cap{color:var(--pd-muted,var(--muted,#888888));font-size:13px;font-weight:500;max-width:36ch}
+.vl-page .vl-cap{font-size:14px}
+.vl-inline .vl-cap{font-size:inherit;font-weight:inherit;color:inherit;max-width:none}
+
+.vl-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+@media (prefers-reduced-motion:no-preference){
+  .vl-ring{animation:vl-spin 1.1s linear infinite}
+  .vl-mark{animation:vl-breathe 1.6s ease-in-out infinite}
+}
+@keyframes vl-spin{to{transform:rotate(360deg)}}
+@keyframes vl-breathe{0%,100%{transform:scale(.9);opacity:.75}50%{transform:scale(1.04);opacity:1}}
+
+/* Drop the block padding when the parent card already pads (e.g. `.pd-load`, flash-repay empty state). */
+.vl.vl-flush{padding:0}
+/* Covers a positioned parent (e.g. the perps chart box) while its content loads. */
+.vl.vl-cover{position:absolute;inset:0;padding:0}

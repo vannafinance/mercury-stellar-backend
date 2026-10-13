@@ -6,7 +6,6 @@ import {
   fallbackPriceForSymbol,
   resolveUsdAlias,
   shortStellar,
-  syntheticGAccount,
 } from "./canon";
 import { fetchTokenPrices, getCachedTokenPrice } from "@/lib/oracle-price";
 
@@ -29,6 +28,8 @@ export type LiveLiquidationRow = {
   badDebt: number;
   durationSeconds: number;
   status: "success" | "partial";
+  /** Full margin (smart) account address from the event topic ("" when the event did not carry one). */
+  account: string;
 };
 
 export type LiveWhaleActivityRow = {
@@ -44,6 +45,10 @@ export type LiveWhaleActivityRow = {
     | "WITHDRAW";
   amountUsd: number;
   details: string;
+  /** Full address (margin account or lender wallet) from the event topic ("" when not emitted). */
+  account: string;
+  /** Transaction hash ("" when the RPC did not return one). */
+  txHash: string;
 };
 
 export type LiveEventFeed = {
@@ -158,49 +163,55 @@ export async function readLiveEventFeed(lookbackLedgers = DEFAULT_LOOKBACK_LEDGE
       txHash: ev.txHash || `live-liq-${i}`,
       chain: "stellar",
       timestamp,
-      positionAddress: shortStellar(smartAccount || syntheticGAccount(9000 + i)),
-      liquidatorAddress: shortStellar(smartAccount || syntheticGAccount(8000 + i)),
+      positionAddress: shortStellar(smartAccount),
+      // The liquidation event does not emit the liquidator; never stand in another address for it.
+      liquidatorAddress: "",
       // AccountManager liquidation event doesn't emit debt/recovery fields today.
       debtAmount: 0,
       recoveryAmount: 0,
       badDebt: 0,
       durationSeconds: 0,
       status: "success",
+      account: smartAccount,
     };
   });
 
   const whaleActivity: LiveWhaleActivityRow[] = [];
 
-  for (const [i, ev] of accountCreateEvents.entries()) {
+  for (const ev of accountCreateEvents) {
     const topics = parseTopic(ev.topic);
     const value = parseNativeScVal(ev.value) as { smart_account?: string } | null;
     const trader = String(topics[1] ?? "");
     const smart = String(value?.smart_account ?? "");
     whaleActivity.push({
       timestamp: parseTimestamp(ev.ledgerClosedAt),
-      address: shortStellar(trader || smart || syntheticGAccount(7000 + i)),
+      address: shortStellar(trader || smart),
       chain: "stellar",
       action: "OPEN_POSITION",
       amountUsd: 0,
-      details: `Created smart account ${shortStellar(smart || syntheticGAccount(6000 + i))}`,
+      details: `Created smart account ${shortStellar(smart)}`,
+      account: trader || smart,
+      txHash: ev.txHash || "",
     });
   }
 
-  for (const [i, ev] of borrowEvents.entries()) {
+  for (const ev of borrowEvents) {
     const topics = parseTopic(ev.topic);
     const symbol = String(parseNativeScVal(ev.value) ?? "XLM");
     const smart = String(topics[1] ?? "");
     whaleActivity.push({
       timestamp: parseTimestamp(ev.ledgerClosedAt),
-      address: shortStellar(smart || syntheticGAccount(5000 + i)),
+      address: shortStellar(smart),
       chain: "stellar",
       action: "INCREASE_LEVERAGE",
       amountUsd: 0,
       details: `Borrowed ${symbol} via AccountManager`,
+      account: smart,
+      txHash: ev.txHash || "",
     });
   }
 
-  for (const [i, ev] of repayEvents.entries()) {
+  for (const ev of repayEvents) {
     const topics = parseTopic(ev.topic);
     const smart = String(topics[1] ?? "");
     const value = parseNativeScVal(ev.value) as { token_amount?: unknown; token_symbol?: string } | null;
@@ -208,15 +219,17 @@ export async function readLiveEventFeed(lookbackLedgers = DEFAULT_LOOKBACK_LEDGE
     const amountToken = amountWadToToken(value?.token_amount);
     whaleActivity.push({
       timestamp: parseTimestamp(ev.ledgerClosedAt),
-      address: shortStellar(smart || syntheticGAccount(4000 + i)),
+      address: shortStellar(smart),
       chain: "stellar",
       action: "DECREASE_LEVERAGE",
       amountUsd: tokenUsd(tokenSymbol, amountToken),
       details: `Repaid ${amountToken.toFixed(4)} ${tokenSymbol}`,
+      account: smart,
+      txHash: ev.txHash || "",
     });
   }
 
-  for (const [i, ev] of poolDepositEvents.entries()) {
+  for (const ev of poolDepositEvents) {
     const topics = parseTopic(ev.topic);
     const lender = String(topics[1] ?? "");
     const value = parseNativeScVal(ev.value) as { amount?: unknown; asset_symbol?: string } | null;
@@ -224,15 +237,17 @@ export async function readLiveEventFeed(lookbackLedgers = DEFAULT_LOOKBACK_LEDGE
     const amountToken = amountWadToToken(value?.amount);
     whaleActivity.push({
       timestamp: parseTimestamp(ev.ledgerClosedAt),
-      address: shortStellar(lender || syntheticGAccount(3000 + i)),
+      address: shortStellar(lender),
       chain: "stellar",
       action: "DEPOSIT",
       amountUsd: tokenUsd(symbol, amountToken),
       details: `Deposited ${amountToken.toFixed(4)} ${symbol} into lending pool`,
+      account: lender,
+      txHash: ev.txHash || "",
     });
   }
 
-  for (const [i, ev] of poolWithdrawEvents.entries()) {
+  for (const ev of poolWithdrawEvents) {
     const topics = parseTopic(ev.topic);
     const lender = String(topics[1] ?? "");
     const value = parseNativeScVal(ev.value) as { vtoken_amount?: unknown; asset_symbol?: string } | null;
@@ -240,11 +255,13 @@ export async function readLiveEventFeed(lookbackLedgers = DEFAULT_LOOKBACK_LEDGE
     const amountToken = amountWadToToken(value?.vtoken_amount);
     whaleActivity.push({
       timestamp: parseTimestamp(ev.ledgerClosedAt),
-      address: shortStellar(lender || syntheticGAccount(2000 + i)),
+      address: shortStellar(lender),
       chain: "stellar",
       action: "WITHDRAW",
       amountUsd: tokenUsd(symbol, amountToken),
       details: `Withdrew ${amountToken.toFixed(4)} ${symbol} from lending pool`,
+      account: lender,
+      txHash: ev.txHash || "",
     });
   }
 

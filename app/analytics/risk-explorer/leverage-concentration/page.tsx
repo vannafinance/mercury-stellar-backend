@@ -115,9 +115,9 @@ export default function LeverageConcentrationPage() {
   return (
     <div className="p-6 w-full max-w-[1400px] mx-auto space-y-6">
       <div className="flex items-center gap-3">
-        <Link href="/analytics/overview2" className="flex items-center gap-1.5 text-[11px] text-vgray-400 hover:text-violet-600 transition-colors">
+        <Link href="/analytics/risk-explorer" className="flex items-center gap-1.5 text-[11px] text-vgray-400 hover:text-violet-600 transition-colors">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7L9 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
-          Risk Command Center
+          Risk Explorer
         </Link>
         <span className="text-vgray-200">/</span>
         <span className="text-[11px] text-vgray-600 font-semibold">High-Leverage Concentration Risk</span>
@@ -151,7 +151,7 @@ export default function LeverageConcentrationPage() {
                 onChange={e => setLeverageThreshold(Number(e.target.value))}
                 className="w-full h-1.5 appearance-none rounded-full bg-vgray-100 accent-violet-500 cursor-pointer"
               />
-              <p className="text-[9px] text-vgray-400">Positions above this leverage are "high-leverage"</p>
+              <p className="text-[9px] text-vgray-400">Positions above this leverage are &quot;high-leverage&quot;</p>
             </div>
 
             {/* Protocol Stats */}
@@ -200,7 +200,7 @@ export default function LeverageConcentrationPage() {
           {/* Liquidation Cliff Chart */}
           <div className="bg-surface rounded-r4 border border-vgray-100 shadow-vanna p-4">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-vgray-500 mb-1">Liquidation Cliff Chart</p>
-            <p className="text-[9px] text-vgray-400 mb-3">Positions liquidated + bad debt ($K) at each price drop — watch for the "cliff" where bad debt spikes</p>
+            <p className="text-[9px] text-vgray-400 mb-3">Positions liquidated + bad debt ($K) at each price drop — watch for the &quot;cliff&quot; where bad debt spikes</p>
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={cliffData} barSize={22}>
                 <XAxis dataKey="drop" tick={{ fontSize: 9, fill: cc.axisText }} axisLine={false} tickLine={false} />

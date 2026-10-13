@@ -99,11 +99,8 @@ export const Navbar = (props: Navbar) => {
   const appMode = useAppModeStore((s) => s.mode);
   const setAppMode = useAppModeStore((s) => s.set);
 
-  // Lite mode is parked — no active use for it right now. The toggle below is
-  // hidden rather than deleted so it's a one-line flip to bring back. Force
-  // any browser whose persisted app-mode-store still says "lite" (from before
-  // this flag) back to "pro", since there's no UI left to switch it manually.
-  const LITE_MODE_ENABLED = false;
+  // Pro/Lite toggle. Set false to hide Lite for testing and force Pro.
+  const LITE_MODE_ENABLED = true;
   useEffect(() => {
     if (!LITE_MODE_ENABLED && appMode === "lite") {
       setAppMode({ mode: "pro" });
@@ -326,8 +323,7 @@ export const Navbar = (props: Navbar) => {
               src="/logos/vanna-icon.png"
             />
           </motion.a>
-          {/* Pro / Lite mode toggle — sits next to the logo. Parked (see
-              LITE_MODE_ENABLED above); flip that flag to bring it back. */}
+          {/* Pro / Lite mode toggle — sits next to the logo. */}
           {LITE_MODE_ENABLED && (
           <div
             className={`hidden sm:inline-flex relative items-center w-[84px] h-[26px] rounded-[8px] p-[2px] cursor-pointer select-none shrink-0 ${

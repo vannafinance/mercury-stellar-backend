@@ -1,0 +1,31 @@
+/* Shared "Select a Token" dialog (token-picker.tsx): the Spot picker's look, centered on screen. */
+.v3{--tp-dim:#a7a7a7;--tp-chip:#f4f4f4;--tp-chip-h:#eeeeee;--tp-val:#555555}
+html.dark .v3{--tp-dim:#777777;--tp-chip:#222222;--tp-chip-h:#333333;--tp-val:#cccccc}
+
+/* Center this dialog vertically instead of pinning it near the top. */
+.v3 .modal-bg:has(.tp-modal){align-items:center}
+
+.v3 .modal.tp-modal{width:min(480px,100%);padding:0;border-radius:20px;overflow:hidden}
+.v3 .tp h2{font-size:16px;font-weight:600;line-height:24px;padding:20px 60px 12px 20px;color:var(--text)}
+.v3 .tp-search{margin:0 20px 12px;display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border-radius:12px;border:1px solid var(--line-2);background:var(--tile);color:var(--label)}
+.v3 .tp-search:focus-within{border-color:var(--violet)}
+.v3 .tp-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;font-size:14px;font-weight:500;color:var(--text)}
+.v3 .tp-search input::placeholder{color:var(--tp-dim)}
+.v3 .tp-pop{padding:0 20px 12px}
+.v3 .tp-pop p{margin-bottom:8px;font-size:11px;font-weight:600;line-height:15px;color:var(--tp-dim)}
+.v3 .tp-pop div{display:flex;flex-wrap:wrap;gap:8px}
+.v3 .tp-pop button{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:var(--tp-chip);font-size:12px;font-weight:600;line-height:18px;color:var(--text)}
+.v3 .tp-pop button:hover,.v3 .tp-pop button.on{background:var(--tp-chip-h)}
+.v3 .tp-head{display:flex;justify-content:space-between;padding:10px 20px 6px;border-top:1px solid var(--line-2);font-size:11px;font-weight:600;line-height:15px;color:var(--tp-dim)}
+.v3 .tp-list{max-height:min(380px,52vh);overflow-y:auto;padding:0 0 8px}
+.v3 .tp-row{width:100%;display:flex;align-items:center;gap:12px;padding:12px 20px;text-align:left}
+.v3 .tp-row:hover,.v3 .tp-row.on{background:var(--menu-hover)}
+.v3 .tp-n{display:flex;flex-direction:column;flex:1;min-width:0}
+.v3 .tp-row b{font-size:14px;font-weight:600;line-height:21px;color:var(--text)}
+.v3 .tp-row small{font-size:12px;font-weight:500;line-height:18px;color:var(--tp-dim)}
+.v3 .tp-v{display:flex;flex-direction:column;align-items:flex-end;flex:none}
+.v3 .tp-v em{font-style:normal;font-size:14px;font-weight:500;color:var(--tp-val)}
+.v3 .tp-none{padding:48px 0;text-align:center;font-size:14px;font-weight:500;color:var(--tp-dim)}
+.v3 .tp-ico{flex:none;display:block;border-radius:50%}
+.v3 .tp-ico.s20{width:20px;height:20px}
+.v3 .tp-ico.s36{width:36px;height:36px}
