@@ -8,6 +8,8 @@
  */
 
 import { signMessage } from "@/lib/wallet-adapter";
+import { Buffer } from "buffer";
+const SESSION_NETWORK_TIMEOUT_MS = 10_000;
 
 function signatureFrom(value: unknown): string | null {
   if (!value) return null;
@@ -18,7 +20,7 @@ function signatureFrom(value: unknown): string | null {
 
 export async function walletSessionStatus(address: string): Promise<boolean> {
   try {
-    const res = await fetch("/api/copilot/wallet-session", { cache: "no-store" });
+    const res = await fetch("/api/copilot/wallet-session", { cache: "no-store", signal: AbortSignal.timeout(SESSION_NETWORK_TIMEOUT_MS) });
     if (!res.ok) return false;
     const body = (await res.json()) as { ok?: boolean; wallet?: string };
     return body.ok === true && body.wallet === address;
@@ -35,10 +37,28 @@ export async function clearWalletSession(): Promise<void> {
   }
 }
 
-export async function establishWalletSession(address: string): Promise<boolean> {
+const pendingSessions = new Map<string, Promise<boolean>>();
+
+/** A user can still be reviewing the message proof after the navbar connects. */
+export function pendingWalletSession(address: string): Promise<boolean> | null {
+  return pendingSessions.get(address) ?? null;
+}
+
+export function establishWalletSession(address: string): Promise<boolean> {
+  const pending = pendingSessions.get(address);
+  if (pending) return pending;
+  const attempt = proveWalletSession(address).finally(() => {
+    if (pendingSessions.get(address) === attempt) pendingSessions.delete(address);
+  });
+  pendingSessions.set(address, attempt);
+  return attempt;
+}
+
+async function proveWalletSession(address: string): Promise<boolean> {
   if (await walletSessionStatus(address)) return true;
 
   const started = await fetch("/api/copilot/wallet-session", {
+    signal: AbortSignal.timeout(SESSION_NETWORK_TIMEOUT_MS),
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
@@ -62,6 +82,7 @@ export async function establishWalletSession(address: string): Promise<boolean> 
   if (signed.signerAddress && signed.signerAddress !== address) return false;
 
   const verified = await fetch("/api/copilot/wallet-session", {
+    signal: AbortSignal.timeout(SESSION_NETWORK_TIMEOUT_MS),
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",

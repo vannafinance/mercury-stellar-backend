@@ -1,4 +1,5 @@
 "use client";
+import { accountSetupPrompt, accountSetupRequest, type AccountSetupContinuation } from "@/lib/copilot/account-setup-continuation";
 
 // Vanna Copilot workspace - Gemini understands intent; MCP executes.
 //
@@ -178,7 +179,7 @@ interface ChatResponse {
     allow_wallet_dispatch?: boolean;
   } | null;
   data?: Record<string, unknown> | null;
-  intent?: { template_id?: string | null } | null;
+  intent?: { template_id?: string | null; slots?: Record<string, unknown> } | null;
   request_id?: string | null;
   /** Browser-only tools (navigate, open Create Vanna wallet modal, etc.). */
   client_tools?: Array<{ name: string; args: Record<string, unknown> }> | null;
@@ -1507,6 +1508,10 @@ export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
   // Lives in the root layout, not here: an in-flight run must survive leaving this page.
   const investigation = useLiveInvestigation();
+  const accountSetupRef = useRef<AccountSetupContinuation | null>(null);
+  const currentConversationRef = useRef(investigation.conversationId);
+  currentConversationRef.current = investigation.conversationId;
+  useEffect(() => { accountSetupRef.current = null; }, [address, investigation.conversationId]);
 
   const workflow = useLiveWorkflow();
   const restoreWorkflow = workflow.restore;
@@ -1956,7 +1961,6 @@ export function CopilotWorkspace() {
   const storedAutoApprove = useCopilotSettingsStore(
     (s) => (address ? Boolean(s.autoApproveByWallet[address]) : false)
   );
-  const freighterAutoApprove = walletKind === "freighter" && Boolean(address) && storedAutoApprove;
 
   // Session signing via Sign Service applies to Privy embedded wallets.
   // For Freighter, auto-approve acts as auto-dispatch directly to the extension popup.
@@ -1995,7 +1999,7 @@ export function CopilotWorkspace() {
   const capsEnforced = signServiceState.address === address && signServiceState.status === "ok";
 
   /** Whether auto-approve is toggled on in the UI by the user. */
-  const autoApproveUiOn = Boolean(address) && storedAutoApprove;
+  const autoApproveUiOn = walletKind === "privy" && Boolean(address) && storedAutoApprove;
   const railBudgetDraft = testnetBudgetDraft({
     tx: railCapsMode === "custom" ? customTx : String(mcpDefaultCaps?.tx ?? ""),
     day: railCapsMode === "custom" ? customDay || customTx : String(mcpDefaultCaps?.day ?? ""),
@@ -2127,11 +2131,9 @@ export function CopilotWorkspace() {
     };
   }, [address, sessionSigningAvailable]);
   /**
-   * Auto-approve is armed when the Sign Service is enforcing caps (for Privy),
-   * or when the user has enabled auto-dispatch (for Freighter).
+   * Auto-approve requires a Privy signing session with enforced caps.
    */
   const sessionSigning =
-    (walletKind === "freighter" && freighterAutoApprove) ||
     (sessionSigningAvailable && autoApprove && capsEnforced);
 
   // Feed the shared margin store from /api/account (identical path to margin page).
@@ -2862,6 +2864,7 @@ export function CopilotWorkspace() {
   );
 
   const cancelInFlight = useCallback(() => {
+    accountSetupRef.current = null;
     cancelledRef.current = true;
     abortRef.current?.abort("cancel pressed");
     abortRef.current = null;
@@ -3213,6 +3216,7 @@ export function CopilotWorkspace() {
 
   const run = useCallback(async (text: string) => {
     if (signing) return;
+    accountSetupRef.current = null;
     /**
      * Supersede the in-flight turn without latching Cancel. `cancelInFlight()` sets
      * `cancelledRef`, and the replacement POST then discarded its own response.
@@ -3582,13 +3586,7 @@ export function CopilotWorkspace() {
       return;
     }
     if (walletKind === "freighter") {
-      const next = !freighterAutoApprove;
-      setAutoApprove(address, next);
-      if (next) {
-        toast.success("Auto-dispatch on - transactions will open directly in Freighter");
-      } else {
-        toast.success("Auto-dispatch off");
-      }
+      toast("Auto-approve is available with Privy wallets. With Freighter, sign each transaction in your wallet.");
       return;
     }
     if (autoApproveUiOn) {
@@ -3632,7 +3630,6 @@ export function CopilotWorkspace() {
     autoApprovePending,
     address,
     walletKind,
-    freighterAutoApprove,
     autoApproveUiOn,
     sessionSigningAvailable,
     capsEnforced,
@@ -4015,6 +4012,20 @@ export function CopilotWorkspace() {
           if (seqInfo) {
             await waitForAccountSequenceApplied(seqInfo.source, seqInfo.sequence);
           }
+        }
+
+        const resumeRequest = accountSetupRequest(accountSetupRef.current, {
+          wallet: useUserStore.getState().address, conversationId: currentConversationRef.current,
+          setupRequestId: response?.request_id ?? null, operation: action?.op ?? null, cancelled: cancelledRef.current,
+          settled: Boolean(result.hash),
+        });
+        if (resumeRequest && result.hash) {
+          // Consume before research: settlement retries cannot re-arm the original request.
+          accountSetupRef.current = null;
+          setResponse(null);
+          void investigation.updateLastAssistantText("Your margin account is open. Continuing your original request; that action has not executed yet.");
+          await investigation.run(resumeRequest);
+          return;
         }
 
         // Multi-leg: resume full remaining plan (not 2-deep follow_up only).
@@ -4586,6 +4597,7 @@ export function CopilotWorkspace() {
     refreshRailStats,
     absorbStrategySteps,
     sessionSigning,
+    investigation,
     // Read inside `preferResume`. Omitting it would capture the toggle's value from the
     // render this callback was created in, so turning auto-approve on mid-strategy would
     // not take effect until something else re-created the callback.
@@ -6028,13 +6040,43 @@ export function CopilotWorkspace() {
                 onCancelPlan={() => { void workflow.cancelPlan(); }}
                 onSign={() => { void signJournalXdr(false); }}
                 wallet={address}
+                accountAvailable={Boolean(snapshot?.hasMarginAccount && snapshot.marginAccountAddress)}
                 autoSign={sessionSigning}
                 onApproveCandidate={investigation.result?.continuation ? approveCandidate : undefined}
                 onReply={(text) => { void run(text); }}
                 onWrite={(op) => {
-                  const request = investigation.result?.originalRequest ?? "";
+                  const request = investigation.result ? accountSetupPrompt(investigation.result) : "";
+                  if (op !== "create_account") {
+                    void postCopilot({ pending_write: { op }, message: request }, request);
+                    return;
+                  }
                   // Only this click opens an account; the server never creates one unasked.
-                  void postCopilot({ pending_write: { op }, message: request }, request);
+                  const conversationId = investigation.conversationId;
+                  if (!address || !conversationId || !request || loading || signing) return;
+                  const pending: AccountSetupContinuation = { wallet: address, conversationId, request, setupRequestId: null };
+                  accountSetupRef.current = pending;
+                  void postCopilot({ pending_write: { op }, message: request }, request).then(async (prepared) => {
+                    if (accountSetupRef.current !== pending) return;
+                    if (!prepared) { accountSetupRef.current = null; return; }
+                    pending.setupRequestId = prepared.request_id ?? null;
+                    const existing = prepared.intent?.template_id === "create_account" && prepared.intent.slots?.smart_account;
+                    const settledSetup = prepared.kind === "executed" && prepared.execution?.status === "signed_and_submitted" && prepared.execution.tx_hash;
+                    if ((existing || settledSetup) && !cancelledRef.current && useUserStore.getState().address === address
+                      && currentConversationRef.current === conversationId) {
+                      if (settledSetup) {
+                        const note = investigation.updateLastAssistantText("Your margin account is open. Continuing your original request; that action has not executed yet.");
+                        await updateExecutionReceipt(buildRunReceipt({ legs: [], isRun: false, runId: null, requestId: prepared.request_id,
+                          network: investigation.result?.scope.network || "testnet", single: { op }, txHash: settledSetup }));
+                        await note;
+                      }
+                      await refreshRailStats({ force: true, after: settledSetup || null });
+                      if (accountSetupRef.current !== pending || cancelledRef.current || useUserStore.getState().address !== address
+                        || currentConversationRef.current !== conversationId) return;
+                      accountSetupRef.current = null;
+                      setResponse(null);
+                      await investigation.run(request);
+                    } else if (prepared.kind === "error" || prepared.kind === "blocked") accountSetupRef.current = null;
+                  });
                 }}
                 threadDefersReceipt={cardDrawsRun}
                 approvalQueued={approveWhenProposedRef.current}
@@ -6245,7 +6287,7 @@ export function CopilotWorkspace() {
                         setIntentText(submitted || "");
                         setResponse(null);
                       }}
-                      onCancel={() => setResponse(null)}
+                      onCancel={() => { accountSetupRef.current = null; setResponse(null); }}
                     />
                   )}
 

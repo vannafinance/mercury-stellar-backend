@@ -18,6 +18,7 @@ import {
   registerPrivyBridge,
   registerPrivyAuthControls,
   setActiveWalletKind,
+  getActiveWalletKind,
 } from "@/lib/wallet-adapter";
 import { useUserStore } from "@/store/user";
 import { clearMarginAccount } from "@/store/margin-account-info-store";
@@ -129,6 +130,8 @@ export const PrivyWalletBridge = () => {
     if (!stellarWallet) return false;
 
     registerPrivyBridge({ address: stellarWallet.address, signRawHash });
+    // Keep Privy's signer warm without replacing an explicitly selected external wallet.
+    if (getActiveWalletKind() === "freighter" || (getActiveWalletKind() === null && useUserStore.getState().walletKind === "freighter")) return true;
     setActiveWalletKind("privy");
 
     useUserStore.getState().set({

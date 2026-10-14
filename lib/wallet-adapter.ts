@@ -183,6 +183,7 @@ export function startPrivyConnect(): PrivyConnectResult {
  * null rather than a throw — a signed-out visitor's reads must not break.
  */
 export async function getPrivyIdentityToken(): Promise<string | null> {
+  if (activeWalletKind === 'freighter') return null;
   const controls = privyAuthControls;
   if (!controls?.authenticated) return null;
   try {
@@ -268,7 +269,9 @@ async function resolveFreighterAddress(
 ): Promise<{ address: string; error?: WalletApiError }> {
   try {
     const direct = await FreighterApi.getAddress();
-    if (direct?.address && !direct.error) return direct;
+    if (direct?.address && !direct.error) {
+      if (!opts.interactive || (await FreighterApi.isAllowed()).isAllowed) return direct;
+    }
 
     const lockedDetail =
       describeWalletError(direct?.error) || "Freighter is locked or has not authorized this site.";
@@ -355,7 +358,10 @@ export async function signTransaction(
     }
   }
 
-  return FreighterApi.signTransaction(xdr, opts);
+  const connected = await resolveFreighterAddress({ interactive: true });
+  if (connected.error || !connected.address) return { signedTxXdr: '', error: connected.error || 'Connect Freighter before signing.' };
+  if (opts.address && connected.address !== opts.address) return { signedTxXdr: '', error: 'The selected Freighter account changed. Reconnect the intended wallet before signing.' };
+  return FreighterApi.signTransaction(xdr, { ...opts, address: connected.address });
 }
 
 /**
@@ -368,5 +374,8 @@ export async function signMessage(
   message: string,
   opts: { address: string },
 ): Promise<{ signedMessage: string | Uint8Array | null; signerAddress?: string; error?: WalletApiError }> {
+  const connected = await resolveFreighterAddress({ interactive: true });
+  if (connected.error || !connected.address) return { signedMessage: null, error: connected.error || 'Connect Freighter before verifying this wallet.' };
+  if (connected.address !== opts.address) return { signedMessage: null, error: 'The selected Freighter account changed. Reconnect the intended wallet before verifying it.' };
   return FreighterApi.signMessage(message, opts);
 }

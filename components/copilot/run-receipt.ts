@@ -17,6 +17,7 @@
  * caller's one id for the whole run, which is what stops that.
  */
 import type { ExecutionReceiptSnapshot, ExecutionReceiptStep } from "@/lib/copilot/execution-receipt";
+import { lifecycleCompletionText } from "@/lib/copilot/account-setup-continuation";
 import type { StepStatus } from "@/lib/copilot/workflow/types";
 import { toRunLegStatus } from "./run-execution-card";
 
@@ -80,6 +81,7 @@ export function buildRunReceipt(input: {
       : [
           {
             operation: (single?.op as ExecutionReceiptStep["operation"]) ?? "submit",
+            ...(lifecycleCompletionText(single?.op) ? { label: lifecycleCompletionText(single?.op)! } : {}),
             asset: String(single?.asset ?? single?.token_b ?? ""),
             amount: String(single?.amount ?? ""),
             status: "settled",
@@ -87,6 +89,7 @@ export function buildRunReceipt(input: {
           },
         ];
   return {
+    origin: "wallet",
     workflowId: (isRun ? runId : null) || requestId || `tx-${txHash.slice(0, 8)}`,
     status: "completed",
     network,

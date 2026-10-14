@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import toast from "react-hot-toast";
 import { establishWalletSession } from "@/lib/copilot/establish-wallet-session";
 import { useUserStore } from "@/store/user";
@@ -18,29 +18,39 @@ export function FreighterWalletSession() {
   const walletKind = useUserStore((s) => s.walletKind);
   const running = useRef<string | null>(null);
 
-  useEffect(() => {
+  const prove = useCallback(async (): Promise<void> => {
     if (!address || walletKind !== "freighter") return;
     if (running.current === address) return;
     running.current = address;
-    void (async () => {
+    const noticeId = `freighter-proof:${address}`;
+    const needsRetry = () => {
+      const current = useUserStore.getState();
+      if (current.address !== address || current.walletKind !== "freighter") return;
+      toast((notice) => <div role="alert">
+        <p>Verify this Freighter wallet so Copilot can read it. This signs a message, with no transaction fee.</p>
+        <button type="button" onClick={() => { toast.dismiss(notice.id); void prove(); }}>Verify wallet</button>
+      </div>, { id: noticeId, duration: Infinity });
+    };
       try {
         const ok = await establishWalletSession(address);
-        if (!ok && useUserStore.getState().address === address) {
-          toast.error(
-            "Approve the Freighter signature so Copilot can read this wallet. The navbar is connected, but the request is not signed in until you do.",
-          );
-        }
+        if (!ok) needsRetry();
+        else toast.dismiss(noticeId);
       } catch (error) {
         console.warn(
           `[copilot] Freighter wallet proof failed (${
             error instanceof Error ? error.message : String(error)
           })`,
         );
+        needsRetry();
       } finally {
         if (running.current === address) running.current = null;
       }
-    })();
   }, [address, walletKind]);
+
+  useEffect(() => {
+    void prove();
+    return () => { if (address) toast.dismiss(`freighter-proof:${address}`); };
+  }, [prove]);
 
   return null;
 }

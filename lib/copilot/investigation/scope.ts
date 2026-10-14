@@ -31,9 +31,9 @@ function remember(
   input: { subject: string; wallet: string | null; network: string },
   scope: InvestigationScope,
 ): InvestigationScope {
-  // Only verified scopes (a trader was established). Caching an empty-bindings
-  // public fallback for five minutes would hide a later good binding.
-  if (scope.trader && !scope.unverified) {
+  // Cache only verified scopes with an account. A cached miss would hide a
+  // newly created account while other account views already show it.
+  if (scope.trader && scope.smartAccount && !scope.unverified) {
     scopeCache.set(cacheKey(input), { scope, expiresAt: Date.now() + SCOPE_CACHE_TTL_MS });
   }
   return scope;

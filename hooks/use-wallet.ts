@@ -151,7 +151,7 @@ export const useWallet = () => {
      * auth.privy.io, `authenticated` stayed false, Freighter was not injected, and the
      * else-branch cleared the store. The session was never expired.
      */
-    if (persisted && !privy?.authenticated) {
+    if (walletKind !== 'freighter' && persisted && !privy?.authenticated) {
       setActiveWalletKind("privy");
       useUserStore.getState().set({
         walletKind: "privy",
@@ -165,7 +165,7 @@ export const useWallet = () => {
     // A persisted Privy session rehydrates through Privy's own SDK state
     // (see PrivyWalletBridge). Mark the kind, then try an immediate resync so
     // the signing bridge is registered before the user hits Approve & sign.
-    if (walletKind === 'privy' || privy?.authenticated) {
+    if (walletKind === 'privy' || (walletKind !== 'freighter' && privy?.authenticated)) {
       setActiveWalletKind('privy');
       try {
         const controls = privy ?? getPrivyAuthControls();

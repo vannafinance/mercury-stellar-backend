@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeResearchFacts } from "@/lib/copilot/investigation/normalize";
 import type { Observation } from "@/lib/copilot/investigation/types";
+import { factualAnswer } from "@/lib/copilot/investigation/answer";
 
 /**
  * Live MCP shapes captured 10 Sep 2026 from vanna_margin_status / vanna_margin_trade
@@ -57,6 +58,21 @@ const LIVE_CAN_WITHDRAW = {
 const noDisplayWarning = /no supported display fields were available/;
 
 describe("normalizeResearchFacts live MCP shapes", () => {
+  it("keeps successful address-list and unknown-shape diagnostics out of user warnings", () => {
+    const result = normalizeResearchFacts([
+      observation("list_smart_accounts", { accounts: ["C-account"] }),
+      observation("inactive_accounts", { accounts: [] }),
+      observation("future_read", { metadata: "no numeric display field" }),
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+  it("explains zero debt without inventing a finite health factor", () => {
+    const result = normalizeResearchFacts([observation("account_health", { debt_usd: "0", collateral_usd: "0", is_healthy: true })]);
+    expect(result.facts).toContainEqual(expect.objectContaining({ sourcePath: "health_factor_state", label: "Debt status", value: "no outstanding debt" }));
+    expect(factualAnswer(result.facts, "health factor")).toContain("Your account has no debt, so a health factor does not apply yet.");
+    const missing = normalizeResearchFacts([observation("account_health", { collateral_usd: "0" })]);
+    expect(missing.facts.some(fact => fact.sourcePath === "health_factor_state")).toBe(false);
+  });
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -156,7 +172,7 @@ describe("normalizeResearchFacts live MCP shapes", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = normalizeResearchFacts([observation("account_health", { smart_account: "C_ONLY" })]);
     expect(result.facts).toEqual([]);
-    expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(true);
+    expect(result.warnings).toEqual([]);
     expect(warn).toHaveBeenCalledWith("[copilot] investigation fact extract", expect.objectContaining({
       capability: "account_health",
       status: "ok",

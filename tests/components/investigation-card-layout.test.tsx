@@ -236,6 +236,15 @@ describe("plan layouts by count", () => {
 });
 
 describe("a write choice", () => {
+  it("removes obsolete creation controls and account warnings when the current account is available", () => {
+    cardFor(view({ message: "An account was required.", understanding: null,
+      choices: [{ id: "create_account", label: "Open a margin account", write: "create_account" }],
+      warnings: ["No active margin account was discovered for this wallet.", "Keep your chosen safety floor."],
+    }), { accountAvailable: true, onWrite: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Open a margin account" })).toBeNull();
+    expect(screen.queryByText("No active margin account was discovered for this wallet.")).toBeNull();
+    expect(screen.getByText("Keep your chosen safety floor.")).toBeTruthy();
+  });
   it("opens a margin account only when its button is clicked", () => {
     const onWrite = vi.fn(); const onReply = vi.fn();
     cardFor(view({

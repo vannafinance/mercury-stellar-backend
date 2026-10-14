@@ -1,4 +1,5 @@
 import type { MCPClient } from "../mcp-client";
+import { MISSING_MARGIN_ACCOUNT_NOTE } from "../account-setup-continuation";
 import { anchoredSigningPolicyRequest } from "./signing-policy-request";
 import { reuseTerminalReadFailures } from "./terminal-read-cache";
 import type { ResearchModel, InvestigationProgress, InvestigationLimits, Observation, ProposedPlan, ResearchTask } from "./types";
@@ -776,6 +777,22 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       logPhase("position_coverage", { requested: coverage.length });
     }
   }
+  let accountOverviewId: string | null = null;
+  const accountOwnershipAnswer = outcome.kind === "research_complete" && outcome.goal.intent === "answer"
+    && outcome.findings.some(finding => finding.evidenceIds.some(id => result.observations.some(observation =>
+      observation.id === id && observation.capability === "list_smart_accounts" && observation.status === "ok")));
+  if (accountOwnershipAnswer && scope.trader) {
+    // Ownership-list answers include the independently resolved active association.
+    // Reuse the already-started account snapshot for the current account's summary.
+    result.observations.push({ id: "resolved-account-identity", capability: "account_identity", args: {},
+      observedAt: 0, status: "ok", data: { has_active_account: Boolean(scope.smartAccount) } });
+    const overviewPosition = scope.smartAccount ? position ?? (await authoritativePositionTask).value : null;
+    if (overviewPosition) {
+      const observation = healthObservations(overviewPosition)[0];
+      accountOverviewId = `account-overview-${result.observations.length}`;
+      result.observations.push({ ...observation, id: accountOverviewId });
+    }
+  }
   let displaySnapshot = position?.snapshot ?? null;
   const healthAnswer = outcome.kind === "research_complete" && outcome.goal.intent === "answer"
     && !outcome.plans?.length && !outcome.goal.actions?.length
@@ -811,9 +828,16 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     // Unknown freshness must not become a fabricated live-read timestamp.
     ? accountDisplayObservations(result.observations, displaySnapshot, 0) : result.observations;
   const normalized = normalizeResearchFacts(displayObservations);
-  if (healthAnswer) normalized.facts.forEach(fact => {
-    if (fact.sourcePath === "health_factor") { fact.requested = true; fact.requiredInReply = true; }
+  if (accountOwnershipAnswer) normalized.facts.forEach(fact => {
+    if (fact.sourcePath === "has_active_account" || (fact.evidenceId === accountOverviewId
+      && (fact.sourcePath === "collateral_usd" || fact.sourcePath === "debt_usd"))) fact.requiredInReply = true;
   });
+  if (healthAnswer) {
+    const healthState = normalized.facts.findLast(fact => fact.sourcePath === "health_factor_state");
+    normalized.facts.forEach(fact => {
+      if (fact.sourcePath === "health_factor" || fact === healthState) { fact.requested = true; fact.requiredInReply = true; }
+    });
+  }
   const { warnings } = normalized;
   // An unsupported asset the user named beside supported ones is stated as a fact, not left to a failed read.
   const facts = [...normalized.facts, ...unsupportedAssetFacts(messages[messages.length - 1] ?? input.message)];
@@ -1576,7 +1600,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   } else if (!scope.trader) {
     warnings.push("No verified wallet is connected. Only public market information was available.");
   } else if (!scope.smartAccount && !lifecycleOp) {
-    warnings.push("No active margin account was discovered for this wallet.");
+    warnings.push(MISSING_MARGIN_ACCOUNT_NOTE);
   }
   // Why the run stopped is for the log: the reply above already says it stopped, in words for the user,
   // and a line naming the internal reason ("repeated read") on the card is a pipeline note, not an answer.

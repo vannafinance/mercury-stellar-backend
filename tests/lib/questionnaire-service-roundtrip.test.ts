@@ -59,6 +59,7 @@ const BASIS = {
 
 const mcp = {
   call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+    if (tool === "vanna_list_smart_accounts") return { smart_accounts: [SCOPE.smartAccount], count: 1 };
     if (tool === "vanna_get_wallet_balance") return { assets: [{ symbol: "XLM", balance: "80", decimals: 7, status: "ok" }, { symbol: "XLM_SAC", balance: "80", decimals: 7, status: "ok" }], fee_reserve_xlm: "0.5" };
     if (tool === "vanna_get_collateral") return { collateral: [{ symbol: "XLM", balance: "300" }] };
     if (tool === "vanna_get_price" || tool === "vanna_get_prices_batch") return { price_usd: "0.2", prices: { XLM: { price_usd: "0.2" } } };
@@ -70,6 +71,23 @@ const mcp = {
 };
 
 describe("questionnaire round trip through researchTurn", () => {
+  it("grounds an ownership-list answer in active scope and the existing account snapshot", async () => {
+    harness.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    harness.computeAccountPosition.mockResolvedValue({ grossCollateralUsd: "0", debtUsd: "0", healthFactor: null,
+      snapshot: { grossCollateralValue: 0, totalBorrowedValue: 0, collateralBalances: {}, borrowedBalances: {} } });
+    harness.computeBorrowCapacity.mockResolvedValue(null);
+    let turn = 0;
+    const result = await researchTurn({ message: "Show my margin account status", wallet: SCOPE.trader, continuation: null }, {
+      subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+      model: async () => ++turn === 1 ? { kind: "inspect", capability: "list_smart_accounts", args: {} }
+        : { kind: "research_complete", goal: { intent: "answer", objective: "Account status", constraints: [], borrowing: "unspecified" },
+          findings: [{ summary: "Your wallet owns a margin account.", evidenceIds: ["e1"] }], openQuestions: [] },
+    });
+    expect(result.facts).toContainEqual(expect.objectContaining({ sourcePath: "has_active_account", value: "active", requiredInReply: true }));
+    for (const sourcePath of ["collateral_usd", "debt_usd"]) expect(result.facts).toContainEqual(expect.objectContaining({ sourcePath, value: "0", requiredInReply: true }));
+    expect(result.warnings.some(warning => warning.includes("supported display fields"))).toBe(false);
+    expect(result.message).toContain("You have an active margin account.");
+  });
   it.each(["clarify", "research_complete"] as const)("asks the same USDC questionnaire from %s and retains the supplied amount", async (kind) => {
     harness.resolveInvestigationScope.mockResolvedValue(SCOPE);
     harness.computeAccountPosition.mockResolvedValue(null);
