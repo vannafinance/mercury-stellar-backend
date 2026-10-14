@@ -419,3 +419,11 @@ html:not(.dark) .v3 .fm-act.k .fm-cta:disabled{background:#a7a7a7;color:#fff}   
 .v3 .fm-tbl[aria-label="Delta-neutral vaults"] .fm-ven > span{white-space:normal;line-height:1.3}
 /* Perena vaults table (seven columns, same row style as the Kamino table above it). */
 .v3 .fm-tr.k7{grid-template-columns:repeat(7,minmax(0,1fr))}
+
+/* LP pair logos: overlapped with a card-coloured ring (the design's .fd-stack). */
+.v3 .fm-pair{display:inline-flex;align-items:center;flex:none}
+.v3 .fm-pair .fm-ico16{width:18px;height:18px;border-radius:50%;box-shadow:0 0 0 2px var(--card);background:var(--card)}
+.v3 .fm-pair .fm-ico16+.fm-ico16{margin-left:-6px}
+/* LP rows: keep "XLM / SoUSDC" on one line, and give the 8-column LP table's pool column the room for it. */
+.v3 .fm-tk{white-space:nowrap}
+.v3 .fm-tr.k8{grid-template-columns:minmax(0,1.5fr) repeat(7,minmax(0,1fr))}

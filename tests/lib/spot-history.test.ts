@@ -90,4 +90,28 @@ describe("token-transfer spot history fallback", () => {
     expect(leg).toMatchObject({ direction: "out", amount: BigInt("10000000") });
     expect(transfersToSpotHistory([leg!], account)).toEqual([]);
   });
+
+  it("decodes the native XLM SAC's 4-topic transfer (trailing asset topic)", () => {
+    const leg = decodeSpotTransfer(
+      CONTRACT_ADDRESSES.BLEND_XLM,
+      ["transfer", account, "CPOOL", "native"],
+      BigInt("100000000"),
+      account,
+      "tx-sac",
+      300,
+    );
+    expect(leg).toMatchObject({ direction: "out", amount: BigInt("100000000") });
+  });
+
+  it("excludes an LP deposit whose over-supplied side is refunded", () => {
+    // Aquarius deposit_liquidity: XLM and AqUSDC both leave, a few stroops of
+    // AqUSDC come back. Not a swap, though it has an outgoing and an incoming leg.
+    const legs = [
+      decodeSpotTransfer(CONTRACT_ADDRESSES.AQUARIUS_USDC, ["transfer", account, "CPOOL"], BigInt("20000000"), account, "tx-lp", 400),
+      decodeSpotTransfer(CONTRACT_ADDRESSES.BLEND_XLM, ["transfer", account, "CPOOL", "native"], BigInt("2601400000"), account, "tx-lp", 400),
+      decodeSpotTransfer(CONTRACT_ADDRESSES.AQUARIUS_USDC, ["transfer", "CPOOL", account], BigInt("277"), account, "tx-lp", 400),
+    ];
+    expect(legs.every(Boolean)).toBe(true);
+    expect(transfersToSpotHistory(legs.map((leg) => leg!), account)).toEqual([]);
+  });
 });

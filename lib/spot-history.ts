@@ -147,6 +147,12 @@ export function transfersToSpotHistory(
       totals.set(leg.tokenContract, total);
     }
 
+    // A swap sends out exactly one token. Two tokens leaving in the same
+    // transaction is an LP deposit (e.g. Aquarius returns a few stroops of the
+    // over-supplied side, which would otherwise read as XLM -> AqUSDC).
+    const outgoingTokens = Array.from(totals.values()).filter((total) => total.out > ZERO).length;
+    if (outgoingTokens !== 1) continue;
+
     let input: { token: string; amount: bigint } | null = null;
     let output: { token: string; amount: bigint } | null = null;
     for (const [token, total] of totals) {
@@ -286,6 +292,20 @@ async function fromMercury(marginAccountAddress: string): Promise<SpotHistoryEnt
   return rows;
 }
 
+// Ledgers per getEvents request. The public testnet RPC scans at most ~10k
+// ledgers per call and answers a single 50k-ledger request with only its OLDEST
+// 10k (plus a cursor) — so the old one-shot query silently returned no swaps
+// whenever the account traded more than ~14 hours after that slice. Busy
+// stretches of the native XLM contract also trip "-32001 request exceeded
+// processing limit" on 10k windows; 5k windows with an explicit endLedger
+// stay under it (verified 2026-10-14), and a failing window is halved once.
+const RPC_WINDOW_LEDGERS = 5_000;
+// Roughly three days of ledgers, as before.
+const RPC_LOOKBACK_LEDGERS = 50_000;
+const RPC_WINDOW_CONCURRENCY = 4;
+
+type RpcEvent = StellarSdk.rpc.Api.EventResponse;
+
 async function fromRpc(marginAccountAddress: string): Promise<SpotHistoryEntry[]> {
   const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
   const health = await server.getHealth();
@@ -293,32 +313,58 @@ async function fromRpc(marginAccountAddress: string): Promise<SpotHistoryEntry[]
     .scvAddress(new StellarSdk.Address(marginAccountAddress).toScAddress())
     .toXDR("base64");
   const transferTopic = StellarSdk.xdr.ScVal.scvSymbol("transfer").toXDR("base64");
-  const response = await server.getEvents({
-    filters: [
-      {
-        type: "contract",
-        contractIds: [CONTRACT_ADDRESSES.ACCOUNT_MANAGER],
-        topics: [["*", accountTopic]],
-      },
-      {
-        type: "contract",
-        contractIds: SPOT_TOKEN_CONTRACTS,
-        topics: [[transferTopic, accountTopic, "*"]],
-      },
-      {
-        type: "contract",
-        contractIds: SPOT_TOKEN_CONTRACTS,
-        topics: [[transferTopic, "*", accountTopic]],
-      },
-    ],
-    // Use the node's real retention boundary, capped to roughly three days of
-    // ledgers. The former 9,000-ledger window was only ~12 hours and made
-    // otherwise-valid recent swaps disappear before Mercury had a chance to
-    // provide the long-term copy. Keeping this at 50k also stays below the
-    // public RPC node's event-query processing limit.
-    startLedger: Math.max(health.oldestLedger, health.latestLedger - 50_000),
-    limit: 1000,
-  });
+  const filters: StellarSdk.rpc.Api.EventFilter[] = [
+    {
+      type: "contract",
+      contractIds: [CONTRACT_ADDRESSES.ACCOUNT_MANAGER],
+      topics: [["*", accountTopic]],
+    },
+    // Trailing "**" matches any number of further topics. The native XLM SAC
+    // emits transfer with a 4th topic ("native"), so the old exact 3-segment
+    // filter never matched its transfers — every XLM leg was missing and no
+    // XLM <-> USDC swap could be reconstructed (verified 2026-10-14).
+    {
+      type: "contract",
+      contractIds: SPOT_TOKEN_CONTRACTS,
+      topics: [[transferTopic, accountTopic, "*", "**"]],
+    },
+    {
+      type: "contract",
+      contractIds: SPOT_TOKEN_CONTRACTS,
+      topics: [[transferTopic, "*", accountTopic, "**"]],
+    },
+  ];
+
+  /** One [start, end) ledger window; on a processing-limit error, retried as two halves. */
+  const readWindow = async (start: number, end: number, canSplit = true): Promise<RpcEvent[]> => {
+    try {
+      const response = await server.getEvents({ filters, startLedger: start, endLedger: end, limit: 1000 });
+      return response.events;
+    } catch (error) {
+      if (!canSplit || end - start < 2) throw error;
+      const mid = Math.floor((start + end) / 2);
+      const halves = await Promise.allSettled([readWindow(start, mid, false), readWindow(mid, end, false)]);
+      return halves.flatMap((half) => (half.status === "fulfilled" ? half.value : []));
+    }
+  };
+
+  // Newest window first, so the most recent swaps are read even if an older
+  // window fails or the caller's timeout cuts the scan short.
+  const oldest = Math.max(health.oldestLedger, health.latestLedger - RPC_LOOKBACK_LEDGERS);
+  const windows: [number, number][] = [];
+  for (let end = health.latestLedger + 1; end > oldest; end -= RPC_WINDOW_LEDGERS) {
+    windows.push([Math.max(oldest, end - RPC_WINDOW_LEDGERS), end]);
+  }
+  const events: RpcEvent[] = [];
+  for (let i = 0; i < windows.length; i += RPC_WINDOW_CONCURRENCY) {
+    const batch = await Promise.allSettled(
+      windows.slice(i, i + RPC_WINDOW_CONCURRENCY).map(([start, end]) => readWindow(start, end)),
+    );
+    batch.forEach((result) => {
+      if (result.status === "fulfilled") events.push(...result.value);
+    });
+  }
+  const response = { events };
 
   const execRows = response.events
     .filter((event) => event.contractId?.contractId() === CONTRACT_ADDRESSES.ACCOUNT_MANAGER)
@@ -375,11 +421,11 @@ export async function getSpotHistory(
 ): Promise<SpotHistoryEntry[]> {
   if (!marginAccountAddress) return [];
   // Cap each source so a hung Mercury walk can't leave Spot History empty for
-  // the entire page session. RPC usually returns within a few seconds; Mercury
-  // is allowed a bit longer but must not block indefinitely.
+  // the entire page session. Mercury must not block indefinitely; RPC now walks
+  // ~10 ledger windows (see RPC_WINDOW_LEDGERS), so it gets a longer budget.
   const [mercury, rpc] = await Promise.allSettled([
     withTimeout(fromMercury(marginAccountAddress), 6_000),
-    withTimeout(fromRpc(marginAccountAddress), 8_000),
+    withTimeout(fromRpc(marginAccountAddress), 20_000),
   ]);
   const byHash = new Map<string, SpotHistoryEntry>();
   // Prefer RPC first (recent, usually faster), then Mercury for longer history.

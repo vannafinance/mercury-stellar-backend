@@ -9,7 +9,7 @@ import { iconPaths } from "@/lib/constants";
 /** Logos shipped with the design (file name = key). */
 const LOGO_FILES: Record<string, string> = {
   XLM: "XLM.png", USDC: "USDC.png", USDT: "USDT.svg", ETH: "ETH.svg", BTC: "BTC.svg", SOL: "SOL.png", EURC: "EURC.svg",
-  PYTH: "PYTH.png", AQUARIUS: "AQUARIUS.png", SOROSWAP: "SOROSWAP.png",
+  PYTH: "PYTH.png", AQUARIUS: "AQUARIUS.png", SOROSWAP: "SOROSWAP.png", BLEND: "BLEND.png",
 };
 /** Venue logos are rounded squares, token logos circles. */
 const VENUES = new Set(["PYTH", "AQUARIUS", "SOROSWAP", "BLEND"]);
@@ -22,7 +22,6 @@ const ALIAS: Record<string, string> = {
 export function logoSrc(sym: string): string | null {
   const key = ALIAS[sym] ?? sym;
   if (LOGO_FILES[key]) return `/logos-v3/${LOGO_FILES[key]}`;
-  if (key === "BLEND") return null;
   return iconPaths[sym] ?? iconPaths[key] ?? null;
 }
 

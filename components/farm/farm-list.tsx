@@ -33,10 +33,10 @@ const parseThr = (s: string) => {
   return m ? parseFloat(m[1]) * ({ k: 1e3, m: 1e6, b: 1e9 }[(m[2] || "").toLowerCase() as "k" | "m" | "b"] ?? 1) : null;
 };
 
-/** Two overlapping pool logos (LP rows). */
+/** Two overlapping pool logos (LP rows), as the design's `fd-stack`. */
 function PairIcons({ a, b }: { a: string; b: string }) {
   return (
-    <span className="fm-tk" style={{ gap: 0 }}>
+    <span className="fm-pair">
       <Icon sym={a} className="fm-ico16" />
       <Icon sym={b} className="fm-ico16" />
     </span>

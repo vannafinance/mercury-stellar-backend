@@ -10,7 +10,7 @@ import Link from "next/link";
 import { Icon, IC } from "@/components/v3/icons";
 import { Info } from "@/components/v3/ui";
 
-/** Venue name → logo key (Blend has no logo file, so `Icon` draws its lettered circle). */
+/** Venue name → logo key (public/logos-v3). */
 const VSYM: Record<string, string> = { Blend: "BLEND", Aquarius: "AQUARIUS", Soroswap: "SOROSWAP" };
 
 /** One table cell: value line plus optional mini chips. */
