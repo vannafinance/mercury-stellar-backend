@@ -1,6 +1,11 @@
+/**
+ * Nav entries. `group`: "primary" (standalone), "lend" (the LEND box: supply to Vanna's pools),
+ * "bordered" (the BORROW & TRADE box: borrow on Margin, use the credit in Trade and Farm),
+ * "secondary" (standalone, after the boxes).
+ */
 export const navbarItems = [
   { title: "Portfolio", link: "/portfolio", group: "primary" },
-  { title: "Earn", link: "/earn", group: "primary" },
+  { title: "Earn", link: "/earn", group: "lend" },
   { title: "Margin", link: "/", group: "bordered" },
   { title: "Trade", link: "/trade" , group: "bordered"  },
   { title: "Farm", link: "/farm", group: "bordered" },

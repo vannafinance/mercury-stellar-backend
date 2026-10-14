@@ -132,6 +132,7 @@ export const Navbar = (props: Navbar) => {
 
   const groupedItems = {
     primary: filteredItems.filter((item) => item.group === "primary"),
+    lend: filteredItems.filter((item) => item.group === "lend"),
     bordered: filteredItems.filter((item) => item.group === "bordered"),
     secondary: filteredItems.filter((item) => item.group === "secondary"),
   };
@@ -252,6 +253,45 @@ export const Navbar = (props: Navbar) => {
       if (event.key === "Escape") setIsDropdownOpen(false);
     };
 
+  /** One standalone nav pill (Portfolio, and the LEND box's Earn). */
+  const renderPlainItem = (item: { title: string; link: string; group: string }, idx: number) => {
+    const isActive = isNavItemActive(pathname, item);
+    return (
+      <motion.div
+        key={item.link}
+        onClick={() => {
+          handleNavItemClickWithLink(item);
+        }}
+        onKeyDown={handleNavKeyDown(item)}
+        role="button"
+        tabIndex={0}
+        className={`rounded-[8px] py-[9px] px-[16px] text-[14px] font-semibold group flex gap-1.5 items-center hover:text-[#FF007A] cursor-pointer transition-colors ${
+          isActive
+            ? activePillClass(isDark)
+            : isDark
+            ? "text-white"
+            : ""
+        }`}
+        aria-label={`Navigate to ${item.title}`}
+        aria-current={isActive ? "page" : undefined}
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{
+          duration: 0.3,
+          delay: idx * 0.1,
+          ease: "easeOut",
+        }}
+        whileHover={{
+          scale: 0.95,
+          transition: { type: "spring", stiffness: 300, damping: 15 },
+        }}
+        whileTap={{ scale: 0.95 }}
+      >
+        {item.title}
+      </motion.div>
+    );
+  };
+
   return (
     <div
       className={`sticky top-0 z-[1000] ${
@@ -323,6 +363,15 @@ export const Navbar = (props: Navbar) => {
               src="/logos/vanna-icon.png"
             />
           </motion.a>
+          {/* Network badge — the app runs on Stellar testnet. */}
+          <span
+            className={`hidden sm:inline-flex items-center h-[26px] px-[10px] rounded-[8px] text-[12px] font-semibold shrink-0 select-none ${
+              isDark ? "bg-[#703AE6]/20 text-[#A78BFA]" : "bg-[#F1EBFD] text-[#703AE6]"
+            }`}
+            title="Vanna on Stellar testnet"
+          >
+            Testnet
+          </span>
           {/* Pro / Lite mode toggle — sits next to the logo. */}
           {LITE_MODE_ENABLED && (
           <div
@@ -401,48 +450,37 @@ export const Navbar = (props: Navbar) => {
 
         {/* Navigation items — desktop only */}
         <div className="hidden xl:flex gap-2 items-center">
-          {groupedItems.primary.map((item, idx) => {
-            const isActive = isNavItemActive(pathname, item);
-            return (
-              <motion.div
-                key={item.link}
-                onClick={() => {
-                  handleNavItemClickWithLink(item);
-                }}
-                onKeyDown={handleNavKeyDown(item)}
-                role="button"
-                tabIndex={0}
-                className={`rounded-[8px] py-[9px] px-[16px] text-[14px] font-semibold group flex gap-1.5 items-center hover:text-[#FF007A] cursor-pointer transition-colors ${
-                  isActive
-                    ? activePillClass(isDark)
-                    : isDark
-                    ? "text-white"
-                    : ""
+          {groupedItems.primary.map((item, idx) => renderPlainItem(item, idx))}
+          {groupedItems.lend.length > 0 && (
+            <div
+              className={`relative rounded-[8px] border-[1px] ${
+                isDark ? "border-[#333333]" : "border-[#E2E2E2]"
+              } p-1 flex gap-1 overflow-visible`}
+              title="Lend: supply to Vanna's pools and earn from margin borrowers"
+            >
+              <span
+                className={`absolute -top-2 left-2.5 px-[5px] text-[9px] leading-[14px] font-bold tracking-[0.08em] uppercase whitespace-nowrap text-[#9CA3AF] ${
+                  isDark ? "bg-[#111111]" : "bg-white"
                 }`}
-                aria-label={`Navigate to ${item.title}`}
-                aria-current={isActive ? "page" : undefined}
-                initial={{ opacity: 0, y: -20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{
-                  duration: 0.3,
-                  delay: idx * 0.1,
-                  ease: "easeOut",
-                }}
-                whileHover={{
-                  scale: 0.95,
-                  transition: { type: "spring", stiffness: 300, damping: 15 },
-                }}
-                whileTap={{ scale: 0.95 }}
               >
-                {item.title}
-              </motion.div>
-            );
-          })}
+                Lend
+              </span>
+              {groupedItems.lend.map((item, idx) => renderPlainItem(item, idx + groupedItems.primary.length))}
+            </div>
+          )}
           <div
-            className={`rounded-[8px] border-[1px] ${
-              isDark ? "border-[#2A2A2A]" : "border-[#E5E7EB]"
+            className={`relative rounded-[8px] border-[1px] ${
+              isDark ? "border-[#333333]" : "border-[#E2E2E2]"
             } p-1 flex gap-1 overflow-visible`}
+            title="Borrow & trade: borrow on Margin, use the credit in Trade and Farm"
           >
+            <span
+              className={`absolute -top-2 left-2.5 px-[5px] text-[9px] leading-[14px] font-bold tracking-[0.08em] uppercase whitespace-nowrap text-[#9CA3AF] ${
+                isDark ? "bg-[#111111]" : "bg-white"
+              }`}
+            >
+              Borrow &amp; trade
+            </span>
             {groupedItems.bordered.map((item, idx) => {
               const isActive = isNavItemActive(pathname, item);
 
@@ -1645,6 +1683,7 @@ export const Navbar = (props: Navbar) => {
                 {/* All nav items */}
                 {[
                   ...groupedItems.primary,
+                  ...groupedItems.lend,
                   ...groupedItems.bordered,
                   ...groupedItems.secondary,
                 ].map(
