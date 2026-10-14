@@ -96,7 +96,7 @@ function CapField({
  * setting the user flips once.
  */
 export function AutoApproveMenu({
-  on,
+  on: configuredOn,
   busy,
   capsMode,
   customTx,
@@ -118,6 +118,7 @@ export function AutoApproveMenu({
   onReviewOpened,
   variant = "pill",
 }: AutoApproveMenuProps) {
+  const on = configuredOn && !walletSigningRequired;
   const [open, setOpen] = useState(false);
   const reviewedRequest = useRef(0);
   useEffect(() => {
@@ -174,7 +175,7 @@ export function AutoApproveMenu({
 
   const rail = variant === "rail";
   const mini = variant === "mini";
-  const controlLabel = walletSigningRequired ? "Auto-continue" : "Auto-approve";
+  const controlLabel = "Auto-approve";
 
   const toggle = () => {
     if (hoverMode) {
@@ -219,7 +220,7 @@ export function AutoApproveMenu({
               type="button"
               role="switch"
               aria-checked={on}
-              disabled={busy}
+              disabled={busy || walletSigningRequired}
               onClick={() => onToggle()}
 
               className={`relative h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:opacity-75 ${
@@ -234,7 +235,7 @@ export function AutoApproveMenu({
             </button>
           </div>
 
-          {walletSigningRequired && <p className="mt-2 text-[12px] leading-[18px] text-vgray-500">Continue approved steps automatically. Freighter still asks you to sign each transaction; this does not enable offline execution.</p>}
+          {walletSigningRequired && <p className="mt-2 text-[12px] leading-[18px] text-vgray-500">Auto-approve is available with Privy wallets. With Freighter, sign each transaction in your wallet.</p>}
           {!walletSigningRequired && <p className="mt-2 text-[12px] leading-[18px] text-vgray-500">Each transaction has a limit. The daily budget covers their combined value.</p>}
           <div hidden={walletSigningRequired} className={walletSigningRequired ? "hidden" : "mt-3 flex gap-1.5"}>
             <button

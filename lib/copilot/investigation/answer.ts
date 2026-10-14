@@ -42,7 +42,7 @@ function relevantFacts(facts: readonly ResearchFact[], request?: string): readon
       if (named.length && !named.some((asset) => fact.unit === asset || fact.label.toUpperCase().includes(asset))) return false;
       return wantsWallet || named.length > 0;
     }
-    if (fact.sourcePath === "posted_health_factor" || fact.sourcePath === "health_factor" || fact.sourcePath === "page_debt_mismatch") {
+    if (fact.sourcePath === "posted_health_factor" || fact.sourcePath === "health_factor" || fact.sourcePath === "health_factor_state" || fact.sourcePath === "page_debt_mismatch") {
       return wantsHealth;
     }
     if (isDebtTotal(fact)) return wantsDebt;
@@ -164,18 +164,24 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string, 
   };
   const sentences: string[] = [];
   const selected = relevantFacts(facts, request);
+  const accountStatus = selected.find(fact => fact.sourcePath === "has_active_account");
+  if (accountStatus) sentences.push(accountStatus.value === "active"
+    ? "You have an active margin account." : "No active margin account was found for this wallet.");
   const balances = selected.filter(f => f.venue === "wallet" && f.sourcePath.endsWith(".balance"));
   if (balances.length) sentences.push(`Your wallet holds ${balances.map(amount).join(", ")}.`);
   const posted = selected.find(f => f.sourcePath === "posted_health_factor");
   const pageHealth = selected.find(f => f.sourcePath === "health_factor" && f.venue === "margin");
   const pageMismatch = selected.find(f => f.sourcePath === "page_debt_mismatch");
+  const healthState = selected.find(f => f.sourcePath === "health_factor_state");
   /**
    * The health factor the user is told is the site's own (owner, 29 Sep: the Margin page's
    * 2.32 is correct, the contract-basis 1.83 is not what to say). The posted ratio is stated
    * only beside a panel shown to be stale by its debt; when the panel figure simply was not
    * read, no other number stands in for it.
    */
-  if (pageHealth && !posted && !pageMismatch) {
+  if (healthState && !pageHealth && !posted && !pageMismatch) {
+    sentences.push("Your account has no debt, so a health factor does not apply yet.");
+  } else if (pageHealth && !posted && !pageMismatch) {
     sentences.push(`Your reported health factor is ${formatHealthFactor(pageHealth.value)}.`);
   } else if (posted && !pageMismatch) {
     sentences.push("I could not read a live figure for that just now.");

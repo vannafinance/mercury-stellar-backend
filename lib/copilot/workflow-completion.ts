@@ -1,5 +1,6 @@
 import type { ExecutionReceiptSnapshot } from "./execution-receipt";
 import type { ReplyBlock } from "./investigation/view";
+import { lifecycleCompletionText } from "./account-setup-continuation";
 
 /** Presentation only: settlement authority remains the workflow journal. */
 export type WorkflowCompletion = {
@@ -18,7 +19,7 @@ export type WorkflowCompletionReply = {
 /** A completed journal may still need a presentation-only restore to finish its summary. */
 export function needsCompletionRecovery(receipt: ExecutionReceiptSnapshot | null | undefined,
   completion: WorkflowCompletion | null | undefined): boolean {
-  return receipt?.status === "completed" && !completionMatches(receipt, completion);
+  return receipt?.status === "completed" && receipt.origin !== "wallet" && !completionMatches(receipt, completion);
 }
 
 /** A transaction hash for display: the ends, with the whole hash kept in the link's title and accessible name. */
@@ -88,7 +89,7 @@ export function explorerNetwork(network: string): "public" | "testnet" | null {
 }
 
 export function transactionPurpose(steps: ExecutionReceiptSnapshot["steps"]): string {
-  return steps.map((step) => step.label || [step.operation, step.amount, step.asset].filter(Boolean).join(" ")).join("; ");
+  return steps.map((step) => lifecycleCompletionText(step.operation) || step.label || [step.operation, step.amount, step.asset].filter(Boolean).join(" ")).join("; ");
 }
 
 /** Plain history carries the same evidence as the UI; future turns need not parse a card. */

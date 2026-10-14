@@ -14,6 +14,10 @@ export function reply(r = receipt()): WorkflowCompletionReply {
 }
 
 describe("post-settlement presentation contract", () => {
+  it("does not restore a wallet receipt as a nonexistent workflow journal", () => {
+    expect(needsCompletionRecovery({ ...receipt(), origin: "wallet" }, undefined)).toBe(false);
+    expect(needsCompletionRecovery(receipt(), undefined)).toBe(true);
+  });
   it("restores only completed workflows whose matching summary is missing", () => {
     const r = receipt();
     expect(needsCompletionRecovery(r, undefined)).toBe(true);

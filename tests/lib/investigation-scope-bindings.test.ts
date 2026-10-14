@@ -38,6 +38,17 @@ beforeEach(() => {
 });
 
 describe("investigation scope bindings", () => {
+  it("discovers a newly created account immediately after a verified Freighter account miss", async () => {
+    let created = false;
+    const mcp = { call: vi.fn(async () => created
+      ? { status: "found_on_chain", smart_account: ACCOUNT }
+      : { status: "required", smart_account: null }) };
+    const input = { subject: `stellar:${WALLET}`, wallet: WALLET, network: "testnet" };
+    expect((await resolveInvestigationScope(input, mcp, new AbortController().signal)).smartAccount).toBeNull();
+    created = true;
+    expect((await resolveInvestigationScope(input, mcp, new AbortController().signal)).smartAccount).toBe(ACCOUNT);
+    expect(mcp.call).toHaveBeenCalledTimes(2);
+  });
   it("allows a new connected wallet to prepare a manual plan before it has a binding", async () => {
     const mcp = {
       call: vi.fn(async (tool: string) => tool === "vanna_list_my_wallet_bindings"

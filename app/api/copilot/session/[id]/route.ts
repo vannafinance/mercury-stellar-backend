@@ -3,6 +3,7 @@ import { loadUserFromRequest } from "@/lib/copilot/request-user";
 import { deleteConversation, openConversation, pinConversation, renameConversation, updateSessionExecutionReceipt, updateSessionAssistantText } from "@/lib/copilot/session-store";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import { WORKFLOW_OPS, type StepStatus, type WorkflowRecord } from "@/lib/copilot/workflow/types";
+import { isLifecycleWriteOp, LIFECYCLE_WRITES } from "@/lib/copilot/workflow/lifecycle";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,7 +16,7 @@ const WORKFLOW_STATUSES = new Set<WorkflowRecord["status"]>([
 const STEP_STATUSES = new Set<StepStatus>([
   "pending", "invoking", "awaiting_signature", "submitting", "submitted", "settled", "failed", "uncertain",
 ]);
-const WORKFLOW_OPERATIONS = new Set<string>(WORKFLOW_OPS);
+const WORKFLOW_OPERATIONS = new Set<string>([...WORKFLOW_OPS, ...LIFECYCLE_WRITES]);
 const TX_HASH = /^[a-f0-9]{64}$/i;
 
 function isReceipt(value: unknown): value is ExecutionReceiptSnapshot {
@@ -24,14 +25,16 @@ function isReceipt(value: unknown): value is ExecutionReceiptSnapshot {
   if (typeof receipt.workflowId !== "string" || !receipt.workflowId || receipt.workflowId.length > 128 ||
     typeof receipt.status !== "string" || !WORKFLOW_STATUSES.has(receipt.status as WorkflowRecord["status"]) ||
     typeof receipt.network !== "string" || receipt.network.length > 32 ||
-    !Array.isArray(receipt.steps) || receipt.steps.length > 64) return false;
+    !Array.isArray(receipt.steps) || receipt.steps.length > 64 ||
+    (receipt.origin !== undefined && receipt.origin !== "wallet" && receipt.origin !== "journal")) return false;
   return receipt.steps.every((value) => {
     if (!value || typeof value !== "object") return false;
     const step = value as Record<string, unknown>;
+    const lifecycle = typeof step.operation === "string" && isLifecycleWriteOp(step.operation);
     return typeof step.operation === "string" && WORKFLOW_OPERATIONS.has(step.operation)
       && (step.label == null || typeof step.label === "string" && step.label.length <= 200)
-      && typeof step.asset === "string" && step.asset.length > 0 && step.asset.length <= 128
-      && typeof step.amount === "string" && step.amount.length > 0 && step.amount.length <= 128
+      && typeof step.asset === "string" && (lifecycle || step.asset.length > 0) && step.asset.length <= 128
+      && typeof step.amount === "string" && (lifecycle || step.amount.length > 0) && step.amount.length <= 128
       && typeof step.status === "string" && STEP_STATUSES.has(step.status as StepStatus)
       && (step.txHash == null || typeof step.txHash === "string" && TX_HASH.test(step.txHash))
       && (step.settledLedger == null || typeof step.settledLedger === "number" && Number.isSafeInteger(step.settledLedger) && step.settledLedger > 0);

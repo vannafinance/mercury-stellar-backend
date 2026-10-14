@@ -29,6 +29,12 @@ const base = {
   txHash: "1314989d".padEnd(64, "c"),
 };
 
+it("records a friendly account setup receipt as a wallet transaction, not a sized journal", () => {
+  const receipt = buildRunReceipt({ ...base, isRun: false, single: { op: "create_account" }, legs: [], txHash: "a".repeat(64) });
+  expect(receipt.origin).toBe("wallet");
+  expect(receipt.steps[0]).toMatchObject({ operation: "create_account", label: "Your margin account is open", asset: "", amount: "", status: "settled" });
+});
+
 describe("a run's receipt describes the run, not the last leg to settle", () => {
   it("carries every leg, not just the one that finished last", () => {
     const receipt = buildRunReceipt({ ...base, legs: RUN });

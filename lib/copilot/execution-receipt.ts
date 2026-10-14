@@ -10,6 +10,8 @@
 
 import type { FactTone, StructuredAnswer } from "./answer-schema";
 import { farmReceiptLine } from "./execution-copy";
+import { lifecycleCompletionText } from "./account-setup-continuation";
+import type { LifecycleWriteOp } from "./workflow/lifecycle";
 import type { StepStatus, WorkflowOp, WorkflowRecord, WorkflowView } from "./workflow/types";
 
 export type ReceiptLeg = {
@@ -101,7 +103,7 @@ export function singleWriteReceiptAnswer(opts: {
   const action = [opts.op?.replace(/_/g, " ").trim(), amount, opts.asset?.trim()]
     .filter((p) => p && p.length)
     .join(" ");
-  const what = (opts.summary ?? "").trim() || action || "Your transaction";
+  const what = lifecycleCompletionText(opts.op) || (opts.summary ?? "").trim() || action || "Your transaction";
 
   const facts: StructuredAnswer["facts"] = [];
   if (action && action !== what) facts.push({ label: "signed", value: action });
@@ -119,7 +121,7 @@ export function singleWriteReceiptAnswer(opts: {
 
 /** A durable, machine-readable workflow receipt; never reconstructed from prose. */
 export type ExecutionReceiptStep = {
-  operation: WorkflowOp;
+  operation: WorkflowOp | LifecycleWriteOp;
   /** The step's own card label ("Supply 1 XLM to Blend"); a restored card showed the op code without it. */
   label?: string;
   asset: string;
@@ -130,6 +132,8 @@ export type ExecutionReceiptStep = {
 };
 
 export type ExecutionReceiptSnapshot = {
+  /** Wallet receipts have no journal to restore; this never authorizes another transaction. */
+  origin?: "wallet" | "journal";
   workflowId: string;
   status: WorkflowRecord["status"];
   network: string;

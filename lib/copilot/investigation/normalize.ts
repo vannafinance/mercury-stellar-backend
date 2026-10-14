@@ -89,6 +89,11 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
     const before = facts.length;
 
     switch (observation.capability) {
+      case "account_identity": {
+        consumed.add("has_active_account");
+        flag("has_active_account", "Margin account status", data.has_active_account, "active", "no active account found");
+        break;
+      }
       /**
        * Judgement: the wallet read reports the same Stellar asset twice - under its
        * symbol and as `<SYMBOL>_SAC` (the Soroban wrapper for the identical holding).
@@ -122,6 +127,14 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       case "account_position":
       case "liquidation_snapshot": {
         consumed.add("is_healthy").add("liquidatable").add("unpriceable_plain").add("page_debt_mismatch").add("page_health_factor");
+        const debt = decimal(data.debt_usd);
+        if (debt !== null && Number(debt) === 0) {
+          // Zero debt is a verified state, not a missing numeric ratio or an infinite JSON number.
+          consumed.add("health_factor").add("posted_health_factor");
+          facts.push({ id: `${observation.id}:health_factor_state`, label: "Debt status",
+            value: "no outstanding debt", unit: "", venue: "margin", evidenceId: observation.id,
+            sourcePath: "health_factor_state", readAt: observation.observedAt });
+        }
         flag("is_healthy", "Account health status", data.is_healthy, "healthy", "at risk");
         flag(
           "unpriceable_plain",
@@ -245,7 +258,8 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       warnings.add(`${noun}: ${data.errors.length} ${data.errors.length === 1 ? "entry" : "entries"} could not be read; this is not a complete picture.`);
     }
     if (facts.length === before && observation.capability !== "aquarius_markets") {
-      warnings.add(`${noun}: no supported display fields were available.`);
+      // A successful identity/list read need not contain display measurements.
+      // Keep extraction diagnostics in logs; real read failures remain user warnings above.
       logDropped(observation, "no_fields");
     }
   }

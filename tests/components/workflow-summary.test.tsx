@@ -8,10 +8,10 @@ import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 afterEach(cleanup);
-const r: ExecutionReceiptSnapshot = { workflowId: "run", network: "testnet", status: "completed", steps: [
+const r = { workflowId: "run", network: "testnet", status: "completed", steps: [
   { operation: "deposit_collateral", label: "Deposit 10 XLM", asset: "XLM", amount: "10", status: "settled", txHash: "a".repeat(64), settledLedger: 123 },
   { operation: "borrow", label: "Borrow 2 BLUSDC", asset: "BLUSDC", amount: "2", status: "settled", txHash: "b".repeat(64), settledLedger: 124 },
-] };
+] } satisfies ExecutionReceiptSnapshot;
 const completion = { workflowId: r.workflowId, receiptKey: receiptKey(r), generatedAt: 1, source: "model" as const };
 
 describe("whole-run summary presentation", () => {

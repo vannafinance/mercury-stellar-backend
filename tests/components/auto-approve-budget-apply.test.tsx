@@ -8,6 +8,17 @@ const props = (): AutoApproveMenuProps => ({ on: true, capsMode: "custom", custo
   activeLimits: "$1000 per transaction · $5000 per day", draftChanged: true,
   onToggle: vi.fn(), onCapsMode: vi.fn(), onCustomTx: vi.fn(), onCustomDay: vi.fn(), onApplyLimits: vi.fn() });
 describe("active auto-approve policy editing", () => {
+  it("keeps the Auto-approve name, disables Freighter activation and explains manual signing", () => {
+    const p = props(); render(<AutoApproveMenu {...p} walletSigningRequired />);
+    fireEvent.click(screen.getByRole("button", { name: /Auto-approve/ }));
+    expect(screen.getByRole("dialog", { name: "Auto-approve" })).toBeTruthy();
+    const toggle = screen.getByRole("switch");
+    expect(toggle.hasAttribute("disabled")).toBe(true);
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByText(/Auto-approve is available with Privy wallets/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Custom" })).toBeNull();
+    fireEvent.click(toggle); expect(p.onToggle).not.toHaveBeenCalled();
+  });
   it("opens an externally requested settings review without invoking Apply or the signing toggle", () => {
     const p = props(); render(<AutoApproveMenu {...p} reviewRequest={1} />);
     expect(screen.getByRole("dialog", { name: "Auto-approve" })).toBeTruthy();

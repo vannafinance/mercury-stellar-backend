@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
 import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
-import { walletSessionStatus } from "@/lib/copilot/establish-wallet-session";
+import { pendingWalletSession, walletSessionStatus } from "@/lib/copilot/establish-wallet-session";
+import { getActiveWalletKind } from "@/lib/wallet-adapter";
 import { consumeResearchStream } from "@/lib/copilot/investigation/stream";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { QuestionnaireAnswers, ReplyBlock, ResearchView } from "@/lib/copilot/investigation/view";
@@ -49,11 +50,17 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
  * wallet-session cookie is what makes the request not-guest. Wait for that
  * cookie the same way, without treating a missing Privy header as failure.
  */
-async function requestHeaders(signal: AbortSignal, wallet: string | null) {
+export async function requestHeaders(signal: AbortSignal, wallet: string | null) {
   let stop: () => void = () => {};
   const timed = async () => {
     let headers = await copilotRequestHeaders();
     if (!wallet || headers[PRIVY_TOKEN_HEADER]) return headers;
+    if (getActiveWalletKind() === "freighter") {
+      if (await walletSessionStatus(wallet)) return headers;
+      const pending = pendingWalletSession(wallet);
+      if (pending && await pending && await walletSessionStatus(wallet)) return headers;
+      throw new Error("Verify your Freighter wallet for Copilot, then retry this request. This request was not sent.");
+    }
     for (let attempt = 0; attempt < 24; attempt++) {
       if (await walletSessionStatus(wallet)) return headers;
       await wait(400, signal);
@@ -713,7 +720,7 @@ export function useInvestigation(wallet: string | null) {
         wallet: owner, loading: true, prompt: answeringQuestion ? previous.prompt || prompt : prompt,
         result: previous.result,
         turns,
-        progress: { kind: "scope", label: "Preparing your session" }, error: null,
+        progress: { kind: "scope", label: getActiveWalletKind() === "freighter" ? "Verifying your Freighter wallet" : "Preparing your session" }, error: null,
         conversationId: previous.conversationId, resultOrigin: previous.resultOrigin,
       };
     });
@@ -731,7 +738,7 @@ export function useInvestigation(wallet: string | null) {
       setState((previous) => ({ ...previous, loading: false, progress: null, ...patch }));
     };
     try {
-      const headers = await requestHeaders(AbortSignal.any([combined, AbortSignal.timeout(10_000)]), owner);
+      const headers = await requestHeaders(getActiveWalletKind() === "freighter" ? combined : AbortSignal.any([combined, AbortSignal.timeout(10_000)]), owner);
       if (sequence.current !== id || activeWallet.current !== owner) return;
       if (combined.aborted) {
         settle({ error: abortedCopy() });

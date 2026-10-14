@@ -17,6 +17,7 @@ import { formatRunClock } from "@/lib/copilot/investigation/duration";
 import { recommendationReason } from "@/lib/copilot/investigation/recommendation";
 import { ChatTurns, REPLY_CARD_GAP_PX } from "@/components/copilot/chat-message";
 import { signRefusalCopy } from "@/components/copilot/sign-refusal-copy";
+import { MISSING_MARGIN_ACCOUNT_NOTE } from "@/lib/copilot/account-setup-continuation";
 
 export interface InvestigationCardProps {
   prompt: string;
@@ -57,6 +58,7 @@ export interface InvestigationCardProps {
   onReply?: (text: string) => void;
   /** A `write` choice was clicked (e.g. "Open a margin account"). */
   onWrite?: (op: "create_account") => void;
+  accountAvailable?: boolean;
   /**
    * The thread has been told to hide this run's receipt so this card is the one place the
    * run is drawn: the plan card becomes the execution card in the same spot.
@@ -366,7 +368,7 @@ const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] fo
 export function InvestigationCard({
   prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, continueLabel,
   onPropose, workflow, planWithdrawn, planLiveFloor, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
-  wallet = null, autoSign = false, onApproveCandidate, onReply, onWrite, threadDefersReceipt = false, approvalQueued = false, approvingId = null,
+  wallet = null, autoSign = false, onApproveCandidate, onReply, onWrite, accountAvailable = false, threadDefersReceipt = false, approvalQueued = false, approvingId = null,
 }: InvestigationCardProps) {
   /**
    * Cancel on a plan that was never prepared: nothing was sent, so it only closes the plans
@@ -454,7 +456,8 @@ export function InvestigationCard({
   // Normalization diagnostics stay in the research record, not the chat UI.
   // Actionable safety notes retain their existing presentation.
   const visibleWarnings = (result?.warnings ?? []).filter((warning) =>
-    !warning.endsWith(": data was unavailable. No value was assumed."));
+    !warning.endsWith(": data was unavailable. No value was assumed.") && !(accountAvailable && warning === MISSING_MARGIN_ACCOUNT_NOTE));
+  const visibleChoices = accountAvailable ? result?.choices?.filter(choice => choice.write !== "create_account") : result?.choices;
   const hasCardContent = Boolean(
     result?.understanding ||
     result?.capacity ||
@@ -714,7 +717,7 @@ export function InvestigationCard({
                   <SectionTitle>{result.candidates?.feasible.length ? "Open point" : "Needs your answer"}</SectionTitle>
                   <p className="mt-1.5 whitespace-pre-wrap break-words text-[14px] leading-6 text-vgray-900">{result.question}</p>
                   {/* Choices the server built from the user's own words ("did you mean"): one tap answers. */}
-                  <ChoiceButtons choices={result.choices} onReply={onReply} onWrite={onWrite} />
+                  <ChoiceButtons choices={visibleChoices} onReply={onReply} onWrite={onWrite} />
                   <p className="mt-1.5 text-[12.5px] leading-5 text-vgray-500">
                     {result.candidates?.feasible.length ? "The plans above stand. Reply below to change them." : "Reply below to continue."}
                   </p>
@@ -722,7 +725,7 @@ export function InvestigationCard({
               )}
 
               {/* With a questionnaire the question box is hidden, so its choices (e.g. "Open a margin account") show here. */}
-              {(!result.question || result.questionnaire) && <ChoiceButtons choices={result.choices} onReply={onReply} onWrite={onWrite} />}
+              {(!result.question || result.questionnaire) && <ChoiceButtons choices={visibleChoices} onReply={onReply} onWrite={onWrite} />}
 
               {/* Notes explain a partial answer. With a plan or a run on screen they are noise (UI-FIX-LIST 3). */}
               {!(result.status === "incomplete" && result.understanding?.intent === "answer") && visibleWarnings.length > 0 && !result.candidates?.feasible.length && !workflow && (
