@@ -266,7 +266,23 @@ export function AssistantPanel({
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
     >
-      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto px-[20px] pt-[18px] pb-6">
+      <div
+        ref={listRef}
+        className={`min-h-0 flex-1 overflow-y-auto px-[20px] pt-[18px] pb-6 ${
+          turns.length === 0 && !waiting ? "flex flex-col justify-center" : ""
+        }`}
+      >
+        {turns.length === 0 && !waiting && (
+          // Centred in the middle of the whole panel: the logo, the name and what Assist is for.
+          // The suggestion chips stay down by the composer.
+          <div className="text-center">
+            <Image src="/logos/vanna-icon.png" alt="" width={44} height={44} className="mx-auto mb-2.5 block object-contain" />
+            <h3 className="text-[20px] font-semibold leading-6 text-violet-500">Vanna Assist</h3>
+            <p className="mx-auto mt-1 max-w-[34ch] text-[16px] font-medium leading-6 text-vgray-700">
+              Ask about this screen, protocol mechanics, or where to find any control.
+            </p>
+          </div>
+        )}
         <div className="flex flex-col gap-6">
           {turns.map((e, i) => {
             const lastUserIdx = turns.reduce((acc, t, idx) => (t.role === "user" ? idx : acc), -1);
@@ -329,11 +345,7 @@ export function AssistantPanel({
 
       {turns.length === 0 && !waiting && (
         <div className="shrink-0 px-[18px] pb-3">
-          <h3 className="text-[20px] font-semibold leading-6 text-violet-500">Vanna Assist</h3>
-          <p className="mt-1 text-[16px] font-medium leading-6 text-vgray-700">
-            Ask about this screen, protocol mechanics, or where to find any control.
-          </p>
-          <div className="mt-4 flex flex-wrap items-start gap-2">
+          <div className="flex flex-wrap items-start justify-center gap-2">
             {SUGGESTIONS.map((s) => (
               <button
                 key={s}

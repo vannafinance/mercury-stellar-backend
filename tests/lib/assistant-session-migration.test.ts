@@ -13,8 +13,7 @@ describe("assistant-session persisted state", () => {
     const state = useAssistantSessionStore.getState();
     expect(state.turns).toHaveLength(1);
     expect(state.open).toBe(true);
-    expect(state.layoutMode).toBe("floating");
-    expect(state.panelPos).toBeNull();
+    expect(state.launcherPos).toBeNull();
     expect(errors).not.toHaveBeenCalled();
     errors.mockRestore();
   });

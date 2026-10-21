@@ -1,5 +1,5 @@
 /**
- * Assistant session state — chat history and floating geometry survive route navigations
+ * Assistant session state — chat history and the tab position survive route navigations
  * and reloads.
  */
 
@@ -25,21 +25,32 @@ export type AssistantTurn = {
 };
 
 export type AssistantCoords = { x: number; y: number };
-export type AssistantLayoutMode = "floating" | "docked";
+
+/** An earlier chat, kept so the history menu can bring it back. */
+export type ArchivedChat = { id: string; title: string; turns: AssistantTurn[]; updatedAt: number };
+
+const HISTORY_LIMIT = 20;
+const TITLE_LIMIT = 60;
+
+/** A chat is named after its first question, the way the chat list names it. */
+export function assistantChatTitle(turns: readonly AssistantTurn[]): string {
+  const first = turns.find((t) => t.role === "user")?.text.replace(/\s+/g, " ").trim();
+  if (!first) return "New chat";
+  return first.length > TITLE_LIMIT ? `${first.slice(0, TITLE_LIMIT - 1).trimEnd()}\u2026` : first;
+}
 
 export interface AssistantSession {
   turns: AssistantTurn[];
+  /** Earlier chats, newest activity last. The chat on screen is `turns`, not part of this list. */
+  history: ArchivedChat[];
   open: boolean;
-  layoutMode: AssistantLayoutMode;
-  panelPos: AssistantCoords | null;
   launcherPos: AssistantCoords | null;
 }
 
 const initial: AssistantSession = {
   turns: [],
+  history: [],
   open: false,
-  layoutMode: "floating",
-  panelPos: null,
   launcherPos: null,
 };
 
@@ -49,7 +60,7 @@ export const useAssistantSessionStore = createNewStore(initial, {
   persist: {
     name: "assistant-session",
     version: 2,
-    // v1 saved only turns and open; keep them and give the v2 layout fields their defaults.
+    // v1 saved only turns and open; keep them and give the v2 fields their defaults.
     migrate: (persisted: unknown) => ({ ...initial, ...((persisted as Partial<AssistantSession> | null) ?? {}) }),
   },
 });
@@ -87,24 +98,34 @@ export function setAssistantOpen(open: boolean) {
   useAssistantSessionStore.getState().set({ open });
 }
 
-export function setAssistantLayoutMode(layoutMode: AssistantLayoutMode) {
-  useAssistantSessionStore.getState().set({ layoutMode });
-}
-
-export function setAssistantPanelPos(panelPos: AssistantCoords | null) {
-  useAssistantSessionStore.getState().set({ panelPos });
-}
-
 export function setAssistantLauncherPos(launcherPos: AssistantCoords | null) {
   useAssistantSessionStore.getState().set({ launcherPos });
 }
 
+function archiveCurrent(): ArchivedChat[] {
+  const { turns, history } = useAssistantSessionStore.getState();
+  if (!turns.length) return history ?? [];
+  const entry: ArchivedChat = { id: `chat-${Date.now()}-${(history ?? []).length}`, title: assistantChatTitle(turns), turns, updatedAt: Date.now() };
+  return [...(history ?? []), entry].slice(-HISTORY_LIMIT);
+}
+
 /**
- * Gemini-style “new chat”: wipe in-memory turns while preserving the user's window
- * layout mode and position.
+ * Start a new chat. The chat that was on screen is kept in the history menu instead of being thrown away,
+ * and the tab position is preserved.
  */
 export function clearAssistantTurns() {
-  useAssistantSessionStore.getState().set({ turns: [] });
+  useAssistantSessionStore.getState().set({ history: archiveCurrent(), turns: [] });
+}
+
+/** Bring an earlier chat back; the one on screen takes its place in the history. */
+export function openAssistantChat(id: string) {
+  const { history } = useAssistantSessionStore.getState();
+  const chosen = (history ?? []).find((chat) => chat.id === id);
+  if (!chosen) return;
+  const rest = (history ?? []).filter((chat) => chat.id !== id);
+  useAssistantSessionStore.setState({ history: rest });
+  const kept = archiveCurrent();
+  useAssistantSessionStore.setState({ history: kept, turns: chosen.turns });
 }
 
 /** Alias for UI “New chat / refresh” actions. */

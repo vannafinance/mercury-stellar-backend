@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { normalizeGuideAnswer, guideAnswerToText } from "@/lib/copilot/guide-schema";
-import { clampToViewport } from "@/components/copilot/assistant-launcher";
 import { handleChat } from "@/lib/copilot/handle";
 
 
-describe("Vanna Assist structured guide schema & viewport clamping", () => {
+describe("Vanna Assist structured guide schema", () => {
   it("normalizes highlights, steps, terms, copilotHandoffPrompt, and clientTools", () => {
     const raw = {
       question: "How do I check my health factor and go to Margin?",
@@ -48,27 +47,6 @@ describe("Vanna Assist structured guide schema & viewport clamping", () => {
     const text = guideAnswerToText(parsed!);
     expect(text).toContain("Liquidation Floor: 1.10");
     expect(text).toContain("1. Open the Margin page");
-  });
-
-  it("clamps floating Assist coordinates strictly within the website viewport bounds", () => {
-    const vw = 1280;
-    const vh = 800;
-    const w = 428;
-    const h = 620;
-
-    // Attempt to drag far outside top-left
-    const topLeft = clampToViewport(-500, -300, w, h, vw, vh);
-    expect(topLeft.x).toBe(12);
-    expect(topLeft.y).toBe(64); // kept below top navbar
-
-    // Attempt to drag far outside bottom-right
-    const bottomRight = clampToViewport(5000, 5000, w, h, vw, vh);
-    expect(bottomRight.x).toBe(vw - w - 12);
-    expect(bottomRight.y).toBe(vh - h - 12);
-
-    // Valid in-bounds position stays untouched
-    const inside = clampToViewport(300, 120, w, h, vw, vh);
-    expect(inside).toEqual({ x: 300, y: 120 });
   });
 
   it("includes copilotHandoffPrompt when redirecting an action from the Assist surface", async () => {
