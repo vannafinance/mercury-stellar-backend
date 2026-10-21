@@ -5,7 +5,7 @@ import { CircleAlert } from "lucide-react";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import type { ReplyBlock, ReplySegment } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
-import { completionMatches, receiptBeside, settledTransactions, shortTransactionHash, transactionPurpose } from "@/lib/copilot/workflow-completion";
+import { completionMatches, receiptBeside, settledLifecycleTransactions, settledTransactions, shortTransactionHash, transactionPurpose } from "@/lib/copilot/workflow-completion";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 import { VANNA_ICON_SRC } from "@/components/copilot/vanna-icon-data";
 
@@ -422,7 +422,10 @@ function AssistantTurn({
   note,
   tone = "default",
   sessionSigning,
+  priorSettled,
 }: {
+  /** Transactions an earlier turn settled that this reply continues (an account opened for it). Listed first. */
+  priorSettled?: ReturnType<typeof settledLifecycleTransactions>;
   text: string;
   blocks?: ReplyBlock[];
   receipt?: ThreadTurn["executionReceipt"];
@@ -459,14 +462,15 @@ function AssistantTurn({
       />
       <div className="flex flex-col min-w-0 w-full" style={{ gap: REPLY_CARD_GAP_PX }}>
         {(() => {
-          const settled = receipt && completionMatches(receipt, completion) ? settledTransactions(receipt) : null;
+          const own = receipt ? (completionMatches(receipt, completion) ? settledTransactions(receipt) : settledLifecycleTransactions(receipt)) : null;
+          const settled = priorSettled?.length || own ? [...(priorSettled ?? []), ...(own ?? [])] : null;
           // One list when the reply already has one item per transaction: each hash and ledger sits at the end of its own item.
           const at = settled ? receiptBeside(blocks, settled.length) : null;
           const link = (transaction: NonNullable<typeof settled>[number]) => (
             <>
               <span> · </span>
               <a href={transaction.url} target="_blank" rel="noopener noreferrer" className="underline text-[var(--cp-emerald)]" title={transaction.hash} aria-label={`Transaction ${transaction.hash}`}>{shortTransactionHash(transaction.hash)} ↗</a>
-              <span> · Ledger <span className="text-[var(--cp-emerald)]">{transaction.ledger.toLocaleString()}</span></span>
+              {transaction.ledger != null ? <span> · Ledger <span className="text-[var(--cp-emerald)]">{transaction.ledger.toLocaleString()}</span></span> : null}
             </>
           );
           const beside = settled && at != null ? { at, nodes: settled.map((transaction) => <span key={transaction.hash} className="text-[14px] text-vgray-700">{link(transaction)}</span>) } : undefined;
@@ -486,7 +490,7 @@ function AssistantTurn({
             </>
           );
         })()}
-        {receipt && !(completionMatches(receipt, completion)) ? (
+        {receipt && !(completionMatches(receipt, completion) || settledLifecycleTransactions(receipt)) ? (
           <div className="w-full">
             <ExecutionStepper
               steps={receiptStepperSteps(receipt)}
@@ -530,6 +534,19 @@ export function ChatTurns({
 }) {
   if (!turns.length && !pendingUser && !liveAssistant && !working) return null;
   const groups = groupChatTurns(turns);
+  /**
+   * An account opened for a request is one reply with the request it unlocked, not two. The turn that
+   * opened it (a settled account receipt) is followed by the continuing reply with no message of the
+   * user's between them; the first draws nothing of its own and its transaction leads the second's list.
+   * Decided from the receipts and the order of the turns, never from the wording.
+   */
+  const setupOf = (group: (typeof groups)[number] | undefined) => (
+    group?.assistant?.executionReceipt ? settledLifecycleTransactions(group.assistant.executionReceipt) : null
+  );
+  const continuesSetup = (index: number) => {
+    const next = groups[index + 1];
+    return !!setupOf(groups[index]) && !!next && !next.user && !!next.assistant && !next.assistant.quiet;
+  };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 34 }} aria-label="Conversation">
       {groups.map((group, index) => {
@@ -541,8 +558,9 @@ export function ChatTurns({
         return (
           <section key={`turn-${index}`} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {group.user ? <UserBubble>{group.user.text}</UserBubble> : null}
-            {group.assistant && !hideStaleAssistant && !group.assistant.quiet ? (
+            {group.assistant && !hideStaleAssistant && !group.assistant.quiet && !continuesSetup(index) ? (
               <AssistantTurn
+                priorSettled={!group.user && index > 0 && continuesSetup(index - 1) ? setupOf(groups[index - 1]) : null}
                 text={sayRunning ? runningPlanText! : group.assistant.text}
                 blocks={sayRunning ? undefined : group.assistant.blocks}
                 completion={group.assistant.completion}

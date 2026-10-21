@@ -447,7 +447,7 @@ describe("bounded execution", () => {
 });
 
 describe("Flash-only model policy", () => {
-  it.each(["gemini-3.7-flash", "gemini-3.8-flash", "gemini-2.5-flash", "gemini-3-flash-preview"])("accepts %s", (model) => {
+  it.each(["gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3-flash-preview"])("accepts %s", (model) => {
     expect(() => assertFlashModel(model)).not.toThrow();
   });
   it.each(["claude-sonnet", "gemini-3.8-pro", "gemini-3.8-flash-image", "gemini-3.1-flash-lite", "gpt-5", ""])("rejects %s", (model) => {

@@ -235,6 +235,17 @@ export const copilotConfig = {
   get vertexSocialModel(): string {
     return env("VERTEX_SOCIAL_MODEL", MODEL_DEFAULTS.social);
   },
+  get vertexGuideModel(): string {
+    return env("VERTEX_GUIDE_MODEL", MODEL_DEFAULTS.guide);
+  },
+  get vertexGuideFallbacks(): string[] {
+    const raw = env("VERTEX_GUIDE_FALLBACKS", MODEL_DEFAULTS.guideFallback.join(","));
+    const primary = this.vertexGuideModel;
+    return raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((m) => m && m !== primary);
+  },
   /**
    * Fallback models when primary Vertex model returns 404/unavailable.
    * Comma-separated env VERTEX_MODEL_FALLBACKS or built-in list.

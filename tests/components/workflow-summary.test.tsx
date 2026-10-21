@@ -53,4 +53,20 @@ describe("whole-run summary presentation", () => {
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(screen.getByText("Hello!")).toBeTruthy();
   });
+  it("renders a settled create_account wallet receipt as a summary bullet instead of leaving ExecutionStepper on screen", () => {
+    const hash = "f".repeat(64);
+    const openReceipt: ExecutionReceiptSnapshot = {
+      origin: "wallet",
+      workflowId: "req-open-1",
+      status: "completed",
+      network: "testnet",
+      steps: [{ operation: "create_account", label: "Your margin account is open", asset: "", amount: "", status: "settled", txHash: hash }],
+    };
+    render(<ChatTurns turns={[{ role: "assistant", text: "Your margin account is open.", executionReceipt: openReceipt }]} />);
+    const list = screen.getByRole("list", { name: "Settled transactions" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    expect(list.textContent).toContain("Your margin account is open");
+    expect(within(list).getByRole("link").getAttribute("href")).toBe(`https://stellar.expert/explorer/testnet/tx/${hash}`);
+    expect(screen.queryByText("Execution progress")).toBeNull();
+  });
 });

@@ -1,19 +1,17 @@
 "use client";
 
 /**
- * Site-wide page-aware Assistant drawer.
- * - Semantic pageContext captured on every send
- * - Client tool execution (navigate / scroll / highlight)
- * - Chat history persists across navigations
- *
- * The reply is rendered from the structured `guide` the brain returns, not from its
- * flattened text - see guide-answer-view.tsx. `text` is kept on the turn regardless so
- * history stays readable and a turn without structure still renders.
+ * Site-wide page-aware Vanna Assist widget.
+ * - Floating & draggable anywhere within the website viewport (strictly clamped to tab bounds)
+ * - Toggleable between Floating Window and Docked Right Drawer
+ * - Non-blocking: underlying Vanna pages remain clickable while Assist is open
+ * - Semantic pageContext captured on every send + client tool execution
+ * - One-click handoff to Vanna Copilot for on-chain actions
  */
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import { X, RefreshCw } from "lucide-react";
+import { X, RefreshCw, GripHorizontal, PanelRight, Maximize2 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import toast from "react-hot-toast";
@@ -34,27 +32,91 @@ import {
   appendAssistantTurn,
   clearAssistantTurns,
   getAssistantHistory,
+  setAssistantLauncherPos,
+  setAssistantLayoutMode,
   setAssistantOpen,
+  setAssistantPanelPos,
   useAssistantSessionStore,
+  type AssistantCoords,
 } from "@/store/assistant-session";
 import { AssistantPanel, type AssistantSendExtras } from "./assistant-panel";
 import { AssistantRegionOverlay } from "./assistant-region-overlay";
 
 const ASK_EVENT = "vanna:assistant:ask";
-/** Browser abort - must cover guide (60s) + prose fallback on cold Vertex. */
-const ASSISTANT_FETCH_MS = 125_000;
+const ASSISTANT_FETCH_MS = 90_000;
+
+const FLOATING_WIDTH = 428;
+const FLOATING_HEIGHT = 620;
+const LAUNCHER_WIDTH = 44;
+const LAUNCHER_HEIGHT = 104;
+const VIEWPORT_MARGIN = 12;
+const TOP_SAFE_MARGIN = 64;
+
+/**
+ * Clamp floating coordinates strictly inside the current website viewport so the widget
+ * can never be dragged outside the browser tab or under the top navigation bar.
+ */
+export function clampToViewport(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  vw = typeof window !== "undefined" ? window.innerWidth : 1280,
+  vh = typeof window !== "undefined" ? window.innerHeight : 800,
+): AssistantCoords {
+  const effW = Math.min(width, Math.max(280, vw - VIEWPORT_MARGIN * 2));
+  const effH = Math.min(height, Math.max(320, vh - TOP_SAFE_MARGIN - VIEWPORT_MARGIN));
+  const minX = VIEWPORT_MARGIN;
+  const maxX = Math.max(minX, vw - effW - VIEWPORT_MARGIN);
+  const minY = TOP_SAFE_MARGIN;
+  const maxY = Math.max(minY, vh - effH - VIEWPORT_MARGIN);
+  return {
+    x: Math.round(Math.min(Math.max(x, minX), maxX)),
+    y: Math.round(Math.min(Math.max(y, minY), maxY)),
+  };
+}
+
+function defaultFloatingPos(): AssistantCoords {
+  if (typeof window === "undefined") return { x: 820, y: 88 };
+  return clampToViewport(
+    window.innerWidth - FLOATING_WIDTH - 24,
+    84,
+    FLOATING_WIDTH,
+    FLOATING_HEIGHT,
+  );
+}
+
+function defaultLauncherPos(): AssistantCoords {
+  if (typeof window === "undefined") return { x: 1220, y: 340 };
+  return clampToViewport(
+    window.innerWidth - LAUNCHER_WIDTH - VIEWPORT_MARGIN,
+    Math.round(window.innerHeight / 2 - LAUNCHER_HEIGHT / 2),
+    LAUNCHER_WIDTH,
+    LAUNCHER_HEIGHT,
+  );
+}
 
 function AssistantLauncherInner() {
   const [prefill, setPrefill] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
-  const [lastContextPath, setLastContextPath] = useState<string | null>(null);
+  const [, setLastContextPath] = useState<string | null>(null);
   const [selectingRegion, setSelectingRegion] = useState(false);
   const [hasRegion, setHasRegion] = useState(false);
   const [composerNonce, setComposerNonce] = useState(0);
   const [phase, setPhase] = useState<AssistantPhase>("idle");
   const pendingRegionRef = useRef<CaptureRect | null>(null);
+
   const open = useAssistantSessionStore((s) => s.open);
   const turns = useAssistantSessionStore((s) => s.turns);
+  const layoutMode = useAssistantSessionStore((s) => s.layoutMode ?? "floating");
+  const storedPanelPos = useAssistantSessionStore((s) => s.panelPos);
+  const storedLauncherPos = useAssistantSessionStore((s) => s.launcherPos);
+
+  const [livePanelPos, setLivePanelPos] = useState<AssistantCoords | null>(null);
+  const [liveLauncherPos, setLiveLauncherPos] = useState<AssistantCoords | null>(null);
+
+  const panelRef = useRef<HTMLElement | null>(null);
+  const launcherDragMovedRef = useRef(false);
 
   const pathname = usePathname();
   const router = useRouter();
@@ -64,6 +126,40 @@ function AssistantLauncherInner() {
   useEffect(() => setMounted(true), []);
 
   useEffect(() => observeAssistantToasts(), []);
+
+  // Keep panel & launcher strictly inside the browser tab on window resize
+  useEffect(() => {
+    if (!mounted) return;
+    const onResize = () => {
+      const currentPanel = useAssistantSessionStore.getState().panelPos;
+      if (currentPanel) {
+        const rect = panelRef.current?.getBoundingClientRect();
+        const clamped = clampToViewport(
+          currentPanel.x,
+          currentPanel.y,
+          rect?.width ?? FLOATING_WIDTH,
+          rect?.height ?? FLOATING_HEIGHT,
+        );
+        if (clamped.x !== currentPanel.x || clamped.y !== currentPanel.y) {
+          setAssistantPanelPos(clamped);
+        }
+      }
+      const currentLauncher = useAssistantSessionStore.getState().launcherPos;
+      if (currentLauncher) {
+        const clampedL = clampToViewport(
+          currentLauncher.x,
+          currentLauncher.y,
+          LAUNCHER_WIDTH,
+          LAUNCHER_HEIGHT,
+        );
+        if (clampedL.x !== currentLauncher.x || clampedL.y !== currentLauncher.y) {
+          setAssistantLauncherPos(clampedL);
+        }
+      }
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [mounted]);
 
   useEffect(() => {
     const onAsk = (ev: Event) => {
@@ -92,14 +188,6 @@ function AssistantLauncherInner() {
     setSelectingRegion(false);
   }, []);
 
-  /**
-   * A drawn region is a VIEWPORT rectangle, and the capture resolves it with
-   * `getBoundingClientRect()`. So if the page scrolls or navigates between drawing the
-   * box and pressing send, the same coordinates now cover different content - the
-   * Assistant would answer confidently about a part of the page the user never selected.
-   * Dropping the rect is the honest failure: the chip disappears, and the question falls
-   * back to the full page capture instead of a silently wrong crop.
-   */
   useEffect(() => {
     if (!hasRegion) return;
     const origin = { x: window.scrollX, y: window.scrollY };
@@ -119,6 +207,117 @@ function AssistantLauncherInner() {
     clearRegion();
   }, [pathname, clearRegion]);
 
+  const handleOpenInCopilot = useCallback(
+    (prompt: string) => {
+      const clean = prompt.trim();
+      if (!clean) return;
+      try {
+        window.sessionStorage.setItem("vanna.copilot.handoff", clean);
+        window.dispatchEvent(
+          new CustomEvent("vanna:copilot-handoff", { detail: { prompt: clean } }),
+        );
+      } catch {
+        // ignore storage errors
+      }
+      setAssistantOpen(false);
+      router.push("/copilot");
+    },
+    [router],
+  );
+
+  // Drag handler for the open floating Assist panel header
+  const onHeaderPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLElement>) => {
+      if (layoutMode !== "floating") return;
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("button, a, input, textarea, [data-no-drag]")) return;
+
+      e.preventDefault();
+      const rect = panelRef.current?.getBoundingClientRect();
+      const width = rect?.width ?? FLOATING_WIDTH;
+      const height = rect?.height ?? FLOATING_HEIGHT;
+      const startCoords = storedPanelPos
+        ? clampToViewport(storedPanelPos.x, storedPanelPos.y, width, height)
+        : defaultFloatingPos();
+
+      const offsetX = e.clientX - startCoords.x;
+      const offsetY = e.clientY - startCoords.y;
+      let latest = startCoords;
+
+      const onMove = (ev: PointerEvent) => {
+        latest = clampToViewport(ev.clientX - offsetX, ev.clientY - offsetY, width, height);
+        setLivePanelPos(latest);
+      };
+
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        setLivePanelPos(null);
+        setAssistantPanelPos(latest);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [layoutMode, storedPanelPos],
+  );
+
+  // Drag handler for the closed floating launcher button
+  const onLauncherPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>) => {
+      if (e.button !== 0) return;
+      launcherDragMovedRef.current = false;
+      const startCoords = storedLauncherPos
+        ? clampToViewport(
+            storedLauncherPos.x,
+            storedLauncherPos.y,
+            LAUNCHER_WIDTH,
+            LAUNCHER_HEIGHT,
+          )
+        : defaultLauncherPos();
+
+      const startClientX = e.clientX;
+      const startClientY = e.clientY;
+      const offsetX = e.clientX - startCoords.x;
+      const offsetY = e.clientY - startCoords.y;
+      let latest = startCoords;
+
+      const onMove = (ev: PointerEvent) => {
+        const dist = Math.hypot(ev.clientX - startClientX, ev.clientY - startClientY);
+        if (dist > 5) {
+          launcherDragMovedRef.current = true;
+        }
+        if (launcherDragMovedRef.current) {
+          latest = clampToViewport(
+            ev.clientX - offsetX,
+            ev.clientY - offsetY,
+            LAUNCHER_WIDTH,
+            LAUNCHER_HEIGHT,
+          );
+          setLiveLauncherPos(latest);
+        }
+      };
+
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        if (launcherDragMovedRef.current) {
+          setLiveLauncherPos(null);
+          setAssistantLauncherPos(latest);
+        }
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [storedLauncherPos],
+  );
+
   const send = useCallback(
     async (message: string, extras?: AssistantSendExtras) => {
       const pending = pendingRegionRef.current;
@@ -126,14 +325,13 @@ function AssistantLauncherInner() {
       setHasRegion(false);
       setPhase("capturing");
 
-      // Always re-read the DOM so the model sees the page as it is right now.
-      // A selected region contributes region_text + metrics, not a screenshot.
       const capture = captureAssistantTurn({ region: pending });
       if (extras?.selectedText) {
         if (!capture.semantic.selectedText) capture.semantic.selectedText = extras.selectedText;
         if (!capture.snapshot.selection) capture.snapshot.selection = extras.selectedText;
       }
-      const readablePage = capture.semantic.sections.length > 0 || capture.semantic.mainText.trim().length > 0;
+      const readablePage =
+        capture.semantic.sections.length > 0 || capture.semantic.mainText.trim().length > 0;
       const history = getAssistantHistory(8);
 
       const attachments: AssistantImageAttachment[] = [];
@@ -178,17 +376,23 @@ function AssistantLauncherInner() {
         }
         const data = await res.json();
 
-        // Hands: execute client tools returned by the model
         if (Array.isArray(data.client_tools) && data.client_tools.length) {
           executeClientTools(data.client_tools, { router });
         }
 
         const guide = (data.guide ?? null) as GuideAnswer | null;
+        const handoff =
+          guide?.copilotHandoffPrompt ??
+          (typeof data?.data?.copilotHandoffPrompt === "string"
+            ? data.data.copilotHandoffPrompt
+            : null);
+
         appendAssistantTurn({
           role: "assistant",
           text: String(data.message || "No reply."),
           guide,
           hasPageContext: readablePage,
+          ...(handoff ? { copilotHandoffPrompt: handoff } : {}),
         });
         console.info("[assistant] ok", {
           ms: Date.now() - t0,
@@ -233,20 +437,52 @@ function AssistantLauncherInner() {
 
   if (!mounted) return null;
 
+  const effectivePanelPos =
+    livePanelPos ??
+    (storedPanelPos
+      ? clampToViewport(storedPanelPos.x, storedPanelPos.y, FLOATING_WIDTH, FLOATING_HEIGHT)
+      : defaultFloatingPos());
+
+  const effectiveLauncherPos =
+    liveLauncherPos ??
+    (storedLauncherPos
+      ? clampToViewport(storedLauncherPos.x, storedLauncherPos.y, LAUNCHER_WIDTH, LAUNCHER_HEIGHT)
+      : null);
+
+  const isFloating = layoutMode === "floating";
+
   return createPortal(
     <>
       {!open && (
         <button
           type="button"
-          aria-label="Ask Vanna Assist"
+          aria-label="Ask Vanna Assist (drag to reposition)"
+          title="Ask Vanna Assist · Drag to move anywhere on page"
+          onPointerDown={onLauncherPointerDown}
           onClick={() => {
+            if (launcherDragMovedRef.current) {
+              launcherDragMovedRef.current = false;
+              return;
+            }
             setPrefill(null);
             setAssistantOpen(true);
           }}
-          className="cp-root fixed right-0 top-1/2 z-[10000] flex -translate-y-1/2 cursor-pointer flex-col items-center gap-2.5
-                     rounded-l-[14px] border border-r-0 border-vgray-100 bg-surface px-2.5 py-[18px]
-                     shadow-md transition-colors hover:border-violet-400"
+          style={
+            effectiveLauncherPos
+              ? {
+                  left: `${effectiveLauncherPos.x}px`,
+                  top: `${effectiveLauncherPos.y}px`,
+                }
+              : undefined
+          }
+          className={`cp-root fixed z-[10000] flex cursor-grab active:cursor-grabbing select-none flex-col items-center gap-2
+                     border border-vgray-100 bg-surface px-2.5 py-3.5 shadow-lg transition-colors hover:border-violet-400 ${
+                       effectiveLauncherPos
+                         ? "rounded-[14px]"
+                         : "right-0 top-1/2 -translate-y-1/2 rounded-l-[14px] border-r-0"
+                     }`}
         >
+          <GripHorizontal size={12} className="text-vgray-400" aria-hidden />
           <Image src="/logos/vanna-icon.png" alt="" width={18} height={18} className="object-contain" />
           <span
             className="text-[12.5px] font-semibold text-vgray-800"
@@ -258,105 +494,134 @@ function AssistantLauncherInner() {
       )}
 
       {open && (
-        <div
-          className="fixed inset-0 z-[10000] flex justify-end"
+        <aside
+          ref={panelRef}
           role="dialog"
-          aria-modal="true"
-          aria-label="Vanna Assist"
+          aria-modal="false"
+          data-assistant-panel
+          aria-label="Vanna Assist - ask about this page"
+          style={
+            isFloating
+              ? {
+                  left: `${effectivePanelPos.x}px`,
+                  top: `${effectivePanelPos.y}px`,
+                  width: `min(${FLOATING_WIDTH}px, calc(100vw - ${VIEWPORT_MARGIN * 2}px))`,
+                  height: `min(${FLOATING_HEIGHT}px, calc(100vh - ${TOP_SAFE_MARGIN + VIEWPORT_MARGIN}px))`,
+                  fontFamily: "var(--font-plus-jakarta-sans), system-ui, sans-serif",
+                }
+              : {
+                  fontFamily: "var(--font-plus-jakarta-sans), system-ui, sans-serif",
+                  animation: "cp-drawer-in 220ms ease-out",
+                }
+          }
+          className={
+            isFloating
+              ? "cp-root fixed z-[10000] flex flex-col overflow-hidden rounded-[18px] border border-vgray-100 bg-surface shadow-2xl"
+              : "cp-root fixed top-0 right-0 bottom-0 z-[10000] flex h-full w-full max-w-[452px] flex-col border-l border-vgray-100 bg-surface shadow-2xl"
+          }
         >
-          <button
-            type="button"
-            aria-label="Close assistant backdrop"
-            className="absolute inset-0 bg-black/15 sm:bg-black/10"
-            onClick={() => setAssistantOpen(false)}
-          />
-          <aside
-            data-assistant-panel
-            aria-label="Vanna Assist - ask about this page"
-            className="cp-root relative flex h-full w-full max-w-[452px] flex-col border-l border-vgray-100 bg-surface shadow-2xl"
-            style={{
-              fontFamily: "var(--font-plus-jakarta-sans), system-ui, sans-serif",
-              animation: "cp-drawer-in 220ms ease-out",
-            }}
+          <header
+            onPointerDown={onHeaderPointerDown}
+            className={`z-[3] flex shrink-0 select-none items-center gap-2.5 border-b border-vgray-100 bg-surface px-[16px] pt-3.5 pb-3 ${
+              isFloating ? "cursor-grab active:cursor-grabbing" : ""
+            }`}
           >
-            <header className="z-[3] flex shrink-0 items-center gap-2.5 border-b border-vgray-100 bg-surface px-[18px] pt-4 pb-3.5">
-              <span
-                aria-hidden="true"
-                className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-r3 bg-violet-50"
-              >
-                <Image
-                  src="/logos/vanna-icon.png"
-                  alt=""
-                  width={19}
-                  height={19}
-                  className="block object-contain"
-                />
-              </span>
-              <div className="flex min-w-0 flex-1 flex-col justify-center">
-                <h2 className="text-[15px] font-semibold leading-[18px] text-vgray-900">
+            <span
+              aria-hidden="true"
+              className="flex h-[32px] w-[32px] shrink-0 items-center justify-center rounded-r3 bg-violet-50"
+            >
+              <Image
+                src="/logos/vanna-icon.png"
+                alt=""
+                width={18}
+                height={18}
+                className="block object-contain"
+              />
+            </span>
+            <div className="flex min-w-0 flex-1 flex-col justify-center">
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-[14.5px] font-semibold leading-[18px] text-vgray-900">
                   Vanna Assist
                 </h2>
-                <p
-                  className={`mt-1 text-[11px] leading-[14px] ${
-                    phase !== "idle" ? "font-medium text-violet-500" : "text-vgray-500"
-                  }`}
-                  aria-live="polite"
-                >
-                  {phase !== "idle" && (
-                    <span
-                      className="mr-1.5 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400 align-middle"
-                      aria-hidden
-                    />
-                  )}
-                  {contextLabel}
-                </p>
+                {isFloating && (
+                  <span
+                    title="Drag header to move within page"
+                    className="inline-flex items-center rounded bg-vgray-50 px-1.5 py-0.5 text-[10px] font-medium text-vgray-500"
+                  >
+                    Drag
+                  </span>
+                )}
               </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <button
-                  type="button"
-                  title="Clears this thread completely"
-                  onClick={() => {
-                    clearAssistantTurns();
-                    setPrefill(null);
-                    setLastContextPath(null);
-                    clearRegion();
-                    setComposerNonce((n) => n + 1);
-                    toast.success("New chat - history cleared", { duration: 2000 });
-                  }}
-                  disabled={turns.length === 0}
-                  className="flex cursor-pointer items-center gap-1.5 rounded-r2 border border-vgray-100 bg-transparent px-2.5 py-1.5 text-[12px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500 disabled:cursor-default disabled:opacity-40 disabled:hover:border-vgray-100 disabled:hover:bg-transparent disabled:hover:text-vgray-800"
-                >
-                  <RefreshCw size={13} />
-                  New chat
-                </button>
-                <button
-                  type="button"
-                  aria-label="Close Assist"
-                  title="Close"
-                  onClick={() => setAssistantOpen(false)}
-                  className="flex cursor-pointer rounded-r2 border border-vgray-100 bg-transparent p-[7px] text-vgray-500 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            </header>
-
-            <div className="min-h-0 flex-1">
-              <AssistantPanel
-                key={composerNonce}
-                send={send}
-                prefill={prefill}
-                onConsumedPrefill={() => setPrefill(null)}
-                pageLabel={pathname || undefined}
-                turns={turns}
-                onSelectFromScreen={() => setSelectingRegion(true)}
-                hasRegion={hasRegion}
-                onClearRegion={clearRegion}
-                phase={phase}
-              />
+              <p
+                className={`mt-0.5 truncate text-[11px] leading-[14px] ${
+                  phase !== "idle" ? "font-medium text-violet-500" : "text-vgray-500"
+                }`}
+                aria-live="polite"
+              >
+                {phase !== "idle" && (
+                  <span
+                    className="mr-1.5 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400 align-middle"
+                    aria-hidden
+                  />
+                )}
+                {contextLabel}
+              </p>
             </div>
-          </aside>
-        </div>
+            <div className="flex shrink-0 items-center gap-1.5" data-no-drag>
+              <button
+                type="button"
+                title={isFloating ? "Dock panel to right edge" : "Detach as draggable floating window"}
+                aria-label={isFloating ? "Dock to right" : "Float window"}
+                onClick={() => setAssistantLayoutMode(isFloating ? "docked" : "floating")}
+                className="flex cursor-pointer items-center justify-center rounded-r2 border border-vgray-100 bg-transparent p-[7px] text-vgray-600 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
+              >
+                {isFloating ? <PanelRight size={13} /> : <Maximize2 size={13} />}
+              </button>
+              <button
+                type="button"
+                title="Clears this thread completely"
+                onClick={() => {
+                  clearAssistantTurns();
+                  setPrefill(null);
+                  setLastContextPath(null);
+                  clearRegion();
+                  setComposerNonce((n) => n + 1);
+                  toast.success("New chat - history cleared", { duration: 2000 });
+                }}
+                disabled={turns.length === 0}
+                className="flex cursor-pointer items-center gap-1 rounded-r2 border border-vgray-100 bg-transparent px-2 py-1.5 text-[11.5px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500 disabled:cursor-default disabled:opacity-40 disabled:hover:border-vgray-100 disabled:hover:bg-transparent disabled:hover:text-vgray-800"
+              >
+                <RefreshCw size={12} />
+                New
+              </button>
+              <button
+                type="button"
+                aria-label="Close Assist"
+                title="Close"
+                onClick={() => setAssistantOpen(false)}
+                className="flex cursor-pointer rounded-r2 border border-vgray-100 bg-transparent p-[7px] text-vgray-500 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </header>
+
+          <div className="min-h-0 flex-1">
+            <AssistantPanel
+              key={composerNonce}
+              send={send}
+              prefill={prefill}
+              onConsumedPrefill={() => setPrefill(null)}
+              pageLabel={pathname || undefined}
+              turns={turns}
+              onSelectFromScreen={() => setSelectingRegion(true)}
+              hasRegion={hasRegion}
+              onClearRegion={clearRegion}
+              phase={phase}
+              onOpenInCopilot={handleOpenInCopilot}
+            />
+          </div>
+        </aside>
       )}
 
       <AssistantRegionOverlay
@@ -370,7 +635,6 @@ function AssistantLauncherInner() {
 }
 
 export function AssistantLauncher() {
-  // useSearchParams (via semantic hook if used) needs Suspense in some Next setups
   return (
     <Suspense fallback={null}>
       <AssistantLauncherInner />

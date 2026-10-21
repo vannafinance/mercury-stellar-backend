@@ -88,12 +88,7 @@ describe("an investigation says whether the page ran it or read it back", () => 
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404 } as unknown as Response)));
     const { result } = renderHook(() => useInvestigation(WALLET));
     await flush();
-    // A reload starts a new chat (owner, 25 Sep): nothing is on screen, so nothing can re-fire …
-    expect(result.current.result).toBeNull();
-    expect(result.current.turns).toHaveLength(0);
-    // … and the chat, reopened from History, is a record, not a turn to run again.
-    const archived = result.current.conversations.find((c) => c.title === "withdraw all funds");
-    await act(async () => { await result.current.open(archived!.id); });
+    // A reload restores the active thread in sessionStorage with resultOrigin="restored", so nothing re-fires.
     expect(result.current.result?.originalRequest).toBe("withdraw all funds");
     expect(result.current.turns).toHaveLength(2);
     expect(result.current.resultOrigin).toBe("restored");

@@ -1,6 +1,6 @@
 /**
- * Assistant session state — chat history survives route navigations
- * (plan Section 1.3 / Step 4).
+ * Assistant session state — chat history and floating geometry survive route navigations
+ * and reloads.
  */
 
 import createNewStore from "@/zustand/index";
@@ -18,24 +18,40 @@ export type AssistantTurn = {
   guide?: GuideAnswer | null;
   /** Whether a page was readable when this turn was sent, for the "general answer" note. */
   hasPageContext?: boolean;
+  /** Optional one-click handoff prompt to open in Vanna Copilot. */
+  copilotHandoffPrompt?: string | null;
   /** Structured workflow facts; kept separate from the flattened assistant text. */
   executionReceipt?: ExecutionReceiptSnapshot | null;
 };
 
+export type AssistantCoords = { x: number; y: number };
+export type AssistantLayoutMode = "floating" | "docked";
+
 export interface AssistantSession {
   turns: AssistantTurn[];
   open: boolean;
+  layoutMode: AssistantLayoutMode;
+  panelPos: AssistantCoords | null;
+  launcherPos: AssistantCoords | null;
 }
 
 const initial: AssistantSession = {
   turns: [],
   open: false,
+  layoutMode: "floating",
+  panelPos: null,
+  launcherPos: null,
 };
 
 export const useAssistantSessionStore = createNewStore(initial, {
   name: "assistant-session",
   devTools: true,
-  persist: { name: "assistant-session", version: 1 },
+  persist: {
+    name: "assistant-session",
+    version: 2,
+    // v1 saved only turns and open; keep them and give the v2 layout fields their defaults.
+    migrate: (persisted: unknown) => ({ ...initial, ...((persisted as Partial<AssistantSession> | null) ?? {}) }),
+  },
 });
 
 export function appendAssistantTurn(turn: AssistantTurn) {
@@ -48,7 +64,7 @@ export function appendAssistantTurn(turn: AssistantTurn) {
  * Attach the latest journal snapshot to the current assistant turn.
  *
  * Replaying a ledger poll is safe: the same workflow replaces the snapshot on the same
- * turn instead of appending another prose turn.  A different workflow is not allowed to
+ * turn instead of appending another prose turn. A different workflow is not allowed to
  * overwrite the latest receipt, which prevents a late poll from corrupting newer history.
  */
 export function updateAssistantExecutionReceipt(receipt: ExecutionReceiptSnapshot): boolean {
@@ -71,20 +87,24 @@ export function setAssistantOpen(open: boolean) {
   useAssistantSessionStore.getState().set({ open });
 }
 
+export function setAssistantLayoutMode(layoutMode: AssistantLayoutMode) {
+  useAssistantSessionStore.getState().set({ layoutMode });
+}
+
+export function setAssistantPanelPos(panelPos: AssistantCoords | null) {
+  useAssistantSessionStore.getState().set({ panelPos });
+}
+
+export function setAssistantLauncherPos(launcherPos: AssistantCoords | null) {
+  useAssistantSessionStore.getState().set({ launcherPos });
+}
+
 /**
- * Gemini-style “new chat”: wipe in-memory turns and the persisted session
- * (survives route changes and page reloads via zustand persist).
+ * Gemini-style “new chat”: wipe in-memory turns while preserving the user's window
+ * layout mode and position.
  */
 export function clearAssistantTurns() {
   useAssistantSessionStore.getState().set({ turns: [] });
-  // Ensure localStorage key is cleared even if middleware lag leaves a stale blob.
-  if (typeof window !== "undefined") {
-    try {
-      window.localStorage.removeItem("assistant-session");
-    } catch {
-      /* ignore */
-    }
-  }
 }
 
 /** Alias for UI “New chat / refresh” actions. */

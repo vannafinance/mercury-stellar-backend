@@ -66,6 +66,7 @@ const LIST_PREFIX = "vanna.copilot.conversations.";
 /** On-screen chat that the server has not recorded yet - never sent as conversationId. */
 export const LIVE_CONVERSATION_ID = "local:current";
 const TITLE_LIMIT = 80;
+const GUEST_WALLET_KEY = "__guest__";
 
 export type StoredThread = {
   turns: ThreadTurn[];
@@ -74,13 +75,16 @@ export type StoredThread = {
   result: ResearchView | null;
   /** The server-side conversation this thread belongs to; null for a chat that has not had a turn yet. */
   conversationId?: string | null;
+  /** Active direct-lane response and prompt on screen so route changes and tab reloads preserve them. */
+  directResponse?: unknown | null;
+  directSubmitted?: string | null;
 };
 
 /** What the conversation list shows for each conversation. */
 export type ConversationSummary = { id: string; title: string; createdAt: number; updatedAt: number; pinned?: boolean; pending?: boolean };
 
-export function threadStorageKey(wallet: string): string {
-  return `${STORAGE_PREFIX}${wallet}`;
+export function threadStorageKey(wallet: string | null): string {
+  return `${STORAGE_PREFIX}${wallet || GUEST_WALLET_KEY}`;
 }
 
 export function conversationsStorageKey(wallet: string): string {
@@ -137,12 +141,13 @@ export function upsertConversation(
 }
 
 export function readStoredThread(wallet: string | null): StoredThread | null {
-  if (!wallet || typeof sessionStorage === "undefined") return null;
+  if (typeof sessionStorage === "undefined") return null;
+  const expectedWallet = wallet || GUEST_WALLET_KEY;
   try {
     const raw = sessionStorage.getItem(threadStorageKey(wallet));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StoredThread;
-    if (!parsed || parsed.wallet !== wallet || !Array.isArray(parsed.turns)) return null;
+    if (!parsed || parsed.wallet !== expectedWallet || !Array.isArray(parsed.turns)) return null;
     return parsed;
   } catch {
     return null;
@@ -150,20 +155,23 @@ export function readStoredThread(wallet: string | null): StoredThread | null {
 }
 
 export function writeStoredThread(wallet: string | null, value: StoredThread): void {
-  if (!wallet || typeof sessionStorage === "undefined") return;
+  if (typeof sessionStorage === "undefined") return;
+  const effectiveWallet = wallet || GUEST_WALLET_KEY;
   try {
     sessionStorage.setItem(threadStorageKey(wallet), JSON.stringify({
       turns: value.turns.slice(-16),
       continuation: value.continuation,
-      wallet,
+      wallet: effectiveWallet,
       result: value.result,
       conversationId: value.conversationId ?? null,
+      ...(value.directResponse !== undefined ? { directResponse: value.directResponse } : {}),
+      ...(value.directSubmitted !== undefined ? { directSubmitted: value.directSubmitted } : {}),
     }));
   } catch { /* quota - the live thread still works until reload */ }
 }
 
 export function clearStoredThread(wallet: string | null): void {
-  if (!wallet || typeof sessionStorage === "undefined") return;
+  if (typeof sessionStorage === "undefined") return;
   try { sessionStorage.removeItem(threadStorageKey(wallet)); } catch { /* ignore */ }
 }
 
@@ -195,6 +203,8 @@ export function writeStoredLocalThread(wallet: string | null, localId: string, v
         wallet,
         result: value.result,
         conversationId: localId,
+        ...(value.directResponse !== undefined ? { directResponse: value.directResponse } : {}),
+        ...(value.directSubmitted !== undefined ? { directSubmitted: value.directSubmitted } : {}),
       }),
     );
   } catch {

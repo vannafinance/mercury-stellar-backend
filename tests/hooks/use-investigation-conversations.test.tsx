@@ -219,11 +219,10 @@ describe("useInvestigation - conversations", () => {
     expect(result.current.turns.map((turn) => turn.text)).toEqual(["lend 1 XLM", "Lend 1 XLM."]);
   });
   /**
-   * A reload starts a new chat (owner, 25 Sep): the server's open conversation stays in the
-   * list, where opening it brings every turn back, and its pointer is cleared so the next turn
-   * is not appended to it.
+   * When the user closes the site and returns in a new tab (empty sessionStorage), it starts
+   * a blank new chat while listing all saved server conversations.
    */
-  it("lists the server's conversations on load, starts blank, and reopens the last one from the list", async () => {
+  it("lists the server's conversations on a fresh tab load, starts blank, and reopens the last one from the list", async () => {
     const calls = server([]);
     const { result } = renderHook(() => useInvestigation(WALLET));
     await waitFor(() => expect(result.current.conversations.map((c) => c.id)).toEqual(["c-newer", "c-older"]));
@@ -235,18 +234,24 @@ describe("useInvestigation - conversations", () => {
     expect(result.current.turns.map((t) => t.text)).toEqual(["repay 25% of my debt", "Repay …"]);
   });
 
-  it("archives the chat that was on screen when the page reloads, and keeps it openable", async () => {
-    server([]);
+  it("restores the active chat that was on screen when the page reloads, and only blanks on newChat()", async () => {
+    const calls = server([]);
     sessionStorage.setItem(`vanna.copilot.thread.${WALLET}`, JSON.stringify({
       wallet: WALLET, turns: [{ role: "user", text: "lend 5 XLM" }, { role: "assistant", text: "Lent 5 XLM." }],
-      continuation: null, result: null, conversationId: null,
+      continuation: "r-reload", result: view("Lent 5 XLM.", "r-reload"), conversationId: "c-newer",
+      directResponse: { kind: "answer", message: "Lent 5 XLM." }, directSubmitted: "lend 5 XLM",
     }));
     const { result } = renderHook(() => useInvestigation(WALLET));
-    expect(result.current.turns).toEqual([]);
-    const archived = result.current.conversations.find((c) => c.title === "lend 5 XLM");
-    expect(archived?.id).toMatch(/^local:/);
-    await act(async () => { await result.current.open(archived!.id); });
+    await waitFor(() => expect(result.current.conversations.length).toBeGreaterThanOrEqual(2));
     expect(result.current.turns.map((t) => t.text)).toEqual(["lend 5 XLM", "Lent 5 XLM."]);
+    expect(result.current.conversationId).toBe("c-newer");
+    expect(result.current.resultOrigin).toBe("restored");
+    expect(result.current.directSubmitted).toBe("lend 5 XLM");
+    expect(calls.some((c) => c.url === "/api/copilot/session" && c.method === "DELETE")).toBe(false);
+    act(() => { result.current.newChat(); });
+    expect(result.current.turns).toEqual([]);
+    expect(result.current.conversationId).toBeNull();
+    expect(result.current.directResponse).toBeNull();
   });
 
   it("persists a workflow receipt and mirrors it into the open thread", async () => {

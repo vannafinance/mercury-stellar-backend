@@ -104,16 +104,19 @@ function sortedByActivity(items: readonly ConversationSummary[]): ConversationSu
 /**
  * One conversation at a time on screen; every conversation the signed-in user has had,
  * kept by the server, listed beside it. The live thread is mirrored into sessionStorage so
- * a reload paints instantly; the server copy is what "open" and a fresh tab read.
+ * a reload or route change within the same tab preserves the open chat, while closing the
+ * tab/site and returning in a new tab starts a clean chat.
  */
 export function useInvestigation(wallet: string | null) {
   const [state, setState] = useState<{
     wallet: string | null; loading: boolean; prompt: string; result: ResearchView | null;
     progress: InvestigationProgress | null; error: string | null; turns: ThreadTurn[];
     conversationId: string | null; resultOrigin: "live" | "restored";
+    directResponse: unknown | null; directSubmitted: string | null;
   }>({
     wallet, loading: false, prompt: "", result: null, progress: null, error: null, turns: [],
     conversationId: null, resultOrigin: "restored",
+    directResponse: null, directSubmitted: null,
   });
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const abort = useRef<AbortController | null>(null);
@@ -129,6 +132,11 @@ export function useInvestigation(wallet: string | null) {
    */
   const transcript = useRef<Array<{ role: "user" | "assistant"; text: string }>>([]);
   const lastResult = useRef<ResearchView | null>(null);
+  /** A label set between runs (see `holdProgress`); the next run, or a clear, takes it over. */
+  const holding = useRef(false);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const directResponseRef = useRef<unknown | null>(null);
+  const directSubmittedRef = useRef<string | null>(null);
   const activeWallet = useRef(wallet);
   activeWallet.current = wallet;
 
@@ -187,10 +195,13 @@ export function useInvestigation(wallet: string | null) {
     continuation.current = null;
     conversationId.current = null;
     lastResult.current = null;
+    directResponseRef.current = null;
+    directSubmittedRef.current = null;
     transcript.current = [];
     setState({
       wallet: owner, loading: false, prompt: "", result: null, progress: null, error: null, turns: [],
       conversationId: null, resultOrigin: "restored",
+      directResponse: null, directSubmitted: null,
     });
   }, []);
 
@@ -201,19 +212,65 @@ export function useInvestigation(wallet: string | null) {
    * marked `restored`: the effects that carry a turn onward act on `live` only, so coming
    * back to the page shows the last answer instead of running it again.
    */
-  const applyThread = useCallback((owner: string | null, thread: { turns: ThreadTurn[]; continuation: string | null; result: ResearchView | null; conversationId: string | null }) => {
+  const applyThread = useCallback((owner: string | null, thread: {
+    turns: ThreadTurn[];
+    continuation: string | null;
+    result: ResearchView | null;
+    conversationId: string | null;
+    directResponse?: unknown | null;
+    directSubmitted?: string | null;
+  }) => {
     continuation.current = thread.continuation;
     conversationId.current = thread.conversationId;
     lastResult.current = thread.result;
+    directResponseRef.current = thread.directResponse ?? null;
+    directSubmittedRef.current = thread.directSubmitted ?? null;
     transcript.current = thread.turns.map((turn) => ({ role: turn.role, text: turn.text }));
     const lastUser = [...thread.turns].reverse().find((turn) => turn.role === "user");
     setState({
       wallet: owner, loading: false, prompt: lastUser?.text ?? "", result: thread.result,
       progress: null, error: null, turns: thread.turns, conversationId: thread.conversationId,
       resultOrigin: "restored",
+      directResponse: thread.directResponse ?? null,
+      directSubmitted: thread.directSubmitted ?? null,
     });
     // Opening an existing transcript is navigation, not new conversation activity.
     // Keep its list position and server-owned timestamps until a new turn is recorded.
+  }, []);
+
+  /**
+   * Synchronize active direct-lane state (`response` and `submitted` from `/api/copilot`)
+   * into the persistent provider and `sessionStorage` so route navigation and page refresh
+   * keep the active direct card/answer on screen.
+   */
+  const syncDirect = useCallback((nextResponse: unknown | null, nextSubmitted: string | null) => {
+    const sameResp = directResponseRef.current === nextResponse;
+    const sameSub = directSubmittedRef.current === nextSubmitted;
+    if (sameResp && sameSub) return;
+    directResponseRef.current = nextResponse;
+    directSubmittedRef.current = nextSubmitted;
+    const owner = activeWallet.current;
+    setState((previous) => {
+      if (previous.directResponse === nextResponse && previous.directSubmitted === nextSubmitted) {
+        return previous;
+      }
+      if (previous.turns.length > 0 || previous.result != null || nextResponse != null) {
+        writeStoredThread(owner, {
+          wallet: owner ?? "",
+          turns: previous.turns,
+          continuation: continuation.current,
+          result: lastResult.current,
+          conversationId: conversationId.current,
+          directResponse: nextResponse,
+          directSubmitted: nextSubmitted,
+        });
+      }
+      return {
+        ...previous,
+        directResponse: nextResponse,
+        directSubmitted: nextSubmitted,
+      };
+    });
   }, []);
 
   /**
@@ -240,9 +297,12 @@ export function useInvestigation(wallet: string | null) {
     abort.current?.abort("wallet changed");
     sequence.current += 1;
     const listed = wallet ? readStoredConversations(wallet) : [];
-    const stored = wallet ? readStoredThread(wallet) : null;
+    const stored = readStoredThread(wallet);
+    const hasActiveStored = Boolean(
+      stored && (stored.turns.length > 0 || stored.result != null || stored.directResponse != null),
+    );
     const liveId = stored?.conversationId ?? LIVE_CONVERSATION_ID;
-    let seeded = stored?.turns.some((turn) => turn.role === "user")
+    const seeded = stored?.turns.some((turn) => turn.role === "user")
       ? upsertConversation(listed, {
           id: liveId,
           title: titleFromTurns(stored.turns),
@@ -250,28 +310,30 @@ export function useInvestigation(wallet: string | null) {
           updatedAt: listed.find((item) => item.id === liveId)?.updatedAt ?? Date.now(),
         })
       : listed;
-    /**
-     * A reload starts a NEW chat (owner, 25 Sep), the same as pressing New chat: the chat that
-     * was on screen goes into History, where opening it brings back every turn and its
-     * execution cards, and the screen starts blank. It used to reopen the last chat, so a
-     * refresh could never get a clean start. A chat the server recorded is already in its list;
-     * one it never recorded is kept in this tab's cache under a local id, exactly as New chat
-     * keeps it.
-     */
-    let keptId = liveId;
-    if (stored?.turns.length) {
-      if (!stored.conversationId || isLocalConversationId(stored.conversationId)) {
-        keptId = stored.conversationId && isLocalConversationId(stored.conversationId) ? stored.conversationId : `local:${Date.now()}`;
-        writeStoredLocalThread(wallet!, keptId, { ...stored, conversationId: keptId });
-        seeded = seeded.map((item) => (item.id === LIVE_CONVERSATION_ID ? { ...item, id: keptId } : item));
-        writeStoredConversations(wallet!, seeded);
-      }
-      clearStoredThread(wallet!);
+
+    if (wallet && stored?.turns.length && stored.conversationId && isLocalConversationId(stored.conversationId)) {
+      writeStoredLocalThread(wallet, stored.conversationId, stored);
+      writeStoredConversations(wallet, seeded);
     }
+
     setConversations(seeded);
-    applyBlank(wallet);
+    if (hasActiveStored && stored) {
+      applyThread(wallet, {
+        turns: stored.turns,
+        continuation: stored.continuation,
+        result: stored.result,
+        conversationId: stored.conversationId ?? null,
+        directResponse: stored.directResponse ?? null,
+        directSubmitted: stored.directSubmitted ?? null,
+      });
+    } else {
+      applyBlank(wallet);
+    }
     if (!wallet) return () => { abort.current?.abort("wallet cleared"); sequence.current += 1; };
-    // The server holds the list and, when this tab has nothing, the open conversation.
+    // The server holds the list. When this tab has an active thread in sessionStorage (refresh
+    // or route navigation), keep that thread open on screen. When sessionStorage has no active
+    // thread (the user closed the tab/site and opened a fresh tab, or clicked New chat), start
+    // blank and clear the server's activeId pointer so the next turn starts a new conversation.
     const restore = new AbortController();
     void (async () => {
       try {
@@ -282,16 +344,14 @@ export function useInvestigation(wallet: string | null) {
         const remote = await response.json() as SessionPayload;
         if (Array.isArray(remote.conversations)) {
           const remoteConversations = remote.conversations;
-          const live = seeded.find((item) => item.id === keptId);
+          const live = seeded.find((item) => item.id === liveId);
           const merged = live && !remoteConversations.some((item) => item.id === live.id)
             ? upsertConversation(remoteConversations, live)
             : sortedByActivity(remoteConversations);
           setConversations(merged);
           writeStoredConversations(wallet, merged);
         }
-        // The server's "open conversation" is not reopened on load either: it stays in the list.
-        // Clearing the pointer keeps the next turn from being appended to that old chat.
-        if (remote.activeId) {
+        if (!hasActiveStored && remote.activeId) {
           await fetch("/api/copilot/session", { method: "DELETE", headers, cache: "no-store" }).catch(() => undefined);
         }
       } catch { /* sessionStorage remains the live thread; the list appears on the next load */ }
@@ -300,6 +360,8 @@ export function useInvestigation(wallet: string | null) {
   }, [effectiveWallet, applyBlank, applyThread]);
 
   const cancel = useCallback(() => {
+    holding.current = false;
+    if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
     abort.current?.abort("cancel pressed");
     sequence.current += 1;
     const message = "Investigation cancelled. No transactions were requested.";
@@ -307,15 +369,15 @@ export function useInvestigation(wallet: string | null) {
     setState((previous) => {
       const turns: ThreadTurn[] = [...previous.turns, { role: "assistant" as const, text: message }].slice(-16);
       transcript.current = turns.map((turn) => ({ role: turn.role, text: turn.text }));
-      if (owner) {
-        writeStoredThread(owner, {
-          wallet: owner,
-          turns,
-          continuation: continuation.current,
-          result: lastResult.current,
-          conversationId: conversationId.current,
-        });
-      }
+      writeStoredThread(owner, {
+        wallet: owner ?? "",
+        turns,
+        continuation: continuation.current,
+        result: lastResult.current,
+        conversationId: conversationId.current,
+        directResponse: directResponseRef.current,
+        directSubmitted: directSubmittedRef.current,
+      });
       rememberLive(owner, turns, conversationId.current);
       return { ...previous, loading: false, progress: null, error: null, turns };
     });
@@ -343,15 +405,15 @@ export function useInvestigation(wallet: string | null) {
         { role: "assistant" as const, text: assistant },
       ].slice(-16);
       transcript.current = localTurns.map((turn) => ({ role: turn.role, text: turn.text }));
-      if (owner) {
-        writeStoredThread(owner, {
-          wallet: owner,
-          turns: localTurns,
-          continuation: null,
-          result: null,
-          conversationId: startedIn,
-        });
-      }
+      writeStoredThread(owner, {
+        wallet: owner ?? "",
+        turns: localTurns,
+        continuation: null,
+        result: null,
+        conversationId: startedIn,
+        directResponse: directResponseRef.current,
+        directSubmitted: directSubmittedRef.current,
+      });
       rememberLive(owner, localTurns, startedIn);
       return { ...previous, turns: localTurns, result: null, error: null };
     });
@@ -377,6 +439,8 @@ export function useInvestigation(wallet: string | null) {
           continuation: continuation.current,
           result: lastResult.current,
           conversationId: payload.conversationId!,
+          directResponse: directResponseRef.current,
+          directSubmitted: directSubmittedRef.current,
         });
         return { ...previous, conversationId: payload.conversationId! };
       });
@@ -406,8 +470,8 @@ export function useInvestigation(wallet: string | null) {
         writeStoredConversations(owner, next);
         return next;
       });
-      clearStoredThread(owner);
     }
+    clearStoredThread(owner);
     applyBlank(owner);
     if (!owner) return;
     void (async () => {
@@ -462,6 +526,8 @@ export function useInvestigation(wallet: string | null) {
           continuation: stored.continuation,
           result: stored.result,
           conversationId: id,
+          directResponse: stored.directResponse ?? null,
+          directSubmitted: stored.directSubmitted ?? null,
         });
       } else {
         setState((previous) => ({ ...previous, error: "That conversation is no longer cached in this session." }));
@@ -482,7 +548,14 @@ export function useInvestigation(wallet: string | null) {
       const conversation = await response.json() as ConversationPayload;
       if (activeWallet.current !== owner || requestSequence !== sequence.current || signal.aborted) return;
       if (conversation.id !== id) throw new Error("conversation_mismatch");
-      const thread = { turns: conversation.turns, continuation: conversation.continuation, result: conversation.result, conversationId: conversation.id };
+      const thread = {
+        turns: conversation.turns,
+        continuation: conversation.continuation,
+        result: conversation.result,
+        conversationId: conversation.id,
+        directResponse: null,
+        directSubmitted: null,
+      };
       writeStoredThread(owner, { wallet: owner, ...thread });
       applyThread(owner, thread);
     } catch {
@@ -570,12 +643,6 @@ export function useInvestigation(wallet: string | null) {
     const owner = activeWallet.current;
     const id = conversationId.current;
     if (!owner || !id) return false;
-    /**
-     * The receipt goes onto its turn FIRST, here, and is saved to the server after. Everything that follows a settled run - the
-     * summary above all - finds the receipt on the turn, so tying that to the save meant one slow or failed save (the sign-in token
-     * fetch before it timed out) left a finished run with no summary ever, and nothing retried it (7 Oct, live, auto-approve on).
-     * The save still reports whether it worked, so the caller can try again.
-     */
     setState((previous) => {
       if (previous.wallet !== owner || previous.conversationId !== id) return previous;
       const reversed = [...previous.turns].map((turn, index) => ({ turn, index })).reverse();
@@ -590,6 +657,8 @@ export function useInvestigation(wallet: string | null) {
       writeStoredThread(owner, {
         wallet: owner, continuation: continuation.current, turns,
         result: lastResult.current, conversationId: id,
+        directResponse: directResponseRef.current,
+        directSubmitted: directSubmittedRef.current,
       });
       return { ...previous, turns };
     });
@@ -612,17 +681,20 @@ export function useInvestigation(wallet: string | null) {
       const turns = applyWorkflowCompletion(previous.turns, reply);
       if (!turns) return previous;
       transcript.current = turns.map((turn) => ({ role: turn.role, text: turn.text }));
-      writeStoredThread(owner, { wallet: owner, continuation: continuation.current, turns, result: lastResult.current, conversationId: id });
+      writeStoredThread(owner, {
+        wallet: owner,
+        continuation: continuation.current,
+        turns,
+        result: lastResult.current,
+        conversationId: id,
+        directResponse: directResponseRef.current,
+        directSubmitted: directSubmittedRef.current,
+      });
       rememberLive(owner, turns, id);
       return { ...previous, turns };
     });
   }, [rememberLive]);
 
-  /**
-   * Update the latest assistant turn in the conversation.
-   * When a chained action (e.g. deposit after asset setup) completes and settles,
-   * this replaces the pre-setup text with the actual settled action message.
-   */
   /**
    * `blocks` replaces the turn's composed reply; without it any earlier blocks are dropped, or
    * a plan reply's blocks would keep drawing over the "Done." text that replaced it.
@@ -643,15 +715,15 @@ export function useInvestigation(wallet: string | null) {
       void _stale;
       updatedTurns[idx] = { ...turn, text: clean, ...(blocks?.length ? { blocks } : {}) };
       transcript.current = updatedTurns.map((t) => ({ role: t.role, text: t.text }));
-      if (owner) {
-        writeStoredThread(owner, {
-          wallet: owner,
-          turns: updatedTurns,
-          continuation: continuation.current,
-          result: lastResult.current,
-          conversationId: id,
-        });
-      }
+      writeStoredThread(owner, {
+        wallet: owner ?? "",
+        turns: updatedTurns,
+        continuation: continuation.current,
+        result: lastResult.current,
+        conversationId: id,
+        directResponse: directResponseRef.current,
+        directSubmitted: directSubmittedRef.current,
+      });
       rememberLive(owner, updatedTurns, id);
       return { ...previous, turns: updatedTurns };
     });
@@ -675,38 +747,50 @@ export function useInvestigation(wallet: string | null) {
    * THAT reply's continuation, which seals the options the server checks them against; the
    * summary is only what the thread shows as the user's turn, never what is executed.
    */
-  const run = useCallback(async (message: string, signal?: AbortSignal, answers?: QuestionnaireAnswers, onResult?: (result: ResearchView) => void) => {
+  /**
+   * Show the progress line with a label of the caller's choosing while no run is in flight: the gap
+   * between one finished step and the next run (the account opened, the next request not yet sent)
+   * had no event, so the screen went quiet. `null` clears it. A run that starts takes it over, and it
+   * clears itself after a minute if nothing does, so a failed hand-off cannot leave a spinner behind.
+   */
+  const holdProgress = useCallback((label: string | null) => {
+    if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
+    if (!label) {
+      if (!holding.current) return;
+      holding.current = false;
+      setState((previous) => (previous.loading ? { ...previous, loading: false, progress: null } : previous));
+      return;
+    }
+    holding.current = true;
+    setState((previous) => ({ ...previous, loading: true, error: null, progress: { kind: "scope", label } }));
+    holdTimer.current = setTimeout(() => {
+      holdTimer.current = null;
+      if (!holding.current) return;
+      holding.current = false;
+      setState((previous) => (previous.loading ? { ...previous, loading: false, progress: null } : previous));
+    }, 60_000);
+  }, []);
+
+  const run = useCallback(async (message: string, signal?: AbortSignal, answers?: QuestionnaireAnswers, onResult?: (result: ResearchView) => void, options?: { echoUser?: boolean }) => {
     const prompt = message.trim();
     if (!prompt) return;
+    holding.current = false;
+    if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
     abort.current?.abort("replaced by a newer prompt");
     const controller = new AbortController();
     abort.current = controller;
     const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-    /**
-     * Name what ended the run. 23 Sep: replies were cut off (XS7 "blend" ended ERR_ABORTED,
-     * leaving a summary with no card) and "Cancelled" appeared without a press. Every abort
-     * site passes a label; this reaches the dev terminal as a [browser] line.
-     */
     combined.addEventListener("abort", () => {
       console.warn("[copilot] investigation aborted", { reason: String(combined.reason ?? "unlabelled"), prompt: prompt.slice(0, 60) });
     }, { once: true });
     const id = ++sequence.current;
     const owner = wallet;
     const current = () => sequence.current === id && activeWallet.current === owner && !combined.aborted;
-    // Above the route's 75s guarantee: the server should always answer first, so this
-    // is a backstop for a dead connection rather than the normal end of a slow run.
-    // The composer keeps a 130s outer deadline so this 120s timer is the one that fires.
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; controller.abort("120s client deadline"); }, 120_000);
-    /**
-     * Two different things end a run early and they must not share a sentence: the
-     * deadline (time really ran out) and an abort (this request was replaced, cancelled,
-     * or the wallet changed under it). The second is not a failure to retry blindly.
-     */
     const abortedCopy = () => timedOut
       ? "The investigation ran out of time before it could finish. Nothing was executed - please try again."
       : "This investigation was cancelled or replaced before it finished. Nothing was executed - run it again.";
-    // Always sent when held: whether this message continues it is for the server's model to read, with the plans on screen.
     const followUp = continuation.current;
     const answeringQuestion = Boolean(lastResult.current?.question);
     const session = continuation.current;
@@ -714,9 +798,19 @@ export function useInvestigation(wallet: string | null) {
     const startedIn = conversationId.current && !isLocalConversationId(conversationId.current)
       ? conversationId.current : null;
     setState((previous) => {
-      const turns = [...previous.turns, { role: "user" as const, text: prompt }].slice(-16);
+      const turns = (options?.echoUser === false ? [...previous.turns] : [...previous.turns, { role: "user" as const, text: prompt }]).slice(-16);
+      writeStoredThread(owner, {
+        wallet: owner ?? "",
+        continuation: continuation.current,
+        turns,
+        result: previous.result,
+        conversationId: previous.conversationId,
+        directResponse: directResponseRef.current,
+        directSubmitted: directSubmittedRef.current,
+      });
       rememberLive(owner, turns, startedIn);
       return {
+        ...previous,
         wallet: owner, loading: true, prompt: answeringQuestion ? previous.prompt || prompt : prompt,
         result: previous.result,
         turns,
@@ -744,9 +838,6 @@ export function useInvestigation(wallet: string | null) {
         settle({ error: abortedCopy() });
         return;
       }
-      // Three follow-up prompts on 13 Sep sat on "Preparing your session" until the deadline with
-      // nothing reaching the server. The label must say which half stalled: the sign-in token
-      // (above) or the request itself (below).
       setState((previous) => (sequence.current === id ? { ...previous, progress: { kind: "scope", label: "Sending your request" } } : previous));
       trace("dispatch");
       const response = await fetch("/api/copilot/investigate", {
@@ -776,7 +867,7 @@ export function useInvestigation(wallet: string | null) {
           transcript.current = next.slice(-8);
           if (owner) void refreshConversations(owner);
           setState((previous) => {
-            const priorTurns: ThreadTurn[] = previous.turns.some((turn, index) =>
+            const priorTurns: ThreadTurn[] = options?.echoUser === false || previous.turns.some((turn, index) =>
               turn.role === "user" && turn.text === prompt && index === previous.turns.length - 1)
               ? previous.turns
               : [...previous.turns, { role: "user" as const, text: prompt }];
@@ -792,6 +883,8 @@ export function useInvestigation(wallet: string | null) {
               wallet: owner ?? "",
               continuation: event.result.continuation,
               turns, result: event.result, conversationId: landedIn,
+              directResponse: directResponseRef.current,
+              directSubmitted: directSubmittedRef.current,
             });
             rememberLive(owner, turns, landedIn);
             return {
@@ -812,6 +905,8 @@ export function useInvestigation(wallet: string | null) {
               })),
               result: null,
               conversationId: conversationId.current,
+              directResponse: directResponseRef.current,
+              directSubmitted: directSubmittedRef.current,
             });
           }
           setState((previous) => ({
@@ -843,7 +938,36 @@ export function useInvestigation(wallet: string | null) {
   }, [wallet, refreshConversations, rememberLive]);
 
   // Do not expose the previous wallet's state during the render before its effect resets.
-  const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null, resultOrigin: "restored" as const };
+  const visible = state.wallet === wallet ? state : {
+    ...state,
+    loading: false,
+    prompt: "",
+    result: null,
+    progress: null,
+    error: null,
+    turns: [],
+    conversationId: null,
+    resultOrigin: "restored" as const,
+    directResponse: null,
+    directSubmitted: null,
+  };
   /** `reset` keeps its name for the workspace: it is "new chat" now, not "wipe the thread". */
-  return { ...visible, conversations, run, cancel, recordDirect, reset: newChat, newChat, open, remove, rename, pin, updateExecutionReceipt, updateLastAssistantText, updateWorkflowCompletion };
+  return {
+    ...visible,
+    conversations,
+    run,
+    cancel,
+    recordDirect,
+    syncDirect,
+    holdProgress,
+    reset: newChat,
+    newChat,
+    open,
+    remove,
+    rename,
+    pin,
+    updateExecutionReceipt,
+    updateLastAssistantText,
+    updateWorkflowCompletion,
+  };
 }

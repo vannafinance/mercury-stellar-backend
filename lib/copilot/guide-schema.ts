@@ -1,24 +1,27 @@
 /**
- * Structured Guide answers.
+ * Structured Guide answers for Vanna Assist.
  *
- * The Guide explains; the Copilot acts. It answers "what is a health factor?", "what am
- * I looking at on this page?" - long-form prose where the *structure* is the value:
- * a summary, then sections, some with a formula, some with a list, a glossary of terms
- * it used, and follow-up questions.
- *
- * runPageAgent returned one flat prose blob, so none of that structure survived: a
- * formula was a line of text in a paragraph, and the terms it leaned on went undefined.
- * The Claude Design Guide panel binds to fields (sections, formula, terms, followUps),
- * which is why this contract exists - same reasoning as answer-schema.ts, applied to a
- * reading surface rather than a figure surface.
+ * The Assist explains, diagnoses, and guides around the UI; the Copilot acts.
+ * Returning structured fields (summary, highlights, sections with formula/bullets/steps,
+ * terms glossary, followUps, copilotHandoffPrompt, and optional clientTools) allows every
+ * Assist turn to complete in a single low-latency LLM pass and render as a rich,
+ * scannable card layout rather than a flat wall of text.
  */
+
+export interface GuideHighlight {
+  label: string;
+  value: string;
+  tone?: "good" | "warn" | "bad" | "neutral";
+}
 
 export interface GuideSection {
   heading: string;
   body: string;
-  /** Rendered as its own monospace block - formulas are what people re-read. */
+  /** Rendered as its own monospace callout block - formulas are what people re-read. */
   formula?: string;
   bullets?: string[];
+  /** Numbered step-by-step instructions when explaining a workflow or UI action. */
+  steps?: string[];
 }
 
 export interface GuideTerm {
@@ -26,22 +29,40 @@ export interface GuideTerm {
   short: string;
 }
 
+export interface GuideClientTool {
+  name: "navigateToRoute" | "scrollToSection" | "highlightElement" | "openConnectWallet";
+  path?: string;
+  elementId?: string;
+  selector?: string;
+  prefer?: string;
+  intent?: string;
+}
+
 export interface GuideAnswer {
   /** The question, echoed so the panel can title itself. */
   question: string;
-  /** Two or three sentences that answer it before any section. */
+  /** Two or three sentences that answer it directly before any section. */
   summary: string;
+  /** Key metrics or status pills extracted from the current page or session context. */
+  highlights?: GuideHighlight[];
   sections: GuideSection[];
   /** Jargon used above, defined inline so the reader never has to leave. */
   terms: GuideTerm[];
-  /** Follow-up questions offered as chips. */
+  /** Follow-up questions offered as interactive chips. */
   followUps: string[];
+  /**
+   * When the user asks to execute an on-chain action, build a strategy, or retry a
+   * transaction, provide the exact prompt they can hand off to Copilot in one click.
+   */
+  copilotHandoffPrompt?: string | null;
+  /** Optional UI navigation/highlight tools to invoke on the client. */
+  clientTools?: GuideClientTool[];
   /**
    * An on-screen element this answer refers to, for the "show me on this page"
    * affordance. Null when there was no page context or nothing relevant on it.
    */
   pageRef?: { label: string; elementId: string } | null;
-  /** True when the Guide genuinely does not know - rendered as an honest state. */
+  /** True when Assist genuinely does not know - rendered as an honest state. */
   unknown?: boolean;
 }
 
@@ -52,42 +73,67 @@ export const GUIDE_RESPONSE_SCHEMA = {
     summary: {
       type: "STRING",
       description:
-        "Two or three sentences answering the question directly. Plain text. No markdown.",
+        "One to three crisp sentences answering the question directly. Plain text, no markdown.",
+    },
+    highlights: {
+      type: "ARRAY",
+      description:
+        "Optional (up to 4) key figures, metrics, or statuses visible on the user's current page " +
+        "or session events that directly relate to their question. Never invent figures not in context.",
+      items: {
+        type: "OBJECT",
+        properties: {
+          label: { type: "STRING", description: "Short metric or status label, e.g. 'Health Factor' or 'Pool APY'." },
+          value: { type: "STRING", description: "Exact value from pageContext or protocol law, e.g. '1.10 liquidation floor'." },
+          tone: {
+            type: "STRING",
+            enum: ["good", "warn", "bad", "neutral"],
+            description: "Visual tone for the metric card.",
+          },
+        },
+        required: ["label", "value"],
+        propertyOrdering: ["label", "value", "tone"],
+      },
     },
     sections: {
       type: "ARRAY",
-      description: "At most 4 sections, each a distinct aspect of the answer.",
+      description:
+        "1 to 4 structured sections. Keep simple questions to 1-2 sections; use more only for full page walkthroughs or multi-part comparisons.",
       items: {
         type: "OBJECT",
         properties: {
           heading: { type: "STRING", description: "Short sentence-case heading." },
-          body: { type: "STRING", description: "One or two paragraphs of plain prose." },
+          body: { type: "STRING", description: "Concise, clear plain prose (1-3 sentences)." },
           formula: {
             type: "STRING",
             description:
               "A formula in plain text if one genuinely clarifies this section, e.g. " +
-              "'health factor = collateral / debt'. Omit otherwise - do not invent one.",
+              "'Health Factor = Gross Collateral / Debt (Liquidation <= 1.10)'. Omit otherwise.",
           },
           bullets: {
             type: "ARRAY",
-            description: "Up to 4 short points, only when a list beats a sentence.",
+            description: "Up to 4 short bullet points when comparing items or listing key takeaways.",
+            items: { type: "STRING" },
+          },
+          steps: {
+            type: "ARRAY",
+            description: "Up to 5 ordered steps when explaining how to perform an action in the UI.",
             items: { type: "STRING" },
           },
         },
         required: ["heading", "body"],
-        propertyOrdering: ["heading", "body", "formula", "bullets"],
+        propertyOrdering: ["heading", "body", "formula", "bullets", "steps"],
       },
     },
     terms: {
       type: "ARRAY",
       description:
-        "Jargon actually used above, defined in one sentence each. At most 4. Omit terms " +
-        "the answer never mentions.",
+        "Jargon actually used above, defined in one plain sentence each. At most 4. Omit if no specialized terms were used.",
       items: {
         type: "OBJECT",
         properties: {
           term: { type: "STRING" },
-          short: { type: "STRING", description: "One sentence, no jargon of its own." },
+          short: { type: "STRING", description: "One plain sentence defining the term." },
         },
         required: ["term", "short"],
         propertyOrdering: ["term", "short"],
@@ -95,55 +141,116 @@ export const GUIDE_RESPONSE_SCHEMA = {
     },
     followUps: {
       type: "ARRAY",
-      description: "Up to 3 questions a reader would naturally ask next.",
+      description: "2 to 3 natural next questions the user might want to ask.",
       items: { type: "STRING" },
+    },
+    copilotHandoffPrompt: {
+      type: "STRING",
+      description:
+        "Set ONLY when the user wants to execute an on-chain action, check live off-page wallet/margin state via MCP, " +
+        "or build a strategy that belongs in Vanna Copilot. Provide the exact prompt to run in Copilot.",
+    },
+    clientTools: {
+      type: "ARRAY",
+      description:
+        "Set ONLY when the user explicitly asks to navigate to a page, scroll to a section, highlight a control, " +
+        "or open the wallet connection modal.",
+      items: {
+        type: "OBJECT",
+        properties: {
+          name: {
+            type: "STRING",
+            enum: ["navigateToRoute", "scrollToSection", "highlightElement", "openConnectWallet"],
+          },
+          path: {
+            type: "STRING",
+            description: "For navigateToRoute: app route such as /margin, /earn, /farm, /portfolio, /trade/spot, /copilot, /analytics",
+          },
+          elementId: {
+            type: "STRING",
+            description: "For scrollToSection: DOM id from pageContext.sections[].id",
+          },
+          selector: {
+            type: "STRING",
+            description: "For highlightElement: CSS selector or data-copilot-id from interactiveHints",
+          },
+          prefer: {
+            type: "STRING",
+            description: "For openConnectWallet: 'privy', 'modal', or 'freighter'",
+          },
+          intent: {
+            type: "STRING",
+            description: "For openConnectWallet: 'create' or 'connect'",
+          },
+        },
+        required: ["name"],
+        propertyOrdering: ["name", "path", "elementId", "selector", "prefer", "intent"],
+      },
     },
     unknown: {
       type: "BOOLEAN",
       description:
-        "True when you cannot answer from Vanna product knowledge or the page context. " +
-        "Say so rather than guessing - a confident wrong explanation of a risk mechanic " +
-        "is worse than admitting the gap.",
+        "True when the question is outside Vanna Finance / Stellar DeFi or cannot be answered honestly from product knowledge and page context.",
     },
   },
   required: ["question", "summary", "sections"],
-  propertyOrdering: ["question", "summary", "sections", "terms", "followUps", "unknown"],
+  propertyOrdering: [
+    "question",
+    "summary",
+    "highlights",
+    "sections",
+    "terms",
+    "followUps",
+    "copilotHandoffPrompt",
+    "clientTools",
+    "unknown",
+  ],
 } as const;
 
-export const GUIDE_SYSTEM = `You are Vanna Assist. You EXPLAIN Vanna Finance on Stellar/Soroban. You never transact - the Copilot does that, and you must never imply you have acted or can act.
+export const GUIDE_SYSTEM = `You are Vanna Assist, the in-app DeFi companion for Vanna Finance on Stellar/Soroban.
 Never call yourself Vanna Guide or Vanna Assistant - your name is Vanna Assist.
+You EXPLAIN, DIAGNOSE, and GUIDE around the interface. You never sign or submit transactions yourself - Vanna Copilot executes on-chain actions.
 
-You return DATA, not prose layout. The interface renders your fields. Never write markdown, asterisks, bullet characters or headings inside a field; they are shown literally and read as a bug.
+You return structured JSON matching the schema. The UI renders each field into dedicated typography, metric cards, formula callouts, step badges, and glossary pills. Never write markdown syntax (no **bold**, *italics*, # headings, or bullet symbols) inside string fields.
 
-summary
-- Answer the question in two or three sentences before any section. A reader who stops here should still have their answer.
+ADAPTIVE STRUCTURE & TONE
+- Lead with a crystal-clear summary (1-3 sentences) that directly answers the user's question.
+- Populate highlights (up to 4 cards) when the user's screen has concrete numbers (APY, TVL, Health Factor, Collateral, Debt) or when highlighting critical protocol invariants (such as the 1.10 liquidation floor).
+- Keep sections sharp and well-paced:
+  - Use formula only when an exact mathematical relation clarifies the concept.
+  - Use steps when walking the user through how to do something in the UI.
+  - Use bullets when comparing venues, tokens, or key properties.
+- Define specialized terms in terms (up to 4) so newcomers and pros alike get instant clarity.
+- Suggest 2-3 smart, contextual followUps.
+- If the user asks to perform a transaction, build a levered strategy, or run a live account action, explain briefly how it works and populate copilotHandoffPrompt with the exact prompt they can launch in Vanna Copilot.
+- If the user asks to go to another page, scroll to a section, highlight a button, or connect/create a wallet, include the appropriate entry in clientTools alongside your explanation.
 
-sections
-- Each covers one distinct aspect. Order them so the most useful comes first.
-- Add a formula only when it genuinely clarifies, and only one you are certain of. Never invent notation.
-- Use bullets only when the content is genuinely a list.
+PAGE CONTEXT & SESSION EVENTS
+- You receive the live pageContext (path, title, sections, mainText, selectedText, metrics, tables) from the user's current screen.
+- When the user asks about their screen ("what am I looking at?", "explain this page", "what does this metric mean?"), ground your explanation in the exact sections, controls, and figures visible on that page.
+- Never invent balances, APYs, or prices that are not present in pageContext.
+- When the page context is empty or unrelated to the question, answer from product knowledge and do not pretend to see a page. Never describe a section, control, or figure that is not in the context.
+- If SESSION EVENTS are present, use them to diagnose transaction issues accurately (e.g. distinguishing wallet_rejected signature cancellation from simulation or on-chain failures).
+- If screenshots are attached, read only what is visibly shown and cross-check with pageContext.
 
-terms
-- Define only jargon you actually used, one plain sentence each. No term whose definition needs another term.
+PROTOCOL ACCURACY & DOMAIN BOUNDARY
+- Health Factor on Vanna is Gross Collateral / Debt. Hard liquidation occurs at or below HF <= 1.10. There is no collateral threshold haircut.
+- Never present a safety floor you were not given as a protocol rule, and never put one into copilotHandoffPrompt. Any safety buffer above the 1.10 protocol liquidation threshold belongs strictly to the user.
+- Three-bucket architecture: Spendable Wallet balances, Posted Margin (Smart Account collateral & debt), and Earn Pools are distinct buckets.
+- Earn, Farm, and Margin are distinct products:
+  - Earn: Vanna's native lending pools where suppliers earn yield.
+  - Margin: Vanna's smart account holding collateral and borrowed debt.
+  - Farm: External DeFi venues on Stellar/Soroban (Blend lending pools, Aquarius & Soroswap LP pools).
+- Three distinct USDC tokens exist on testnet/protocol: BLUSDC (Blend), AQUSDC (Aquarius), and SOUSDC (Soroswap). They are not interchangeable without swapping.
+- Stay strictly within Vanna Finance, Stellar/Soroban, and relevant DeFi mechanics. If a user asks an off-domain question (unrelated coding, general trivia, politics, etc.), set unknown: true and politely state that Vanna Assist focuses exclusively on Vanna Finance and Stellar DeFi.`;
 
-followUps
-- Questions this answer naturally raises, phrased as the user would ask them.
-
-PAGE CONTEXT
-- You are given the page the user is looking at: its path, title, headings and visible text.
-- When the question is about the page ("what am I looking at", "what is this", "explain this screen"), answer about THAT page specifically: name its real sections and controls, in the order they appear, and say what each is for. A generic description of Vanna is a wrong answer to that question.
-- Ground every claim in the page text. Never describe a section, control or figure that is not in the context, and never restate a number that is not there.
-- When the context is empty or unrelated to the question, answer from product knowledge and do not pretend to see a page.
-- SESSION EVENTS, if present, are facts from this browser session. Use them to diagnose failures. wallet_rejected is a cancelled signature, not an on-chain failure. Do not invent a tx hash or stage that is not listed.
-- Attached images are crops or pastes the user chose. Describe only what is visible. Prefer page/session numbers over OCR.
-- You never transact. If they need to retry, tell them to open Copilot.
-
-Accuracy rules that override everything above:
-- Health factor on Vanna is gross collateral divided by debt. Liquidation happens at or below 1.10. There is no threshold haircut on the collateral side.
-- Earn, Farm and Margin are different products. Never blur them: Earn is Vanna's own lending pools, Farm is external venues (Blend, Aquarius/Soroswap LP), Margin is the smart account that holds collateral and debt.
-- There are three distinct USDC tokens (BLUSDC, AQUSDC, SOUSDC) and they are not interchangeable.
-- Never quote a live figure - a balance, an APY, a health factor - unless the page context contains it. You explain mechanics; the Copilot reports numbers.
-- If the question is outside Vanna, or you are not confident, set unknown true and say what you would need. Do not fill the gap with plausible-sounding detail.`;
+const VALID_TONES = new Set(["good", "warn", "bad", "neutral"]);
+const VALID_TOOLS = new Set([
+  "navigateToRoute",
+  "scrollToSection",
+  "highlightElement",
+  "openConnectWallet",
+]);
 
 /** Normalise a model answer, dropping malformed parts rather than trusting them. */
 export function normalizeGuideAnswer(raw: unknown, fallbackQuestion: string): GuideAnswer | null {
@@ -153,6 +260,27 @@ export function normalizeGuideAnswer(raw: unknown, fallbackQuestion: string): Gu
   const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
   const summary = str(o.summary);
   if (!summary) return null;
+
+  const highlights: GuideHighlight[] = Array.isArray(o.highlights)
+    ? o.highlights
+        .map((h) => {
+          const e = (h ?? {}) as Record<string, unknown>;
+          const label = str(e.label);
+          const value = str(e.value);
+          if (!label || !value) return null;
+          const rawTone = str(e.tone);
+          const tone = VALID_TONES.has(rawTone)
+            ? (rawTone as GuideHighlight["tone"])
+            : undefined;
+          return {
+            label,
+            value,
+            ...(tone ? { tone } : {}),
+          };
+        })
+        .filter((h): h is GuideHighlight => h !== null)
+        .slice(0, 4)
+    : [];
 
   const sections: GuideSection[] = Array.isArray(o.sections)
     ? o.sections
@@ -165,11 +293,15 @@ export function normalizeGuideAnswer(raw: unknown, fallbackQuestion: string): Gu
           const bullets = Array.isArray(e.bullets)
             ? e.bullets.map(str).filter(Boolean).slice(0, 4)
             : [];
+          const steps = Array.isArray(e.steps)
+            ? e.steps.map(str).filter(Boolean).slice(0, 5)
+            : [];
           return {
             heading,
             body,
             ...(formula ? { formula } : {}),
             ...(bullets.length ? { bullets } : {}),
+            ...(steps.length ? { steps } : {}),
           };
         })
         .filter((s): s is GuideSection => s !== null)
@@ -192,12 +324,41 @@ export function normalizeGuideAnswer(raw: unknown, fallbackQuestion: string): Gu
     ? o.followUps.map(str).filter(Boolean).slice(0, 3)
     : [];
 
+  const copilotHandoffPrompt = str(o.copilotHandoffPrompt) || null;
+
+  const clientTools: GuideClientTool[] = Array.isArray(o.clientTools)
+    ? o.clientTools
+        .map((t) => {
+          const e = (t ?? {}) as Record<string, unknown>;
+          const name = str(e.name);
+          if (!VALID_TOOLS.has(name)) return null;
+          const path = str(e.path);
+          const elementId = str(e.elementId);
+          const selector = str(e.selector);
+          const prefer = str(e.prefer);
+          const intent = str(e.intent);
+          return {
+            name: name as GuideClientTool["name"],
+            ...(path ? { path } : {}),
+            ...(elementId ? { elementId } : {}),
+            ...(selector ? { selector } : {}),
+            ...(prefer ? { prefer } : {}),
+            ...(intent ? { intent } : {}),
+          };
+        })
+        .filter((t): t is GuideClientTool => t !== null)
+        .slice(0, 3)
+    : [];
+
   return {
     question: str(o.question) || fallbackQuestion,
     summary,
+    ...(highlights.length ? { highlights } : {}),
     sections,
     terms,
     followUps,
+    ...(copilotHandoffPrompt ? { copilotHandoffPrompt } : {}),
+    ...(clientTools.length ? { clientTools } : {}),
     pageRef: null,
     ...(o.unknown === true ? { unknown: true } : {}),
   };
@@ -206,10 +367,17 @@ export function normalizeGuideAnswer(raw: unknown, fallbackQuestion: string): Gu
 /** Flatten to plain text for `message`, so a surface without the panel still works. */
 export function guideAnswerToText(a: GuideAnswer): string {
   const out: string[] = [a.summary];
+  if (a.highlights?.length) {
+    out.push("");
+    for (const h of a.highlights) out.push(`• ${h.label}: ${h.value}`);
+  }
   for (const s of a.sections) {
     out.push("", s.heading, s.body);
     if (s.formula) out.push(s.formula);
     for (const b of s.bullets ?? []) out.push(`• ${b}`);
+    for (let i = 0; i < (s.steps ?? []).length; i++) {
+      out.push(`${i + 1}. ${s.steps![i]}`);
+    }
   }
   if (a.terms.length) {
     out.push("", "Terms used here");

@@ -1,5 +1,5 @@
 "use client";
-import { accountSetupPrompt, accountSetupRequest, type AccountSetupContinuation } from "@/lib/copilot/account-setup-continuation";
+import { accountSetupPrompt, accountSetupRequest, lifecycleCompletionText, type AccountSetupContinuation } from "@/lib/copilot/account-setup-continuation";
 
 // Vanna Copilot workspace - Gemini understands intent; MCP executes.
 //
@@ -27,6 +27,7 @@ import { useUserStore } from "@/store/user";
 import {
   useMarginAccountInfoStore,
   checkUserMarginAccount,
+  clearMarginAccount,
   refreshBorrowedBalances,
   isSnapshotFeedSuppressed,
 } from "@/store/margin-account-info-store";
@@ -1531,7 +1532,9 @@ export function CopilotWorkspace() {
   const { snapshot, isLoading: snapshotLoading, error: snapshotError, refresh: refreshSnapshot } = useAccountSnapshot(address);
 
   const [intentText, setIntentText] = useState("");
-  const [submitted, setSubmitted] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState<string | null>(
+    () => investigation.directSubmitted ?? null,
+  );
   const [signingJournal, setSigningJournal] = useState(false);
   const signAttemptRef = useRef<object | null>(null);
   useEffect(() => {
@@ -1551,7 +1554,37 @@ export function CopilotWorkspace() {
    * "auto-approve on but needs your click" while session signing was still enabled.
    */
   const [autoSubmitBlockedKey, setAutoSubmitBlockedKey] = useState<string | null>(null);
-  const [response, setResponse] = useState<ChatResponse | null>(null);
+  const [response, setResponse] = useState<ChatResponse | null>(
+    () => (investigation.directResponse as ChatResponse | null) ?? null,
+  );
+  // Restore direct-lane state once `useInvestigation` has read sessionStorage on mount. This runs only
+  // when the stored copy changes, never because the local value became null: clearing the card
+  // (setResponse(null)) must stay cleared, and the effect below writes that clear back to the store.
+  const syncDirect = investigation.syncDirect;
+  useEffect(() => {
+    if (investigation.directResponse != null) setResponse((current) => current ?? (investigation.directResponse as ChatResponse));
+    if (investigation.directSubmitted != null) setSubmitted((current) => current ?? investigation.directSubmitted);
+  }, [investigation.directResponse, investigation.directSubmitted]);
+  // A card or answer belongs to the wallet that asked for it. Switching wallets drops it, so the
+  // new wallet never sees (or signs) the previous wallet's staged action. Switching straight from one
+  // wallet to another never passes through a disconnect, so the shared margin store is cleared here too
+  // (the rail would otherwise keep the previous wallet's positions until a refresh).
+  const lastWalletRef = useRef<string | null>(address);
+  useEffect(() => {
+    const before = lastWalletRef.current;
+    lastWalletRef.current = address;
+    if (before && address && before !== address) {
+      setResponse(null);
+      setSubmitted(null);
+      clearMarginAccount();
+      if (address) void checkUserMarginAccount(address, true);
+    }
+  }, [address]);
+  const directHydrated = useRef(false);
+  useEffect(() => {
+    if (!directHydrated.current) { directHydrated.current = true; return; }
+    syncDirect(response as unknown as Record<string, unknown> | null, submitted);
+  }, [response, submitted, syncDirect]);
   /** Always read latest response in signWithWallet - avoids stale XDR after hop advance. */
   const responseRef = useRef<ChatResponse | null>(null);
   responseRef.current = response;
@@ -1770,7 +1803,8 @@ export function CopilotWorkspace() {
     cancelledRef.current = false;
     abortRef.current?.abort("workspace reset");
     abortRef.current = null;
-  }, [workflow]);
+    syncDirect(null, null);
+  }, [workflow, syncDirect]);
   const startNewChat = useCallback(() => { leavePlanCard(); investigation.newChat(); }, [leavePlanCard, investigation]);
   const openConversation = useCallback((id: string) => {
     leavePlanCard();
@@ -3094,9 +3128,16 @@ export function CopilotWorkspace() {
       if (!sent) releaseDispatch(address, key);
       else if (lifecycleTurnRef.current === turn && (sent.kind === "error" || sent.kind === "blocked")) {
         void investigation.updateLastAssistantText(sent.message);
+      } else if (lifecycleTurnRef.current === turn && sent.kind === "executed") {
+        const tx = sent.execution?.tx_hash ?? null;
+        if (tx) {
+          void updateExecutionReceipt(buildRunReceipt({ legs: [], isRun: false, runId: null, requestId: sent.request_id ?? null, network: view.scope.network || "testnet", single: { op }, txHash: tx }));
+          setResponse(null);
+        }
+        void investigation.updateLastAssistantText(tx ? (lifecycleCompletionText(op) ?? sent.message) : sent.message);
       }
     });
-  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, investigation.updateLastAssistantText, postCopilot, address]);
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, investigation.updateLastAssistantText, updateExecutionReceipt, postCopilot, address]);
 
   const signJournalXdr = useCallback(async (auto = false) => {
     const view = workflow.view;
@@ -3230,6 +3271,34 @@ export function CopilotWorkspace() {
     setIntentText(text);
     await dispatchRun(text);
   }, [loading, signing, dispatchRun]);
+
+  // Accept one-click execution handoffs from Vanna Assist (`vanna.copilot.handoff` in sessionStorage
+  // or `vanna:copilot-handoff` custom event when already on /copilot).
+  useEffect(() => {
+    const consumeHandoff = (prompt?: string | null) => {
+      const text = (prompt ?? "").trim();
+      if (!text) return;
+      try {
+        sessionStorage.removeItem("vanna.copilot.handoff");
+      } catch {
+        /* ignore */
+      }
+      setIntentText(text);
+      void run(text);
+    };
+    try {
+      const pending = sessionStorage.getItem("vanna.copilot.handoff");
+      if (pending) consumeHandoff(pending);
+    } catch {
+      /* ignore */
+    }
+    const onHandoff = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ prompt?: string }>).detail;
+      consumeHandoff(detail?.prompt);
+    };
+    window.addEventListener("vanna:copilot-handoff", onHandoff);
+    return () => window.removeEventListener("vanna:copilot-handoff", onHandoff);
+  }, [run]);
 
   /**
    * Send an approved plan back for execution.
@@ -4010,6 +4079,7 @@ export function CopilotWorkspace() {
         if (xdr) {
           const seqInfo = readEnvelopeSourceSequence(xdr);
           if (seqInfo) {
+            if (lifecycleCompletionText(action?.op) && accountSetupRef.current) investigation.holdProgress("Waiting for the ledger");
             await waitForAccountSequenceApplied(seqInfo.source, seqInfo.sequence);
           }
         }
@@ -4024,7 +4094,16 @@ export function CopilotWorkspace() {
           accountSetupRef.current = null;
           setResponse(null);
           void investigation.updateLastAssistantText("Your margin account is open. Continuing your original request; that action has not executed yet.");
-          await investigation.run(resumeRequest);
+          investigation.holdProgress("Refreshing your account");
+          await refreshRailStats({ force: true, after: result.hash });
+          investigation.holdProgress("Continuing your original request");
+          await investigation.run(resumeRequest, undefined, undefined, undefined, { echoUser: false });
+          return;
+        }
+        if (lifecycleCompletionText(action?.op) && result.hash && investigation.turns.length > 0) {
+          investigation.holdProgress(null);
+          setResponse(null);
+          void refreshRailStats({ force: true, after: result.hash });
           return;
         }
 
@@ -5170,6 +5249,7 @@ export function CopilotWorkspace() {
     nextStepFiredRef.current = null;
     strategyParentRef.current = null;
     resetStrategyAccumulator();
+    syncDirect(null, null);
     inputRef.current?.focus();
   };
 
@@ -5996,7 +6076,7 @@ export function CopilotWorkspace() {
                 return running ? runningPlanText(running, workflow.view?.status === "completed") : null;
               })()}
             />
-            {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
+            {txHash && !lifecycleCompletionText(action?.op) && !investigation.turns.some((turn) => turn.executionReceipt) ? (
               <div className="flex items-start gap-2.5 max-w-[85%]">
                 <div className="w-[18px] shrink-0" aria-hidden="true" />
                 <div className="min-w-0 w-full">
@@ -6069,12 +6149,14 @@ export function CopilotWorkspace() {
                           network: investigation.result?.scope.network || "testnet", single: { op }, txHash: settledSetup }));
                         await note;
                       }
+                      investigation.holdProgress("Refreshing your account");
                       await refreshRailStats({ force: true, after: settledSetup || null });
                       if (accountSetupRef.current !== pending || cancelledRef.current || useUserStore.getState().address !== address
                         || currentConversationRef.current !== conversationId) return;
                       accountSetupRef.current = null;
                       setResponse(null);
-                      await investigation.run(request);
+                      investigation.holdProgress("Continuing your original request");
+                      await investigation.run(request, undefined, undefined, undefined, { echoUser: false });
                     } else if (prepared.kind === "error" || prepared.kind === "blocked") accountSetupRef.current = null;
                   });
                 }}
