@@ -756,6 +756,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           "I'm the Vanna Assist - I can explain this page and answer questions, but I " +
           "don't sign or submit transactions myself. Open the Copilot page to run " +
           `"${message}".`,
+        data: { copilotHandoffPrompt: message },
         intent: { template_id: "assistant_surface_redirect" },
         request_id,
       };
@@ -855,6 +856,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           "I'm the Vanna Assist - I can explain this page and answer questions, but I " +
           "don't sign or submit transactions myself. Open the Copilot page to run " +
           `"${message}".`,
+        data: { copilotHandoffPrompt: message },
         intent: { template_id: "assistant_surface_redirect" },
         request_id,
       };
@@ -912,6 +914,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         "I'm the Vanna Assist - I can explain this page and answer questions, but I " +
         "don't sign or submit transactions myself. Open the Copilot page to run " +
         `"${message}".`,
+      data: { copilotHandoffPrompt: message },
       intent: { template_id: "assistant_surface_redirect" },
       request_id,
     };
@@ -940,6 +943,29 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   }
 
   if (routed.kind === "clarify") {
+    if (req.surface === "assistant" && routed.template_id === "clarify_capabilities") {
+      let semantic = req.semantic_page_context ?? null;
+      if (!semantic && req.page_snapshot) {
+        const snap = req.page_snapshot;
+        semantic = {
+          url: snap.url,
+          path: snap.path,
+          title: snap.title,
+          description: "",
+          sections: (snap.headings || []).map((t) => ({ level: 2, text: t, id: null })),
+          mainText: snap.visible_text || snap.region_text || "",
+          selectedText: snap.selection ?? null,
+          interactiveHints: [],
+          capturedAt: snap.captured_at,
+        };
+      }
+      return runPageAgent(message, semantic, request_id, {
+        history: Array.isArray(req.history) ? req.history : undefined,
+        session_events: req.session_events ?? [],
+        attachments: req.attachments ?? [],
+        snapshot: req.page_snapshot ?? null,
+      });
+    }
     // Only the *generic* fallback is replaced. A router clarification with its own
     // template_id (unsupported asset, missing amount…) is a real, specific answer and
     // stands whether or not the model was reachable.

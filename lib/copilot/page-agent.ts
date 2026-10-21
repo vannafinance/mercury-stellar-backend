@@ -1,15 +1,20 @@
 /**
- * Page-aware agent (Gemini plan): structured pageContext + client tool calling.
+ * Page-aware agent: single-pass structured Guide response + in-schema client tool calling.
  */
 
-import type { ChatResponse, SemanticPageContextCtx, PageSnapshotCtx, AssistantSessionEvent, AssistantImageAttachment } from "./types";
+import type {
+  ChatResponse,
+  SemanticPageContextCtx,
+  PageSnapshotCtx,
+  AssistantSessionEvent,
+  AssistantImageAttachment,
+} from "./types";
 import {
   generateText,
-  generateWithClientTools,
   vertexGuideAnswer,
   type VertexInlineImage,
 } from "./vertex";
-import { guideAnswerToText, type GuideAnswer } from "./guide-schema";
+import { guideAnswerToText, type GuideClientTool } from "./guide-schema";
 import { isAssistantChat } from "./concept";
 import { DOMAIN_FIREWALL_SYSTEM } from "./domain-firewall";
 import {
@@ -20,7 +25,7 @@ import { COPILOT_WORKFLOW_PACK, glossaryHintsFor } from "@/lib/assistant/product
 
 export { isAssistantChat };
 
-/** Shared formatting contract so every answer looks like a clean AI reply. */
+/** Shared formatting contract for plain-text fallback only when structured JSON is unavailable. */
 const FORMAT_RULES = `
 ### OUTPUT FORMAT (required - the UI renders this with spacing and bullets)
 Structure every answer like a modern AI assistant:
@@ -43,41 +48,8 @@ Hard rules:
 - One idea per bullet or step. Keep steps short.
 - Use "• " for bullets (bullet character) and "1. " "2. " for steps - never walls of paragraphs.
 - Do NOT use **bold**, *italic*, markdown # headings, or code fences.
-- Do NOT write First,/Second,/Third, as prose - always use numbered "1. 2. 3." instead.
 - No fake numbers. Only cite balances/APYs if they appear in pageContext.
 `;
-
-export const PAGE_AGENT_SYSTEM = `You are Vanna Assist, the page-aware explainer for Vanna Finance (Stellar DeFi).
-Never call yourself Vanna Guide or Vanna Assistant.
-Help users understand what they see and how to use the product.
-${DOMAIN_FIREWALL_SYSTEM}
-
-CRITICAL - ALWAYS ANSWER IN TEXT:
-- Every reply MUST include a full natural-language answer.
-- NEVER respond with tools only.
-- Pure explain questions (what is / what can / how do I) → full structured answer, no tools.
-- You never sign, submit, enable auto-sign, or retry a transaction. If they want to act, send them to the Copilot page.
-
-### pageContext (JSON each turn)
-path, title, sections, mainText, selectedText, interactiveHints, optional region/metrics.
-
-### sessionEvents
-Classified facts from this browser session (wallet_rejected vs simulation_failed vs on-chain). Use them to answer "what happened". Never invent a stage that is not listed.
-
-### Attachments
-Screenshots the user pasted or cropped. Describe only what is in them. Do not invent balances from a blurry crop if sessionEvents or pageContext already have the number.
-
-### Tools (only for show me / take me / where do I click)
-- scrollToSection, navigateToRoute, highlightElement, openConnectWallet
-Paths: /, /margin, /earn, /farm, /portfolio, /trade/spot, /copilot, /analytics...
-Never call a tool that would sign or submit.
-
-### Product notes
-Margin: deposit collateral, borrow, health factor (~1.1 liquidation). Earn: supply vaults.
-Farm: Blend / Aquarius / Soroswap. Spot: swap. BLUSDC / AQUSDC / SOUSDC are different.
-Leverage: deposit collateral + borrow (and related farm leverage) - explain from page text when present.
-Never claim you signed a transaction.
-${FORMAT_RULES}`;
 
 const ANSWER_ONLY_SYSTEM = `You are Vanna Assist. Answer fully using pageContext when useful.
 Never call yourself Vanna Guide. You explain; Copilot is the one that acts.
@@ -85,107 +57,29 @@ No tools. Be concrete and helpful about Vanna (margin, earn, farm, spot).
 ${DOMAIN_FIREWALL_SYSTEM}
 ${FORMAT_RULES}`;
 
-/** Vertex function declarations for client-side tools. */
-export const CLIENT_TOOL_DECLS = [
-  {
-    name: "navigateToRoute",
-    description:
-      "Navigate the user to another in-app route without a full page reload (SPA navigation).",
-    parameters: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "App path, e.g. /earn, /farm, /portfolio, /trade/spot, /analytics",
+function mapGuideClientTools(
+  tools?: GuideClientTool[],
+): Array<{ name: string; args: Record<string, unknown> }> {
+  if (!Array.isArray(tools) || !tools.length) return [];
+  const out: Array<{ name: string; args: Record<string, unknown> }> = [];
+  for (const t of tools) {
+    if (t.name === "navigateToRoute" && t.path) {
+      out.push({ name: "navigateToRoute", args: { path: t.path } });
+    } else if (t.name === "scrollToSection" && t.elementId) {
+      out.push({ name: "scrollToSection", args: { elementId: t.elementId, highlight: true } });
+    } else if (t.name === "highlightElement" && t.selector) {
+      out.push({ name: "highlightElement", args: { selector: t.selector } });
+    } else if (t.name === "openConnectWallet") {
+      out.push({
+        name: "openConnectWallet",
+        args: {
+          ...(t.prefer ? { prefer: t.prefer } : {}),
+          ...(t.intent ? { intent: t.intent } : {}),
         },
-      },
-      required: ["path"],
-    },
-  },
-  {
-    name: "scrollToSection",
-    description:
-      "Smooth-scroll to a section on the current page by DOM element id (from pageContext.sections).",
-    parameters: {
-      type: "object",
-      properties: {
-        elementId: {
-          type: "string",
-          description: "DOM id of the heading/section (from sections[].id)",
-        },
-        highlight: {
-          type: "boolean",
-          description: "Whether to apply visual highlight pulse (default true)",
-        },
-      },
-      required: ["elementId"],
-    },
-  },
-  {
-    name: "highlightElement",
-    description:
-      "Highlight an interactive UI element using a CSS selector or data-copilot-id value.",
-    parameters: {
-      type: "object",
-      properties: {
-        selector: {
-          type: "string",
-          description: "CSS selector or data-copilot-id value",
-        },
-      },
-      required: ["selector"],
-    },
-  },
-  {
-    name: "openConnectWallet",
-    description:
-      "Open the Connect / Create Vanna wallet dialog (Privy email/Google or Freighter). " +
-      "Use when the user asks to create a wallet, create a Vanna wallet, connect a wallet, " +
-      "or set up a G-wallet. Never invent wallet keys or claim MCP creates wallets.",
-    parameters: {
-      type: "object",
-      properties: {
-        prefer: {
-          type: "string",
-          description: 'prefer "privy" for create, "modal" to show both options, or "freighter"',
-        },
-        intent: {
-          type: "string",
-          description: '"create" for new Vanna wallet, "connect" for existing wallet',
-        },
-      },
-    },
-  },
-] as const;
-
-/**
- * "What am I looking at?" and its cousins. These want an explanation of the page, not a
- * tool call, but none of them start with "what is", so they were taking the tool path:
- * one call to decide no tool was needed, then a second for the answer.
- */
-const PAGE_QUESTION =
-  /\b(what|where)\s+am\s+i\b|\b(looking\s+at|on\s+(?:my\s+)?screen|this\s+page|this\s+screen)\b|\b(what|who)\s+(is|are)\s+(this|that|these|those)\b|\bwalk\s+me\s+through\b/i;
-
-function sanitizeProse(s: string): string {
-  return s
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/__([^_]+)__/g, "$1")
-    .replace(/\*([^*\n]+)\*/g, "$1")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/```[\s\S]*?```/g, (b) => b.replace(/```\w*\n?/g, "").replace(/```/g, ""))
-    // Normalize First,/Second, prose into numbered steps when model slips
-    .replace(/^(First|Second|Third|Fourth|Fifth|Finally),?\s+/gim, (_m, w) => {
-      const map: Record<string, string> = {
-        first: "1. ",
-        second: "2. ",
-        third: "3. ",
-        fourth: "4. ",
-        fifth: "5. ",
-        finally: "6. ",
-      };
-      return map[String(w).toLowerCase()] || "• ";
-    })
-    .trim();
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -312,58 +206,28 @@ export async function runPageAgent(
 
   const guideCtx = [ctxJson, knowledge].join("\n\n");
 
-  const wantsGuidanceOnly =
-    diagnosing ||
-    ((/\b(what is|what are|what can|what does|how (?:do|does|can|to)|explain|tell me|meaning|kya |kaise )\b/i.test(
-      message,
-    ) ||
-      PAGE_QUESTION.test(message)) &&
-      !/\b(show me|take me|go to|open |scroll|where (?:is|do i click|on (?:this|the) page))\b/i.test(
-        message,
-      ));
-
   try {
-    let text = "";
-    let client_tools: Array<{ name: string; args: Record<string, unknown> }> = [];
-    let guide: GuideAnswer | null = null;
+    // Single-pass structured call: returns structured GuideAnswer AND any clientTools
+    // in one low-latency round-trip across the configured Guide model chain.
+    const guide = await vertexGuideAnswer(message, guideCtx || null, history, images);
+    const client_tools = mapGuideClientTools(guide?.clientTools);
 
-    if (wantsGuidanceOnly) {
-      // One structured call first; prose fallback only if guide returns empty - not if
-      // Vertex is still running (guide has its own timeout). Avoid stacking two full
-      // 60s calls, which made the browser abort at 90s while the server kept going.
-      guide = await vertexGuideAnswer(message, guideCtx || null, history, images);
-      if (!guide) {
-        text = await generateText(ANSWER_ONLY_SYSTEM, user, {
-          temperature: 0.4,
-          images,
-          timeoutMs: 45_000,
-        });
-      }
-    } else {
-      const result = await generateWithClientTools(
-        PAGE_AGENT_SYSTEM,
-        user,
-        CLIENT_TOOL_DECLS as any,
+    let text = "";
+    if (!guide) {
+      text = await generateText(ANSWER_ONLY_SYSTEM, user, {
+        temperature: 0.3,
         images,
-      );
-      text = result.text;
-      client_tools = result.client_tools;
-      if (!text.trim()) {
-        text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4, images });
-      }
-      if (!client_tools.length) {
-        guide = await vertexGuideAnswer(message, guideCtx || null, history, images);
-      }
+        timeoutMs: 45_000,
+      });
     }
 
-    const messageOut = sanitizeProse(
-      text.trim() ||
-        "I could not produce an answer from the current page. Try rephrasing your question.",
-    );
+    const messageOut = guide
+      ? guideAnswerToText(guide)
+      : text.trim() || "I could not produce an answer from the current page. Try rephrasing your question.";
 
     return {
       kind: "answer",
-      message: guide ? guideAnswerToText(guide) : messageOut,
+      message: messageOut,
       ...(guide ? { guide } : {}),
       data: {
         assistant: true,
@@ -376,13 +240,14 @@ export async function runPageAgent(
         session_events: events.length,
         attachments: images.length,
         horizon: opts.horizon?.status ?? null,
+        ...(guide?.copilotHandoffPrompt ? { copilotHandoffPrompt: guide.copilotHandoffPrompt } : {}),
       },
       client_tools,
       intent: {
         template_id: "page_assist",
         slots: {
           path: pageContext?.path ?? null,
-          mode: diagnosing ? "diagnosis" : wantsGuidanceOnly ? "explain" : "semantic_agent",
+          mode: diagnosing ? "diagnosis" : client_tools.length ? "semantic_agent" : "explain",
           tools: client_tools.map((t) => t.name),
         },
       },
@@ -393,13 +258,13 @@ export async function runPageAgent(
     console.warn("[copilot:page-agent] primary failed:", errMsg.slice(0, 200));
     try {
       const fallback = await generateText(ANSWER_ONLY_SYSTEM, user, {
-        temperature: 0.4,
+        temperature: 0.3,
         images,
         timeoutMs: 45_000,
       });
       return {
         kind: "answer",
-        message: sanitizeProse(fallback),
+        message: fallback.trim(),
         data: { assistant: true, fallback: true },
         client_tools: [],
         intent: { template_id: "page_assist", slots: { mode: "fallback_text" } },
@@ -409,7 +274,7 @@ export async function runPageAgent(
       const offline = offlineScreenAnswer(pageContext);
       return {
         kind: "answer",
-        message: sanitizeProse(offline),
+        message: offline.trim(),
         data: {
           assistant: true,
           offline: true,

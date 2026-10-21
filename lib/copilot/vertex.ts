@@ -452,9 +452,9 @@ function modelUrl(model: string): string {
 //
 // Minimums are per-model: below them a prefix is never cached at all.
 const IMPLICIT_CACHE_MIN: Record<string, number> = {
-  "gemini-2.5-flash": 2048,
-  "gemini-2.5-pro": 2048,
+  "gemini-3.8-flash": 4096,
   "gemini-3.5-flash": 4096,
+  "gemini-3.5-flash-lite": 4096,
   "gemini-3.1-pro": 4096,
 };
 
@@ -463,7 +463,7 @@ function implicitCacheMin(model: string): number {
   for (const [prefix, min] of Object.entries(IMPLICIT_CACHE_MIN)) {
     if (model.startsWith(prefix)) return min;
   }
-  return model.startsWith("gemini-2.5") ? 2048 : 4096;
+  return 4096;
 }
 
 let cacheFloorWarned = false;
@@ -935,91 +935,6 @@ export async function generateText(
     }
   }
   throw new VertexError(`All Vertex models failed: ${errors.join(" | ").slice(0, 500)}`);
-}
-
-export type ClientToolDecl = {
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-};
-
-/**
- * Page-agent generation: AUTO function calling for client tools + free text.
- * Returns prose and zero or more client tool calls for the browser to execute.
- */
-export async function generateWithClientTools(
-  system: string,
-  user: string,
-  toolDecls: ClientToolDecl[],
-  images?: VertexInlineImage[] | null,
-): Promise<{
-  text: string;
-  client_tools: Array<{ name: string; args: Record<string, unknown> }>;
-}> {
-  const model = copilotConfig.vertexModel;
-  return withModelCall(model, { outputType: "text" }, async () => {
-  const token = await getAccessToken();
-  const body = {
-    systemInstruction: { parts: [{ text: system }] },
-    tools: [{ functionDeclarations: toolDecls }],
-    // AUTO: model may answer in text and/or call tools (Gemini side-panel style)
-    toolConfig: { functionCallingConfig: { mode: "AUTO" } },
-    contents: [{ role: "user", parts: userContentParts(user, images) }],
-    generationConfig: { temperature: 0.35 },
-  };
-
-  const res = await fetch(modelUrl(model), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
-    cache: "no-store",
-  });
-  const raw = await res.text();
-  if (!res.ok) {
-    if (res.status === 401 || res.status === 403) tokenCache = null;
-    // Fallback: plain text without tools if schema rejected
-    console.warn(`[copilot:vertex] client-tools HTTP ${res.status}, falling back to generateText`);
-    const textOnly = await generateText(system, user, { temperature: 0.35, images: images ?? undefined });
-    return { text: textOnly, client_tools: [] };
-  }
-
-  let parsed: {
-    candidates?: Array<{
-      content?: { parts?: Array<{ text?: string; functionCall?: { name?: string; args?: Record<string, unknown> } }> };
-      finishReason?: string;
-    }>;
-  };
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new VertexError(`Vertex client-tools non-JSON: ${raw.slice(0, 300)}`);
-  }
-  logUsage("page-agent:fc", parsed);
-
-  const parts = parsed?.candidates?.[0]?.content?.parts ?? [];
-  const text = parts
-    .map((p) => p.text)
-    .filter(Boolean)
-    .join("")
-    .trim();
-  const client_tools = parts
-    .filter((p) => p.functionCall?.name)
-    .map((p) => ({
-      name: String(p.functionCall!.name),
-      args: (p.functionCall!.args ?? {}) as Record<string, unknown>,
-    }));
-
-  if (!text && client_tools.length === 0) {
-    throw new VertexError(
-      `Vertex page-agent empty (finishReason=${parsed?.candidates?.[0]?.finishReason ?? "?"})`,
-    );
-  }
-  return { text, client_tools };
-  });
 }
 
 /**
@@ -1539,10 +1454,11 @@ export async function vertexExplainStructured(
       return null;
     }
     const parsed = JSON.parse(text) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
     };
     logUsage("answer", parsed);
     const out = (parsed?.candidates?.[0]?.content?.parts ?? [])
+      .filter((p) => !p.thought)
       .map((p) => p.text)
       .filter(Boolean)
       .join("");
@@ -1676,10 +1592,11 @@ export async function vertexSummarizeExecution(
       return null;
     }
     const parsed = JSON.parse(await res.text()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
     };
     logUsage("receipt", parsed);
     const out = (parsed?.candidates?.[0]?.content?.parts ?? [])
+      .filter((p) => !p.thought)
       .map((p) => p.text)
       .filter(Boolean)
       .join("");
@@ -1743,47 +1660,53 @@ export async function vertexGuideAnswer(
     .filter(Boolean)
     .join("\n\n");
 
-  const model = copilotConfig.vertexModel;
-  return withModelCall(model, { outputType: "json" }, async () => {
-  const token = await getAccessToken();
-  try {
-    const res = await fetch(modelUrl(model), {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: GUIDE_SYSTEM }] },
-        contents: [{ role: "user", parts: userContentParts(user, images) }],
-        generationConfig: {
-          temperature: 0.3,
-          responseMimeType: "application/json",
-          responseSchema: GUIDE_RESPONSE_SCHEMA,
-        },
-      }),
-      signal: AbortSignal.timeout(60_000),
-      cache: "no-store",
+  const candidates = usableModels([copilotConfig.vertexGuideModel, ...copilotConfig.vertexGuideFallbacks]);
+  for (const model of candidates) {
+    const result = await withModelCall(model, { outputType: "json", reasoningLevel: "LOW" }, async () => {
+      const token = await getAccessToken();
+      try {
+        const res = await fetch(modelUrl(model), {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: GUIDE_SYSTEM }] },
+            contents: [{ role: "user", parts: userContentParts(user, images) }],
+            generationConfig: {
+              ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel: "LOW" } } : { temperature: 0.2 }),
+              responseMimeType: "application/json",
+              responseSchema: GUIDE_RESPONSE_SCHEMA,
+            },
+          }),
+          signal: AbortSignal.timeout(45_000),
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 403) tokenCache = null;
+          console.warn(`[copilot:vertex] guide HTTP ${res.status} (${model})`);
+          return null;
+        }
+        const parsed = JSON.parse(await res.text()) as {
+          candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
+        };
+        logUsage("guide", parsed);
+        const out = (parsed?.candidates?.[0]?.content?.parts ?? [])
+          .filter((p) => !p.thought)
+          .map((p) => p.text)
+          .filter(Boolean)
+          .join("");
+        return out.trim() ? normalizeGuideAnswer(JSON.parse(out), question) : null;
+      } catch (e) {
+        console.warn(
+          `[copilot:vertex] guide failed on ${model}: ${e instanceof Error ? e.message.slice(0, 140) : String(e)}`,
+        );
+        return null;
+      }
     });
-    if (!res.ok) {
-      if (res.status === 401 || res.status === 403) tokenCache = null;
-      console.warn(`[copilot:vertex] guide HTTP ${res.status}`);
-      return null;
-    }
-    const parsed = JSON.parse(await res.text()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
-    logUsage("guide", parsed);
-    const out = (parsed?.candidates?.[0]?.content?.parts ?? [])
-      .map((p) => p.text)
-      .filter(Boolean)
-      .join("");
-    return out.trim() ? normalizeGuideAnswer(JSON.parse(out), question) : null;
-  } catch (e) {
-    console.warn(
-      `[copilot:vertex] guide failed, using prose: ${e instanceof Error ? e.message.slice(0, 140) : String(e)}`,
-    );
-    return null;
+    if (result) return result;
   }
-  });
+  return null;
 }
+
 
 /** Cheap health probe used by /api/copilot GET */
 export async function vertexPing(): Promise<{ ok: boolean; model: string; error?: string }> {

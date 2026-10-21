@@ -118,6 +118,32 @@ export function settledTransactions(receipt: ExecutionReceiptSnapshot) {
   return [...groups.values()];
 }
 
+/**
+ * Settled account-lifecycle receipts (`create_account`, `settle_account`) recorded on a turn via `buildRunReceipt`
+ * (`origin === "wallet"`). These carry a verified 64-character hex `txHash` and `status === "completed"` without a
+ * workflow-journal `completion` object, so the turn renders the settled transaction summary instead of leaving the
+ * execution progress stepper on screen.
+ */
+export function settledLifecycleTransactions(receipt: ExecutionReceiptSnapshot | null | undefined) {
+  if (!receipt || receipt.origin !== "wallet" || receipt.status !== "completed" || !receipt.steps.length) return null;
+  const network = explorerNetwork(receipt.network);
+  if (!network) return null;
+  const groups = new Map<string, { hash: string; ledger: number | null; url: string; steps: ExecutionReceiptSnapshot["steps"] }>();
+  for (const step of receipt.steps) {
+    const hash = step.txHash?.toLowerCase();
+    if (!lifecycleCompletionText(step.operation) || step.status !== "settled" || !hash || hash.length !== 64 ||
+      [...hash].some((c) => !"0123456789abcdef".includes(c))) return null;
+    const ledger = typeof step.settledLedger === "number" && Number.isSafeInteger(step.settledLedger) && step.settledLedger > 0
+      ? step.settledLedger
+      : null;
+    const group = groups.get(hash);
+    if (group && group.ledger !== ledger) return null;
+    if (group) group.steps.push(step);
+    else groups.set(hash, { hash, ledger, url: `https://stellar.expert/explorer/${network}/tx/${hash}`, steps: [step] });
+  }
+  return [...groups.values()];
+}
+
 export function completionMatches(receipt: ExecutionReceiptSnapshot | null | undefined, completion: WorkflowCompletion | null | undefined): boolean {
   return !!receipt && !!completion && receipt.workflowId === completion.workflowId &&
     completion.receiptKey === receiptKey(receipt) && settledTransactions(receipt) !== null;

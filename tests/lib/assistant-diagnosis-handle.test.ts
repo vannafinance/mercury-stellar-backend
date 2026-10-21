@@ -32,7 +32,6 @@ vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
       followUps: ["How do I retry this on Copilot?"],
     })),
     generateText: vi.fn(async () => "fallback"),
-    generateWithClientTools: vi.fn(async () => ({ text: "ok", client_tools: [] })),
   };
 });
 

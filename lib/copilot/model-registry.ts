@@ -2,21 +2,24 @@
  * The one place the copilot's model ids, and what is known about their retirement, live.
  *
  * Switching to a newer model, or off one that is retiring, is a change to `MODEL_DEFAULTS` here
- * (or to the VERTEX_MODEL / VERTEX_MODEL_FALLBACKS / VERTEX_SOCIAL_MODEL env vars on a deploy). No
- * other file names a model, and nothing branches on a specific model: how a model is called is
- * decided by its family in vertex.ts, and the API itself refuses a field a model cannot take.
+ * (or to the VERTEX_MODEL / VERTEX_MODEL_FALLBACKS / VERTEX_SOCIAL_MODEL / VERTEX_GUIDE_MODEL env
+ * vars on a deploy). No other file names a model, and nothing branches on a specific model: how a
+ * model is called is decided by its family in vertex.ts, and the API itself refuses a field a model
+ * cannot take.
  *
  * Roles, not versions:
- *   research  the investigation loop, reply composition, domain classification
- *   fallback  tried in order when the research model 404s or is unavailable
- *   social    greetings only; needs a model that accepts MINIMAL thinking (3.7/3.8 do not)
+ *   research       the investigation loop, reply composition, domain classification
+ *   fallback       tried in order when the research model 404s or is unavailable
+ *   guide          Vanna Assist structured page guide (runs at LOW thinking for fast interactive UI)
+ *   guideFallback  tried in order when the guide model is unavailable
+ *   social         greetings only; needs a model that accepts MINIMAL thinking (3.7/3.8 do not)
  *
  * Google announced these retirements by email on 5 Oct 2026. After the date a request to the
  * model fails with HTTP 404, which is why a retired id is dropped from the candidates instead of
  * being tried and failing. Only dates Google has published belong in MODEL_RETIREMENTS; a model
  * without an entry is not claimed to be permanent, only not known to be retiring.
  *
- * Checked against Google's "Model versions and lifecycle" table on 7 Oct 2026: gemini-3.8-flash "No
+ * Checked against Google's "Model versions and lifecycle" table: gemini-3.8-flash "No
  * retirement date announced"; gemini-3.5-flash "May 19, 2027 or later" and gemini-3.5-flash-lite
  * "July 21, 2027 or later" are earliest dates, not announced retirements, so neither has an entry.
  * Re-check that table when adding one.
@@ -24,6 +27,8 @@
 export const MODEL_DEFAULTS = {
   research: "gemini-3.8-flash",
   fallback: ["gemini-3.5-flash"],
+  guide: "gemini-3.8-flash",
+  guideFallback: ["gemini-3.5-flash-lite", "gemini-3.5-flash"],
   social: "gemini-3.5-flash-lite",
   /**
    * Reasoning effort for the research loop's concluding turn (the goal and evidence-linked findings).

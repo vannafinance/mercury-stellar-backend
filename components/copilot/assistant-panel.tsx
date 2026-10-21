@@ -3,14 +3,14 @@
 /**
  * Assistant drawer body - the Guide surface from the Copilot design.
  *
- * The Guide explains; the Copilot acts. A turn renders as the design's article
- * (summary → sections → glossary → follow-ups) whenever the brain returned a
- * structured answer, and falls back to prose when it returned only text - an error,
- * a clarification, or a turn that navigated the page instead of explaining it.
+ * The Guide explains; the Copilot acts. A turn renders as the structured Guide card
+ * (summary -> highlights -> sections -> glossary -> Copilot handoff -> follow-ups)
+ * whenever the brain returned a structured answer, and falls back to prose when it
+ * returned only text.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Crop, Send, X } from "lucide-react";
+import { Send, X } from "lucide-react";
 import Image from "next/image";
 import type { AssistantPhase } from "@/lib/assistant/phase";
 import toast from "react-hot-toast";
@@ -20,7 +20,12 @@ import { MAX_ATTACHMENTS } from "@/lib/assistant/packet";
 import { compressImageFile, isAllowedImageMime } from "@/lib/assistant/image-attach";
 import type { AssistantTurn } from "@/store/assistant-session";
 import { AssistantProse, sanitizeAssistantText } from "./assistant-prose";
-import { GuideAnswerView, GuideQuestion, GuideSkeleton } from "./guide-answer-view";
+import {
+  CopilotHandoffButton,
+  GuideAnswerView,
+  GuideQuestion,
+  GuideSkeleton,
+} from "./guide-answer-view";
 
 export type AssistantSendExtras = {
   attachments: AssistantImageAttachment[];
@@ -39,10 +44,10 @@ export type AssistantSend = (
 
 /** Short openers, Gemini-style - chips hug the text, they don’t stretch full width. */
 const SUGGESTIONS = [
-  "What can you do?",
   "What am I looking at?",
   "What is a health factor?",
   "How is Earn different from Farm?",
+  "What can you do?",
 ];
 
 function CopyTurn({ text }: { text: string }) {
@@ -101,20 +106,16 @@ export function AssistantPanel({
   prefill,
   onConsumedPrefill,
   turns,
-  onSelectFromScreen,
-  hasRegion,
-  onClearRegion,
   phase = "idle",
+  onOpenInCopilot,
 }: {
   send: AssistantSend;
   prefill?: string | null;
   onConsumedPrefill?: () => void;
   pageLabel?: string;
   turns: AssistantTurn[];
-  onSelectFromScreen?: () => void;
-  hasRegion?: boolean;
-  onClearRegion?: () => void;
   phase?: AssistantPhase;
+  onOpenInCopilot?: (prompt: string) => void;
 }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -126,6 +127,7 @@ export function AssistantPanel({
   const lastUserRef = useRef<HTMLDivElement>(null);
   const lastAnswerRef = useRef<HTMLDivElement>(null);
   const waiting = busy || phase !== "idle";
+
   useEffect(() => {
     if (prefill) {
       setInput(prefill);
@@ -210,7 +212,7 @@ export function AssistantPanel({
 
   const run = useCallback(
     async (message: string, extras?: AssistantSendExtras) => {
-      const visual = (extras?.attachments?.length ?? 0) > 0 || !!hasRegion;
+      const visual = (extras?.attachments?.length ?? 0) > 0;
       const text = composeMessage(message, extras?.selectedText ?? selectionSnippet, visual);
       if (!text || busy) return;
       setBusy(true);
@@ -225,7 +227,7 @@ export function AssistantPanel({
         setBusy(false);
       }
     },
-    [busy, send, hasRegion, selectionSnippet],
+    [busy, send, selectionSnippet],
   );
 
   const submitComposer = useCallback(() => {
@@ -234,15 +236,15 @@ export function AssistantPanel({
 
   const canSend =
     !waiting &&
-    (!!input.trim() || attachments.length > 0 || !!hasRegion || !!selectionSnippet);
+    (!!input.trim() || attachments.length > 0 || !!selectionSnippet);
 
-  const hasChips = attachments.length > 0 || hasRegion || !!selectionSnippet;
+  const hasChips = attachments.length > 0 || !!selectionSnippet;
 
   const loadingHint =
     phase === "capturing"
       ? "Reading this page…"
       : phase === "thinking"
-        ? "Thinking - answers usually take 10–30 seconds."
+        ? "Synthesizing structured guide…"
         : "Working…";
 
   return (
@@ -258,7 +260,23 @@ export function AssistantPanel({
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
     >
-      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto px-[22px] pt-[22px] pb-7">
+      <div
+        ref={listRef}
+        className={`min-h-0 flex-1 overflow-y-auto px-[20px] pt-[18px] pb-6 ${
+          turns.length === 0 && !waiting ? "flex flex-col justify-center" : ""
+        }`}
+      >
+        {turns.length === 0 && !waiting && (
+          // Centred in the middle of the whole panel: the logo, the name and what Assist is for.
+          // The suggestion chips stay down by the composer.
+          <div className="text-center">
+            <Image src="/logos/vanna-icon.png" alt="" width={44} height={44} className="mx-auto mb-2.5 block object-contain" />
+            <h3 className="text-[20px] font-semibold leading-6 text-violet-500">Vanna Assist</h3>
+            <p className="mx-auto mt-1 max-w-[34ch] text-[16px] font-medium leading-6 text-vgray-700">
+              Ask about this screen, protocol mechanics, or where to find any control.
+            </p>
+          </div>
+        )}
         <div className="flex flex-col gap-6">
           {turns.map((e, i) => {
             const lastUserIdx = turns.reduce((acc, t, idx) => (t.role === "user" ? idx : acc), -1);
@@ -286,9 +304,18 @@ export function AssistantPanel({
                       answer={e.guide}
                       onAsk={(q) => void run(q)}
                       hasPageContext={e.hasPageContext !== false}
+                      onOpenInCopilot={onOpenInCopilot}
                     />
                   ) : (
-                    <AssistantProse text={sanitizeAssistantText(e.text)} />
+                    <>
+                      <AssistantProse text={sanitizeAssistantText(e.text)} />
+                      {e.copilotHandoffPrompt && (
+                        <CopilotHandoffButton
+                          prompt={e.copilotHandoffPrompt}
+                          onOpenInCopilot={onOpenInCopilot}
+                        />
+                      )}
+                    </>
                   )}
                   <CopyTurn text={e.text} />
                 </div>
@@ -312,17 +339,13 @@ export function AssistantPanel({
 
       {turns.length === 0 && !waiting && (
         <div className="shrink-0 px-[18px] pb-3">
-          <h3 className="text-[22px] font-semibold leading-7 text-violet-500">Hello</h3>
-          <p className="mt-1 text-[22px] font-semibold leading-7 text-vgray-900">
-            How can I help you today?
-          </p>
-          <div className="mt-5 flex flex-col items-start gap-2">
+          <div className="flex flex-wrap items-start justify-center gap-2">
             {SUGGESTIONS.map((s) => (
               <button
                 key={s}
                 type="button"
                 onClick={() => void run(s)}
-                className="cursor-pointer rounded-full bg-vgray-50 px-3.5 py-2 text-left text-[13.5px] text-vgray-800 transition-colors hover:bg-violet-50 hover:text-violet-500"
+                className="cursor-pointer rounded-full border border-vgray-100 bg-vgray-50 px-3.5 py-1.5 text-left text-[13px] font-medium text-vgray-800 transition-colors hover:border-violet-400/40 hover:bg-violet-50 hover:text-violet-500"
               >
                 {s}
               </button>
@@ -342,19 +365,6 @@ export function AssistantPanel({
       >
         {hasChips && (
           <div className="flex flex-wrap gap-1.5">
-            {hasRegion && (
-              <span className="inline-flex max-w-full items-center gap-1.5 rounded-r2 border border-violet-50 bg-violet-50 px-2.5 py-1 text-[12px] font-medium text-violet-500">
-                Selected region · page text
-                <button
-                  type="button"
-                  aria-label="Remove selected region"
-                  onClick={() => onClearRegion?.()}
-                  className="cursor-pointer rounded-r2 text-violet-500 transition-colors hover:text-vgray-800"
-                >
-                  <X size={12} />
-                </button>
-              </span>
-            )}
             {selectionSnippet && (
               <span className="inline-flex max-w-full items-center gap-1.5 rounded-r2 border border-violet-50 bg-violet-50 px-2.5 py-1 text-[12px] font-medium text-violet-500">
                 <span className="min-w-0 truncate">Ask about “{snippetLabel(selectionSnippet)}”</span>
@@ -399,16 +409,6 @@ export function AssistantPanel({
         )}
 
         <div className="flex h-[42px] items-center gap-2">
-          <button
-            type="button"
-            title="Select part of the page (sends that region’s text with your question)"
-            aria-label="Select part of the page"
-            disabled={waiting}
-            onClick={() => onSelectFromScreen?.()}
-            className="flex h-full w-[42px] shrink-0 cursor-pointer items-center justify-center rounded-r3 border border-vgray-100 bg-transparent text-vgray-700 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Crop size={16} />
-          </button>
           <input
             ref={inputRef}
             type="text"

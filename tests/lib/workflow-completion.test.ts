@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyWorkflowCompletion, completionMatches, completionStep, needsCompletionRecovery, immediateCompletion, receiptBeside, receiptKey, settledTransactions, shortTransactionHash, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
+import { applyWorkflowCompletion, completionMatches, completionStep, needsCompletionRecovery, immediateCompletion, receiptBeside, receiptKey, settledLifecycleTransactions, settledTransactions, shortTransactionHash, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 
 export function receipt(): ExecutionReceiptSnapshot {
@@ -151,5 +151,31 @@ describe("receiptBeside: where a transaction's hash can sit beside the reply's o
     expect(receiptBeside([{ type: "paragraph" }, list(3)], 2)).toBeNull();
     expect(receiptBeside([{ type: "paragraph" }], 2)).toBeNull();
     expect(receiptBeside(undefined, 2)).toBeNull();
+  });
+
+  it("extracts a settled create_account wallet receipt without requiring a journal completion or ledger", () => {
+    const hash = "e".repeat(64);
+    const r: ExecutionReceiptSnapshot = {
+      origin: "wallet",
+      workflowId: "req-open",
+      status: "completed",
+      network: "testnet",
+      steps: [{ operation: "create_account", label: "Your margin account is open", asset: "", amount: "", status: "settled", txHash: hash }],
+    };
+    expect(settledLifecycleTransactions(r)).toEqual([
+      {
+        hash,
+        ledger: null,
+        url: `https://stellar.expert/explorer/testnet/tx/${hash}`,
+        steps: r.steps,
+      },
+    ]);
+    expect(settledLifecycleTransactions({
+      origin: "wallet",
+      workflowId: "req-dep",
+      status: "completed",
+      network: "testnet",
+      steps: [{ operation: "deposit_collateral", label: "Deposit 10 XLM", asset: "XLM", amount: "10", status: "settled", txHash: hash }],
+    })).toBeNull();
   });
 });
