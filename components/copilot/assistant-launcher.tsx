@@ -17,7 +17,6 @@ import { usePathname, useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import type { CaptureRect } from "@/lib/assistant/capture-page";
 import { captureAssistantTurn } from "@/lib/assistant/capture-turn";
 import { observeAssistantToasts } from "@/lib/assistant/observe-toasts";
 import { MAX_ATTACHMENTS } from "@/lib/assistant/packet";
@@ -33,6 +32,7 @@ import {
   clearAssistantTurns,
   assistantChatTitle,
   getAssistantHistory,
+  pruneAssistantHistory,
   setAssistantLauncherPos,
   setAssistantOpen,
   useAssistantSessionStore,
@@ -40,7 +40,6 @@ import {
 } from "@/store/assistant-session";
 import { AssistantPanel, type AssistantSendExtras } from "./assistant-panel";
 import { AssistantHistoryMenu } from "./assistant-history-menu";
-import { AssistantRegionOverlay } from "./assistant-region-overlay";
 
 const ASK_EVENT = "vanna:assistant:ask";
 const ASSISTANT_FETCH_MS = 90_000;
@@ -79,11 +78,8 @@ function AssistantLauncherInner() {
   const [prefill, setPrefill] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
   const [, setLastContextPath] = useState<string | null>(null);
-  const [selectingRegion, setSelectingRegion] = useState(false);
-  const [hasRegion, setHasRegion] = useState(false);
   const [composerNonce, setComposerNonce] = useState(0);
   const [phase, setPhase] = useState<AssistantPhase>("idle");
-  const pendingRegionRef = useRef<CaptureRect | null>(null);
 
   const open = useAssistantSessionStore((s) => s.open);
   const turns = useAssistantSessionStore((s) => s.turns);
@@ -98,7 +94,10 @@ function AssistantLauncherInner() {
   const address = useUserStore((s) => s.address);
   const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 
-  useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    setMounted(true);
+    pruneAssistantHistory();
+  }, []);
 
   useEffect(() => observeAssistantToasts(), []);
 
@@ -130,37 +129,11 @@ function AssistantLauncherInner() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (selectingRegion) return;
       setAssistantOpen(false);
     };
     if (open) window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, selectingRegion]);
-
-  const clearRegion = useCallback(() => {
-    pendingRegionRef.current = null;
-    setHasRegion(false);
-    setSelectingRegion(false);
-  }, []);
-
-  useEffect(() => {
-    if (!hasRegion) return;
-    const origin = { x: window.scrollX, y: window.scrollY };
-    const onScroll = () => {
-      if (
-        Math.abs(window.scrollX - origin.x) > 24 ||
-        Math.abs(window.scrollY - origin.y) > 24
-      ) {
-        clearRegion();
-      }
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, [hasRegion, clearRegion]);
-
-  useEffect(() => {
-    clearRegion();
-  }, [pathname, clearRegion]);
+  }, [open]);
 
   const handleOpenInCopilot = useCallback(
     (prompt: string) => {
@@ -222,12 +195,9 @@ function AssistantLauncherInner() {
 
   const send = useCallback(
     async (message: string, extras?: AssistantSendExtras) => {
-      const pending = pendingRegionRef.current;
-      pendingRegionRef.current = null;
-      setHasRegion(false);
       setPhase("capturing");
 
-      const capture = captureAssistantTurn({ region: pending });
+      const capture = captureAssistantTurn({});
       if (extras?.selectedText) {
         if (!capture.semantic.selectedText) capture.semantic.selectedText = extras.selectedText;
         if (!capture.snapshot.selection) capture.snapshot.selection = extras.selectedText;
@@ -323,12 +293,6 @@ function AssistantLauncherInner() {
     [address, smartAccount, router],
   );
 
-  const onRegionComplete = useCallback((rect: CaptureRect) => {
-    setSelectingRegion(false);
-    pendingRegionRef.current = rect;
-    setHasRegion(true);
-  }, []);
-
   const pageName = assistantPageLabel(pathname);
   const contextLabel =
     phase === "capturing"
@@ -403,7 +367,6 @@ function AssistantLauncherInner() {
                 onOpened={() => {
                   setPrefill(null);
                   setLastContextPath(null);
-                  clearRegion();
                   setComposerNonce((n) => n + 1);
                 }}
               />
@@ -415,7 +378,6 @@ function AssistantLauncherInner() {
                   clearAssistantTurns();
                   setPrefill(null);
                   setLastContextPath(null);
-                  clearRegion();
                   setComposerNonce((n) => n + 1);
                 }}
                 disabled={turns.length === 0}
@@ -443,21 +405,12 @@ function AssistantLauncherInner() {
               onConsumedPrefill={() => setPrefill(null)}
               pageLabel={pathname || undefined}
               turns={turns}
-              onSelectFromScreen={() => setSelectingRegion(true)}
-              hasRegion={hasRegion}
-              onClearRegion={clearRegion}
               phase={phase}
               onOpenInCopilot={handleOpenInCopilot}
             />
           </div>
         </aside>
       )}
-
-      <AssistantRegionOverlay
-        active={selectingRegion}
-        onComplete={onRegionComplete}
-        onCancel={() => setSelectingRegion(false)}
-      />
     </>,
     document.body,
   );

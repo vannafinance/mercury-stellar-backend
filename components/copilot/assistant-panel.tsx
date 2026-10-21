@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Crop, Send, X } from "lucide-react";
+import { Send, X } from "lucide-react";
 import Image from "next/image";
 import type { AssistantPhase } from "@/lib/assistant/phase";
 import toast from "react-hot-toast";
@@ -106,9 +106,6 @@ export function AssistantPanel({
   prefill,
   onConsumedPrefill,
   turns,
-  onSelectFromScreen,
-  hasRegion,
-  onClearRegion,
   phase = "idle",
   onOpenInCopilot,
 }: {
@@ -117,9 +114,6 @@ export function AssistantPanel({
   onConsumedPrefill?: () => void;
   pageLabel?: string;
   turns: AssistantTurn[];
-  onSelectFromScreen?: () => void;
-  hasRegion?: boolean;
-  onClearRegion?: () => void;
   phase?: AssistantPhase;
   onOpenInCopilot?: (prompt: string) => void;
 }) {
@@ -218,7 +212,7 @@ export function AssistantPanel({
 
   const run = useCallback(
     async (message: string, extras?: AssistantSendExtras) => {
-      const visual = (extras?.attachments?.length ?? 0) > 0 || !!hasRegion;
+      const visual = (extras?.attachments?.length ?? 0) > 0;
       const text = composeMessage(message, extras?.selectedText ?? selectionSnippet, visual);
       if (!text || busy) return;
       setBusy(true);
@@ -233,7 +227,7 @@ export function AssistantPanel({
         setBusy(false);
       }
     },
-    [busy, send, hasRegion, selectionSnippet],
+    [busy, send, selectionSnippet],
   );
 
   const submitComposer = useCallback(() => {
@@ -242,9 +236,9 @@ export function AssistantPanel({
 
   const canSend =
     !waiting &&
-    (!!input.trim() || attachments.length > 0 || !!hasRegion || !!selectionSnippet);
+    (!!input.trim() || attachments.length > 0 || !!selectionSnippet);
 
-  const hasChips = attachments.length > 0 || hasRegion || !!selectionSnippet;
+  const hasChips = attachments.length > 0 || !!selectionSnippet;
 
   const loadingHint =
     phase === "capturing"
@@ -371,19 +365,6 @@ export function AssistantPanel({
       >
         {hasChips && (
           <div className="flex flex-wrap gap-1.5">
-            {hasRegion && (
-              <span className="inline-flex max-w-full items-center gap-1.5 rounded-r2 border border-violet-50 bg-violet-50 px-2.5 py-1 text-[12px] font-medium text-violet-500">
-                Selected region · page text
-                <button
-                  type="button"
-                  aria-label="Remove selected region"
-                  onClick={() => onClearRegion?.()}
-                  className="cursor-pointer rounded-r2 text-violet-500 transition-colors hover:text-vgray-800"
-                >
-                  <X size={12} />
-                </button>
-              </span>
-            )}
             {selectionSnippet && (
               <span className="inline-flex max-w-full items-center gap-1.5 rounded-r2 border border-violet-50 bg-violet-50 px-2.5 py-1 text-[12px] font-medium text-violet-500">
                 <span className="min-w-0 truncate">Ask about “{snippetLabel(selectionSnippet)}”</span>
@@ -428,16 +409,6 @@ export function AssistantPanel({
         )}
 
         <div className="flex h-[42px] items-center gap-2">
-          <button
-            type="button"
-            title="Select part of the page (sends that region’s text with your question)"
-            aria-label="Select part of the page"
-            disabled={waiting}
-            onClick={() => onSelectFromScreen?.()}
-            className="flex h-full w-[42px] shrink-0 cursor-pointer items-center justify-center rounded-r3 border border-vgray-100 bg-transparent text-vgray-700 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Crop size={16} />
-          </button>
           <input
             ref={inputRef}
             type="text"

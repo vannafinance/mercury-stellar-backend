@@ -3,8 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { MoreVertical, AlignLeft } from "lucide-react";
 import {
+  HISTORY_LIMIT,
   assistantChatTitle,
   openAssistantChat,
+  pruneAssistantHistory,
+  recentAssistantHistory,
   useAssistantSessionStore,
 } from "@/store/assistant-session";
 
@@ -17,6 +20,10 @@ export function AssistantHistoryMenu({ onOpened }: { onOpened?: () => void }) {
   const history = useAssistantSessionStore((s) => s.history ?? []);
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (open) pruneAssistantHistory();
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -35,7 +42,8 @@ export function AssistantHistoryMenu({ onOpened }: { onOpened?: () => void }) {
   }, [open]);
 
   const current = turns.length ? { id: "current", title: assistantChatTitle(turns) } : null;
-  const earlier = [...history].sort((a, b) => b.updatedAt - a.updatedAt);
+  // At most five rows in all, so the menu never grows to cover the panel: this chat, then the newest earlier ones from the last day.
+  const earlier = recentAssistantHistory(history).slice(0, HISTORY_LIMIT - (current ? 1 : 0));
 
   return (
     <div ref={wrapRef} className="relative" data-no-drag>

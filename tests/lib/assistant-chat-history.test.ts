@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  appendAssistantTurn, assistantChatTitle, clearAssistantTurns, openAssistantChat, useAssistantSessionStore,
+  appendAssistantTurn, assistantChatTitle, clearAssistantTurns, openAssistantChat, pruneAssistantHistory, recentAssistantHistory, useAssistantSessionStore,
 } from "@/store/assistant-session";
 
 const state = () => useAssistantSessionStore.getState();
@@ -56,9 +56,23 @@ describe("Assist chat history", () => {
     expect(state().turns[0].text).toBe("kept");
   });
 
-  it("keeps only the 20 most recent earlier chats", () => {
-    for (let i = 0; i < 25; i += 1) { say(`question ${i}`); clearAssistantTurns(); }
-    expect(state().history).toHaveLength(20);
-    expect(state().history[19].title).toBe("question 24");
+  it("keeps only the 5 most recent earlier chats", () => {
+    for (let i = 0; i < 9; i += 1) { say(`question ${i}`); clearAssistantTurns(); }
+    expect(state().history).toHaveLength(5);
+    expect(state().history.map((c) => c.title)).toContain("question 8");
+    expect(state().history.map((c) => c.title)).not.toContain("question 0");
+  });
+
+  it("forgets an earlier chat a day after it was last used", () => {
+    const hour = 60 * 60 * 1000;
+    useAssistantSessionStore.setState({ history: [
+      { id: "old", title: "yesterday", turns: [{ role: "user", text: "yesterday" }], updatedAt: Date.now() - 25 * hour },
+      { id: "new", title: "this morning", turns: [{ role: "user", text: "this morning" }], updatedAt: Date.now() - 2 * hour },
+    ] });
+    expect(recentAssistantHistory(state().history).map((c) => c.id)).toEqual(["new"]);
+    pruneAssistantHistory();
+    expect(state().history.map((c) => c.id)).toEqual(["new"]);
+    openAssistantChat("old");
+    expect(state().turns).toEqual([]);
   });
 });

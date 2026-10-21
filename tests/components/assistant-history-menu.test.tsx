@@ -29,6 +29,16 @@ describe("Assist chat history menu", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  it("never shows more than five rows, so it cannot cover the panel", () => {
+    for (let i = 0; i < 8; i += 1) { say(`earlier ${i}`); clearAssistantTurns(); }
+    say("the chat on screen");
+    render(<AssistantHistoryMenu />);
+    fireEvent.click(screen.getByRole("button", { name: "Chat history" }));
+    const rows = screen.getAllByRole("menuitem");
+    expect(rows).toHaveLength(5);
+    expect(rows[0].textContent).toContain("the chat on screen");
+  });
+
   it("closes on Escape", () => {
     say("a question");
     render(<AssistantHistoryMenu />);

@@ -29,7 +29,9 @@ export type AssistantCoords = { x: number; y: number };
 /** An earlier chat, kept so the history menu can bring it back. */
 export type ArchivedChat = { id: string; title: string; turns: AssistantTurn[]; updatedAt: number };
 
-const HISTORY_LIMIT = 20;
+/** Earlier chats kept, and how long each is kept after it was last used. */
+export const HISTORY_LIMIT = 5;
+export const HISTORY_TTL_MS = 24 * 60 * 60 * 1000;
 const TITLE_LIMIT = 60;
 
 /** A chat is named after its first question, the way the chat list names it. */
@@ -102,11 +104,31 @@ export function setAssistantLauncherPos(launcherPos: AssistantCoords | null) {
   useAssistantSessionStore.getState().set({ launcherPos });
 }
 
+/**
+ * The earlier chats still worth showing: used within the last day, newest first, at most five. The saved list is
+ * oldest first, so two chats archived in the same instant are told apart by their place in it.
+ */
+export function recentAssistantHistory(history: readonly ArchivedChat[] | undefined, now: number = Date.now()): ArchivedChat[] {
+  return (history ?? [])
+    .map((chat, order) => ({ chat, order }))
+    .filter(({ chat }) => now - chat.updatedAt < HISTORY_TTL_MS)
+    .sort((a, b) => b.chat.updatedAt - a.chat.updatedAt || b.order - a.order)
+    .slice(0, HISTORY_LIMIT)
+    .map(({ chat }) => chat);
+}
+
+/** Drop expired and surplus chats from the saved list. */
+export function pruneAssistantHistory() {
+  const { history } = useAssistantSessionStore.getState();
+  const kept = recentAssistantHistory(history).reverse();
+  if (kept.length !== (history ?? []).length) useAssistantSessionStore.getState().set({ history: kept });
+}
+
 function archiveCurrent(): ArchivedChat[] {
   const { turns, history } = useAssistantSessionStore.getState();
-  if (!turns.length) return history ?? [];
+  if (!turns.length) return recentAssistantHistory(history).reverse();
   const entry: ArchivedChat = { id: `chat-${Date.now()}-${(history ?? []).length}`, title: assistantChatTitle(turns), turns, updatedAt: Date.now() };
-  return [...(history ?? []), entry].slice(-HISTORY_LIMIT);
+  return recentAssistantHistory([...(history ?? []), entry]).reverse();
 }
 
 /**
@@ -120,7 +142,7 @@ export function clearAssistantTurns() {
 /** Bring an earlier chat back; the one on screen takes its place in the history. */
 export function openAssistantChat(id: string) {
   const { history } = useAssistantSessionStore.getState();
-  const chosen = (history ?? []).find((chat) => chat.id === id);
+  const chosen = recentAssistantHistory(history).find((chat) => chat.id === id);
   if (!chosen) return;
   const rest = (history ?? []).filter((chat) => chat.id !== id);
   useAssistantSessionStore.setState({ history: rest });
