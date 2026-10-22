@@ -89,7 +89,7 @@ describe("preBroadcastRejection", () => {
   it("names the MCP's reason for an envelope it classified inside the tool", () => {
     // The 13 Sep deposit: keys error, message, code, contract_diagnostic, reason - no tx_hash.
     const build = { error: "simulation_failed", message: "On-chain simulation rejected the transaction: balance too low", code: "3", contract_diagnostic: "…", reason: "insufficient_balance_or_allowance" };
-    expect(preBroadcastRejection(build, null)).toBe("Not submitted - the protocol rejected this step before broadcast: On-chain simulation rejected the transaction: balance too low");
+    expect(preBroadcastRejection(build, null)).toBe("Nothing was sent - the network refused this step in its pre-check, so no funds moved: On-chain simulation rejected the transaction: balance too low");
   });
   it("falls back to error and reason when there is no message", () => {
     expect(preBroadcastRejection({ error: "health_check_failed", reason: "ltv_too_high" }, null)).toMatch(/health_check_failed \(ltv too high\)/);
@@ -120,7 +120,7 @@ describe("preBroadcastRejection", () => {
       signing_status: "no_xdr", error: "simulation_failed", reason: "insufficient_balance_or_allowance",
       message: "On-chain simulation rejected the transaction",
     };
-    expect(preBroadcastRejection(build, null)).toMatch(/rejected this step before broadcast/);
+    expect(preBroadcastRejection(build, null)).toMatch(/refused this step in its pre-check/);
   });
 
   it("stays silent - uncertain - when a hash exists or the error carries no classification", () => {

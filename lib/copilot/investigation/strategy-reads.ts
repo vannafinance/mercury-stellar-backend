@@ -12,7 +12,8 @@ import { interruptible, readFailureText } from "./runtime";
 import { isRecord } from "./decision";
 import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { InvestigationScope, Observation, ProposedPlan } from "./types";
-import { ASSET_OUT_OPS, OP_FLOW } from "../workflow/types";
+import { ASSET_OUT_OPS, deploysIntoPosition, OP_FLOW } from "../workflow/types";
+import { SEP41_ASSET_IDS } from "../token-contracts";
 
 export interface StrategyRead { capability: string; args: Record<string, unknown> }
 
@@ -103,6 +104,14 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       if (leg.op === "lend") want("account_collateral");
       // A leg the account funds is checked against the account's balance, whatever its sizing word.
       if (flow.from === "account") want("account_collateral");
+      // A repay, and a deployment into a position (Blend supply, adding liquidity), are paid from the token balance the
+      // account really holds. Recorded collateral understates it by the proceeds of any borrow in that token, so the
+      // balance itself is read - for the leg's asset and, for a pool, the paired one.
+      if (flow.from === "account" && (flow.to === "debt" || deploysIntoPosition(leg.op) || leg.op === "withdraw_collateral")) {
+        for (const spent of [leg.asset, ...(leg.assetOut ? [leg.assetOut] : [])]) {
+          if (SEP41_ASSET_IDS.includes(spent)) want("account_token_balance", spent);
+        }
+      }
     }
   }
   return [...wanted.values()];

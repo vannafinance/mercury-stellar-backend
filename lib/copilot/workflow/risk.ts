@@ -1,5 +1,4 @@
-import { Asset, Networks } from "@stellar/stellar-sdk";
-import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
+import { sep41Token } from "../token-contracts";
 import type { MCPClient } from "../mcp-client";
 import { resolveRead } from "../investigation/capabilities";
 import { interruptible } from "../investigation/runtime";
@@ -12,10 +11,6 @@ import { allowedInvocation } from "./allowlist";
 import { assetForVenueSpelling } from "../registry/assets";
 import { OP_FLOW, POCKET_HOLDER, SIZED_OPS, stepFundingPreview, type SizedOp, type WorkflowProposal } from "./types";
 
-const TOKENS: Record<string, string> = {
-  XLM: Asset.native().contractId(Networks.TESTNET), BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC_TOKEN,
-  AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC_TOKEN, SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC_TOKEN,
-};
 const VERIFIED_RISK_WASM = "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960";
 const READ_MS = 15_000;
 
@@ -93,7 +88,7 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
     );
     const holders = holdersFor(proposal);
     await Promise.all(assets.map(async asset => {
-      const contract = TOKENS[asset];
+      const contract = sep41Token(asset);
       if (!contract) fail("asset_not_validated");
       if (project || proposal.floor) {
         const priceRead = resolveRead("asset_price", { asset }, proposal.scope);

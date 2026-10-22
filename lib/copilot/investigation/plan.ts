@@ -163,8 +163,8 @@ function opCode(op: PlanLeg["op"]): string {
 type SizerLeg = ProposedPlan["legs"][number] & {
   fundsRepay?: true;
   repayShare?: PlanSizing & { kind: "fraction" };
-  /** A deposit of the shortfall, derived from the reads. Its amount is not one the user typed. */
-  fundsAccount?: true;
+  /** A stated repay cut to what the margin account holds. Its amount is derived; `requested` is what the user typed. */
+  limitedToBalance?: { requested: string };
 };
 
 /**
@@ -193,6 +193,57 @@ function postedBalance(ctx: PlanContext, asset: string): bigint | null {
   try { return decimalWad(held); } catch { return null; }
 }
 
+/**
+ * What the margin account can really spend of one token: the balance its token contract reports
+ * (`account_token_balance`). Recorded collateral is not that: it leaves out the proceeds of a borrow in the
+ * token, so a repay sized against it asked the wallet for tokens the account already held. Null when the
+ * read is missing, stale or does not name this holder and token - never a guess from the recorded figure.
+ */
+function accountSpendable(ctx: PlanContext, asset: string): bigint | null {
+  const read = [...ctx.observations].reverse().find((observation) =>
+    observation.capability === "account_token_balance" && observation.status === "ok" && observation.args.asset === asset &&
+    observation.data && ctx.now - observation.observedAt <= 60_000);
+  if (!read?.data) return null;
+  const holder = read.data.holder;
+  if (typeof holder === "string" && ctx.scope.smartAccount && holder !== ctx.scope.smartAccount) return null;
+  const human = read.data.human;
+  if (typeof human !== "string" && typeof human !== "number") return null;
+  try { return decimalWad(String(human)); } catch { return null; }
+}
+
+/**
+ * What a leg that takes from the margin account is sized against. A withdraw is the Transfer Collateral page's
+ * Max: the token balance the account really holds (recorded collateral leaves out borrow proceeds), and only
+ * the recorded figure when that balance was not read. Every other op keeps the recorded row.
+ */
+function accountHolding(ctx: PlanContext, leg: { op: WorkflowOp; asset: string }, def: { id: string; marginSymbol?: string | null }): string | null {
+  const real = leg.op === "withdraw_collateral" ? accountSpendable(ctx, leg.asset) : null;
+  if (real !== null) return formatWad(real);
+  return positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
+}
+
+/** What the account holds when it holds none of the token a repay would pay with. */
+function holdsNothingToRepay(asset: string): string {
+  return `Your margin account holds no ${asset} to repay with. Deposit ${asset} into the account first, or ask to repay with your wallet's ${asset}`;
+}
+
+/**
+ * The Repay page's own rule, for every way a repay can be sized: pay the smaller of what is wanted and what the
+ * account holds (after the legs before it), never top the account up from the wallet. Returns the amount to repay
+ * and, when it was cut, what was wanted. With no read of the account's balance nothing is cut: approval re-reads
+ * it and refuses a repay the account cannot cover.
+ */
+function cutRepayToHolding(
+  ctx: PlanContext, asset: string, name: string, wanted: bigint, drafts: readonly { leg: ProposedPlan["legs"][number]; tokens: string | null; produces: string | null }[],
+): { amount: bigint; requested?: bigint } {
+  const holding = accountSpendable(ctx, asset);
+  if (holding === null) return { amount: wanted };
+  const { available, unsized } = pocketBalance("account", holding, drafts as never, asset);
+  if (unsized || available >= wanted) return { amount: wanted };
+  if (available <= ZERO) throw new Reject(name, holdsNothingToRepay(asset));
+  return { amount: available, requested: wanted };
+}
+
 function spendableWallet(ctx: PlanContext, asset: string): bigint | null {
   const read = ctx.observations.some((observation) =>
     observation.capability === "wallet_balances" && observation.status === "ok" && observation.data && ctx.now - observation.observedAt <= 60_000);
@@ -217,8 +268,11 @@ function pairedNeed(stated: bigint, reserves: PoolReserves, statedIsXlm: boolean
  * sizes - the wallet deposits the shortfall first. No reserves read leaves the leg
  * alone, so the existing refusal still speaks.
  */
-function heldAfterEarlier(ctx: PlanContext, asset: string, earlier: readonly ProposedPlan["legs"][number][]): { available: bigint; unsized: boolean } | null {
-  const posted = postedBalance(ctx, asset);
+function heldAfterEarlier(
+  ctx: PlanContext, asset: string, earlier: readonly ProposedPlan["legs"][number][], basis?: bigint | null,
+): { available: bigint; unsized: boolean } | null {
+  // What the account can spend is its real token balance. The recorded collateral stands in only when that was not read.
+  const posted = basis !== undefined ? basis : (accountSpendable(ctx, asset) ?? postedBalance(ctx, asset));
   if (posted === null) return null;
   const drafts = earlier.map((leg) => {
     let tokens: string | null = null;
@@ -287,40 +341,25 @@ function literalFarmFunding(leg: ProposedPlan["legs"][number], ctx: PlanContext,
     }
     needs.push({ asset: paired.id, held: otherHeld.available, needed });
   }
-  const deposits: SizerLeg[] = [];
   const tokenDecimals = decimalsFrom(ctx.observations);
   for (const need of needs) {
     if (need.held >= need.needed) continue;
-    const read = spendableWallet(ctx, need.asset);
-    if (read === null) return null;
-    // A shortfall deposit an earlier leg already takes from the wallet is not there to take twice.
-    const committed = earlier.reduce((sum, e) => {
-      if (!(e as SizerLeg).fundsAccount || e.asset !== need.asset || e.sizing.kind !== "literal") return sum;
-      try { return sum + decimalWad(e.sizing.amount); } catch { return sum; }
-    }, ZERO);
-    const wallet = read > committed ? read - committed : ZERO;
+    // Without a read of the account's real balance a shortfall cannot be told from a recorded figure that understates it:
+    // leave the leg alone, and approval (which re-reads the balance) refuses one the account cannot cover.
+    if (accountSpendable(ctx, need.asset) === null) continue;
+    // The Farm page's own rule: supply what the account holds, and when it holds less say so - never top the account up from
+    // the wallet unasked (the page shows "No XLM in your margin account. Deposit or borrow XLM first" and blocks the supply).
     const shortfall = need.needed - need.held;
-    const rawAmount = formatWad(shortfall);
     const decimals = tokenDecimals.get(need.asset);
-    const amount = decimals === undefined ? rawAmount : truncateToDecimals(rawAmount, decimals);
-    const fundedShortfall = decimalWad(amount);
-    // Truncation is intentional: contracts reject excess precision, and rounding up could
-    // spend more than the user stated. A sub-unit remainder cannot produce a valid deposit.
-    if (fundedShortfall <= ZERO) continue;
-    if (wallet < fundedShortfall) {
-      throw new Reject(
-        `${leg.op.replaceAll("_", " ")} ${need.asset}`,
-        `Your margin account has ${formatWad(need.held)} ${need.asset} and this needs ${formatWad(need.needed)}. Your wallet has ${formatWad(wallet)} ${need.asset}, which does not cover the other ${amount}.`,
-      );
-    }
-    deposits.push({
-      op: "deposit_collateral",
-      asset: need.asset,
-      sizing: { kind: "literal", amount, sourceQuote: leg.sizing.sourceQuote },
-      fundsAccount: true,
-    });
+    const other = decimals === undefined ? formatWad(shortfall) : truncateToDecimals(formatWad(shortfall), decimals);
+    // A sub-unit remainder is not an amount anyone could deposit.
+    if (decimalWad(other) <= ZERO) continue;
+    throw new Reject(
+      `${leg.op.replaceAll("_", " ")} ${need.asset}`,
+      `Your margin account holds ${formatWad(need.held)} ${need.asset} and this needs ${formatWad(need.needed)}. Deposit the other ${other} ${need.asset} into the account first`,
+    );
   }
-  return deposits.length ? [...deposits, leg] : [leg];
+  return [leg];
 }
 
 function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
@@ -328,12 +367,11 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
   // the account, so it is the same two legs, capped by the debt - partial when the wallet
   // covers less, and the card says what remains. 13 Sep: "Repay 14113 XLM, then 2559 BLUSDC"
   // was offered against a wallet holding 9,999 XLM and no BLUSDC; it could never have run.
-  // The earlier legs as they will run, with the shortfall deposits already inserted before them,
-  // so a later leg's shortfall counts what an earlier one moved into the account and out of the wallet.
+  // The earlier legs as they will run, so a later leg's balance counts what an earlier one moved.
   const expanded: ProposedPlan["legs"][number][] = [];
   return legs.flatMap((leg, index): SizerLeg[] => {
     const out = expandLeg(leg, index);
-    expanded.push(...out.filter((e) => e.fundsAccount), leg);
+    expanded.push(leg);
     return out;
   });
   function expandLeg(leg: ProposedPlan["legs"][number], index: number): SizerLeg[] {
@@ -374,57 +412,49 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
       if (leg.sizing.kind === "all_position") {
         const def = resolveAssetDef(leg.asset);
         const owed = def?.marginSymbol ? positionRowBalance(ctx.observations, "account_debt", POSITION_ROWS.account_debt, def.marginSymbol, def.id, ctx.now) : null;
-        const held = heldAfterEarlier(ctx, leg.asset, expanded);
+        const real = accountSpendable(ctx, leg.asset);
+        const held = heldAfterEarlier(ctx, leg.asset, expanded, real !== null ? real : undefined);
         if (owed !== null && held && !held.unsized && held.available >= decimalWad(owed)) return [leg];
       }
       return [{ op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
     }
     /**
-     * "Repay all my debt" names no source - the account is already one, and it repays from
-     * itself when it can. Injecting a wallet deposit unconditionally refused the repay for
-     * want of wallet funds it never needed: 14 Sep, an account holding 842.46 XLM against
-     * 68.49 XLM of debt was told the wallet had nothing spendable. "Repay with my idle
-     * XLM" (`all_wallet`) does name the wallet, so that one still deposits first.
+     * "Repay all my debt" and "repay 25% of my debt" name no source: the account repays, from the balance it really
+     * holds, up to the amount - the Repay page's own rule. The sizer cuts the amount to that balance and the card says
+     * what remains; nothing is deposited from the wallet. Only a repay the user sized from the wallet ("repay with my
+     * idle XLM": `all_wallet`, a share of the wallet) names it, so only those deposit first.
+     * 14 Sep: injecting a wallet deposit into "repay all" refused a repay for want of wallet funds it never needed.
      */
-    if (leg.sizing.kind === "all_position") {
-      const def = resolveAssetDef(leg.asset);
-      const owed = def?.marginSymbol ? positionRowBalance(ctx.observations, "account_debt", POSITION_ROWS.account_debt, def.marginSymbol, def.id, ctx.now) : null;
-      const held = def?.marginSymbol ? positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol, def.id, ctx.now) : null;
-      if (owed !== null && held !== null && decimalWad(held) >= decimalWad(owed) && decimalWad(owed) > ZERO) return [leg];
-      if (owed !== null && held !== null && decimalWad(held) > ZERO && decimalWad(owed) > decimalWad(held)) {
-        const places = decimalsFrom(ctx.observations).get(leg.asset);
-        if (places !== undefined) {
-          // Repayment uses both pockets. A derived top-up must not turn the final
-          // whole-debt repayment into a repayment of just the wallet deposit.
-          const target = decimalWad(truncateToDecimals(formatWad(decimalWad(owed)), places));
-          const shortfall = target - decimalWad(held);
-          if (shortfall <= ZERO) return [leg];
-          const quantum = BigInt(10) ** BigInt(18 - places);
-          const amount = formatWad(((shortfall + quantum - BigInt(1)) / quantum) * quantum);
-          const wallet = spendableWallet(ctx, leg.asset);
-          if (wallet !== null && wallet < decimalWad(amount)) {
-            throw new Reject(`${verbOf(leg.op)} ${leg.asset}`, `Your margin account has ${held} ${leg.asset} against ${formatWad(target)} ${leg.asset} of debt. Your wallet has ${formatWad(wallet)} ${leg.asset}, which does not cover the remaining ${amount} ${leg.asset}`);
-          }
-          return [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "literal", amount, sourceQuote: "" }, fundsAccount: true }, leg];
-        }
-      }
-    }
-    if (leg.sizing.kind === "all_wallet" || leg.sizing.kind === "all_position") {
+    if (leg.sizing.kind === "all_position" || (leg.sizing.kind === "fraction" && leg.sizing.of === "position")) return [leg];
+    if (leg.sizing.kind === "all_wallet") {
       return [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_wallet" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
     }
-    // "repay 25% of my debt" (of: position) or "repay with a quarter of my idle XLM" (of: idle):
-    // the deposit leg takes the share; the repay takes what the deposit put in.
+    // "repay with a quarter of my idle XLM" (of: wallet): the deposit leg takes the share; the repay takes what the deposit put in.
     if (leg.sizing.kind === "fraction") {
-      return leg.sizing.of === "position"
-        ? [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_wallet" }, fundsRepay: true, repayShare: leg.sizing }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }]
-        : [{ op: "deposit_collateral", asset: leg.asset, sizing: leg.sizing, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
-    }
-    // "repay 100 XLM": from the account when it holds that much, else the wallet puts it in first.
-    if (leg.sizing.kind === "literal") {
-      const def = resolveAssetDef(leg.asset);
-      const held = def?.marginSymbol ? positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol, def.id, ctx.now) : null;
-      if (held !== null && decimalWad(held) >= decimalWad(leg.sizing.amount)) return [leg];
       return [{ op: "deposit_collateral", asset: leg.asset, sizing: leg.sizing, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
+    }
+    /**
+     * "repay 100 XLM": the account repays, from the balance it really holds, up to the amount - the Repay page's
+     * own rule (the smaller of what is owed and what the account holds, never a wallet top-up). 22 Oct, three live
+     * reports: 50 XLM posted and 90 borrowed, "repay 90" deposited 90 more from the wallet first, because the
+     * recorded collateral it checked leaves out the borrowed proceeds. The wallet is used only when the user
+     * sized the repay from it (`all_wallet`, a share of the wallet), which are handled above.
+     */
+    if (leg.sizing.kind === "literal") {
+      const base = accountSpendable(ctx, leg.asset);
+      // No read of the account's balance: say nothing about it. Approval re-reads it and refuses a repay the account cannot cover.
+      if (base === null) return [leg];
+      const held = heldAfterEarlier(ctx, leg.asset, expanded, base);
+      if (held === null || held.unsized) return [leg];
+      let stated: bigint;
+      try { stated = decimalWad(leg.sizing.amount); } catch { return [leg]; }
+      if (held.available >= stated) return [leg];
+      const places = decimalsFrom(ctx.observations).get(leg.asset);
+      const capped = places === undefined ? held.available : decimalWad(truncateToDecimals(formatWad(held.available), places));
+      if (capped <= ZERO) {
+        throw new Reject(`${verbOf(leg.op)} ${leg.asset}`, holdsNothingToRepay(leg.asset));
+      }
+      return [{ ...leg, sizing: { kind: "literal", amount: formatWad(capped), sourceQuote: leg.sizing.sourceQuote }, limitedToBalance: { requested: leg.sizing.amount } }];
     }
     return [leg];
   }
@@ -496,7 +526,8 @@ function anchoredMultiple(sizing: PlanSizing & { kind: "leverage" }, messages: r
 const SCALES: Readonly<Record<string, number>> = Object.freeze({ k: 1_000, m: 1_000_000, b: 1_000_000_000 });
 function tokenAmountsIn(text: string): string[] {
   const amounts: string[] = [];
-  for (const match of text.matchAll(/(\d+(?:\.\d+)?)([a-z%]*)/gi)) {
+  // "6,100" is one figure: groups of three digits after commas read as thousands, never as 6 and 100.
+  for (const match of text.matchAll(/(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)([a-z%]*)/gi)) {
     const suffix = match[2] ?? "";
     const before = text.slice(0, match.index ?? 0);
     if (/^x(?![a-z])/i.test(suffix)) continue;
@@ -504,7 +535,7 @@ function tokenAmountsIn(text: string): string[] {
     if (/\b(hf|health\s*factor)\b[^\d]{0,24}$/i.test(before)) continue;
     const scale = /^[kmb](?![a-z])/i.test(suffix) ? SCALES[suffix[0].toLowerCase()] : null;
     try {
-      const wad = decimalWad(match[1]);
+      const wad = decimalWad(match[1].replace(/,/g, ""));
       amounts.push(formatWad(scale ? wad * BigInt(scale) : wad));
     } catch { /* not a figure the chain can count */ }
   }
@@ -1229,7 +1260,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         continue;
       }
       if (flow.positionRead === null) throw new PlanFault(name, `all_position applies to ${positionOps()}`);
-      const raw = positionRowBalance(ctx.observations, flow.positionRead, POSITION_ROWS[flow.positionRead as keyof typeof POSITION_ROWS], def.marginSymbol!, def.id, ctx.now);
+      const raw = flow.positionRead === "account_collateral"
+        ? accountHolding(ctx, leg, def)
+        : positionRowBalance(ctx.observations, flow.positionRead, POSITION_ROWS[flow.positionRead as keyof typeof POSITION_ROWS], def.marginSymbol!, def.id, ctx.now);
       const holds = flow.positionRead === "account_debt" ? "debt"
         : flow.positionRead === "blend_position" ? "Blend supply" : "posted collateral";
       if (raw === null) throw new Reject(name, `no ${leg.asset} ${holds} was read this investigation`);
@@ -1249,9 +1282,12 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
             ? `the legs before this one already withdraw the whole ${raw} ${leg.asset} Blend supply`
             : `the legs before this one already use all ${raw} ${leg.asset} in the margin account`);
       }
-      const balance = precise(formatWad(left.available), leg.asset, name);
+      // A repay is cut to what the account holds, like the Repay page's own 100%.
+      const cut = leg.op === "repay" && !(leg as SizerLeg).fundsRepay ? cutRepayToHolding(ctx, leg.asset, name, left.available, drafts) : { amount: left.available };
+      const balance = precise(formatWad(cut.amount), leg.asset, name);
       const usd = formatWad(mulDown(decimalWad(balance), price.price, WAD));
-      drafts.push({ leg, name, usd, tokens: balance, produces: leg.op === "swap" ? null : balance, heldTokens: null });
+      const sized = cut.requested !== undefined ? { ...leg, limitedToBalance: { requested: formatWad(cut.requested) } } as typeof leg : leg;
+      drafts.push({ leg: sized, name, usd, tokens: balance, produces: leg.op === "swap" ? null : balance, heldTokens: null });
       continue;
     }
     if (sizing.kind === "to_floor") {
@@ -1261,7 +1297,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         drafts.push({ leg, name, usd: "max", tokens: null, produces: null, heldTokens: null });
         continue;
       }
-      const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
+      const posted = accountHolding(ctx, leg, def);
       if (posted === null) throw new Reject(name, `no ${leg.asset} posted collateral was read this investigation`);
       if (decimalWad(posted) <= ZERO) throw new Reject(name, `no ${leg.asset} is posted as collateral`);
       const stillPosted = pocketBalance("account", decimalWad(posted), drafts, leg.asset);
@@ -1492,8 +1528,24 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         drafts.push({ leg, name, usd, tokens: vtokens, produces: underlying, heldTokens: underlying, vtokenSymbol: position.vtokenSymbol });
         continue;
       }
+      if (leg.op === "repay" && flow.positionRead === "account_debt") {
+        // A share of what is owed, paid from the account's own balance and cut to it (the Repay page's % chips).
+        const owed = positionRowBalance(ctx.observations, "account_debt", POSITION_ROWS.account_debt, def.marginSymbol!, def.id, ctx.now);
+        if (owed === null) throw new Reject(name, `no ${leg.asset} debt was read this investigation`);
+        if (decimalWad(owed) <= ZERO) throw new Reject(name, `you owe no ${leg.asset}`);
+        const stillOwed = pocketBalance("debt", decimalWad(owed), drafts, leg.asset);
+        if (stillOwed.available <= ZERO) throw new Reject(name, `the legs before this one already repay the whole ${owed} ${leg.asset} debt`);
+        const wanted = decimalWad(precise(shareOf(formatWad(stillOwed.available), share), leg.asset, name));
+        if (wanted <= ZERO) throw new Reject(name, `${sizing.percent}% of ${owed} ${leg.asset} rounds to nothing`);
+        const cut = cutRepayToHolding(ctx, leg.asset, name, wanted, drafts);
+        const tokens = precise(formatWad(cut.amount), leg.asset, name);
+        const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
+        const sized = cut.requested !== undefined ? { ...leg, limitedToBalance: { requested: formatWad(cut.requested) } } as typeof leg : leg;
+        drafts.push({ leg: sized, name, usd, tokens, produces: tokens, heldTokens: null });
+        continue;
+      }
       if (flow.positionRead !== "account_collateral") throw new Reject(name, `a share of the position sizes ${positionOps()}`);
-      const posted = positionRowBalance(ctx.observations, flow.positionRead, POSITION_ROWS[flow.positionRead], def.marginSymbol!, def.id, ctx.now);
+      const posted = accountHolding(ctx, leg, def);
       if (posted === null) throw new Reject(name, `no ${leg.asset} posted collateral was read this investigation`);
       if (decimalWad(posted) <= ZERO) throw new Reject(name, `no ${leg.asset} is posted as collateral`);
       const stillPosted = pocketBalance("account", decimalWad(posted), drafts, leg.asset);
@@ -1565,7 +1617,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       continue;
     }
     // literal - anchored to the user's own words, exactly as goal.actions requires.
-    if (!leg.fundsAccount && !literalAmountAnchored(sizing, ctx, plan, leg)) {
+    if (!(leg as SizerLeg).limitedToBalance && !literalAmountAnchored(sizing, ctx, plan, leg)) {
       throw new Reject(name, `the amount ${sizing.amount} does not appear in your request`);
     }
     /**
@@ -1589,8 +1641,14 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const available = decimalWad(afterEarlier.tokens);
       if (available < amountWad) throw new Reject(name, `only ${formatUserAmount(available, leg.asset)} ${leg.asset} is spendable in the wallet${spendableAfter(leg.asset, ctx, earlier.length > 0)}`, walletShortageMismatch(leg), true);
     }
-    if (flow.from === "account") {
-      const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
+    // A repay is checked against the balance the account really holds; with no read of it, approval does the check.
+    const repaysFromHolding = leg.op === "repay";
+    // A repay and a deployment into a position (Blend supply, adding liquidity) spend the token balance the account really holds.
+    const holding = repaysFromHolding || deploysIntoPosition(leg.op) || leg.op === "withdraw_collateral" ? accountSpendable(ctx, leg.asset) : null;
+    if (flow.from === "account" && !(repaysFromHolding && holding === null)) {
+      const posted = holding !== null
+        ? formatWad(holding)
+        : positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
       const { available, unsized } = pocketBalance("account", posted === null ? ZERO : decimalWad(posted), drafts, leg.asset);
       if (unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields - use the amount from the earlier step`);
       if (available < amountWad) {
@@ -2125,9 +2183,20 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     amountBasis: drafts.some((d) => d.leg.sizing.kind === "literal" || d.leg.sizing.kind === "fraction") ? "stated" : drafts.some((d) => d.leg.sizing.kind === "to_floor") ? "derived_max_at_floor" : "stated",
     heldAmount: first.heldTokens,
     steps,
-    rationale: remainingDebt?.length
-      ? `${plan.rationale} Leaves ${remainingDebt.map((r) => `${trimAmount(r.left)} ${r.asset}`).join(" and ")} of debt - the wallet covers no more.`
-      : remainingDebt ? `${plan.rationale} No debt remains after this.` : plan.rationale,
+    rationale: (() => {
+      const limited = drafts.map((d) => (d.leg as SizerLeg).limitedToBalance ? { asset: d.leg.asset, repaid: d.tokens ?? "", requested: (d.leg as SizerLeg).limitedToBalance!.requested } : null)
+        .filter((row): row is { asset: string; repaid: string; requested: string } => row !== null);
+      if (limited.length) {
+        const said = limited.map((row) => `Repays ${trimAmount(row.repaid)} of the ${trimAmount(row.requested)} ${row.asset} you asked for - the margin account holds no more to repay with.`).join(" ");
+        const left = remainingDebt?.length ? ` Leaves ${remainingDebt.map((r) => `${trimAmount(r.left)} ${r.asset}`).join(" and ")} of debt.` : "";
+        return `${plan.rationale} ${said}${left}`;
+      }
+      // "The wallet covers no more" is only true of a repay the wallet funds; a repay the account makes just leaves what it leaves.
+      const walletFunded = drafts.some((d) => (d.leg as SizerLeg).fundsRepay);
+      return remainingDebt?.length
+        ? `${plan.rationale} Leaves ${remainingDebt.map((r) => `${trimAmount(r.left)} ${r.asset}`).join(" and ")} of debt${walletFunded ? " - the wallet covers no more" : ""}.`
+        : remainingDebt ? `${plan.rationale} No debt remains after this.` : plan.rationale;
+    })(),
     ...(remainingDebt ? { repaysAllDebt: remainingDebt.length === 0 } : {}),
   };
 }
@@ -2800,6 +2869,8 @@ export function isPositionRowRead(read: string): read is keyof typeof POSITION_R
  */
 function wholePositionRead(leg: PlanLeg): { basis: "whole_position"; read: string } | null {
   if (leg.sizing.kind !== "all_position") return null;
+  // A repay cut to what the account holds is no longer the whole debt: re-reading the debt before sending would put the cut back.
+  if ((leg as SizerLeg).limitedToBalance) return null;
   const read = OP_FLOW[leg.op].positionRead;
   if (read === "earn_position") return { basis: "whole_position", read };
   return read && isPositionRowRead(read) ? { basis: "whole_position", read } : null;

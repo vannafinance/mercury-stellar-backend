@@ -457,17 +457,18 @@ describe("researchTurn fast path", () => {
     expect(result.executionAllowed).toBe(false);
   });
 
-  it("sizes a stated repay against the account it draws from: the account's own balance covers it, or the wallet puts it in first", async () => {
+  it("sizes a stated repay against the balance the account really holds: it covers it, or it repays what it holds, and the wallet is never topped up", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
     mocks.computeAccountPosition.mockResolvedValue(null);
     mocks.computeSizingBasis.mockResolvedValue({ grossCollateralUsd: "144", debtUsd: "54", source: "app", issue: null, app: null, contract: null });
-    const world = (posted: string, wallet: string) => ({ call: vi.fn(async (tool: string) => {
+    const world = (held: string, wallet: string) => ({ call: vi.fn(async (tool: string) => {
       if (tool === "vanna_get_wallet_balance") return { assets: [
         { symbol: "XLM", balance: wallet, spendable: wallet, status: "ok" }, { symbol: "XLM_SAC", balance: wallet, decimals: 7, status: "ok" },
       ], fee_reserve_xlm: "0.5" };
       if (tool === "vanna_get_price") return { price_usd: "0.18" };
       if (tool === "vanna_get_debt") return { debt: [{ symbol: "XLM", balance: "300" }] };
-      if (tool === "vanna_get_collateral") return { collateral: posted === "0" ? [] : [{ symbol: "XLM", balance: posted }] };
+      if (tool === "vanna_get_collateral") return { collateral: [] };
+      if (tool === "vanna_get_token_balance") return { holder: SCOPE.smartAccount, contract: "CTOKEN", symbol: "XLM", decimals: 7, human: held };
       if (tool === "vanna_preview_margin") return { error: "invalid_input", message: "Unknown action 'preview' for vanna_margin_status." };
       throw new Error(`Unexpected tool ${tool}`);
     }) });
@@ -481,11 +482,12 @@ describe("researchTurn fast path", () => {
     const fromAccount = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("800", "0"), model }));
     expect(fromAccount.proposalCandidateId).toBe("requested_actions");
     expect(fromAccount.message).toBe("Repay 1 XLM.");
-    const fromWallet = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("0", "100"), model }));
-    expect(fromWallet.proposalCandidateId).toBe("requested_actions");
-    expect(fromWallet.message).toBe("Deposit 1 XLM as collateral, then Repay 1 XLM.");
+    // The wallet holding XLM changes nothing: the account repays from what it holds, and says so when it holds nothing.
+    const accountEmpty = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("0", "100"), model }));
+    expect(accountEmpty.proposalCandidateId).not.toBe("requested_actions");
+    expect(accountEmpty.candidates?.rejected[0]?.reason).toBe("Repay XLM: Your margin account holds no XLM to repay with. Deposit XLM into the account first, or ask to repay with your wallet's XLM.");
     const nothing = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("0", "0"), model }));
     expect(nothing.proposalCandidateId).not.toBe("requested_actions");
-    expect(nothing.candidates?.rejected[0]?.reason).toBe("deposit collateral XLM: XLM is not in the connected wallet.");
+    expect(nothing.candidates?.rejected[0]?.reason).toBe("Repay XLM: Your margin account holds no XLM to repay with. Deposit XLM into the account first, or ask to repay with your wallet's XLM.");
   });
 });

@@ -120,6 +120,36 @@ describe("what the table decides downstream", () => {
   const NOW = 1_700_000_000_000;
   const plan = (legs: ProposedPlan["legs"]): ProposedPlan => ({ title: "t", rationale: "r", evidenceIds: [], legs });
 
+  it("a repay reads the token balance the account really holds, which is what pays it", async () => {
+    const stated = readsForPlans([plan([{ op: "repay", asset: "XLM", sizing: { kind: "literal", amount: "90", sourceQuote: "repay 90 XLM" } }])], [], NOW);
+    expect(stated).toContainEqual({ capability: "account_token_balance", args: { asset: "XLM" } });
+    const whole = readsForPlans([plan([{ op: "repay", asset: "AQUSDC", sizing: { kind: "all_position" } }])], [], NOW);
+    expect(whole).toContainEqual({ capability: "account_token_balance", args: { asset: "AQUSDC" } });
+    // A deposit is paid from the wallet, so it does not ask for the account's balance.
+    const deposit = readsForPlans([plan([{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "5", sourceQuote: "deposit 5 XLM" } }])], [], NOW);
+    expect(deposit.map((r) => r.capability)).not.toContain("account_token_balance");
+  });
+
+  it("binds the account's balance read to the account and the token's own contract, and refuses anything else", async () => {
+    const { resolveRead } = await import("@/lib/copilot/investigation/catalog");
+    const { sep41Token } = await import("@/lib/copilot/token-contracts");
+    const scope = { subject: "user", network: "testnet", trader: "GTRADER", smartAccount: "CACCOUNT" };
+    for (const asset of ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"]) {
+      expect(resolveRead("account_token_balance", { asset }, scope)).toEqual({ tool: "vanna_get_token_balance", args: { holder: "CACCOUNT", token_contract: sep41Token(asset) } });
+    }
+    expect(() => resolveRead("account_token_balance", { asset: "DOGE" }, scope)).toThrow();
+    expect(() => resolveRead("account_token_balance", { asset: "XLM" }, { ...scope, smartAccount: null })).toThrow();
+  });
+
+  it("seals the account's balance with the evidence, so Prepare re-sizes from the same figure", async () => {
+    const { compactResearchEvidence } = await import("@/lib/copilot/investigation/evidence");
+    const held = obs("tb", "account_token_balance", { holder: "CACCOUNT", contract: "CTOKEN", symbol: "XLM", decimals: 7, human: "140", raw: "1400000000", extra: "dropped" }, { asset: "XLM" });
+    const sealed = compactResearchEvidence([held], null, NOW);
+    expect(sealed.observations).toHaveLength(1);
+    expect(sealed.observations[0]).toMatchObject({ capability: "account_token_balance", args: { asset: "XLM" }, data: { holder: "CACCOUNT", symbol: "XLM", decimals: 7, human: "140" } });
+    expect((sealed.observations[0].data as Record<string, unknown>).extra).toBeUndefined();
+  });
+
   it("a leg the account funds reads the account's balance, whatever its sizing word", () => {
     const reads = readsForPlans([plan([{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "100 XLM" } }])], [], NOW);
     expect(reads.map((r) => r.capability)).toContain("account_collateral");
@@ -269,18 +299,98 @@ describe("what the table decides downstream", () => {
     expect(rejected).toEqual([]);
     expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["supply_blend", "100"]]);
     const over = resolvePlans([plan([{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "900", sourceQuote: "supply 900 XLM" } }])], ctx(rows("0", "800", "0"), ["supply 900 XLM to Blend"]));
-    // 24 Sep owner decision: the shortfall is named and topped up from the wallet when it can be;
-    // here the wallet is empty, so it is refused with both balances.
-    expect(over.rejected[0]?.reason).toBe("Your margin account has 800 XLM and this needs 900. Your wallet has 0 XLM, which does not cover the other 100.");
+    // No read of the account's real balance here, so the sizer's own check against the recorded figure speaks.
+    expect(over.rejected[0]?.reason).toBe("only 800 XLM is in the margin account");
   });
 
-  it("a stated repay comes from the account when it holds enough, else the wallet puts it in first", () => {
-    const fromAccount = resolvePlans([plan([{ op: "repay", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "repay 100 XLM" } }])], ctx(rows("0", "800", "300"), ["repay 100 XLM"]));
-    expect(fromAccount.candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "100"]]);
-    const fromWallet = resolvePlans([plan([{ op: "repay", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "repay 100 XLM" } }])], ctx(rows("500", "0", "300"), ["repay 100 XLM"]));
-    expect(fromWallet.candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["deposit_collateral", "100"], ["repay", "100"]]);
-    const overOwed = resolvePlans([plan([{ op: "repay", asset: "XLM", sizing: { kind: "literal", amount: "400", sourceQuote: "repay 400 XLM" } }])], ctx(rows("500", "0", "300"), ["repay 400 XLM"]));
-    expect(overOwed.rejected[0]?.reason).toBe("you owe only 300 XLM");
+  /**
+   * A repay is paid from the token balance the margin account really holds (`account_token_balance`), not from
+   * recorded collateral, which leaves out the proceeds of a borrow in that token. A stated amount is repaid from
+   * what the account holds, up to the amount; the wallet is never topped up unless the user asked to repay with it.
+   * 22 Oct, three live reports: 50 XLM posted, 90 borrowed, "repay 90" deposited 90 more first.
+   */
+  const accountHolds = (symbol: string, human: string): Observation =>
+    obs(`tb-${symbol}`, "account_token_balance", { holder: "CACCOUNT", symbol, decimals: 7, human }, { asset: symbol });
+  const repayOf = (amount: string, observations: Observation[], asset = "XLM") =>
+    resolvePlans([plan([{ op: "repay", asset, sizing: { kind: "literal", amount, sourceQuote: `repay ${amount} ${asset}` } }])], ctx(observations, [`repay ${amount} ${asset}`]));
+
+  it("repays a stated amount straight from the account when it really holds that much, whatever is recorded as collateral", () => {
+    // Recorded collateral 50 (the dev's own deposit); the account actually holds 140 after borrowing 90.
+    const result = repayOf("90", [...rows("500", "50", "300"), accountHolds("XLM", "140")]);
+    expect(result.rejected).toEqual([]);
+    expect(result.candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "90"]]);
+  });
+
+  it("repays what the account holds, not a wallet deposit, when it holds less than was asked", () => {
+    const result = repayOf("90", [...rows("500", "0", "300"), accountHolds("XLM", "50")]);
+    expect(result.rejected).toEqual([]);
+    const candidate = result.candidates[0]!;
+    expect(candidate.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "50"]]);
+    expect(candidate.rationale).toContain("Repays 50 of the 90 XLM you asked for");
+    expect(candidate.rationale).toContain("Leaves 250 XLM of debt");
+  });
+
+  it("says plainly when the account holds nothing to repay with, and offers the wallet only by name", () => {
+    const result = repayOf("90", [...rows("500", "0", "300"), accountHolds("XLM", "0")]);
+    expect(result.candidates).toEqual([]);
+    expect(result.rejected[0]?.reason).toBe("Your margin account holds no XLM to repay with. Deposit XLM into the account first, or ask to repay with your wallet's XLM");
+  });
+
+  it("leaves the stated repay alone, with no deposit, when the account's balance could not be read", () => {
+    const result = repayOf("100", rows("500", "0", "300"));
+    expect(result.rejected).toEqual([]);
+    expect(result.candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "100"]]);
+  });
+
+  it("still refuses to repay more than is owed", () => {
+    const result = repayOf("400", [...rows("500", "0", "300"), accountHolds("XLM", "900")]);
+    expect(result.rejected[0]?.reason).toBe("you owe only 300 XLM");
+  });
+
+  it("behaves the same for another token and other amounts: the rule is about the balance, not a symbol", () => {
+    const usdc = (wallet: string, owed: string, held: string): Observation[] => [
+      obs("w", "wallet_balances", { assets: [{ symbol: "XLM", balance: "60", decimals: 7, status: "ok" }, { symbol: "XLM_SAC", balance: "60", decimals: 7, status: "ok" }, { symbol: "AQUSDC", balance: wallet, decimals: 7, status: "ok" }], fee_reserve_xlm: "0.5" }),
+      obs("p", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }),
+      obs("m", "earn_market", { supply_apr_pct: "4", borrow_apr_pct: "8", utilization_pct: "62.5" }, { asset: "AQUSDC" }),
+      obs("ac", "account_collateral", { collateral: [] }),
+      obs("ad", "account_debt", { debt: [{ symbol: "AQUSDC", balance: owed }] }),
+      accountHolds("AQUSDC", held),
+    ];
+    const enough = repayOf("7.5", usdc("40", "11.78", "12"), "AQUSDC");
+    expect(enough.candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "7.5"]]);
+    const short = repayOf("11", usdc("40", "11.78", "3.25"), "AQUSDC");
+    expect(short.candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "3.25"]]);
+    expect(short.candidates[0]?.rationale).toContain("Repays 3.25 of the 11 AQUSDC you asked for");
+  });
+
+  it("a Blend supply uses what the account really holds, and a true shortfall is named, never topped up from the wallet", () => {
+    const supply = (account: string, wallet: string) => resolvePlans(
+      [plan([{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "supply 100 XLM" } }])],
+      ctx([...rows(wallet, "40", "0"), accountHolds("XLM", account)], ["supply 100 XLM to Blend"]));
+    // Recorded collateral is 40, the account really holds 140: nothing to deposit.
+    expect(supply("140", "500").candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["supply_blend", "100"]]);
+    // It really holds 60: the Farm page's rule - say what is missing, whatever the wallet could add.
+    for (const wallet of ["0", "500"]) {
+      const short = supply("60", wallet);
+      expect(short.candidates).toEqual([]);
+      expect(short.rejected[0]?.reason).toBe("Your margin account holds 60 XLM and this needs 100. Deposit the other 40 XLM into the account first");
+    }
+    // The balance was not read: no deposit is made up either; the sizer's own check against the recorded figure speaks.
+    const unread = resolvePlans([plan([{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "supply 100 XLM" } }])], ctx(rows("500", "40", "0"), ["supply 100 XLM to Blend"]));
+    expect(unread.candidates).toEqual([]);
+    expect(unread.rejected[0]?.reason).toBe("only 40 XLM is in the margin account");
+  });
+
+  it("asks for the account's real balance for a repay and for a Blend supply, but not for a deposit", () => {
+    const supply = readsForPlans([plan([{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "supply 100 XLM" } }])], [], NOW);
+    expect(supply).toContainEqual({ capability: "account_token_balance", args: { asset: "XLM" } });
+    const deposit = readsForPlans([plan([{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "5", sourceQuote: "deposit 5 XLM" } }])], [], NOW);
+    expect(deposit.map((r) => r.capability)).not.toContain("account_token_balance");
+  });
+
+  it("keeps the wallet top-up for a repay the user sized from their wallet", () => {
+    const result = resolvePlans([plan([{ op: "repay", asset: "XLM", sizing: { kind: "all_wallet" } }])], ctx([...rows("500", "0", "300"), accountHolds("XLM", "0")], ["repay with my idle xlm"]));
+    expect(result.candidates[0]?.steps?.map((s) => s.op)).toEqual(["deposit_collateral", "repay"]);
   });
 
   it("previous_leg follows the tokens: a borrow takes nothing from the leg before it", () => {

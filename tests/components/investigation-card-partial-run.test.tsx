@@ -26,9 +26,10 @@ describe("the heading of a stopped run", () => {
     expect(screen.queryByText("Not executed")).toBeNull();
   });
 
-  it("still says Not executed when nothing settled", () => {
+  it("answers in words, not a boxed heading, when nothing settled", () => {
     card(run("blocked", 0));
-    expect(screen.getByText("Not executed")).toBeTruthy();
+    expect(screen.queryByText("Not executed")).toBeNull();
+    expect(screen.getByRole("alert")).toBeTruthy();
   });
 
   it("draws a completed run as the execution card alone, saying Completed", () => {

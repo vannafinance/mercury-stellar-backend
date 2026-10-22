@@ -946,7 +946,7 @@ export function preBroadcastRejection(
   if (!classified) return null;
   const message = typeof build.message === "string" && build.message.trim() ? build.message.trim() : `${build.error}${build.reason ? ` (${String(build.reason).replaceAll("_", " ")})` : ""}`;
   const note = swapFloorNote(step, message);
-  return `Not submitted - the protocol rejected this step before broadcast: ${message}${note ? ` ${note}` : ""}`;
+  return `Nothing was sent - the network refused this step in its pre-check, so no funds moved: ${message}${note ? ` ${note}` : ""}`;
 }
 
 /**

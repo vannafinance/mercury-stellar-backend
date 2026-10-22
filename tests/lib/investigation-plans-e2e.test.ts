@@ -562,7 +562,7 @@ describe("model proposes, code disposes - end to end", () => {
     expect(view.candidates?.rejected).toEqual([]);
     // 25% of the SPENDABLE balance (10,206.8356118 − 0.5 fee reserve), not of the gross balance.
     const option = view.candidates?.feasible.find((c) => c.id === "composed:le.XLM+re.XLM");
-    expect(option?.steps?.map((s) => [s.op, s.amount])).toEqual([["lend", "2551.5839029"], ["deposit_collateral", "3528.3278029"], ["repay", "3528.3278029"]]);
+    expect(option?.steps?.map((s) => [s.op, s.amount])).toEqual([["lend", "2551.5839029"], ["repay", "3528.3278029"]]);
     expect(Number(option?.supplyAprPct)).toBeCloseTo(5, 0);
   });
 
