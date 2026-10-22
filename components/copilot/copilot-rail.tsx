@@ -117,7 +117,7 @@ export interface RailPosition {
   usd: string;
 }
 
-/** Down chevron for in-place sections (Positions, Recents). Open rotates it to point up. */
+/** Down chevron for in-place sections (Margin Positions, Earn Positions, Recents). Open rotates it to point up. */
 function Caret({ open }: { open: boolean }) {
   return (
     <span
@@ -163,6 +163,9 @@ export function CopilotRailBody({
   hasWallet,
   healthFactor,
   positions,
+  earnPositions = [],
+  earnLoading = false,
+  earnError = false,
   accountLoading = false,
   accountError = false,
   onRetryAccount,
@@ -177,6 +180,10 @@ export function CopilotRailBody({
   /** Null when there is no account to read, which the rail says rather than showing 0. */
   healthFactor: number | null;
   positions: RailPosition[];
+  /** Earn (lending pool) deposits, from the wallet's vTokens: never margin collateral. */
+  earnPositions?: RailPosition[];
+  earnLoading?: boolean;
+  earnError?: boolean;
   accountLoading?: boolean;
   accountError?: boolean;
   onRetryAccount?: () => void;
@@ -187,7 +194,9 @@ export function CopilotRailBody({
   onDelete: (id: string) => void;
   onPin?: (id: string, pinned: boolean) => void;
 }) {
-  const [positionsOpen, setPositionsOpen] = useState(true);
+  // Position lists start closed on every visit (as on Solana); the user opens the one they want to see.
+  const [positionsOpen, setPositionsOpen] = useState(false);
+  const [earnOpen, setEarnOpen] = useState(false);
   const [recentsOpen, setRecentsOpen] = useState(true);
 
   const zone = zoneOf(healthFactor);
@@ -217,60 +226,26 @@ export function CopilotRailBody({
         </div>}
       </RailFlyout>
 
-      <RailFlyout order={4} label="Positions" icon={<PositionIcon />} heading={
-        <button
-          type="button"
-          onClick={() => setPositionsOpen((v) => !v)}
-          aria-expanded={positionsOpen}
-          className="cp-rail-row cp-icon-button flex w-full cursor-pointer items-center gap-2.5 text-vgray-900 transition-colors"
-        >
-          <PositionIcon />
-          <span className="flex-1 text-left text-[14px] leading-[21px] font-semibold">Positions</span>
-          <span aria-hidden className="text-[12px] font-normal text-vgray-500">{accountLoading || (accountError && positions.length === 0) ? "-" : positions.length}</span>
-          <Caret open={positionsOpen} />
-        </button>
-        }>
-        {positionsOpen && (
-          <div className="cp-position-list">
-            {positions.length === 0 ? (
-              <p className="text-[12px] leading-[18px] text-vgray-400">{!hasWallet ? "Connect your wallet to see positions." : accountLoading ? "Loading positions…" : accountError ? "Positions unavailable." : "Nothing open."}</p>
-            ) : (
-              positions.map((p) => (
-                <div key={`${p.role}:${p.symbol}`} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  {/* The app's own icon map, not the mock's assets - a token must not be
-                      drawn from two sources that can disagree about what it looks like. */}
-                  <div style={{ position: "relative", width: p.pairedSymbol ? 26 : 20, height: 20, flex: "none" }}>
-                    <img
-                      src={INLINE_COIN_ICONS[p.symbol.toUpperCase()] ?? COIN_ICONS[p.symbol.toUpperCase()] ?? "/coins/default.svg"}
-                      alt=""
-                      width={20}
-                      height={20}
-                      style={{ position: "absolute", left: 0, top: 0, zIndex: 1, borderRadius: 999 }}
-                    />
-                    {p.pairedSymbol && (
-                      <img
-                        src={INLINE_COIN_ICONS[p.pairedSymbol.toUpperCase()] ?? COIN_ICONS[p.pairedSymbol.toUpperCase()] ?? "/coins/default.svg"}
-                        alt=""
-                        width={20}
-                        height={20}
-                        style={{ position: "absolute", left: 8, top: 0, zIndex: 0, borderRadius: 999 }}
-                      />
-                    )}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="truncate text-[14px] leading-[21px] font-semibold text-vgray-900">{p.symbol}</div>
-                    <div title={p.role} className="truncate text-[12px] leading-[18px] text-vgray-500">{p.role}</div>
-                  </div>
-                  <div style={{ flex: "none", textAlign: "right" }}>
-                    <div className="text-[13px] leading-[20px] font-semibold text-vgray-900" style={{ fontFamily: VANNA_FONT }}>{p.amount}</div>
-                    <div className="text-[12px] leading-[18px] text-vgray-400" style={{ fontFamily: VANNA_FONT }}>{p.usd}</div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </RailFlyout>
+      <PositionsFlyout
+        label="Margin Positions"
+        open={positionsOpen}
+        onToggle={() => setPositionsOpen((v) => !v)}
+        positions={positions}
+        loading={accountLoading}
+        error={accountError}
+        hasWallet={hasWallet}
+        empty="Nothing open."
+      />
+      <PositionsFlyout
+        label="Earn Positions"
+        open={earnOpen}
+        onToggle={() => setEarnOpen((v) => !v)}
+        positions={earnPositions}
+        loading={earnLoading}
+        error={earnError}
+        hasWallet={hasWallet}
+        empty="Nothing supplied to the Earn pools."
+      />
 
       <RecentsList
         recentsOpen={recentsOpen}
@@ -283,6 +258,78 @@ export function CopilotRailBody({
         onPin={onPin}
       />
     </div>
+  );
+}
+
+/** One collapsible list of holdings (Margin Positions, Earn Positions), as a flyout when the rail is compact. */
+function PositionsFlyout({ label, open, onToggle, positions, loading, error, hasWallet, empty }: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  positions: RailPosition[];
+  loading: boolean;
+  error: boolean;
+  hasWallet: boolean;
+  empty: string;
+}) {
+  // The collapsed rail shows the list in its flyout; there is no dropdown to open there.
+  const compact = useContext(CopilotRailPresentation);
+  const shown = open || compact;
+  return (
+    <RailFlyout order={4} label={label} icon={<PositionIcon />} heading={
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="cp-rail-row cp-icon-button flex w-full cursor-pointer items-center gap-2.5 text-vgray-900 transition-colors"
+      >
+        <PositionIcon />
+        <span className="flex-1 text-left text-[14px] leading-[21px] font-semibold">{label}</span>
+        <span aria-hidden className="text-[12px] font-normal text-vgray-500">{loading || (error && positions.length === 0) ? "-" : positions.length}</span>
+        <Caret open={open} />
+      </button>
+      }>
+      {shown && (
+        <div className="cp-position-list">
+          {positions.length === 0 ? (
+            <p className="text-[12px] leading-[18px] text-vgray-400">{!hasWallet ? "Connect your wallet to see positions." : loading ? "Loading positions…" : error ? "Positions unavailable." : empty}</p>
+          ) : (
+            positions.map((p) => (
+              <div key={`${p.role}:${p.symbol}`} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {/* The app's own icon map, not the mock's assets - a token must not be
+                    drawn from two sources that can disagree about what it looks like. */}
+                <div style={{ position: "relative", width: p.pairedSymbol ? 26 : 20, height: 20, flex: "none" }}>
+                  <img
+                    src={INLINE_COIN_ICONS[p.symbol.toUpperCase()] ?? COIN_ICONS[p.symbol.toUpperCase()] ?? "/coins/default.svg"}
+                    alt=""
+                    width={20}
+                    height={20}
+                    style={{ position: "absolute", left: 0, top: 0, zIndex: 1, borderRadius: 999 }}
+                  />
+                  {p.pairedSymbol && (
+                    <img
+                      src={INLINE_COIN_ICONS[p.pairedSymbol.toUpperCase()] ?? COIN_ICONS[p.pairedSymbol.toUpperCase()] ?? "/coins/default.svg"}
+                      alt=""
+                      width={20}
+                      height={20}
+                      style={{ position: "absolute", left: 8, top: 0, zIndex: 0, borderRadius: 999 }}
+                    />
+                  )}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="truncate text-[14px] leading-[21px] font-semibold text-vgray-900">{p.symbol}</div>
+                  <div title={p.role} className="truncate text-[12px] leading-[18px] text-vgray-500">{p.role}</div>
+                </div>
+                <div style={{ flex: "none", textAlign: "right" }}>
+                  <div className="text-[13px] leading-[20px] font-semibold text-vgray-900" style={{ fontFamily: VANNA_FONT }}>{p.amount}</div>
+                  <div className="text-[12px] leading-[18px] text-vgray-400" style={{ fontFamily: VANNA_FONT }}>{p.usd}</div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </RailFlyout>
   );
 }
 

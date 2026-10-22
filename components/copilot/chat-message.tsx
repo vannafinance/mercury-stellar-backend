@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment } from "react";
-import { CircleAlert } from "lucide-react";
+import { Check, CircleAlert } from "lucide-react";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import type { ReplyBlock, ReplySegment } from "@/lib/copilot/investigation/view";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
@@ -464,30 +464,39 @@ function AssistantTurn({
         {(() => {
           const own = receipt ? (completionMatches(receipt, completion) ? settledTransactions(receipt) : settledLifecycleTransactions(receipt)) : null;
           const settled = priorSettled?.length || own ? [...(priorSettled ?? []), ...(own ?? [])] : null;
-          // One list when the reply already has one item per transaction: each hash and ledger sits at the end of its own item.
-          const at = settled ? receiptBeside(blocks, settled.length) : null;
-          const link = (transaction: NonNullable<typeof settled>[number]) => (
-            <>
-              <span> · </span>
-              <a href={transaction.url} target="_blank" rel="noopener noreferrer" className="underline text-[var(--cp-emerald)]" title={transaction.hash} aria-label={`Transaction ${transaction.hash}`}>{shortTransactionHash(transaction.hash)} ↗</a>
-              {transaction.ledger != null ? <span> · Ledger <span className="text-[var(--cp-emerald)]">{transaction.ledger.toLocaleString()}</span></span> : null}
-            </>
-          );
-          const beside = settled && at != null ? { at, nodes: settled.map((transaction) => <span key={transaction.hash} className="text-[14px] text-vgray-700">{link(transaction)}</span>) } : undefined;
+          if (!settled) return <AssistantMessage note={note} tone={tone} blocks={blocks}>{text}</AssistantMessage>;
+          /**
+           * A finished run reads as on Solana (owner, 22 Oct): the model's sentence, then one row per transaction with a
+           * tick, what it did and its explorer link. When the model already wrote one list item per transaction, that
+           * item is the row's text; otherwise the row says what the transaction did from its own legs. An account
+           * opened for this request leads the list (`priorSettled`).
+           */
+          const at = receiptBeside(blocks, settled.length);
+          const listed = at != null ? blocks![at] : null;
+          const items = listed && (listed.type === "bullets" || listed.type === "steps") ? listed.items : null;
+          const rest = blocks && at != null ? blocks.filter((_, i) => i !== at) : blocks;
+          // The sentence and its rows sit close, as one reply (Solana's 12px), not a card gap apart.
           return (
-            <>
-              <AssistantMessage note={note} tone={tone} blocks={blocks} beside={beside}>{text}</AssistantMessage>
-              {settled && !beside ? (
-                <ul className="list-disc pl-5 space-y-2 text-[14px] leading-6 text-vgray-700" aria-label="Settled transactions">
-                  {settled.map((transaction) => (
-                    <li key={transaction.hash}>
-                      <span>{transactionPurpose(transaction.steps)}</span>
-                      {link(transaction)}
-                    </li>
-                  ))}
-                </ul>
+            <div className="flex flex-col gap-3">
+              {rest?.length ? (
+                <AssistantMessage note={note} tone={tone} blocks={rest}>{text}</AssistantMessage>
+              ) : !blocks?.length ? (
+                <AssistantMessage note={note} tone={tone}>{text}</AssistantMessage>
               ) : null}
-            </>
+              <ul className="m-0 flex list-none flex-col gap-2 p-0" aria-label="Settled transactions">
+                {settled.map((transaction, i) => (
+                  <li key={transaction.hash} className="flex items-start gap-2.5 text-[14px] leading-[21px] text-vgray-700">
+                    <span aria-hidden className="mt-[3px] flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full" style={{ background: "var(--cp-ok-bg)", color: "var(--cp-ok-fg)" }}>
+                      <Check size={10} strokeWidth={3} />
+                    </span>
+                    <span className="min-w-0 flex-1" style={{ textWrap: "pretty" }}>
+                      {items?.[i] ? <Segments segments={items[i]} /> : transactionPurpose(transaction.steps)}
+                    </span>
+                    <a href={transaction.url} target="_blank" rel="noopener noreferrer" className="shrink-0 whitespace-nowrap font-mono text-[12px] leading-[21px] text-violet-500 hover:text-violet-600" title={transaction.hash} aria-label={`Transaction ${transaction.hash}`}>{shortTransactionHash(transaction.hash)} ↗</a>
+                  </li>
+                ))}
+              </ul>
+            </div>
           );
         })()}
         {receipt && !(completionMatches(receipt, completion) || settledLifecycleTransactions(receipt)) ? (

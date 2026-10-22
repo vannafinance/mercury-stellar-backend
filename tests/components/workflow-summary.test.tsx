@@ -32,13 +32,13 @@ describe("whole-run summary presentation", () => {
     const list = screen.getByRole("list", { name: "Settled transactions" });
     expect(within(list).getAllByRole("listitem")).toHaveLength(2);
     expect(within(list).getAllByRole("link")[0].getAttribute("href")).toBe(`https://stellar.expert/explorer/testnet/tx/${"a".repeat(64)}`);
-    expect(list.textContent).toContain("Ledger 123");
+    expect(list.textContent).toContain("Deposit 10 XLM");
+    expect(list.textContent).not.toContain("Ledger");
     // The link reads as a short hash, not the whole 64 characters; the whole hash stays in its title and name.
     expect(within(list).getAllByRole("link")[0].textContent).toBe("aaaaaa…aaaa ↗");
     expect(within(list).getAllByRole("link")[0].getAttribute("title")).toBe("a".repeat(64));
-    // Links and the ledger number are set apart in green, the same token the execution card uses.
-    expect(within(list).getAllByRole("link")[0].className).toContain("--cp-emerald");
-    expect(list.querySelector("span span")?.className).toContain("--cp-emerald");
+    // Each row has its tick, as on the Solana Copilot.
+    expect(list.querySelectorAll("li svg").length).toBe(2);
     expect(screen.queryByText("EXECUTION PROGRESS")).toBeNull();
   });
   it("preserves execution cards for incomplete runs or legacy receipts without completion metadata", () => {

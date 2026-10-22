@@ -252,7 +252,7 @@ describe("investigation card / options", () => {
     expect(screen.getByText("Executing")).toBeTruthy();
   });
 
-  it("offers Approve and run on a proposed plan, and Sign in wallet when an XDR is waiting", () => {
+  it("offers Approve and run on a proposed plan, and Sign & execute when an XDR is waiting", () => {
     const onApprove = vi.fn();
     const onSign = vi.fn();
     const proposed = {
@@ -309,7 +309,7 @@ describe("investigation card / options", () => {
     );
     expect(screen.queryByText("Approve the transaction in your wallet to continue.")).toBeNull();
     expect(screen.getByText("Your signature needed")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Sign in wallet" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Sign & execute/ }));
     expect(onSign).toHaveBeenCalledTimes(1);
   });
 

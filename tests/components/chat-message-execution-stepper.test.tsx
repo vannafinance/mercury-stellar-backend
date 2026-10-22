@@ -101,13 +101,16 @@ describe("ChatTurns - a finished run's hash and ledger sit with the reply's bull
     { op: "supply_blend", amount: "5", hash: hashB, ledger: 12 },
   ]);
 
-  it("puts each transaction's hash and ledger at the end of its own bullet, and draws no second list", () => {
+  it("turns the reply's one-per-transaction bullets into the settled rows, each with its own link, and draws no second list", () => {
     render(<ChatTurns turns={turnWith(receipt, ["Deposited as collateral", "Supplied to Blend"])} />);
-    expect(screen.queryByLabelText("Settled transactions")).toBeNull();
+    const list = screen.getByLabelText("Settled transactions");
     const items = screen.getAllByRole("listitem");
     expect(items).toHaveLength(2);
-    expect(items[0].textContent).toMatch(/Deposited as collateral.*Ledger 10/);
-    expect(items[1].textContent).toMatch(/Supplied to Blend.*Ledger 12/);
+    expect(list.querySelectorAll("li")).toHaveLength(2);
+    expect(items[0].textContent).toMatch(/Deposited as collateral.*↗/);
+    expect(items[1].textContent).toMatch(/Supplied to Blend.*↗/);
+    expect(list.textContent).not.toContain("Ledger");
+    expect(screen.getByText("Both settled.")).toBeTruthy();
     expect(screen.getByLabelText(`Transaction ${hashA}`)).toBeTruthy();
     expect(screen.getByLabelText(`Transaction ${hashB}`)).toBeTruthy();
   });

@@ -63,12 +63,12 @@ describe("plan cards", () => {
     cardFor(view({ status: "incomplete", understanding: { intent: "strategy", objective: "Compare plans", constraints: [], borrowing: "allowed" }, warnings: ["Sizing is unavailable; do not approve a borrow."] }));
     expect(screen.getByRole("list", { name: "Notes" }).textContent).toContain("Sizing is unavailable");
   });
-  it("keeps progress wording, clock and previous server prose beside the loading mark", () => {
+  it("keeps progress wording and previous server prose beside the loading mark, with no elapsed clock", () => {
     vi.useFakeTimers();
     render(<InvestigationCard prompt="Review my position" result={null} progress={{ kind: "reviewing", turn: 1 }} loading error={null} turns={[{ role: "user", text: "Earlier question" }, { role: "assistant", text: "The server explanation stays in the conversation." }]} />);
     act(() => vi.advanceTimersByTime(1500));
     expect(screen.getByRole("status").textContent).toContain("Working out what to check next");
-    expect(screen.getByRole("status").textContent).toMatch(/\(.*\)/);
+    expect(screen.getByRole("status").textContent).not.toMatch(/\(.*\)/);
     expect(screen.getByText("The server explanation stays in the conversation.")).toBeTruthy();
   });
 

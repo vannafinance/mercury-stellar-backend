@@ -54,6 +54,9 @@ describe("compact rail presentation", () => {
   it("does not describe a loading or failed account read as an empty portfolio", () => {
     const props = { hasWallet: true, healthFactor: null, positions: [], conversations: [], activeId: null, onOpen: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), onRetryAccount: vi.fn() };
     const { rerender } = render(<CopilotRailBody {...props} accountLoading />);
+    // Position lists start closed (owner, 22 Oct); open the margin one to read it.
+    expect(screen.queryByText("Loading positions…")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Margin Positions/ }));
     expect(screen.getByText("Loading positions…")).toBeTruthy();
     expect(screen.queryByText("Nothing open.")).toBeNull();
     rerender(<CopilotRailBody {...props} accountError />);
@@ -67,6 +70,7 @@ describe("compact rail presentation", () => {
 
   it("keeps loaded positions visible and labels them when a refresh fails", () => {
     render(<CopilotRailBody hasWallet healthFactor={3} accountError positions={[{ symbol: "XLM", role: "Margin · Collateral", amount: "23.5", usd: "$4.70" }]} conversations={[]} activeId={null} onOpen={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Margin Positions/ }));
     expect(screen.getByText("23.5")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("previously loaded");
     expect(screen.getByText("Unavailable")).toBeTruthy();
@@ -74,34 +78,48 @@ describe("compact rail presentation", () => {
   it("updates the health value without replacing conversation controls or inventing a direction label", () => {
     const props = { hasWallet: true, positions: [], conversations: [], activeId: null, onOpen: vi.fn(), onRename: vi.fn(), onDelete: vi.fn() };
     const { rerender } = render(<CopilotRailBody {...props} healthFactor={3} />);
-    const positions = screen.getByRole("button", { name: "Positions" });
+    const positions = screen.getByRole("button", { name: "Margin Positions" });
     expect(screen.getByText("3.00")).toBeTruthy();
     rerender(<CopilotRailBody {...props} healthFactor={1.8} />);
     expect(screen.getByText("1.80")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Positions" })).toBe(positions);
+    expect(screen.getByRole("button", { name: "Margin Positions" })).toBe(positions);
     expect(props.onOpen).not.toHaveBeenCalled();
   });
 
   it("previews positions on hover, pins on click, and retains the account's figures", () => {
     vi.useFakeTimers();
     render(<CopilotRailPresentation.Provider value><p>Server explanation above the card</p><CopilotRailBody hasWallet healthFactor={999} positions={[{ symbol: "XLM", role: "Margin · Collateral", amount: "23.5", usd: "$4.70" }]} conversations={[]} activeId={null} onOpen={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} /></CopilotRailPresentation.Provider>);
-    const trigger = screen.getByRole("button", { name: "Positions" });
+    const trigger = screen.getByRole("button", { name: "Margin Positions" });
     fireEvent.mouseEnter(trigger);
-    expect(screen.getByRole("dialog", { name: "Positions" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Margin Positions" })).toBeTruthy();
     expect(screen.getByText("23.5")).toBeTruthy();
     expect(screen.getByText("$4.70")).toBeTruthy();
     fireEvent.mouseLeave(trigger);
     act(() => vi.advanceTimersByTime(200));
-    expect(screen.queryByRole("dialog", { name: "Positions" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Margin Positions" })).toBeNull();
     fireEvent.mouseEnter(trigger);
     fireEvent.click(trigger);
     fireEvent.mouseLeave(trigger);
     act(() => vi.advanceTimersByTime(200));
-    expect(screen.getByRole("dialog", { name: "Positions" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Margin Positions" })).toBeTruthy();
     fireEvent.click(trigger);
-    expect(screen.queryByRole("dialog", { name: "Positions" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Margin Positions" })).toBeNull();
     expect(screen.getByText("Server explanation above the card")).toBeTruthy();
     expect(screen.getByText("∞")).toBeTruthy();
+  });
+
+  it("lists Earn deposits in their own section, apart from margin positions", () => {
+    render(<CopilotRailBody hasWallet healthFactor={3} positions={[{ symbol: "XLM", role: "Margin · Collateral", amount: "23.5", usd: "$4.70" }]} earnPositions={[{ symbol: "BLUSDC", role: "Earn · Supplied", amount: "10", usd: "$10.00" }]} conversations={[]} activeId={null} onOpen={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /Margin Positions/ })).toBeTruthy();
+    // Both start closed; each opens on its own.
+    expect(screen.queryByText("BLUSDC")).toBeNull();
+    expect(screen.queryByText("23.5")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Earn Positions/ }));
+    expect(screen.getByText("BLUSDC")).toBeTruthy();
+    expect(screen.getByText("Earn · Supplied")).toBeTruthy();
+    expect(screen.queryByText("23.5")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Margin Positions/ }));
+    expect(screen.getByText("23.5")).toBeTruthy();
   });
 
   it("keeps the same budget controls open after toggling and forwards custom values unchanged", () => {

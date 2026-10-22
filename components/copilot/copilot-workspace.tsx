@@ -33,6 +33,10 @@ import {
 } from "@/store/margin-account-info-store";
 import { setAutoApprove, useCopilotSettingsStore } from "@/store/copilot-settings";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
+import { useUserPositions } from "@/hooks/use-earn";
+import { useTokenPrices } from "@/hooks/use-token-prices";
+import { EARN_POOLS, EARN_PRICE_SYMS } from "@/components/earn/v3/earn-pools";
+import { POSITION_DUST } from "@/components/earn/v3/use-earn-v3";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { acceptedTestnetBudget, defaultTestnetBudget, testnetBudgetLabel, testnetBudgetDraft, readStoredTestnetBudget, storedTestnetBudget, type TestnetBudget } from "@/lib/copilot/auto-approve-budget";
@@ -5371,37 +5375,14 @@ export function CopilotWorkspace() {
                 ? "answer"
                 : "idle";
 
-  /**
-   * Elapsed seconds for the in-flight turn.
-   *
-   * `/api/copilot` streams no progress, so the only truthful things to show while it runs
-   * are that it is running and for how long. The three-row pipeline that used to render
-   * here - "Parsing intent" active, "MCP tool call" pending, "Composing response" pending
-   * - was hardcoded and never advanced, so it still read "MCP tool call pending" long
-   * after the server had finished that stage and moved on to composing. A stage marker
-   * that cannot move is worse than a clock: it looks stalled precisely when work is
-   * happening. Showing a fabricated sequence instead would break the surface's own rule
-   * that progress must reflect events that actually occurred.
-   */
-  const [elapsedSec, setElapsedSec] = useState(0);
-  useEffect(() => {
-    if (!loading) return;
-    const startedAt = Date.now();
-    setElapsedSec(0);
-    const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt) / 1000)), 1000);
-    return () => clearInterval(id);
-  }, [loading]);
-
   /** Agent-run trace, built from the turn that actually happened. */
   const steps = useMemo<Step[]>(() => {
     if (loading) {
-      const clock = elapsedSec >= 60
-        ? `${Math.floor(elapsedSec / 60)}m ${String(elapsedSec % 60).padStart(2, "0")}s`
-        : `${elapsedSec}s`;
+      // No elapsed-time clock beside it (owner, 22 Oct): the spinner says it is running.
       return [
         {
           label: multiLeg ? "Running multi-leg plan" : "Reading your position and the markets",
-          detail: clock,
+          detail: "",
           state: "active",
         },
       ];
@@ -5465,8 +5446,7 @@ export function CopilotWorkspace() {
       state: response.kind === "executed" ? "done" : response.kind === "blocked" ? "done" : "active",
     });
     return out;
-  // elapsedSec drives the in-flight clock; without it the memo freezes at 0s.
-  }, [loading, response, strategySteps, multiLeg, elapsedSec]);
+  }, [loading, response, strategySteps, multiLeg]);
 
   /**
    * The same legs the agent-run list shows, in the shape the run card renders.
@@ -5844,6 +5824,11 @@ export function CopilotWorkspace() {
   /** The run finished on an earlier reply: it is history, drawn by the thread on its own turn. */
   const runIsPast = runIsOnEarlierTurn(investigation.turns, workflow.view ? { id: workflow.view.id, finished: finishedWorkflow(workflow.view) } : null);
   const completionSummaryReady = investigation.turns.some((turn) => turn.executionReceipt?.workflowId === workflow.view?.id && completionMatches(turn.executionReceipt, turn.completion));
+  /**
+   * The run has finished on chain and its reply is still being written (a health read, then the model: several
+   * seconds). The card alone gave no sign the work was done, so a status line says so until the reply lands.
+   */
+  const summaryPending = !completionSummaryReady && !isStaleInvestigation && !runIsPast && workflow.view?.status === "completed";
   const cardDrawsRun = !completionSummaryReady && !isStaleInvestigation && !!workflow.view && !runIsPast &&
     workflow.view.status !== "proposed" && workflow.view.status !== "validating" &&
     investigation.turns[investigation.turns.length - 1]?.role !== "user";
@@ -5885,14 +5870,15 @@ export function CopilotWorkspace() {
       const immediate = immediateCompletion(step.receipt);
       // Presentation retries cannot resubmit or sign transactions. The server persists first.
       void (async () => {
-        for (let attempt = 0; attempt < 3; attempt += 1) {
+        // Two tries: each may take a health read and a model call (~20 s), so a third only held the fallback back.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
           const composed = await fetchComposedCompletion(view.id, null, controller.signal, conversationId);
           if (composed?.completion && composed.receipt) {
             updateWorkflowCompletion(composed as WorkflowCompletionReply, conversationId, owner);
             return;
           }
           if (controller.signal.aborted) return;
-          if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1_000));
+          if (attempt < 1) await new Promise((resolve) => setTimeout(resolve, 1_000));
         }
         if (!controller.signal.aborted && immediate) updateWorkflowCompletion(immediate, conversationId, owner);
       })();
@@ -5961,6 +5947,28 @@ export function CopilotWorkspace() {
       })),
     ];
   }, [positionRows]);
+  /**
+   * The rail's Earn list: the wallet's lending-pool deposits, read by the same hooks the
+   * Earn page uses (useUserPositions, oracle prices), never computed here a second way.
+   */
+  const { positions: earnRaw, isLoading: earnLoading, error: earnError } = useUserPositions();
+  const earnPrices = useTokenPrices(EARN_PRICE_SYMS);
+  const railEarnPositions = useMemo(() => {
+    if (!address) return [];
+    const usd = (n: number) =>
+      `${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return EARN_POOLS.flatMap((pool) => {
+      const supplied = Number.parseFloat(earnRaw[pool.key]?.deposited ?? "0") || 0;
+      if (!(supplied > POSITION_DUST)) return [];
+      const price = earnPrices[pool.priceSym];
+      return [{
+        symbol: pool.sym,
+        role: "Earn · Supplied",
+        amount: supplied.toLocaleString(undefined, { maximumFractionDigits: 7 }),
+        usd: price ? usd(supplied * price) : "-",
+      }];
+    });
+  }, [address, earnRaw, earnPrices]);
 
 
   return (
@@ -6005,6 +6013,9 @@ export function CopilotWorkspace() {
             hasWallet={Boolean(address)}
             healthFactor={liveHf}
             positions={railPositions}
+            earnPositions={railEarnPositions}
+            earnLoading={Boolean(address) && earnLoading}
+            earnError={Boolean(address) && Boolean(earnError)}
             accountLoading={Boolean(address) && !snapshot && snapshotLoading}
             accountError={Boolean(address) && Boolean(snapshotError)}
             onRetryAccount={() => { void refreshSnapshot(); }}
@@ -6164,6 +6175,12 @@ export function CopilotWorkspace() {
                 approvalQueued={approveWhenProposedRef.current}
                 approvingId={approvingId}
               />
+            )}
+            {summaryPending && (
+              <p role="status" aria-live="polite" className="flex items-center gap-2 pl-7 text-[13px] leading-[20px] text-violet-500">
+                <Loader2 size={14} className="shrink-0 animate-spin" aria-hidden />
+                All steps are done on-chain. Writing the summary…
+              </p>
             )}
             <div
               hidden={

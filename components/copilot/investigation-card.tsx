@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { CircleAlert, Search } from "lucide-react";
-import { VANNA_ICON_SRC } from "@/components/copilot/vanna-icon-data";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
@@ -13,9 +12,10 @@ import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap
 import { PlanReviewCard } from "@/components/copilot/plan-review-card";
 import { preparingStatedRun } from "@/components/copilot/preparing-run";
 import { finished } from "@/hooks/use-workflow";
-import { formatRunClock } from "@/lib/copilot/investigation/duration";
 import { recommendationReason } from "@/lib/copilot/investigation/recommendation";
 import { ChatTurns, REPLY_CARD_GAP_PX } from "@/components/copilot/chat-message";
+import { ThinkingRow } from "@/components/copilot/thinking-row";
+import { PLAN_APPROVAL_WINDOW_MS, PlanCountdown, usePlanCountdown } from "@/components/copilot/plan-countdown";
 import { signRefusalCopy } from "@/components/copilot/sign-refusal-copy";
 import { MISSING_MARGIN_ACCOUNT_NOTE } from "@/lib/copilot/account-setup-continuation";
 
@@ -229,24 +229,28 @@ function StillWorking({ afterMs = 20_000 }: { afterMs?: number }) {
 /** The one plan on offer: a full card with its own Approve and Cancel. */
 function PlanCard({
   candidate, index, several, beforeHf, stepsOpen, onToggleSteps,
-  onApprove, onCancel, approveDisabled, cancelDisabled,
+  onApprove, onCancel, approveDisabled, cancelDisabled, windowEnd,
 }: {
   candidate: PlanCandidate; index: number; several: boolean;
   beforeHf: string | null; stepsOpen: boolean; onToggleSteps: () => void;
   onApprove?: () => void; onCancel: () => void; approveDisabled: boolean; cancelDisabled: boolean;
+  /** When the 5-minute approval window ends (epoch ms); null when the reply carries no read time. */
+  windowEnd: number | null;
 }) {
+  const approval = usePlanCountdown(windowEnd, !approveDisabled);
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-vgray-100 bg-surface px-5 py-5 sm:px-6">
       <PlanHeading candidate={candidate} index={index} several={several} selected={false} />
       <PlanDetails candidate={candidate} lead={index === 0} beforeHf={beforeHf} previewSteps={SINGLE_PLAN_PREVIEW_STEPS} stepsOpen={stepsOpen} onToggleSteps={onToggleSteps} />
       {onApprove && (
-        <div className="flex gap-2">
-          <button type="button" onClick={onApprove} disabled={approveDisabled} className={BTN_PRIMARY}>
-            Approve
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={onApprove} disabled={approveDisabled || approval.expired} className={BTN_PRIMARY}>
+            {approval.expired ? "Expired: ask again" : "Approve"}
           </button>
           <button type="button" onClick={onCancel} disabled={cancelDisabled} className={BTN_QUIET}>
             Cancel
           </button>
+          {windowEnd != null && !approveDisabled && <span className="ml-auto"><PlanCountdown {...approval} /></span>}
         </div>
       )}
     </div>
@@ -261,8 +265,9 @@ function PlanCard({
  */
 function PlanPicker({
   plans, letterOf, selectedId, onSelect, beforeHf, openSteps, onToggleSteps,
-  onApprove, onCancel, approveDisabled, cancelDisabled,
+  onApprove, onCancel, approveDisabled, cancelDisabled, windowEnd,
 }: {
+  windowEnd: number | null;
   plans: PlanCandidate[]; letterOf: (candidate: PlanCandidate) => number; selectedId: string;
   onSelect: (id: string) => void; beforeHf: string | null;
   openSteps: Record<string, boolean>; onToggleSteps: (id: string) => void;
@@ -270,6 +275,7 @@ function PlanPicker({
 }) {
   const selected = plans.find((candidate) => candidate.id === selectedId) ?? plans[0];
   const why = recommendationReason(plans);
+  const approval = usePlanCountdown(windowEnd, !approveDisabled);
   const move = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
     if (!step) return;
@@ -312,13 +318,14 @@ function PlanPicker({
         })}
       </div>
       {onApprove && (
-        <div className="flex gap-2 border-t border-vgray-100 px-5 py-4">
-          <button type="button" onClick={() => onApprove(selected.id)} disabled={approveDisabled} className={BTN_PRIMARY}>
-            Approve Plan {planLetter(letterOf(selected))}
+        <div className="flex flex-wrap items-center gap-2 border-t border-vgray-100 px-5 py-4">
+          <button type="button" onClick={() => onApprove(selected.id)} disabled={approveDisabled || approval.expired} className={BTN_PRIMARY}>
+            {approval.expired ? "Expired: ask again" : <>Approve Plan {planLetter(letterOf(selected))}</>}
           </button>
           <button type="button" onClick={() => onCancel(selected.id)} disabled={cancelDisabled} className={BTN_QUIET}>
             Cancel
           </button>
+          {windowEnd != null && !approveDisabled && <span className="ml-auto"><PlanCountdown {...approval} /></span>}
         </div>
       )}
     </section>
@@ -424,27 +431,6 @@ export function InvestigationCard({
     withdrawn: !!planWithdrawn,
   });
   const completionSummaryReady = !!workflow && turns.some((turn) => turn.executionReceipt?.workflowId === workflow.id && completionMatches(turn.executionReceipt, turn.completion));
-  /**
-   * The run clock. Zeroing it inside the effect made every start a second render pass; a
-   * run that begins is a prop change, so the reset belongs in render, where React handles
-   * it in the same pass.
-   */
-  const [elapsedSec, setElapsedSec] = useState(0);
-  const [clockRunning, setClockRunning] = useState(loading);
-  if (loading !== clockRunning) {
-    setClockRunning(loading);
-    if (loading) setElapsedSec(0);
-  }
-  const startedAt = useRef(0);
-  useEffect(() => {
-    if (!loading) return;
-    startedAt.current = Date.now();
-    const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt.current) / 1000)), 1000);
-    return () => clearInterval(id);
-  }, [loading]);
-  // The running clock beside the progress line. A finished reply carries no "Checked in" line
-  // (owner, 29 Sep); the server's timing stays on the view (`elapsedMs`) for diagnostics.
-  const deviceClock = elapsedSec > 0 ? formatRunClock(elapsedSec) : null;
 
   const lastTurn = turns[turns.length - 1];
   /**
@@ -473,6 +459,9 @@ export function InvestigationCard({
   const replyKey = result?.continuation || result?.originalRequest || "";
   const dismissedIds = dismissed?.key === replyKey ? dismissed.ids : [];
   const visiblePlans = (result?.candidates?.feasible ?? []).filter((candidate) => !dismissedIds.includes(candidate.id));
+  // The approval window starts when the plan's figures were read (the reply's newest read), so a reload keeps the clock.
+  const readAt = Math.max(0, ...(result?.checks ?? []).map((check) => Number(check.readAt) || 0));
+  const planWindowEnd = readAt > 0 ? readAt + PLAN_APPROVAL_WINDOW_MS : null;
 
   return (
     <div aria-label="Copilot investigation" className="min-w-0">
@@ -493,12 +482,9 @@ export function InvestigationCard({
             />
           )}
 
-          {loading && (
-            <p role="status" aria-live="polite" className="flex items-center gap-2.5 text-[13px] text-violet-500">
-              <span className="cp-loader-mark" aria-hidden="true"><img src={VANNA_ICON_SRC} alt="" width={18} height={18} /></span>
-              {progressLabel}{deviceClock ? ` (${deviceClock})` : ""}
-            </p>
-          )}
+          {/* While the reply is worked out: the Vanna mark, a spinner and the model's lines for this prompt (as on
+              Solana), with no elapsed-time clock (owner, 22 Oct). */}
+          {loading && <ThinkingRow prompt={prompt} fallback={progress ? progressLabel : "Thinking…"} />}
           {error && (
             <p role="alert" className="flex items-start gap-2 text-[14px] leading-6 text-vgray-700">
               <CircleAlert size={17} className="mt-1 shrink-0 text-imperial-500" aria-hidden="true" />
@@ -574,6 +560,7 @@ export function InvestigationCard({
                         onCancel={() => dismiss(only.id)}
                         approveDisabled={!!workflowLoading || planInFlight}
                         cancelDisabled={!!workflowLoading}
+                        windowEnd={planWindowEnd}
                       />
                     </section>
                   );
@@ -591,6 +578,7 @@ export function InvestigationCard({
                     onCancel={dismiss}
                     approveDisabled={!!workflowLoading || planInFlight}
                     cancelDisabled={!!workflowLoading}
+                    windowEnd={planWindowEnd}
                   />
                 );
               })()}
@@ -693,7 +681,7 @@ export function InvestigationCard({
                   <div className="mt-3 flex flex-wrap gap-2">
                     {/* Sign and Stop live on the execution card itself; the blocked list has neither. */}
                     {workflow.status === "awaiting_signature" && onSign && stepperDrawnInThread && (
-                      <button type="button" onClick={onSign} disabled={workflowLoading} className={BTN_PRIMARY}>Sign in wallet</button>
+                      <button type="button" onClick={onSign} disabled={workflowLoading} className={BTN_PRIMARY}>Sign & execute</button>
                     )}
                     {["running", "approved"].includes(workflow.status) && onResume && (
                       <button type="button" disabled={workflowLoading} onClick={onResume} className={BTN_QUIET}>Check progress</button>
