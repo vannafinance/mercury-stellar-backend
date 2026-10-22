@@ -483,7 +483,8 @@ function AssistantTurn({
               ) : !blocks?.length ? (
                 <AssistantMessage note={note} tone={tone}>{text}</AssistantMessage>
               ) : null}
-              <ul className="m-0 flex list-none flex-col gap-2 p-0" aria-label="Settled transactions">
+              {/* Solana's rows: text on the left, link at the row's end, the list no wider than Solana's reply (85%). */}
+              <ul className="m-0 flex list-none flex-col gap-2 p-0" style={{ maxWidth: "85%" }} aria-label="Settled transactions">
                 {settled.map((transaction, i) => (
                   <li key={transaction.hash} className="flex items-start gap-2.5 text-[14px] leading-[21px] text-vgray-700">
                     <span aria-hidden className="mt-[3px] flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full" style={{ background: "var(--cp-ok-bg)", color: "var(--cp-ok-fg)" }}>
