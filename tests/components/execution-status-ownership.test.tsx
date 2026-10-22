@@ -13,14 +13,14 @@ describe("the execution card owns execution status", () => {
     expect(screen.queryByText(message)).toBeNull();
     expect(screen.getByText("Your signature needed")).toBeTruthy();
     expect(screen.queryByTestId("workflow-progress")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Sign in wallet" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Sign & execute/ }));
     expect(sign).toHaveBeenCalledTimes(1);
   });
   it("does not repeat signing/submission status under prose while keeping the card's status", () => {
     const w = view("Internal RPC instruction");
     const { rerender } = render(<InvestigationCard prompt="Deposit" result={null} progress={null} loading={false} error={null} workflow={w} workflowLoading onSign={() => {}} />);
     expect(screen.queryByTestId("workflow-progress")).toBeNull();
-    expect((screen.getByRole("button", { name: "Sign in wallet" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /^Sign & execute/ }) as HTMLButtonElement).disabled).toBe(true);
     rerender(<InvestigationCard prompt="Deposit" result={null} progress={null} loading={false} error={null} workflow={{ ...w, status: "running", steps: [{ ...w.steps[0], status: "submitted" }] }} workflowLoading />);
     expect(screen.queryByTestId("workflow-progress")).toBeNull();
     expect(screen.getByText("Waiting for the ledger to close…")).toBeTruthy();

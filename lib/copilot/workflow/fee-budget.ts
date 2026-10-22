@@ -9,7 +9,7 @@ import { assertSigningTime } from "./signing-envelope";
 /** Use the prepared envelope's full maximum fee, not a fixed reserve hint. */
 export function assertNativeFeeBudget(tx: Transaction, step: ProposalStep, account: unknown, ledger: unknown,
   reserves: WorkflowProposal["walletReserves"] = [], ongoingFeeReserveXlm = "0") {
-  const unread = () => new ResearchError("fee_balance_unavailable", "The wallet balance and network reserve could not be verified for this transaction. Nothing was submitted. Try Sign in wallet again.", 503);
+  const unread = () => new ResearchError("fee_balance_unavailable", "The wallet balance and network reserve could not be verified for this transaction. Nothing was submitted. Try Sign & execute again.", 503);
   if (!isRecord(account) || account.account_id !== tx.source || !Array.isArray(account.balances)
       || !isRecord(ledger)) throw unread();
   const native = account.balances.find(row => isRecord(row) && row.asset_type === "native");
@@ -61,7 +61,7 @@ export async function checkTransactionFee(xdr: string, step: ProposalStep, reque
     request(`${HORIZON_URL}/accounts/${tx.source}`, { cache: "no-store", signal: AbortSignal.timeout(15_000) }),
     request(`${HORIZON_URL}/ledgers?order=desc&limit=1`, { cache: "no-store", signal: AbortSignal.timeout(15_000) }),
   ]);
-  if (!account.ok || !ledgers.ok) throw new ResearchError("fee_balance_unavailable", "The wallet fee balance could not be verified. Nothing was submitted. Try Sign in wallet again.", 503);
+  if (!account.ok || !ledgers.ok) throw new ResearchError("fee_balance_unavailable", "The wallet fee balance could not be verified. Nothing was submitted. Try Sign & execute again.", 503);
   const [accountData, ledgerData] = await Promise.all([account.json(), ledgers.json()]);
   const latest = isRecord(ledgerData) && isRecord(ledgerData._embedded) && Array.isArray(ledgerData._embedded.records)
     ? ledgerData._embedded.records[0] : null;

@@ -33,7 +33,9 @@ describe("an account opened for a request is one reply with that request", () =>
     expect(items).toHaveLength(2);
     expect(items[0].textContent).toContain("Your margin account is open");
     expect(items[1].textContent).toContain("Deposit 5 XLM as collateral");
-    expect((items[1].textContent ?? "").replace(/\D/g, "")).toContain("5309497");
+    // Rows read as on Solana: what was done and its explorer link, no ledger number (owner, 22 Oct).
+    expect(within(items[1]).getByRole("link").getAttribute("href")).toContain(depositHash);
+    expect(items[1].textContent).not.toContain("Ledger");
     expect(screen.getAllByText("Deposit 5 XLM")).toHaveLength(1);
   });
 

@@ -437,7 +437,7 @@ export function RunExecutionCard({
   }, [legs, total]);
 
   // Elapsed timer for the leg in flight, and the amount being typed for a paused leg.
-  // Both reset when their leg changes, so leg 3 never inherits leg 2's clock or draft.
+  // Both reset when their leg changes, so leg 3 never inherits leg 2's draft.
   //
   // The reset happens during render off a tracked key rather than in an effect: resetting
   // in an effect means one frame where the new leg shows the previous leg's elapsed time.
@@ -445,7 +445,6 @@ export function RunExecutionCard({
   const runningKey = shape.running ? shape.running.n : null;
   const inputKey = shape.needsInput ? shape.needsInput.n : null;
 
-  const [elapsed, setElapsed] = useState(0);
   const [draft, setDraft] = useState("");
   const [lpPick, setLpPick] = useState<string | null>(null);
   const [lpLocked, setLpLocked] = useState(false);
@@ -456,7 +455,6 @@ export function RunExecutionCard({
   });
   if (keys.running !== runningKey || keys.input !== inputKey) {
     setKeys({ running: runningKey, input: inputKey });
-    if (keys.running !== runningKey) setElapsed(0);
     if (keys.input !== inputKey) {
       setLpLocked(false);
       lockedAmtRef.current = "";
@@ -464,18 +462,6 @@ export function RunExecutionCard({
       setLpPick(null);
     }
   }
-
-  useEffect(() => {
-    if (runningKey == null) return;
-    // Timestamp rather than a tick count: a throttled background tab would otherwise
-    // under-count and report a leg as faster than it was.
-    const started = Date.now();
-    const id = window.setInterval(
-      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
-      1000,
-    );
-    return () => window.clearInterval(id);
-  }, [runningKey]);
 
   const fieldRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
@@ -1116,7 +1102,7 @@ export function RunExecutionCard({
                   </div>
                 </div>
 
-                {/* in flight: indeterminate bar + this leg's elapsed time */}
+                {/* in flight: indeterminate bar (no elapsed-seconds counter, owner 22 Oct) */}
                 {l.status === "running" ? (
                   <div className="mt-[9px] flex items-center gap-2.5">
                     <span
@@ -1133,17 +1119,6 @@ export function RunExecutionCard({
                           animation: "rc-slide 1.2s ease-in-out infinite",
                         }}
                       />
-                    </span>
-                    <span
-                      style={{
-                        fontFamily: MONO,
-                        fontSize: 11.5,
-                        fontWeight: 700,
-                        fontVariantNumeric: "tabular-nums",
-                        color: "var(--rc-accent)",
-                      }}
-                    >
-                      {elapsed}s
                     </span>
                   </div>
                 ) : null}

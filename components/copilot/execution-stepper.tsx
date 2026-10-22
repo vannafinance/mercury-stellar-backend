@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Check } from "lucide-react";
 
 export interface StepperStep {
@@ -173,7 +173,6 @@ export function ExecutionStepper({
                     {step.status === "claiming" ? "Checking it before it is sent…"
                       : step.status === "signing" ? "Signing…"
                         : "Waiting for the ledger to close…"}
-                    <ElapsedSeconds />
                   </p>
                 )}
 
@@ -187,7 +186,7 @@ export function ExecutionStepper({
                     {onSign && (
                       <button type="button" onClick={onSign} disabled={busy}
                         className="min-h-9 rounded-lg bg-[image:var(--cp-gradient)] px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50">
-                        Sign in wallet
+                        Sign & execute step {index + 1}
                       </button>
                     )}
                     <span className="text-[12px] text-vgray-400">Your wallet will open to approve this one step.</span>
@@ -237,17 +236,6 @@ function useFreshlySettled(steps: StepperStep[]): ReadonlySet<string> {
     setTrack({ statuses, fresh: [...track.fresh, ...newlySettled] });
   }
   return new Set([...track.fresh, ...newlySettled]);
-}
-
-/** Whole seconds since this line appeared, shown once there is one to show: proof the step is still moving. */
-function ElapsedSeconds() {
-  const [seconds, setSeconds] = useState(0);
-  useEffect(() => {
-    const started = Date.now();
-    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  return seconds > 0 ? <span className="ml-2 text-vgray-400">{seconds}s</span> : null;
 }
 
 const SVG_PROPS = { fill: "none", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true } as const;
