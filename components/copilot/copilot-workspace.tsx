@@ -5849,7 +5849,9 @@ export function CopilotWorkspace() {
     const conversationId = investigation.conversationId;
     const receipt = investigation.turns.find((turn) => turn.executionReceipt?.workflowId === view.id)?.executionReceipt;
     if (view.status === "completed") {
-      const network = investigation.result?.scope.network;
+      // The research result can be gone by now (a newer turn, a restored thread); the run's own receipt, then testnet (the only
+      // network the investigate route serves), keep the summary from waiting forever for it.
+      const network = investigation.result?.scope.network ?? receipt?.network ?? "testnet";
       const step = completionStep(view, receipt, () => (network ? executionReceiptFromWorkflowView(view, network) : null));
       if (!conversationId || step.kind === "wait") return;
       if (step.kind === "attach") {
@@ -5979,7 +5981,9 @@ export function CopilotWorkspace() {
         onToggleCollapsed={() => setRailCollapsed((v) => !v)}
         empty={stageEmpty}
         conversationId={investigation.conversationId}
-        justSubmitted={Boolean(pendingUser && loading)}
+        // As on Solana (`justSubmitted={busy}`): any send in flight, the investigation's included, pins the new message to the
+        // top. `pendingUser && loading` covered only the direct path, so a Copilot send left the message below the fold.
+        justSubmitted={Boolean(loading || investigation.loading)}
         scrollKey={`${investigation.turns.length}-${pendingUser}-${liveReply}-${loading}-${response?.request_id}`}
         railTop={
           <CopilotRailTop
