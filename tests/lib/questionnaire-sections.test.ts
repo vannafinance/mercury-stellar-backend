@@ -15,6 +15,9 @@ const wallet = (rows: Array<{ symbol: string; balance: string }>) =>
   obs("w", "wallet_balances", { assets: rows.map((row) => ({ ...row, decimals: 7, status: "ok" })), fee_reserve_xlm: "0" });
 const account = (rows: Array<{ symbol: string; balance: string }>) =>
   obs("a", "account_collateral", { collateral: rows });
+/** What the margin account really holds of each token, as its token contract reports it. */
+const held = (rows: Array<{ symbol: string; balance: string }>) =>
+  rows.map((row) => obs(`t-${row.symbol}`, "account_token_balance", { symbol: row.symbol, decimals: 7, human: row.balance }, { asset: row.symbol }));
 const prices = ["XLM", "BLUSDC", "AQUSDC"].map((asset) =>
   obs(`p-${asset}`, "asset_price", { price_usd: asset === "XLM" ? "0.2" : "1" }, { asset }));
 const pool = obs("r", "aquarius_pool_reserves", {
@@ -212,7 +215,7 @@ describe("one questionnaire, one section per action", () => {
     expect(fromCard.candidates[0]?.steps?.find((step) => step.op === "swap")?.label).toMatch(/at least/);
   });
 
-  it("deposits the stated 100 once, and only the shortfall when 60 is already posted", () => {
+  it("deposits only what the user said to deposit, and names a shortfall instead of topping it up", () => {
     const quote = "deposit 100 xlm and supply 100 xlm to blend";
     const scope = {
       subject: "user", network: "testnet",
@@ -225,6 +228,7 @@ describe("one questionnaire, one section per action", () => {
       observations: [
         wallet([{ symbol: "XLM", balance: "500" }]),
         account([{ symbol: "XLM", balance: posted }]),
+        ...held([{ symbol: "XLM", balance: posted }]),
         ...prices, blend,
       ],
     });
@@ -232,12 +236,16 @@ describe("one questionnaire, one section per action", () => {
       { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: quote }, sourceQuote: quote },
       { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: quote }, sourceQuote: quote },
     ];
+    // The user's own deposit is kept, once.
     expect(sized(both, quote, "0").candidates[0]?.steps?.filter((step) => step.op === "deposit_collateral").map((step) => step.amount)).toEqual(["100"]);
     const supplyOnly = "supply 100 xlm to blend";
     const supply: StatedAction[] = [
       { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: supplyOnly }, sourceQuote: supplyOnly },
     ];
-    expect(sized(supply, supplyOnly, "60").candidates[0]?.steps?.filter((step) => step.op === "deposit_collateral").map((step) => step.amount)).toEqual(["40"]);
+    // 60 is posted and 100 is asked: the 40 that is missing is named, whatever the wallet holds.
+    const short = sized(supply, supplyOnly, "60");
+    expect(short.candidates).toHaveLength(0);
+    expect(short.rejected[0]?.reason).toBe("Your margin account holds 60 XLM and this needs 100. Deposit the other 40 XLM into the account first");
 
     const twice = "supply 60 xlm twice";
     const doubleSupply: StatedAction[] = [
@@ -247,10 +255,10 @@ describe("one questionnaire, one section per action", () => {
     const doubleResult = resolvePlans([planFromStatedActions(doubleSupply, twice)!], {
       scope, now: NOW, messages: [twice], borrowing: "forbidden" as const, comparisons: [],
       capacity: { grossCollateralUsd: "1000", debtUsd: "0", floor: "1.1" },
-      observations: [wallet([{ symbol: "XLM", balance: "100" }]), account([{ symbol: "XLM", balance: "0" }]), ...prices, blend],
+      observations: [wallet([{ symbol: "XLM", balance: "100" }]), account([{ symbol: "XLM", balance: "0" }]), ...held([{ symbol: "XLM", balance: "0" }]), ...prices, blend],
     });
     expect(doubleResult.candidates).toHaveLength(0);
-    expect(doubleResult.rejected[0]?.reason).toMatch(/wallet has 40 XLM.*does not cover the other 60/i);
+    expect(doubleResult.rejected[0]?.reason).toBe("Your margin account holds 0 XLM and this needs 60. Deposit the other 60 XLM into the account first");
 
     const precise = "supply 1 xlm to blend";
     const precisionResult = resolvePlans([planFromStatedActions([{
@@ -260,7 +268,7 @@ describe("one questionnaire, one section per action", () => {
       capacity: { grossCollateralUsd: "1000", debtUsd: "0", floor: "1.1" },
       observations: [
         obs("w2", "wallet_balances", { assets: [{ symbol: "XLM", balance: "10", decimals: 2, status: "ok" }], fee_reserve_xlm: "0" }),
-        account([{ symbol: "XLM", balance: "0.995" }]), ...prices, blend,
+        account([{ symbol: "XLM", balance: "0.995" }]), ...held([{ symbol: "XLM", balance: "0.995" }]), ...prices, blend,
       ],
     });
     expect(precisionResult.candidates).toHaveLength(0);
@@ -392,8 +400,8 @@ describe("one questionnaire, one section per action", () => {
     };
     expect(answerProblem(built, badAnswers)).toBe("Answer each section once.");
 
-    // 2. Deposit 10 then Blend 1101 -> fails: the account has 100 + 10 = 110 and the wallet top-up
-    // (owner, 24 Sep) covers only the 990 the deposit left in it, 1100 in all.
+    // 2. Deposit 10 then Blend 1101 -> fails: the account holds 100 + 10 = 110, and the wallet is never added to what
+    // a margin-account spend can use.
     const overAnswers: QuestionnaireAnswers = {
       questionnaireId: built.id, asset: "XLM", venue: null, amount: { kind: "literal", amount: "10" }, summary: "deposit 10 and supply 1101 to blend",
       sections: [
@@ -401,9 +409,12 @@ describe("one questionnaire, one section per action", () => {
         { sectionId: built.sections![1].id, asset: "XLM", venue: "supply_blend:XLM", amount: { kind: "literal", amount: "1101" } },
       ],
     };
+    // 1101 is past the sealed upper bound for the section (1100); anything past what the account will hold is refused.
     expect(answerProblem(built, overAnswers)).toBe("That is more than the 1100 XLM available.");
-    const toppedUp = { ...overAnswers, sections: [overAnswers.sections![0], { ...overAnswers.sections![1], amount: { kind: "literal" as const, amount: "1100" } }] };
-    expect(answerProblem(built, toppedUp)).toBeNull();
+    const walletSized = { ...overAnswers, sections: [overAnswers.sections![0], { ...overAnswers.sections![1], amount: { kind: "literal" as const, amount: "1100" } }] };
+    expect(answerProblem(built, walletSized)).toBe("That is more than the 110 XLM available.");
+    const exact = { ...overAnswers, sections: [overAnswers.sections![0], { ...overAnswers.sections![1], amount: { kind: "literal" as const, amount: "110" } }] };
+    expect(answerProblem(built, exact)).toBeNull();
 
     // 3. Deposit 10 then Blend 50 -> succeeds (50 <= 110)
     const goodAnswers: QuestionnaireAnswers = {

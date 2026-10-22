@@ -12,6 +12,7 @@ import { pastOf, pocketAfterMoves, venueLabel, verbOf } from "./plan";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { poolReservesFrom } from "./pool-quote";
 import { decimalsFrom, truncateToDecimals } from "./precision";
+import { SEP41_ASSET_IDS } from "../token-contracts";
 import { parseSizing } from "./decision";
 import { answerForKnownSizing } from "./questionnaire-sizing";
 
@@ -307,6 +308,12 @@ function heldInPocketRaw(observations: readonly Observation[], pocket: Pocket, a
     }
     return null;
   }
+  if (pocket === "account") {
+    // What the account can spend is the balance its token contract reports. Recorded collateral understates it by the
+    // proceeds of a borrow in the token, so it stands in only when that balance was not read.
+    const real = [...observations].reverse().find((item) => item.capability === "account_token_balance" && item.status === "ok" && item.data && item.args.asset === asset);
+    if (real?.data) return positive(real.data.human) ?? null;
+  }
   const capability = pocket === "account" ? "account_collateral"
     : pocket === "debt" ? "account_debt"
       : pocket === "earn" ? "earn_position"
@@ -346,6 +353,7 @@ export function readsForQuestionnaire(missing: QuestionnaireMissing, observation
     const flow = OP_FLOW[op];
     if (flow.from === "wallet" || flow.to === "wallet" || (flow.from === "account" && deploysIntoPosition(op))) want("wallet_balances");
     if (flow.from === "account" || flow.to === "account") want("account_collateral");
+    if (flow.from === "account") for (const asset of assets) if (SEP41_ASSET_IDS.includes(asset)) want("account_token_balance", asset);
     if (flow.from === "debt" || flow.to === "debt") want("account_debt");
     if (flow.positionRead === "earn_position" || flow.positionRead === "farm_lp_position") {
       for (const asset of assets) want(flow.positionRead, asset);
@@ -398,13 +406,13 @@ interface VenueChoice {
 }
 
 function pocketRead(observations: readonly Observation[], pocket: Pocket): boolean {
-  const capability = pocket === "wallet" ? "wallet_balances"
-    : pocket === "account" ? "account_collateral"
-      : pocket === "debt" ? "account_debt"
-        : pocket === "earn" ? "earn_position"
-          : pocket === "blend" ? "blend_position"
-            : "farm_lp_position";
-  return observations.some((item) => item.capability === capability && item.status === "ok" && item.data);
+  const capabilities = pocket === "wallet" ? ["wallet_balances"]
+    : pocket === "account" ? ["account_collateral", "account_token_balance"]
+      : pocket === "debt" ? ["account_debt"]
+        : pocket === "earn" ? ["earn_position"]
+          : pocket === "blend" ? ["blend_position"]
+            : ["farm_lp_position"];
+  return observations.some((item) => capabilities.includes(item.capability) && item.status === "ok" && item.data);
 }
 
 /** A read that does not list the asset holds none of it. An absent read is unknown. */
@@ -430,19 +438,14 @@ function balanceDetail(amount: string, asset: string, pocket: Pocket, rate?: str
   return rate ? `${line} · ${rate}` : line;
 }
 
-function depositSentence(accountHeld: string, asset: string, shortfall: string): string {
-  return `Your margin account has ${accountHeld} ${asset}; I'll deposit the other ${shortfall} from your wallet first.`;
-}
-
 function venueChoices(asset: AssetId, ops: readonly WorkflowOp[], observations: readonly Observation[], named: Set<string>): VenueChoice[] {
   const choices: VenueChoice[] = [];
   for (const op of ops) {
     const flow = OP_FLOW[op];
     if (!assetsAccepted(op).includes(asset)) continue;
-    const accountHeld = flow.from === "account" ? amountInPocket(observations, "account", asset) : null;
-    const walletTopUp = flow.from === "account" ? amountInPocket(observations, "wallet", asset) : null;
+    // An op the account pays for is offered on what the account holds - the Farm page's rule; it never tops the account up from the wallet.
     const held = flow.from === "account"
-      ? (accountHeld && accountHeld !== "0" ? accountHeld : walletTopUp && walletTopUp !== "0" ? accountHeld ?? "0" : null)
+      ? (() => { const inAccount = amountInPocket(observations, "account", asset); return inAccount && inAccount !== "0" ? inAccount : null; })()
       : heldInPocket(observations, flow.from, asset);
     if (!held) continue;
     if (deploysIntoPosition(op) && flow.to === "earn" && resolveAssetDef(asset)?.earnSymbol) {
@@ -603,43 +606,22 @@ export function buildQuestionnaire(
   for (const asset of venueAssets) {
     for (const choice of venueChoices(asset, ops, observations, named)) {
       const spendsAccount = choice.pocket === "account";
-      const accountHeld = spendsAccount ? amountInPocket(observations, "account", asset) : null;
-      const walletHeld = amountInPocket(observations, "wallet", asset);
-      const own = spendsAccount ? sumKnown([accountHeld, walletHeld]) : heldInPocket(observations, choice.pocket, asset);
+      const own = heldInPocket(observations, choice.pocket, asset);
       if (!own || own === "0") continue;
       venueOptions.push(choice.option);
       places.add(`${choice.option.op ?? ""}|${choice.pool?.venue ?? ""}`);
-      const where = spendsAccount && walletHeld && walletHeld !== "0"
-        ? "your margin account and your wallet"
-        : pocketPhrase(choice.pocket).replace(/^in /, "");
+      const where = pocketPhrase(choice.pocket).replace(/^in /, "");
       const startingObs = baseObservations ?? observations;
       const starting = (spendsAccount ? (amountInPocket(startingObs, "account", asset) ?? "0") : heldInPocket(startingObs, choice.pocket, asset)) ?? own;
       max[choice.option.id] = { amount: own, asset, where, starting };
-      const notes: string[] = [];
-      const noteFor = (held: string | null, token: string, needed: bigint) => {
-        if (!held || needed <= wadOf(held)) return;
-        notes.push(depositSentence(held, token, formatWad(needed - wadOf(held))));
-      };
-      noteFor(accountHeld, asset, wadOf(own));
       if (choice.pool) {
         const other = choice.pool.tokens[0] === asset ? choice.pool.tokens[1] : choice.pool.tokens[0];
         const reserves = reservesFor(observations, choice.pool.venue, choice.pool.tokens[1]);
         const unit = reserves ? perUnit(reserves, choice.pool.tokens[0] === asset) : null;
-        const otherAccount = amountInPocket(observations, "account", other);
-        const otherWallet = amountInPocket(observations, "wallet", other);
-        const otherFunds = sumKnown([otherAccount, otherWallet]);
+        const otherFunds = heldInPocket(observations, choice.pocket, other);
         const capped = capByPair(own, otherFunds, unit);
         max[choice.option.id] = { amount: capped, asset, where, starting };
-        notes.length = 0;
-        noteFor(accountHeld, asset, wadOf(capped));
-        if (unit && otherAccount) noteFor(otherAccount, other, (wadOf(capped) * wadOf(unit)) / WAD);
-        const note = notes.length ? notes.join(" ") : undefined;
-        pair[choice.option.id] = { asset: other, perUnit: unit, ...(note ? { note } : {}) };
-        // Kept on the sealed max, not shown on the option row (owner, 25 Sep: the plan card lists
-        // the deposit step with its real amount; this note was sized for Max).
-        if (note) max[choice.option.id].note = note;
-      } else if (notes.length) {
-        max[choice.option.id].note = notes.join(" ");
+        pair[choice.option.id] = { asset: other, perUnit: unit };
       }
       if (!max[asset]) max[asset] = { amount: own, asset, where, starting };
     }
@@ -993,19 +975,10 @@ export function answerProblem(issued: Questionnaire | undefined, answers: Questi
 
         if (running.has(key)) {
           const left = running.get(key)!;
-          // A margin-account spend the account cannot cover is topped up from the wallet (the plan
-          // deposits the shortfall first), so the wallet's running balance covers the rest. Its
-          // share is what the issued cap adds on top of what the account started with.
-          const walletKey = `wallet:${sectionAnswer.asset}`;
-          const topUp = flow.from === "account" && cap?.starting ? wadOf(cap.amount) - wadOf(cap.starting) : ZERO;
-          if (amount > left && topUp > ZERO && !running.has(walletKey)) running.set(walletKey, topUp);
-          const fromWallet = amount > left && topUp > ZERO ? amount - left : ZERO;
-          const walletLeft = running.get(walletKey) ?? ZERO;
-          if (amount > left && (topUp <= ZERO || fromWallet > walletLeft)) {
-            return `That is more than the ${formatWad(left + (topUp > ZERO ? walletLeft : ZERO))} ${sectionAnswer.asset} available.`;
-          }
-          running.set(key, amount > left ? ZERO : left - amount);
-          if (fromWallet > ZERO) running.set(walletKey, walletLeft - fromWallet);
+          // What a section can spend is what its pocket holds, after the sections before it; a margin-account spend is never
+          // topped up from the wallet, so there is nothing to add to it.
+          if (amount > left) return `That is more than the ${formatWad(left)} ${sectionAnswer.asset} available.`;
+          running.set(key, left - amount);
         }
         if (holdsTokens(flow.to)) {
           const producedToken = producedAsset({ op, asset: sectionAnswer.asset }) ?? sectionAnswer.asset;

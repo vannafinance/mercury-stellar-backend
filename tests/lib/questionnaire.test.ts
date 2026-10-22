@@ -17,6 +17,9 @@ const wallet = (rows: Array<{ symbol: string; balance: string }>) =>
   obs("w", "wallet_balances", { assets: rows.map((row) => ({ ...row, decimals: 7, status: "ok" })), fee_reserve_xlm: "0" });
 const account = (rows: Array<{ symbol: string; balance: string }>) =>
   obs("a", "account_collateral", { collateral: rows });
+/** What the margin account really holds of each token, as its token contract reports it. */
+const held = (rows: Array<{ symbol: string; balance: string }>) =>
+  rows.map((row) => obs(`t-${row.symbol}`, "account_token_balance", { symbol: row.symbol, decimals: 7, human: row.balance }, { asset: row.symbol }));
 const prices = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"].map((asset) =>
   obs(`p-${asset}`, "asset_price", { price_usd: asset === "XLM" ? "0.2" : "1" }, { asset }));
 const earn = (asset: string, rate: string) => obs(`e-${asset}`, "earn_market", { supply_apr_pct: rate }, { asset });
@@ -254,11 +257,12 @@ describe("a guessed op does not hide a venue the user did not name", () => {
   });
 });
 
-describe("a short margin account is deposited before a farm add", () => {
+describe("a short margin account is named, never topped up, before a farm add", () => {
   const quote = "add 100 XLM to the Aquarius pool";
   const observations = [
     wallet([{ symbol: "XLM", balance: "80" }, { symbol: "AQUSDC", balance: "30" }]),
     account([{ symbol: "XLM", balance: "40" }, { symbol: "AQUSDC", balance: "10" }]),
+    ...held([{ symbol: "XLM", balance: "40" }, { symbol: "AQUSDC", balance: "10" }]),
     ...prices,
     pool("AQUSDC", "1000", "200"),
   ];
@@ -291,39 +295,39 @@ describe("a short margin account is deposited before a farm add", () => {
     };
   };
 
-  it("deposits both shortfalls, and types the same plan", () => {
+  it("names the shortfall, and a typed request gets the same answer", () => {
     const { answered, direct, issued } = sized();
-    const steps = answered.candidates[0]?.steps?.map((step) => [step.op, step.asset, step.amount]);
-    expect(steps).toEqual([
-      ["deposit_collateral", "XLM", "60"],
-      ["deposit_collateral", "AQUSDC", "10"],
-      ["add_liquidity", "XLM", "100"],
-    ]);
-    expect(direct.candidates[0]?.steps?.map((step) => [step.op, step.asset, step.amount])).toEqual(steps);
-    const note = issued.steps.find((step) => step.slot === "amount")?.pair?.["add_liquidity:aquarius:XLM"]?.note;
-    expect(note).toMatch(/Your margin account has 10 AQUSDC; I'll deposit the other/);
+    expect(answered.candidates).toHaveLength(0);
+    // The wallet could cover 60 XLM, but the account is never topped up unasked: the user is told what to deposit.
+    expect(answered.rejected[0]?.reason).toBe("Your margin account holds 40 XLM and this needs 100. Deposit the other 60 XLM into the account first");
+    expect(direct.rejected[0]?.reason).toBe(answered.rejected[0]?.reason);
+    // The offer itself is sized on what the account holds: no Max the account cannot cover, and no deposit promised.
+    const max = issued.steps.find((step) => step.slot === "amount")?.max?.["add_liquidity:aquarius:XLM"];
+    expect(Number(max?.amount)).toBeLessThanOrEqual(40);
+    expect(issued.steps.find((step) => step.slot === "amount")?.pair?.["add_liquidity:aquarius:XLM"]?.note).toBeUndefined();
   });
 
   it("adds liquidity alone when the account already holds both tokens", () => {
     const rows = [
       wallet([{ symbol: "XLM", balance: "5" }, { symbol: "AQUSDC", balance: "5" }]),
       account([{ symbol: "XLM", balance: "100" }, { symbol: "AQUSDC", balance: "50" }]),
+      ...held([{ symbol: "XLM", balance: "100" }, { symbol: "AQUSDC", balance: "50" }]),
       ...prices, pool("AQUSDC", "1000", "200"),
     ];
     const { answered } = sized(rows);
     expect(answered.candidates[0]?.steps?.map((step) => step.op)).toEqual(["add_liquidity"]);
   });
 
-  it("refuses when the wallet cannot cover the pair, with both amounts", () => {
+  it("says what is missing for the paired token too, whatever the wallet holds", () => {
     const rows = [
-      wallet([{ symbol: "XLM", balance: "80" }, { symbol: "AQUSDC", balance: "5" }]),
-      account([{ symbol: "XLM", balance: "40" }, { symbol: "AQUSDC", balance: "10" }]),
+      wallet([{ symbol: "XLM", balance: "80" }, { symbol: "AQUSDC", balance: "500" }]),
+      account([{ symbol: "XLM", balance: "100" }, { symbol: "AQUSDC", balance: "10" }]),
+      ...held([{ symbol: "XLM", balance: "100" }, { symbol: "AQUSDC", balance: "10" }]),
       ...prices, pool("AQUSDC", "1000", "200"),
     ];
     const { answered, direct } = sized(rows);
     expect(answered.candidates).toHaveLength(0);
-    expect(answered.rejected[0]?.reason).toMatch(/needs 20/);
-    expect(answered.rejected[0]?.reason).toMatch(/wallet has 5/);
+    expect(answered.rejected[0]?.reason).toBe("Your margin account holds 10 AQUSDC and this needs 20. Deposit the other 10 AQUSDC into the account first");
     expect(direct.rejected[0]?.reason).toBe(answered.rejected[0]?.reason);
   });
 

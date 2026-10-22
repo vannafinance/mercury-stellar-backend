@@ -1,4 +1,5 @@
 import { allAssets, isSupportedAsset, resolveAssetDef } from "../registry/assets";
+import { SEP41_ASSET_IDS, sep41Token } from "../token-contracts";
 import type { InvestigationScope, ReadCapability, ReadCost } from "./types";
 
 /**
@@ -28,6 +29,7 @@ const earnAssets = assets.filter((asset) => asset.earnSymbol).map((asset) => ass
 // Only assets Vanna supports can be priced: offering the rest invited reads that fail and a menu that called them supported.
 const priceAssets = assets.filter(isSupportedAsset).map((asset) => asset.id);
 const marginAssets = assets.filter((asset) => asset.marginSymbol).map((asset) => asset.id);
+const tokenBalanceAssets = assets.filter((asset) => SEP41_ASSET_IDS.includes(asset.id)).map((asset) => asset.id);
 const blendAssets = assets.filter((asset) => asset.blendReserve).map((asset) => asset.id);
 const lpAssets = assets.filter((asset) => asset.lpVenue).map((asset) => asset.id);
 const aquariusLpAssets = assets.filter((asset) => asset.lpVenue === "aquarius").map((asset) => asset.id);
@@ -134,6 +136,12 @@ export const CATALOG: readonly CatalogEntry[] = [
     name: "account_collateral", tool: "vanna_get_collateral", scope: "account", cost: "expensive",
     description: "Read gross posted storage and tracking collateral. Plain balances can include borrowed proceeds; they are not net deposited collateral or the Margin page's composite valuation. Do not count them as spendable wallet balance or silently mix this basis with website balances.",
     modelArgs: {}, bind: (_, scope) => ({ smart_account: scope.smartAccount }),
+  },
+  {
+    name: "account_token_balance", tool: "vanna_get_token_balance", scope: "account", cost: "moderate",
+    description: "The margin account's actual balance of one token, as the token contract reports it: what a repay, withdrawal or Blend supply can really spend. Unlike account_collateral (recorded storage) it includes borrowed proceeds and interest. Not the wallet's balance, and not net collateral.",
+    modelArgs: { asset: { type: "enum", values: tokenBalanceAssets } },
+    bind: (args, scope) => ({ holder: scope.smartAccount, token_contract: sep41Token(String(args.asset)) }),
   },
   {
     name: "liquidation_snapshot", tool: "vanna_get_liquidation_snapshot", scope: "account", cost: "expensive",

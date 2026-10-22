@@ -23,7 +23,7 @@ import type { ResearchCapacity } from "./view";
  */
 const KEEP = new Set<string>([
   "wallet_balances", "asset_price", "earn_market", "blend_markets", "aquarius_pool_reserves", "soroswap_pool_reserves",
-  "account_position", "account_health", "max_borrow",
+  "account_position", "account_health", "max_borrow", "account_token_balance",
   ...WORKFLOW_OPS.flatMap((op) => OP_FLOW[op].positionRead ? [OP_FLOW[op].positionRead as string] : []),
 ]);
 const PRIORITY: Record<string, number> = {
@@ -32,6 +32,7 @@ const PRIORITY: Record<string, number> = {
   account_health: 1,
   account_debt: 2,
   account_collateral: 3,
+  account_token_balance: 3,
   wallet_balances: 4,
   asset_price: 5,
   earn_market: 6,
@@ -280,6 +281,16 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
       ...(data.debt_usd !== undefined ? { debt_usd: data.debt_usd } : {}),
       ...(data.source !== undefined ? { source: data.source } : {}),
       ...(debt ? { debt } : {}),
+    };
+  }
+  if (capability === "account_token_balance") {
+    // Exactly what the repay sizer reads: whose balance, of which token, and the figure the token contract reported.
+    return {
+      ...(data.holder !== undefined ? { holder: data.holder } : {}),
+      ...(data.contract !== undefined ? { contract: data.contract } : {}),
+      ...(data.symbol !== undefined ? { symbol: data.symbol } : {}),
+      ...(data.decimals !== undefined ? { decimals: data.decimals } : {}),
+      ...(data.human !== undefined ? { human: data.human } : {}),
     };
   }
   if (capability === "account_collateral") {

@@ -33,15 +33,15 @@ describe("supply my usdc answered with an LP pool", () => {
     fireEvent.click(screen.getByText("SOUSDC"));
     const lp = screen.getAllByText(/Soroswap/)[0];
     fireEvent.click(lp);
-    fireEvent.change(screen.getByPlaceholderText("0.0 or 50%"), { target: { value: "100" } });
+    // The margin account holds 0.3163653 SOUSDC; the wallet's 2,705 SOUSDC is not offered, because the account is never topped up unasked.
+    fireEvent.change(screen.getByPlaceholderText("0.0 or 50%"), { target: { value: "0.3" } });
     fireEvent.click(screen.getByTestId("btn-send"));
     const answers = onSubmit.mock.calls[0][0] as QuestionnaireAnswers;
 
     expect(answerProblem(issued, answers)).toBeNull();
-    // The wallet top-up covers the rest, but not past account + wallet.
     const section = answers.sections![0];
-    const over = { ...answers, sections: [{ ...section, amount: { kind: "literal" as const, amount: "2705.7" } }] };
-    expect(answerProblem(issued, over)).toMatch(/more than the 2705.6980851 SOUSDC/);
+    const over = { ...answers, sections: [{ ...section, amount: { kind: "literal" as const, amount: "100" } }] };
+    expect(answerProblem(issued, over)).toMatch(/more than the 0\.3163653 SOUSDC/);
   });
 
   it("deposit xlm offers the margin account and says Deposit 5 XLM, not 'asset'", () => {

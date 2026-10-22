@@ -681,6 +681,13 @@ describe("resolvePlans - the 13 Sep prompt gets its options", () => {
     expect(candidates[0]?.steps?.[0]).toMatchObject({ op: "lend", amount: "10000" });
   });
 
+  it("reads a thousands separator as one figure, not as two numbers", () => {
+    const legs: ProposedPlan["legs"] = [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "6100", sourceQuote: "lend 6,100 xlm" } }];
+    const { candidates, rejected } = resolvePlans([plan("Lend 6100 XLM", legs)], ctx({ messages: ["lend 6,100 xlm to earn"] }));
+    expect(rejected).toEqual([]);
+    expect(candidates[0]?.steps?.[0]).toMatchObject({ op: "lend", amount: "6100" });
+  });
+
   it("refuses to read a leverage factor as a token amount", () => {
     const legs: ProposedPlan["legs"] = [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "2", sourceQuote: "lend 2x xlm" } }];
     const { candidates, rejected } = resolvePlans([plan("Lend 2 XLM", legs)], ctx({ messages: ["lend 2x xlm"] }));
@@ -1024,24 +1031,26 @@ describe("resolvePlans - a share of what the leg draws on (13 Sep: 'repay 25% of
     expect(candidates[0]?.steps?.[0]).toEqual(expect.objectContaining({ op: "lend", amount: "2499.9693061" }));
   });
 
-  it("repays a share of the debt through the account: deposit the share, then repay it", () => {
+  it("repays a share of the debt from the account, with no wallet deposit", () => {
     const { candidates, rejected } = resolvePlans(
       [plan("Repay a quarter of the XLM debt", [{ op: "repay", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "position", sourceQuote: "repay 25% of xlm debt" } }])],
       ctx({ observations, messages: ["lend 25% of xlm that i hold and also repay 25% of xlm debt"] }),
     );
     expect(rejected).toEqual([]);
-    // 25% of 14113.4967211 = 3528.3741802 (cut to 7 places), well within the 9,999 XLM the wallet spends.
-    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["deposit_collateral", "3528.3741802"], ["repay", "3528.3741802"]]);
-    expect(candidates[0]?.rationale).toMatch(/Leaves 10,585\.1225 XLM of debt/);
+    // 25% of 14113.4967211 = 3528.3741802 (cut to 7 places). The account repays it; the wallet is not touched.
+    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "3528.3741802"]]);
+    expect(candidates[0]?.rationale).toMatch(/Leaves 10,585\.1225 XLM of debt\.$/);
   });
 
-  it("caps a debt share by what the wallet can spend", () => {
-    const small = [...OBSERVATIONS.map((o) => o.id !== "e1" ? o : wallet("1000")), debt];
+  it("cuts a debt share to what the account holds, whatever the wallet could add", () => {
+    const small = [...OBSERVATIONS.map((o) => o.id !== "e1" ? o : wallet("9999.8772246")), debt,
+      obs("e11", "account_token_balance", { symbol: "XLM", decimals: 7, human: "1000" }, { asset: "XLM" })];
     const { candidates } = resolvePlans(
       [plan("Repay half", [{ op: "repay", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "position", sourceQuote: "repay half of my xlm debt" } }])],
       ctx({ observations: small, messages: ["repay half of my xlm debt"] }),
     );
-    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["deposit_collateral", "1000"], ["repay", "1000"]]);
+    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "1000"]]);
+    expect(candidates[0]?.rationale).toContain("Repays 1,000 of the 7,056.7484 XLM you asked for");
   });
 
   it("understands a share said in words, and refuses one the user never said", () => {
@@ -1267,16 +1276,16 @@ describe("resolvePlans - repay from what the wallet has", () => {
     expect(whole.candidates[0]?.id).toBe(partial.candidates[0]?.id);
   });
 
-  it("sizes 'repay the whole debt' (all_position) to what the wallet funds, and says what remains - never an unfundable plan", () => {
-    // 13 Sep: two debts (2,559.65 BLUSDC and 14,113.50 XLM), a wallet with 9,999.88 XLM and no BLUSDC.
-    // The card offered "Repay 14113 XLM, then 2559 BLUSDC" and projected health factor 2,495,879.
+  it("repays the whole debt up to what the account holds, and says what remains - never an unfundable plan", () => {
+    // 13 Sep: two debts (2,559.65 BLUSDC and 14,113.50 XLM). The account holds 9,999.88 XLM and no BLUSDC; the wallet is irrelevant.
     const observations = [
       ...OBSERVATIONS.map((o) => o.id !== "e1" ? o : obs("e1", "wallet_balances", { assets: [
-        { symbol: "XLM", balance: "9999.8772246", spendable: "9999.8772246", status: "ok" },
-        { symbol: "XLM_SAC", balance: "9999.8772246", decimals: 7, status: "ok" },
+        { symbol: "XLM", balance: "20000", spendable: "20000", status: "ok" },
+        { symbol: "XLM_SAC", balance: "20000", decimals: 7, status: "ok" },
         { symbol: "BLUSDC", balance: "0", decimals: 7, status: "ok" },
       ], fee_reserve_xlm: "0.5" })),
       obs("e10", "account_debt", { debt: [{ symbol: "USDC", balance: "2559.646930640709802460" }, { symbol: "XLM", balance: "14113.496721182603715676" }], total_debt_usd: "5076.86" }),
+      obs("e12", "account_token_balance", { symbol: "XLM", decimals: 7, human: "9999.8772246" }, { asset: "XLM" }),
     ];
     const { candidates, rejected } = resolvePlans(
       [plan("Repay XLM and BLUSDC Margin Debts", [{ op: "repay", asset: "XLM", sizing: { kind: "all_position" } }])],
@@ -1284,9 +1293,10 @@ describe("resolvePlans - repay from what the wallet has", () => {
     );
     expect(rejected).toEqual([]);
     const c = candidates[0]!;
-    expect(c.steps?.map((s) => [s.op, s.amount])).toEqual([["deposit_collateral", "9999.8772246"], ["repay", "9999.8772246"]]);
+    expect(c.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "9999.8772246"]]);
     expect(c.repaysAllDebt).toBe(false);
-    expect(c.rationale).toMatch(/Leaves 2,559\.6469 BLUSDC and 4,113\.6195 XLM of debt - the wallet covers no more\.$/);
+    expect(c.rationale).toContain("Repays 9,999.8772 of the 14,113.4967 XLM you asked for - the margin account holds no more to repay with.");
+    expect(c.rationale).toMatch(/Leaves 2,559\.6469 BLUSDC and 4,113\.6195 XLM of debt\.$/);
     expect(Number(c.finalHealthFactor)).toBeLessThan(100);
   });
 
@@ -1303,7 +1313,7 @@ describe("resolvePlans - repay from what the wallet has", () => {
       ctx({ observations, messages: ["repay all my debt"] }),
     );
     const c = candidates[0]!;
-    expect(c.steps?.[1]).toEqual(expect.objectContaining({ op: "repay", amount: "14113.4967211" }));
+    expect(c.steps?.[0]).toEqual(expect.objectContaining({ op: "repay", amount: "14113.4967211" }));
     expect(c.repaysAllDebt).toBe(true);
     expect(c.finalHealthFactor).toBeNull();
     expect(c.rationale).toMatch(/No debt remains after this\.$/);
@@ -1535,19 +1545,18 @@ describe("resolvePlans - redeem and withdraw", () => {
     expect(rejected[0].reason).toMatch(/could not be confirmed against the liquidation engine/);
   });
 
-  it("repays the whole debt of an asset from the debt read - funded through the account, so deposit then repay", () => {
-    // The account is what repays; the wallet funds it. With no BLUSDC in the wallet the plan
-    // cannot run and says so (13 Sep: an unfundable full repay was offered instead).
-    const empty = resolvePlans([plan("Clear USDC debt", [{ op: "repay", asset: "BLUSDC", sizing: { kind: "all_position" } }])], ctx({ observations: withEarn }));
+  it("repays the whole debt of an asset from the account: with nothing held it says so, with some held it repays that much", () => {
+    // The wallet's balance plays no part: the account repays, from the balance it really holds.
+    const held = (human: string) => [...withEarn, obs("e12", "account_token_balance", { symbol: "BLUSDC", decimals: 7, human }, { asset: "BLUSDC" })];
+    const empty = resolvePlans([plan("Clear USDC debt", [{ op: "repay", asset: "BLUSDC", sizing: { kind: "all_position" } }])], ctx({ observations: held("0") }));
     expect(empty.candidates).toEqual([]);
-    expect(empty.rejected[0]?.reason).toMatch(/^you owe 256\.64 BLUSDC \(~\$256\.64\) and the wallet holds no spendable BLUSDC/);
-    const funded = withEarn.map((o) => o.id !== "e1" ? o : obs("e1", "wallet_balances", { assets: [
-      { symbol: "XLM", balance: "100", spendable: "100", status: "ok" }, { symbol: "XLM_SAC", balance: "100", decimals: 7, status: "ok" },
-      { symbol: "BLUSDC", balance: "300", decimals: 7, status: "ok" },
-    ], fee_reserve_xlm: "0.5" }));
-    const { candidates } = resolvePlans([plan("Clear USDC debt", [{ op: "repay", asset: "BLUSDC", sizing: { kind: "all_position" } }])], ctx({ observations: funded }));
-    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount, s.args.symbol])).toEqual([["deposit_collateral", "256.64", "USDC"], ["repay", "256.64", "USDC"]]);
-    expect(candidates[0]?.repaysAllDebt).toBe(true);
+    expect(empty.rejected[0]?.reason).toBe("Your margin account holds no BLUSDC to repay with. Deposit BLUSDC into the account first, or ask to repay with your wallet's BLUSDC");
+    const some = resolvePlans([plan("Clear USDC debt", [{ op: "repay", asset: "BLUSDC", sizing: { kind: "all_position" } }])], ctx({ observations: held("100") }));
+    expect(some.candidates[0]?.steps?.map((s) => [s.op, s.amount, s.args.symbol])).toEqual([["repay", "100", "USDC"]]);
+    expect(some.candidates[0]?.repaysAllDebt).toBe(false);
+    const all = resolvePlans([plan("Clear USDC debt", [{ op: "repay", asset: "BLUSDC", sizing: { kind: "all_position" } }])], ctx({ observations: held("300") }));
+    expect(all.candidates[0]?.steps?.map((s) => [s.op, s.amount, s.args.symbol])).toEqual([["repay", "256.64", "USDC"]]);
+    expect(all.candidates[0]?.repaysAllDebt).toBe(true);
   });
 
   /**
@@ -1566,14 +1575,15 @@ describe("resolvePlans - redeem and withdraw", () => {
     expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "68.49"]]);
   });
 
-  it("still deposits first when the account cannot cover the whole debt on its own", () => {
+  it("repays what the account holds when it cannot cover the whole debt, without a wallet deposit", () => {
     const short = [
       ...withEarn.filter((o) => o.capability !== "account_debt" && o.capability !== "account_collateral"),
       obs("e10", "account_debt", { debt: [{ symbol: "XLM", balance: "68.49" }] }),
       obs("e11", "account_collateral", { collateral: [{ symbol: "XLM", balance: "10" }] }),
+      obs("e12", "account_token_balance", { symbol: "XLM", decimals: 7, human: "40" }, { asset: "XLM" }),
     ];
     const { candidates } = resolvePlans([plan("Clear XLM debt", [{ op: "repay", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({ observations: short }));
-    expect(candidates[0]?.steps?.map((s) => s.op)).toEqual(["deposit_collateral", "repay"]);
+    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "40"]]);
   });
 
   it("names what is missing when the position was not read", () => {

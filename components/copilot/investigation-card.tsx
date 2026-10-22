@@ -650,7 +650,19 @@ export function InvestigationCard({
                   )}
                 </div>
               )}
-              {workflow && !completionSummaryReady && workflow.status !== "proposed" && (workflow.status === "blocked" || stepperDrawnInThread) && (
+              {/* A run stopped before anything settled is answered in words, like every other refusal, not boxed. */}
+              {workflow && !completionSummaryReady && workflow.status === "blocked" && !workflow.steps.some((step) => step.status === "settled") && (
+                <div className="flex flex-col gap-1.5">
+                  <p role="alert" className="flex items-start gap-2 text-[14px] leading-6 text-vgray-700">
+                    <CircleAlert size={17} className="mt-1 shrink-0 text-imperial-500" aria-hidden="true" />
+                    {workflow.message}
+                  </p>
+                  <ul className="pl-[25px] text-[13px] leading-5 text-vgray-500">
+                    {workflow.steps.map((step) => <li key={step.id}>{step.label}</li>)}
+                  </ul>
+                </div>
+              )}
+              {workflow && !completionSummaryReady && workflow.status !== "proposed" && (workflow.status === "blocked" ? workflow.steps.some((step) => step.status === "settled") : stepperDrawnInThread) && (
                 <section className="rounded-xl border border-violet-100 px-4 py-3.5">
                   <SectionTitle>
                     {/* 23 Sep, X10: a run stopped at leg 5 after 4 legs settled read "Not executed".
