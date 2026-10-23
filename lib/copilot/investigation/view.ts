@@ -18,6 +18,12 @@ export interface ResearchFact {
    * rendered as one. Set where the unit is derived (`facts-by-shape.ts`).
    */
   quantity?: boolean;
+  /**
+   * A read whose facts only make sense together (a liquidation price and what it assumes) names the group
+   * where it creates them. A plain reply prints each group under that name, so it needs no knowledge of
+   * any particular read, and a figure stays with its qualifier instead of being sorted in with the rest.
+   */
+  group?: string;
 }
 
 /** Verified sizing inputs for a refused borrow, independent of its presentation. */

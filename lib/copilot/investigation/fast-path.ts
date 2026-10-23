@@ -9,6 +9,7 @@ import type { ResearchView } from "./view";
 import { factualAnswer } from "./answer";
 import type { AssetId } from "../registry/assets";
 import { WAD } from "./fixed";
+import { PAGE_BASIS_SOURCE } from "./health-basis";
 
 export { matchFastPath, parseWithdrawCheck, type FastPathMatch };
 
@@ -93,11 +94,26 @@ function view(input: {
   };
 }
 
+/**
+ * The Margin page's Net Leverage Taken: holdings over equity (holdings minus debt), 1x with no debt
+ * (`lib/account-model.ts`). Equity wiped out is infinity on the page, which is not a figure to
+ * quote, so it is left out rather than shown as a negative or an invented cap.
+ */
+function netLeverage(grossCollateralUsd: string, debtUsd: string): string | null {
+  const gross = Number(grossCollateralUsd);
+  const debt = Number(debtUsd);
+  if (!Number.isFinite(gross) || !Number.isFinite(debt) || gross < 0 || debt < 0) return null;
+  if (debt <= 1e-9) return "1";
+  const equity = gross - debt;
+  return equity > 0 ? (gross / equity).toFixed(4) : null;
+}
+
 export function healthObservations(position: {
   grossCollateralUsd: string;
   debtUsd: string;
   healthFactor: string | null;
 }): Observation[] {
+  const leverage = netLeverage(position.grossCollateralUsd, position.debtUsd);
   return [{
     id: "e0",
     capability: "account_position",
@@ -108,7 +124,8 @@ export function healthObservations(position: {
       collateral_usd: position.grossCollateralUsd,
       debt_usd: position.debtUsd,
       ...(position.healthFactor ? { health_factor: position.healthFactor } : {}),
-      source: "vanna_app_margin_snapshot",
+      ...(leverage ? { net_leverage: leverage } : {}),
+      source: PAGE_BASIS_SOURCE,
     },
   }];
 }

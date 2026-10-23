@@ -35,6 +35,24 @@ export function composeBudgetMs(): number {
   const configured = Number(process.env.COPILOT_COMPOSE_BUDGET_MS);
   return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_COMPOSE_BUDGET_MS;
 }
+
+/** The most the writing step may wait, however much of the route is left: past this a reply is not worth the wait. */
+const MAX_COMPOSE_BUDGET_MS = 45_000;
+/** Kept back so the response can still be sent before the route's own deadline cuts the stream. */
+const ROUTE_RESPONSE_MARGIN_MS = 3_000;
+
+/**
+ * The writing step's budget once research has taken `elapsedMs` of a route that ends at `routeDeadlineMs`.
+ *
+ * A fixed 15 s cut the step off even when research had finished in 16 s of a 75 s route, and the reply
+ * fell back to a canned message that answered a different question (24 Oct, live). The call is already
+ * made and paid for; letting it finish costs nothing, throwing it away costs the answer. Never less
+ * than the configured default: a nearly spent route is cut by its own deadline, not by a smaller budget.
+ */
+export function composeBudgetAfter(elapsedMs: number, routeDeadlineMs: number): number {
+  const left = routeDeadlineMs - elapsedMs - ROUTE_RESPONSE_MARGIN_MS;
+  return Math.max(composeBudgetMs(), Math.min(MAX_COMPOSE_BUDGET_MS, left));
+}
 const PRESENTATION = `Organize the response around what the user needs to understand. Lead with the answer, then group related information. For a broad position overview, open with a brief explanation of the account breakdown before the grouped holdings. Distinguish collateral deposited, posted collateral and outstanding debt by their supplied basis. The supplied labels use the Margin page's own wording; name each figure the way the user asked for it, so a user who says "collateral" reads collateral, one who says "deposit" reads deposit, and one who says "borrowed" or "debt" reads that; separate holdings in other venues and never add overlapping valuations together. Honor the user's requested presentation format when it can represent the supplied evidence faithfully. Otherwise use paragraphs for a connected explanation, bullets for parallel points, steps only when order matters, and a table for genuinely comparable rows. Use short descriptive headings when they improve navigation. Choose the combination and length needed by this request; avoid a wall of text, unnecessary sections, and repeating what a card already shows. Match the user's language where practical.
 Return JSON with a blocks array. A paragraph or heading has segments; bullets or steps have items (an array of segment arrays); a table has columns (an array of segment arrays) and rows (an array of rows of segment arrays). Each segment is either {"type":"text","text":"your freely written words"} or {"type":"fact","factId":"an supplied fact id"}. Code renders fact segments with their verified value and unit. Never type a figure, amount, rate, address or numeric unit in text; use its fact reference, and do not repeat its unit. Do not use placeholder strings or markdown. Refer only to supplied facts. Keep each reference attached to its correct label, venue and meaning. Evidence timestamps describe when a read happened; absent timestamps do not establish a live observation. Do not invent causes, risk conclusions, events or outcomes. The draft is background meaning, not a required sentence or layout.`;
 
@@ -287,10 +305,10 @@ export async function composeCompletion(input: {
 }
 
 /** One budgeted model call, bound to `facts`, or null. Shared by every composed reply. */
-async function boundReply(system: string, user: string, facts: readonly ResearchFact[], signal: AbortSignal, generate: Generate, lane: ReplyLane): Promise<ReplyBlock[] | null> {
+async function boundReply(system: string, user: string, facts: readonly ResearchFact[], signal: AbortSignal, generate: Generate, lane: ReplyLane, budgetMs: number = composeBudgetMs()): Promise<ReplyBlock[] | null> {
   const start = performance.now();
   const deadline = new AbortController();
-  const timer = setTimeout(() => deadline.abort(new DOMException("compose deadline", "TimeoutError")), composeBudgetMs());
+  const timer = setTimeout(() => deadline.abort(new DOMException("compose deadline", "TimeoutError")), budgetMs);
   const budget = AbortSignal.any([signal, deadline.signal]);
   let onAbort: (() => void) | undefined;
   try {
@@ -316,7 +334,7 @@ async function boundReply(system: string, user: string, facts: readonly Research
         feedback = JSON.stringify({ ...JSON.parse(user), previousReplyRefused: `${bound.reason}. Write the reply again: type no digit in any text segment, and take every figure from a fact reference.` });
       } catch { feedback = null; }
       // A second attempt that cannot finish inside the budget only spends it: ask again only when the first came back early.
-      if (feedback && !budget.aborted && performance.now() - start < composeBudgetMs() / 2) bound = bindReplyBlocks(await ask(feedback), facts, mode);
+      if (feedback && !budget.aborted && performance.now() - start < budgetMs / 2) bound = bindReplyBlocks(await ask(feedback), facts, mode);
     }
     if (!bound.ok) {
       compositionEvent(lane, "refused", performance.now() - start, [], `invalid_output:${bound.reason}`);
@@ -363,7 +381,7 @@ function composableUnpreparedStrategy(view: ResearchView): boolean {
  * The view with its reply written by the model around the audited figures, or the view
  * unchanged. Never throws: a composed reply is an improvement, never a dependency.
  */
-export async function composeReply(view: ResearchView, signal: AbortSignal, generate: Generate = defaultGenerate): Promise<ResearchView> {
+export async function composeReply(view: ResearchView, signal: AbortSignal, generate: Generate = defaultGenerate, options: { budgetMs?: number } = {}): Promise<ResearchView> {
   if (process.env.COPILOT_COMPOSED_REPLIES === "off") { compositionEvent("other", "off"); return view; }
   const request = [view.originalRequest, ...view.refinements].filter(Boolean).join("\n");
   let system: string;
@@ -421,7 +439,7 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
   // Raced, not only signalled, in `boundReply`: a step before the model call (the access token)
   // does not listen to the signal, and a reset there held a reply for 34 s (29 Sep, local).
   // Errors are logged by class only: provider errors can carry upstream detail (HANDOFF rule 11).
-  const blocks = await boundReply(system, user, facts, signal, generate, lane);
+  const blocks = await boundReply(system, user, facts, signal, generate, lane, options.budgetMs);
   if (blocks) return { ...view, message: plainReply(blocks), replyBlocks: blocks };
   if (lane === "answer") {
     const fallback = factualReplyBlocks(facts, request);

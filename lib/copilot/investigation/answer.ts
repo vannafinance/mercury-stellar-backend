@@ -269,6 +269,20 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string, 
   };
   if (rates.length) sentences.push(`Supply APY: ${rates.map(f => `${f.label.replace(" supply APR", "")} ${shownApy(f)}`).join("; ")}.`);
   if (sentences.length > scalarStart) blocks?.push({ type: "paragraph", segments: [{ text: sentences.slice(scalarStart).join(" ") }] });
+  /**
+   * Facts a read declared as one group (`ResearchFact.group`), printed under the name the read gave them. This plain
+   * reply is what the user gets when the written one is unavailable, and without it a liquidation question was
+   * answered with the health factor and the collateral list (24 Oct, live, twice). Nothing here knows which reads
+   * make groups, and nothing looks at the question's wording: a read that wants its facts kept together says so.
+   */
+  const groups = new Map<string, ResearchFact[]>();
+  for (const fact of selected) if (fact.group) groups.set(fact.group, [...(groups.get(fact.group) ?? []), fact]);
+  for (const [name, list] of groups) {
+    sentences.push(`${name}:\n${list.map((fact) => `- ${fact.label}: ${formatFactValue(fact)}`).join("\n")}`);
+    blocks?.push({ type: "heading", segments: [{ text: name }] }, {
+      type: "bullets", items: list.map((fact) => [{ text: `${fact.label}: ` }, { text: formatFactValue(fact), figure: true }]),
+    });
+  }
   // A list section needs its own lines; plain sentences still read as one paragraph.
   return sentences.length ? sentences.join(sentences.some((line) => line.includes("\n")) ? "\n\n" : " ") : null;
 }

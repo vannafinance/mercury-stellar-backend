@@ -40,11 +40,13 @@ describe("investigation timeout budgets", () => {
     /POSITION_BUDGET_MS\s*=\s*([\d_]+)/,
     "position-read bound",
   );
-  const routeMs = onlyNumber(
-    read("app/api/copilot/investigate/route.ts"),
-    /setTimeout\(\(\) => (?:abort\.abort|onDeadline)\(\),\s*([\d_]+)\)/,
-    "route reply guarantee",
-  );
+  // The route names its deadline once (the writing step is given what research leaves of it), so the
+  // number is read from that constant, and the guarantee timer must be armed with that same constant.
+  const routeSource = read("app/api/copilot/investigate/route.ts");
+  const routeMs = onlyNumber(routeSource, /ROUTE_DEADLINE_MS\s*=\s*([\d_]+)/, "route reply guarantee");
+  if (!/setTimeout\(\(\) => (?:abort\.abort|onDeadline)\(\),\s*ROUTE_DEADLINE_MS\)/.test(routeSource)) {
+    throw new Error("the route's reply guarantee timer is not armed with ROUTE_DEADLINE_MS");
+  }
   const clientMs = onlyNumber(
     read("hooks/use-investigation.ts"),
     /setTimeout\(\(\) => \{ timedOut = true; controller\.abort\([^)]*\); \},\s*([\d_]+)\)/,

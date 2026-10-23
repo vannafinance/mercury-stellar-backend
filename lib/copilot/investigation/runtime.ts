@@ -10,6 +10,7 @@ import type {
   Observation, ResearchModel,
   InvestigationProgress,
 } from "./types";
+import { copilotLog } from "../prod-log";
 
 /**
  * Budgets that must stay ordered: runtime (55s) + scope resolution (20s) <= the route's
@@ -124,7 +125,7 @@ function clientSafeReadError(error: unknown): string {
 const SNAPSHOT_BACKED = new Set(["account_health", "account_debt", "account_collateral"]);
 
 function logPhase(phase: string, extra: Record<string, unknown>) {
-  console.info("[copilot] investigation phase", { phase, ...extra });
+  copilotLog("[copilot] investigation phase", { phase, ...extra });
 }
 
 /**
