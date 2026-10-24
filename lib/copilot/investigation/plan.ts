@@ -15,6 +15,7 @@
  * but the combinations are the model's to find.
  */
 
+import { copilotConfig } from "../config";
 import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, lpPairs, mentionsBareUsdc, namesAsset, poolVenueFor, resolveAssetDef, swappableWith, USDC_VARIANTS, venueUsdc } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_DONE, OP_FLOW, POSITION_POCKETS, producedAsset, SIZED_OPS, touchesMarginAccount, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
@@ -125,6 +126,8 @@ export interface RejectedPlan {
   pocket?: PocketMismatch;
   /** The refusal names a fault in how the plan is built, which the model can fix when told (see `PlanFault`). */
   repairable?: true;
+  /** The refusal only waits for an answer the user has not given; the reply can be the question (see `NeedsInput`). */
+  needsInput?: true;
   /** Set when the leg needs a margin account and none is connected. No steps are produced. */
   accountRequired?: { code: "accountRequired"; actions: string[] };
   /**
@@ -499,14 +502,29 @@ function anchoredShare(sizing: PlanSizing & { kind: "fraction" }, messages: read
  */
 function anchoredMultiple(sizing: PlanSizing & { kind: "leverage" }, messages: readonly string[], name: string, group: readonly PlanLeg[] = []): bigint {
   if (!messages.some((m) => m.includes(sizing.sourceQuote))) throw new Reject(name, `the leverage "${sizing.sourceQuote}" does not appear in your request`);
+  // The product's own ceiling, the number the direct-action path and the Margin page's slider already use (24 Oct, N1: 12x was planned).
+  const cap = copilotConfig.maxLeverage;
+  if (Number(sizing.multiple) > cap) throw new Reject(name, `${sizing.multiple}x is above the maximum leverage of ${cap}x`);
   const multiple = Number(sizing.multiple);
   const states = (quote: string) =>
     messages.some((m) => m.includes(quote)) &&
     (quote.match(/\d+(?:\.\d+)?/g) ?? []).map(Number).some((n) => Math.abs(n - multiple) < 1e-9);
   const bySibling = group.some((leg) =>
     leg.sizing.kind === "leverage" && Math.abs(Number(leg.sizing.multiple) - multiple) < 1e-9 && states(leg.sizing.sourceQuote));
-  if (!states(sizing.sourceQuote) && !bySibling) throw new Reject(name, `the ${sizing.multiple}x leverage does not appear in your request`);
-  return decimalWad(sizing.multiple);
+  if (states(sizing.sourceQuote) || bySibling) return decimalWad(sizing.multiple);
+  /**
+   * A total the user stated, divided equally by the model. "take 3x, split equally between SOUSDC and XLM" arrives as
+   * 1.5x on each of two legs: the user's number is the sum, and it IS in their words. Only when every leg of the group
+   * carries the same multiple (an equal split - an uneven one would be sized evenly and silently misread) and the legs
+   * add up to a multiple the quote states. The sizer shares one ceiling between the siblings, so the plan is sized by the
+   * total the user wrote, never by the half the model wrote (1.5 as given would size the whole plan to 1.5x).
+   */
+  const equalSplit = group.length > 1 && group.every((leg) => leg.sizing.kind === "leverage" && Math.abs(Number(leg.sizing.multiple) - multiple) < 1e-9);
+  const total = Number((multiple * group.length).toFixed(9));
+  const statesTotal = messages.some((m) => m.includes(sizing.sourceQuote)) &&
+    (sizing.sourceQuote.match(/\d+(?:\.\d+)?/g) ?? []).map(Number).some((n) => Math.abs(n - total) < 1e-9);
+  if (equalSplit && statesTotal) return decimalWad(String(total));
+  throw new Reject(name, `the ${sizing.multiple}x leverage does not appear in your request`);
 }
 /**
  * How many of a token a phrase actually states.
@@ -594,8 +612,16 @@ class PlanFault extends Reject {
 }
 const rejectionDetails = (error: Reject) => ({
   ...(error instanceof PlanFault ? { repairable: true as const } : {}),
+  ...(error instanceof NeedsInput ? { needsInput: true as const } : {}),
   ...(error.borrowLimit ? { borrowLimit: error.borrowLimit } : {}),
 });
+
+/**
+ * A refusal that is only a request for the user's answer: nothing is wrong with the request, a figure it needs was not given
+ * (24 Oct, N6: "borrow some stablecoins" has no amount, so the planner asked for the floor). Said as a refusal it recites the
+ * rejected shape, which had already chosen an asset and a venue for the user; marked, the reply can be the question itself.
+ */
+class NeedsInput extends Reject {}
 
 /**
  * Sized a tenth of a percent inside the protocol's ceiling: the pool's utilization moves with every ledger as interest
@@ -979,6 +1005,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    * one later leg: a borrow is claimed once, and each token of a removal is claimed once.
    */
   const claimedProducers = new Set<string>();
+  /** How much of a producer's output the shares so far have taken (a WAD fraction of 1), so shares of one step never add past all of it. */
+  const sharesTaken = new Map<string, bigint>();
   const claimKey = (producer: number, asset: string) => `${producer}:${asset}`;
   // Materialised so a leg can look at its siblings, not just at what came before it:
   // a leveraged borrow has to know how many other borrows share its funding deposit.
@@ -1156,7 +1184,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * for a floor the leg never needed, on a sizing word this check did not even name.
      */
     if (leg.op === "borrow" && leg.sizing.kind === "to_floor" && ctx.capacity && ctx.capacity.floor === null) {
-      throw new Reject(name, "borrowing to the floor needs the health-factor floor you want kept, above the 1.1 liquidation line - tell me the number, or state the amount and I'll show you the health factor it leaves");
+      throw new NeedsInput(name, "borrowing to the floor needs the health-factor floor you want kept, above the 1.1 liquidation line - tell me the number, or state the amount and I'll show you the health factor it leaves");
     }
     // Same gate as withdraw, same reason: only the missing-contract-basis case has nothing to size from.
     if (leg.op === "borrow" && ctx.capacity?.issue?.reason === "sizing_contract_unavailable") {
@@ -1394,7 +1422,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           heldTokens: null, settledFrom: producerIndex, postSwapPool: poolAfter });
         continue;
       }
-      if (prev.leg.op === "remove_liquidity" && leg.op !== "swap") {
+      if (prev.leg.op === "remove_liquidity") {
         const raw = prev.payouts?.find((row) => row.asset === leg.asset)?.amount ?? null;
         if (!raw) throw new Reject(name, REMOVAL_PAYOUT_UNKNOWN);
         if (!feeds(prev.leg.op, leg.op)) throw new Reject(name, handoffReason(prev.leg.op, leg.op));
@@ -1405,8 +1433,20 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         drafts.push({ leg, name, usd, tokens: amount, produces: amount, heldTokens: null, settledFrom: producerIndex });
         continue;
       }
-      if (prev.leg.op === "remove_liquidity") throw new Reject(name, REMOVAL_PAYOUT_UNKNOWN);
       if (!feeds(prev.leg.op, leg.op)) throw new Reject(name, handoffReason(prev.leg.op, leg.op));
+      /**
+       * What an earlier share already took is not this leg's to spend again: "swap half of the borrowed SoUSDC ... and add
+       * the rest to the LP" hands the LP the other half, not the whole borrow (24 Oct, live #38: the LP was sized to 3.41
+       * SoUSDC when 1.70 was left). The remainder is what the shares did not take, and the leg then owns it.
+       */
+      const sharedBefore = sharesTaken.get(claimKey(producerIndex, leg.asset)) ?? ZERO;
+      if (sharedBefore > ZERO && typeof prev.produces === "string") {
+        const left = precise(shareOf(prev.produces, WAD - sharedBefore), leg.asset, name);
+        if (decimalWad(left) <= ZERO) throw new Reject(name, `the earlier shares already used all of what the ${verbOf(prev.leg.op).toLowerCase()} step produced`);
+        claimedProducers.add(claimKey(producerIndex, leg.asset));
+        drafts.push({ leg, name, usd: formatWad(mulDown(decimalWad(left), price.price, WAD)), tokens: left, produces: left, heldTokens: null });
+        continue;
+      }
       claimedProducers.add(claimKey(producerIndex, leg.asset));
       drafts.push({ leg, name, usd: { previous: producerIndex }, tokens: prev.produces, produces: prev.produces, heldTokens: null,
         ...(prev.settledFrom !== undefined && OP_FLOW[prev.leg.op].from === "account" && OP_FLOW[prev.leg.op].to === "wallet"
@@ -1463,8 +1503,15 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
        */
       const sharesFunding = (candidate: PlanLeg) =>
         candidate.sizing.kind === "leverage" && OP_FLOW[candidate.op].rate === "earn_borrow";
+      /**
+       * The funding deposit is the nearest EARLIER leg that adds collateral, not the leg on the line above: a dual borrow
+       * whose borrows are each followed by the step that uses them ("borrow BLUSDC, supply it to Blend, borrow XLM, supply it
+       * to Blend") has a Supply between the borrows, and the second borrow was refused for it (24 Oct, live #41). The legs in
+       * between do not change which deposit the multiple is measured against; the same identity rule `previous_leg` uses.
+       */
+      const addsCollateral = (candidate: PlanLeg) => OP_FLOW[candidate.op].to === "account" && OP_FLOW[candidate.op].health === "raises";
       let fundingIndex = index - 1;
-      while (fundingIndex >= 0 && sharesFunding(expanded[fundingIndex])) fundingIndex -= 1;
+      while (fundingIndex >= 0 && !addsCollateral(expanded[fundingIndex])) fundingIndex -= 1;
       const funding = fundingIndex >= 0 ? drafts[fundingIndex] : undefined;
       const fundingFlow = funding ? OP_FLOW[funding.leg.op] : null;
       if (!funding || fundingFlow!.to !== "account" || fundingFlow!.health !== "raises") {
@@ -1473,10 +1520,11 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (typeof funding.usd !== "string") {
         throw new Reject(name, `${verbOf(leg.op)} at a leverage multiple needs the deposit before it to have a known amount already`);
       }
-      let siblings = 0;
-      for (let i = fundingIndex + 1; i < expanded.length && sharesFunding(expanded[i]); i += 1) siblings += 1;
+      // Every leveraged borrow this deposit funds, up to the next deposit: they share one ceiling, adjacent or not.
+      const group: PlanLeg[] = [];
+      for (let i = fundingIndex + 1; i < expanded.length && !addsCollateral(expanded[i]); i += 1) if (sharesFunding(expanded[i])) group.push(expanded[i]);
+      const siblings = group.length;
       const equityUsd = decimalWad(funding.usd);
-      const group = expanded.slice(fundingIndex + 1, fundingIndex + 1 + siblings);
       const multiple = anchoredMultiple(sizing, ctx.messages, name, group);
       const ceilingUsd = mulDown(equityUsd, multiple - WAD, WAD);
       const borrowUsd = formatWad(siblings > 1 ? ceilingUsd / BigInt(siblings) : ceilingUsd);
@@ -1489,6 +1537,32 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     }
     if (sizing.kind === "fraction") {
       const share = anchoredShare(sizing, ctx.messages, name);
+      /**
+       * A share of what an EARLIER STEP produced: "swap half of the borrowed SoUSDC" is half of the borrow, not half of the
+       * account's SoUSDC (24 Oct, live: the position also held ~39 SoUSDC already there, and the swap was sized to 31.63
+       * instead of 12). The producer is found the way `previous_leg` finds it - the nearest earlier step that leaves this
+       * asset behind - and only a producer whose output is known in advance (a borrow, a redeem) can be shared; a swap's or a
+       * removal's payout is measured when it settles, and its own handoff already carries that.
+       */
+      if (sizing.of === "previous_leg") {
+        const paysHere = (draft: Draft) => draft.leg.op === "remove_liquidity" ? removalPays(draft.leg, leg.asset) : producedAsset(draft.leg) === leg.asset;
+        const spent = (at: number) => claimedProducers.has(claimKey(at, leg.asset)) || (sharesTaken.get(claimKey(at, leg.asset)) ?? ZERO) >= WAD;
+        let at = index - 1;
+        while (at >= 0 && (!paysHere(drafts[at]) || spent(at))) at -= 1;
+        const source = at >= 0 ? drafts[at] : undefined;
+        if (!source) throw new Reject(name, `a share of what an earlier step produced needs an earlier step that produced ${leg.asset}`);
+        if (typeof source.produces !== "string" || source.leg.op === "swap" || source.leg.op === "remove_liquidity") {
+          throw new Reject(name, `a share of the earlier ${verbOf(source.leg.op).toLowerCase()} step needs its output known in advance; state the amount you want for this step`);
+        }
+        const taken = sharesTaken.get(claimKey(at, leg.asset)) ?? ZERO;
+        if (taken + share > WAD) throw new Reject(name, `the shares you gave of that earlier step add up to more than all of what it produced`);
+        const tokens = precise(shareOf(source.produces, share), leg.asset, name);
+        if (decimalWad(tokens) <= ZERO) throw new Reject(name, `${sizing.percent}% of ${source.produces} ${leg.asset} rounds to nothing`);
+        sharesTaken.set(claimKey(at, leg.asset), taken + share);
+        const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
+        drafts.push({ leg, name, usd, tokens, produces: leg.op === "swap" ? null : tokens, heldTokens: null });
+        continue;
+      }
       if (sizing.of === "wallet") {
         if (flow.from !== "wallet") throw new Reject(name, `a share of the wallet balance sizes ${walletOps()}`);
         const held = holdings[leg.asset as keyof typeof holdings];
@@ -2497,7 +2571,7 @@ function statedActionLabel(action: StatedAction): string {
   const amount =
     sizing.kind === "literal" ? sizing.amount
       : sizing.kind === "leverage" ? `${sizing.multiple}x`
-        : sizing.kind === "fraction" ? `${sizing.percent}% of ${sizing.of === "wallet" ? "your wallet balance" : "the position"}`
+        : sizing.kind === "fraction" ? `${sizing.percent}% of ${sizing.of === "wallet" ? "your wallet balance" : sizing.of === "previous_leg" ? "what the earlier step produced" : "the position"}`
           : sizing.kind === "all_wallet" ? "all"
             : sizing.kind === "all_position" ? "the whole position"
               : sizing.kind === "to_floor" ? "to the floor"

@@ -6139,6 +6139,12 @@ export function CopilotWorkspace() {
                 autoSign={sessionSigning}
                 onApproveCandidate={investigation.result?.continuation ? approveCandidate : undefined}
                 onReply={(text) => { void run(text); }}
+                onRetry={() => {
+                  // The words of the turn that stopped (the hook's last prompt), asked again; the user's bubble is already on screen.
+                  // Not the result's originalRequest: a result can carry the request of an earlier turn in the thread.
+                  const again = investigation.prompt;
+                  if (again) void investigation.run(again, undefined, undefined, undefined, { echoUser: false, replaceLastReply: true });
+                }}
                 onWrite={(op) => {
                   const request = investigation.result ? accountSetupPrompt(investigation.result) : "";
                   if (op !== "create_account") {

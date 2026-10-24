@@ -46,7 +46,7 @@ import { evaluateStandingOrders } from "../standing-orders";
 import { resolveLifecycleWrite } from "../workflow/lifecycle";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
-import { ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
+import { ASSET_SYMBOL_PATTERN, correctAssetSpellings, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
 import { OP_FLOW, WORKFLOW_OPS } from "../workflow/types";
 import { MAX_WORKFLOW_STEPS } from "../workflow/journal";
 import { resolveName } from "../intent/resolve-name";
@@ -181,7 +181,13 @@ export async function researchTurn(input: ResearchInput, dependencies: {
   const logPhase = (phase: string, extra: Record<string, unknown> = {}) => {
     copilotLog("[copilot] investigation phase", { phase, ms: Date.now() - startedAt, ...extra });
   };
-  const view = await executeResearchTurn(input, { ...dependencies, logPhase });
+  // A ticker one slip from exactly one asset is that asset, from here on and for every path below (stated writes
+  // included); the reply says what was read. The user's own words stay on screen as they typed them.
+  const spelled = correctAssetSpellings(input.message);
+  const read = await executeResearchTurn(spelled.corrections.length ? { ...input, message: spelled.text } : input, { ...dependencies, logPhase });
+  const view = spelled.corrections.length && read.understanding?.reading
+    ? { ...read, understanding: { ...read.understanding, reading: `${read.understanding.reading} (read ${spelled.corrections.map((c) => `"${c.from}" as ${c.to}`).join(", ")})` } }
+    : read;
   logPhase("turn", { status: view.status });
   const elapsedMs = Math.max(0, Date.now() - startedAt);
   span.setAttribute("vanna.investigation.status", view.status);
@@ -1462,7 +1468,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
        * utilization cap and the answer was "none could be prepared"). Read that ceiling for the assets concerned, size
        * once more with it in evidence, and put the result to the preview again.
        */
-      const poolLimited = [...new Set(candidates.rejected.flatMap((entry) => entry.poolLimited ? [entry.poolLimited.asset] : []))];
+      // Every refused borrow wants its ceiling read: a pool-limited one to be sized under it, any other (the account's own
+      // health) so the refusal names the real limit. The ceiling is not read up front for a stated amount any more.
+      const poolLimited = [...new Set(candidates.rejected.flatMap((entry) => entry.poolLimited ? [entry.poolLimited.asset] : entry.ceilingNeeded ? [entry.ceilingNeeded.asset] : []))];
       if (poolLimited.length && Date.now() - turnStartedAt <= RESIZE_START_BY_MS) {
         const resizeStarted = Date.now();
         try {

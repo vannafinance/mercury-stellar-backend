@@ -59,7 +59,10 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       // A borrow is limited by more than the health factor: the pool's free liquidity and its utilization
       // cap bind too, and only the protocol knows all three. Its own "most you can borrow now" is read so the
       // sized amount never exceeds it (7 Oct, live: a borrow sized to HF 1.5 was refused by the pool cap).
-      if (flow.from === "debt") want("max_borrow", leg.asset);
+      // Only for a borrow whose AMOUNT is the ceiling (sized to the floor). A stated or leveraged amount needs no
+      // search for the maximum: the protocol's preview answers yes or no for that amount, and a refusal reads the
+      // ceiling then. The search costs 5 s for a pool-limited asset and 34 s for SoUSDC (24 Oct, #29 timed out on it).
+      if (flow.from === "debt" && leg.sizing.kind === "to_floor") want("max_borrow", leg.asset);
       // A leg that carries a rate needs its rate row: the Earn market, and the Blend reserves for a Blend rate.
       if (flow.rate !== null) want("earn_market", leg.asset);
       if (flow.rate === "blend_supply") want("blend_markets");

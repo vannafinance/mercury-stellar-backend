@@ -83,6 +83,35 @@ describe("adaptive investigation", () => {
     expect(model).toHaveBeenCalledTimes(2);
     expect(mcp.call).not.toHaveBeenCalled();
   });
+  /**
+   * 24 Oct, live: "Repay all of my BLUSDC debt and half of my SoUSDC debt" ran only the SoUSDC half and said "Done".
+   * The BLUSDC action was dropped by the shape check ("sizing all_position takes no other keys"); the SoUSDC action
+   * survived, so the loop saw "something survived" and went on - a request for two actions carried out as one, with
+   * nothing said. An action the user stated that cannot be used is a reason to ask the model once more, not to go on.
+   */
+  it("asks once more when a stated action is dropped, even though another action survived", async () => {
+    const dropped = { op: "repay", asset: "BLUSDC", sourceQuote: "repay all", sizing: { kind: "all_position", amount: "5" } };
+    const good = { op: "repay", asset: "SOUSDC", sourceQuote: "half", sizing: { kind: "fraction", percent: "50", of: "position", sourceQuote: "half" } };
+    const base = complete([]);
+    const partial = { ...base, goal: { ...base.goal, intent: "strategy", actions: [dropped, good] } };
+    const whole = { ...base, goal: { ...base.goal, intent: "strategy", actions: [{ ...dropped, sizing: { kind: "all_position" } }, good] } };
+    const model = sequence(partial, whole);
+    const result = await runInvestigation(request, { model, mcp: read() });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(model).mock.calls[1][0]).toMatchObject({ decisionFeedback: expect.stringContaining("BLUSDC") });
+    if (result.outcome.kind !== "research_complete") throw new Error("not complete");
+    expect(result.outcome.goal.actions).toHaveLength(2);
+  });
+  it("asks only once: a second partial answer goes on with what survived, as before", async () => {
+    const dropped = { op: "repay", asset: "BLUSDC", sourceQuote: "repay all", sizing: { kind: "all_position", amount: "5" } };
+    const good = { op: "repay", asset: "SOUSDC", sourceQuote: "half", sizing: { kind: "fraction", percent: "50", of: "position", sourceQuote: "half" } };
+    const base = complete([]);
+    const partial = { ...base, goal: { ...base.goal, intent: "strategy", actions: [dropped, good] } };
+    const model = sequence(partial, partial);
+    const result = await runInvestigation(request, { model, mcp: read() });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(result.outcome.kind).toBe("research_complete");
+  });
   it("feeds actual observations into subsequent decisions and returns research, never execution", async () => {
     const turns: ResearchTurn[] = [];
     const mcp = { call: vi.fn(async (tool: string) => tool === "vanna_get_wallet_balance"
@@ -328,6 +357,25 @@ describe("bounded execution", () => {
     const pending = interruptible(() => new Promise(() => {}), controller.signal);
     controller.abort("budget");
     await expect(pending).rejects.toBe("budget");
+  });
+
+  /**
+   * 24 Oct, live: "Show the supply APY, borrow APY and utilization for all four Vanna lending pools" stopped with
+   * reason tool_budget although it had made a handful of reads against a limit of many. The label was borrowed
+   * from the count check: the read TIME was spent (the loop keeps a reserve for the conclusion), and the stop was
+   * recorded as a shortage of reads. The reason must name what actually ran out.
+   */
+  it("reports the time limit, not the read count, when the read time is spent", async () => {
+    let turn = 0;
+    const result = await runInvestigation({
+      message: "Show the supply APY",
+      scope: { subject: "s", trader: "G", smartAccount: "C", network: "testnet" },
+    }, {
+      limits: { maxDurationMs: 300, maxReadDurationMs: 5_000 },
+      model: async () => ({ kind: "inspect", reads: [{ capability: turn++ === 0 ? "wallet_balances" : "account_debt", args: {} }] }),
+      mcp: { call: async () => { await new Promise((resolve) => setTimeout(resolve, 400)); return { balances: [] }; } },
+    });
+    expect(result.outcome).toEqual({ kind: "stopped", reason: "deadline" });
   });
 
   it("honors cancellation before calling the model", async () => {

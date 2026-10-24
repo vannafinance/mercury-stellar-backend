@@ -220,6 +220,10 @@ export const copilotConfig = {
   get vertexModel(): string {
     return env("VERTEX_MODEL", MODEL_DEFAULTS.research);
   },
+  /** The model that writes the reply from verified facts (VERTEX_COMPOSE_MODEL). Planning stays on `vertexModel`. */
+  get vertexComposeModel(): string {
+    return env("VERTEX_COMPOSE_MODEL", MODEL_DEFAULTS.compose);
+  },
   /**
    * Leftover greeting/identity lane only. Never the investigate/lend model.
    * Flash-Lite + MINIMAL thinking; a 2s abort lives on the caller.

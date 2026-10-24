@@ -8,6 +8,7 @@ import { compareObservedRates } from "@/lib/copilot/investigation/rate-compariso
 import { completionReply } from "@/lib/copilot/investigation/completion";
 import { composeCompletion } from "@/lib/copilot/investigation/compose";
 import { computeAccountPosition } from "@/lib/copilot/investigation/capacity";
+import { postRunFacts } from "@/lib/copilot/investigation/post-run-facts";
 import { executionReceiptFromWorkflowView } from "@/lib/copilot/execution-receipt";
 import { completionMatches, completionPlainText, receiptKey, settledTransactions, type WorkflowCompletionReply } from "@/lib/copilot/workflow-completion";
 import { readConversation, updateSessionWorkflowCompletion } from "@/lib/copilot/session-store";
@@ -16,7 +17,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** How long the health factor read after a run may take before the reply goes without it. */
-const HEALTH_READ_MS = 5_000;
+const HEALTH_READ_MS = 15_000; // the account snapshot took 9-13 s on 24 Oct (public Soroban RPC); 8 s dropped every post-run figure
 
 /**
  * The finished run's reply, composed by the model around the run's own facts (compose.ts).
@@ -77,7 +78,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       view, request: stored.value.proposal.messages?.join("\n") || view.objective, draft, comparisons,
       healthFloor: stored.value.proposal.floor, constraints: stored.value.proposal.constraints,
       healthNow: position?.healthFactor ?? null,
-      ...(position ? { positionNow: { grossCollateralUsd: position.grossCollateralUsd, debtUsd: position.debtUsd, observedAt: Date.now() } } : {}),
+      ...(position ? {
+        positionNow: { grossCollateralUsd: position.grossCollateralUsd, debtUsd: position.debtUsd, observedAt: Date.now() },
+        // Offered for whatever the request asked beyond the transactions; none of it is required of the reply.
+        // Optional by nature: if they cannot be built the reply goes without them, never without itself.
+        extraFacts: (() => { try { return postRunFacts(position, Date.now()); } catch { return []; } })(),
+      } : {}),
     }, signal);
     if (conversationId && transactions) {
       const reply: WorkflowCompletionReply = {

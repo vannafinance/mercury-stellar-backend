@@ -1774,6 +1774,9 @@ export async function executeMcpWrite(
       };
     }
     // Other auto-sign failures: still have XDR → wallet sign
+    // The reason reaches the user only as "could not sign this step"; keep it where an operator can read it (24 Oct: a Blend XLM
+    // supply fell back to the wallet and the Sign Service's own log had no message, so nothing said why).
+    console.warn("[copilot] auto-sign declined", { tool: step.tool, autoSign: as || null, reason: asErr.slice(0, 300) });
     return {
       tool: step.tool,
       label: step.label,

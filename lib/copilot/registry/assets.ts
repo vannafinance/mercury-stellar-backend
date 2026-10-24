@@ -271,6 +271,51 @@ export function resolveAsset(text?: string | null): AssetMatch {
   return { kind: "unknown" };
 }
 
+/**
+ * Edit distance counting a swap of two neighbouring letters as one slip (optimal string alignment).
+ * A person mistypes a ticker by an extra, a missing, a wrong or a swapped letter - each is one slip.
+ */
+function slips(a: string, b: string): number {
+  const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array<number>(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j += 1) d[0][j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/** Each asset's canonical ticker (its first alias), when long enough to be told apart from an ordinary word. */
+const TICKERS: ReadonlyArray<{ ticker: string; id: string }> = allAssets()
+  .flatMap((def) => def.aliases.length ? [{ ticker: def.aliases[0].toUpperCase(), id: def.id }] : [])
+  .filter(({ ticker }) => ticker.length >= 6 && !/[\s_]/.test(ticker));
+
+/**
+ * A ticker one slip away from exactly one asset, read as that asset.
+ *
+ * "soudsdc" is "SOUSDC" with an extra letter; sent as typed it named no asset, so the request was not read as a
+ * stated action and ended as a plan with no button (24 Oct). Only a word of six letters or more is considered,
+ * only against each asset's own ticker (never against words like STELLAR or LUMENS that are ordinary English),
+ * and only when one asset is the clear nearest - a tie is left alone, for the question that follows. Every
+ * correction is returned so the reply can say what it read; the user's own message is never rewritten on screen.
+ */
+export function correctAssetSpellings(text: string): { text: string; corrections: Array<{ from: string; to: string }> } {
+  const corrections: Array<{ from: string; to: string }> = [];
+  const known = new Set(ALIAS_INDEX.map(({ alias }) => alias));
+  const out = text.replace(/[A-Za-z][A-Za-z0-9_]{5,}/g, (word) => {
+    const upper = word.toUpperCase();
+    if (known.has(upper)) return word;
+    const near = TICKERS.filter(({ ticker }) => slips(upper, ticker) <= 1);
+    if (near.length !== 1) return word;
+    corrections.push({ from: word, to: near[0].ticker });
+    return near[0].ticker;
+  });
+  return { text: out, corrections };
+}
+
 /** The def when the text names exactly one asset, else null. */
 export function resolveAssetDef(text?: string | null): AssetDef | null {
   const m = resolveAsset(text);

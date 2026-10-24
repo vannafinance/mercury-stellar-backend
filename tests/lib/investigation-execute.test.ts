@@ -101,9 +101,10 @@ describe("advanceWorkflow", () => {
     const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
     const mcp: McpCall = { call: async (tool, args) => {
       seen.push({ tool, args: args as Record<string, unknown> });
-      if (tool === "vanna_get_collateral") {
+      // The margin account's real token balance (not its posted-collateral storage): what the swap actually delivered.
+      if (tool === "vanna_get_token_balance") {
         if (afterBalance === "unread") throw new Error("read unavailable");
-        return { collateral: [{ symbol: "AQUSDC", balance: afterBalance }] };
+        return { holder: SCOPE.smartAccount, contract: "CAZRY5GS", raw: "0", decimals: 7, symbol: "USDC", human: afterBalance };
       }
       if (tool === "vanna_get_aquarius_pool_stats") return { found: true, pool: { available: true,
         reserves: { XLM: "1050", AQUSDC: "190" }, total_share: "100", fee: "0.003" } };
@@ -118,7 +119,7 @@ describe("advanceWorkflow", () => {
       return;
     }
     expect(view.status).toBe("completed");
-    expect(seen.map(call => call.tool)).toEqual(["vanna_get_collateral", "vanna_get_aquarius_pool_stats", "vanna_add_liquidity"]);
+    expect(seen.map(call => call.tool)).toEqual(["vanna_get_token_balance", "vanna_get_aquarius_pool_stats", "vanna_add_liquidity"]);
     const sent = seen[2].args;
     const used = afterBalance === "109.96" ? 9.96 : 10;
     expect(Number(sent.amount_a)).toBeCloseTo(used, 7);
@@ -685,7 +686,7 @@ describe("advanceWorkflow - an amount that was the whole position is re-read bef
  * The proposal amount is the estimate and is not rewritten.
  */
 describe("advanceWorkflow - a removal's payout is measured when the next leg is sent", () => {
-  const COLLATERAL = "vanna_get_collateral";
+  const BALANCE = "vanna_get_token_balance"; // the margin account's real token balance, not its posted-collateral storage
   const REMOVE = "vanna_remove_liquidity";
   const SUPPLY = "vanna_blend_supply";
   const HASH2 = "b".repeat(64);
@@ -726,10 +727,10 @@ describe("advanceWorkflow - a removal's payout is measured when the next leg is 
     const mcp: McpCall = {
       call: async (tool, args) => {
         seen.push({ tool, args: args as Record<string, unknown> });
-        if (tool === COLLATERAL) {
+        if (tool === BALANCE) {
           const next = balances[balance++];
           if (next === "fail" || next === undefined) throw new Error("upstream credentials leaked");
-          return { collateral: [{ symbol: "XLM", balance: next }] };
+          return { holder: SCOPE.smartAccount, contract: "CDLZFC3S", raw: "0", decimals: 7, symbol: "native", human: next };
         }
         return { status: "signed_and_submitted", tx_hash: hashes[write++] ?? HASH };
       },
@@ -746,7 +747,7 @@ describe("advanceWorkflow - a removal's payout is measured when the next leg is 
     const first = scripted(["0"], [HASH]);
     const opened = await advance(id, first.mcp);
     expect(opened.status).toBe("running");
-    expect(first.seen.map((call) => call.tool)).toEqual([COLLATERAL, REMOVE]);
+    expect(first.seen.map((call) => call.tool)).toEqual([BALANCE, REMOVE]);
     const mid = await stored(id);
     expect(mid.value.proposal.digest).toBe(digest);
     expect(mid.value.proposal.steps[1].amount).toBe("100");
@@ -754,7 +755,7 @@ describe("advanceWorkflow - a removal's payout is measured when the next leg is 
 
     const second = scripted(["100.4"], [HASH2]);
     const view = await advance(id, second.mcp);
-    expect(second.seen.map((call) => call.tool)).toEqual([COLLATERAL, SUPPLY]);
+    expect(second.seen.map((call) => call.tool)).toEqual([BALANCE, SUPPLY]);
     expect(second.seen[1].args.amount).toBe("100.4");
     expect(view.status).toBe("completed");
     expect(view.message).toContain("measured payout");
@@ -782,7 +783,7 @@ describe("advanceWorkflow - a removal's payout is measured when the next leg is 
     await advance(id, scripted(["1000"], [HASH]).mcp);
     const withdrawal = scripted(["1100.4"], [HASH2]);
     await advance(id, withdrawal.mcp);
-    expect(withdrawal.seen.map(row => row.tool)).toEqual([COLLATERAL, "vanna_withdraw_collateral"]);
+    expect(withdrawal.seen.map(row => row.tool)).toEqual([BALANCE, "vanna_withdraw_collateral"]);
     expect(withdrawal.seen[1].args.amount).toBe("100.4");
     const transferred = await stored(id);
     expect(transferred.value.steps[1]).toMatchObject({ status: "settled", transferAmount: "100.4", txHash: HASH2 });
@@ -838,7 +839,7 @@ describe("advanceWorkflow - a removal's payout is measured when the next leg is 
     await advance(id, scripted(["0"], [HASH]).mcp);
     const second = scripted(["101"], [HASH2]);
     const view = await advance(id, second.mcp);
-    expect(second.seen.map((call) => call.tool)).toEqual([COLLATERAL]);
+    expect(second.seen.map((call) => call.tool)).toEqual([BALANCE]);
     expect(view.status).toBe("blocked");
     expect(view.steps[1].status).toBe("pending");
     expect(view.message).toContain("outside the approved estimate of 100 XLM");
@@ -849,7 +850,7 @@ describe("advanceWorkflow - a removal's payout is measured when the next leg is 
     const { id } = await approved();
     const run = scripted(["fail"], [HASH]);
     const view = await advance(id, run.mcp);
-    expect(run.seen.map((call) => call.tool)).toEqual([COLLATERAL]);
+    expect(run.seen.map((call) => call.tool)).toEqual([BALANCE]);
     expect(view.status).toBe("blocked");
     expect(view.steps[0].status).toBe("pending");
     expect(view.message).toContain("could not be read before removing liquidity");
@@ -861,10 +862,38 @@ describe("advanceWorkflow - a removal's payout is measured when the next leg is 
     await advance(id, scripted(["0"], [HASH]).mcp);
     const second = scripted(["fail"], [HASH2]);
     const view = await advance(id, second.mcp);
-    expect(second.seen.map((call) => call.tool)).toEqual([COLLATERAL]);
+    expect(second.seen.map((call) => call.tool)).toEqual([BALANCE]);
     expect(view.status).toBe("blocked");
     expect(view.steps[1].status).toBe("pending");
     expect(view.message).toContain("could not be read after the removal settled");
     expect(view.message).not.toMatch(/upstream|credentials|Error/);
   });
+  /**
+   * 24 Oct, live, #37: a swap of 6 AqUSDC paid 774.4468322 XLM (Horizon's effects for the transaction: the margin account debited
+   * 6 USDC and credited 774.4468322 XLM, exactly the quote). The check then read the account's POSTED-COLLATERAL row before and
+   * after, which moved by only 35.4064 (the oracle value of 6 USDC), called the swap "outside the approved estimate" and left
+   * the liquidity step unsent. Posted collateral is recorded storage, not what the account holds, and the two disagree whenever a
+   * pool pays away from the oracle price. What arrived is the rise in the token's real balance.
+   */
+  it("measures what arrived from the account's real token balance, never from its posted collateral", async () => {
+    const { id } = await approved("100");
+    const seen: string[] = [];
+    let reads = 0;
+    const mcp: McpCall = {
+      call: async (tool) => {
+        seen.push(tool);
+        if (tool === BALANCE) return { holder: SCOPE.smartAccount, contract: "CDLZFC3S", raw: "0", decimals: 7, symbol: "native", human: ["5000", "5100.4"][reads++] ?? "5100.4" };
+        // The recorded-storage row moves by a different amount, as it did live: it must not be the one consulted.
+        if (tool === "vanna_get_collateral") return { collateral: [{ symbol: "XLM", balance: String(2863 + reads * 35.4064) }] };
+        return { status: "signed_and_submitted", tx_hash: reads === 1 ? HASH : HASH2 };
+      },
+    };
+    await advance(id, mcp);
+    const view = await advance(id, mcp);
+    expect(seen).not.toContain("vanna_get_collateral");
+    const sent = seen.filter((tool) => tool === SUPPLY);
+    expect(sent).toHaveLength(1);
+    expect(view.status).toBe("completed");
+  });
+
 });

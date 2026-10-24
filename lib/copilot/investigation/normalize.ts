@@ -344,9 +344,19 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
 
     const shaped = extractFactsByShape(observation, consumed);
     const taken = new Set(facts.slice(before).map((fact) => fact.sourcePath));
+    /**
+     * Judgement: an Earn pool's `total_liquidity` is what is LEFT to borrow (total_assets minus total_borrows: 42,690 beside
+     * 120,470 supplied and 77,780 borrowed for XLM), not a total. Named "total liquidity" it read as a disagreement with the
+     * Earn page's "Assets Supplied" (24 Oct). The other two are what the page calls them.
+     */
+    const EARN_POOL_NAMES: Record<string, string> = {
+      total_liquidity: "available liquidity", total_assets: "supplied", total_borrows: "borrowed",
+    };
     for (const fact of shaped.facts) {
       if (taken.has(fact.path)) continue;
-      facts.push({ id: `${observation.id}:${fact.path}`, label: fact.label, value: fact.value, unit: fact.unit, venue: fact.venue, evidenceId: observation.id, sourcePath: fact.path, readAt: observation.observedAt, quantity: fact.quantity });
+      const poolWords = observation.capability === "earn_market" ? EARN_POOL_NAMES[fact.path.replace(/_human$/, "")] : undefined;
+      const label = poolWords ? `${String(observation.args.asset)} Earn ${poolWords}` : fact.label;
+      facts.push({ id: `${observation.id}:${fact.path}`, label, value: fact.value, unit: fact.unit, venue: fact.venue, evidenceId: observation.id, sourcePath: fact.path, readAt: observation.observedAt, quantity: fact.quantity });
     }
     for (const row of shaped.unavailable) {
       warnings.add(`${noun}: ${row.identity ?? row.path} was unavailable${row.message ? ` - ${row.message}` : "."}`);

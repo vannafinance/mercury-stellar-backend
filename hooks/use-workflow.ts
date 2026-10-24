@@ -68,6 +68,13 @@ export function useWorkflow(wallet: string | null = null) {
   const [liveQuote, setLiveQuote] = useState<{ id: string; revision: number; minOut: string; note: string } | null>(null);
   const storageKey = wallet ? `vanna-workflow:${wallet}` : null;
   const active = useRef<AbortController | null>(null);
+  /**
+   * Plans this page left while they were under way (the user opened another chat). One of these read back later is the user's
+   * own run, still going: it is not "restored" in the sense that holds auto-sign back until a real click, which exists for a
+   * card rehydrated after a reload. Without this the run, which went on in the background, stopped at "Your signature needed"
+   * on the next step when the chat was opened again (24 Oct).
+   */
+  const leftRunning = useRef(new Set<string>());
   const viewRef = useRef<WorkflowView | null>(null);
   viewRef.current = state.view;
   const loadingRef = useRef(false);
@@ -107,11 +114,21 @@ export function useWorkflow(wallet: string | null = null) {
 
   const runUntilPaused = useCallback(async (initial: WorkflowView, signal: AbortSignal) => {
     let view = initial;
-    for (let step = 0; step < 8 && running(view); step++) {
+    /**
+     * The plan is no longer on screen: the user opened another chat. The run goes on without the screen - it waits out each
+     * submitted step and issues the next, until it needs a signature or finishes - rather than stopping at the first
+     * transaction and sitting there until the chat is opened again (24 Oct). When the same plan is back on screen the
+     * ledger clock below takes it over, so the loop stops waiting.
+     */
+    const onScreen = (current: WorkflowView) => viewRef.current?.id === current.id;
+    let issued = 0;
+    let polls = 0;
+    while (running(view) && issued < 8 && polls < 80 && !signal.aborted) {
+      if (inFlight(view) && !onScreen(view)) { polls++; await new Promise<void>((resolve) => { const t = setTimeout(resolve, 2_500); signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true }); }); if (signal.aborted) break; } else issued++;
       view = await postJson(`/api/copilot/workflow/${view.id}/advance`, {}, signal, true);
       const advanced = view;
-      if (!signal.aborted) setState((previous) => ({ ...previous, view: advanced, loading: true, error: null }));
-      if (inFlight(view)) break;
+      if (!signal.aborted && onScreen(advanced)) setState((previous) => ({ ...previous, view: advanced, loading: true, error: null }));
+      if (inFlight(view) && onScreen(view)) break;
     }
     return view;
   }, []);
@@ -282,7 +299,7 @@ export function useWorkflow(wallet: string | null = null) {
       const response = await fetch(`/api/copilot/workflow/${encodeURIComponent(id)}`, { headers, signal, cache: "no-store" });
       if (!response.ok) throw new Error(response.status === 401 ? "Reconnect your wallet session to resume this plan." : "The saved plan could not be loaded. Try opening this chat again.");
       const view = await response.json() as WorkflowView;
-      if (!controller.signal.aborted && active.current === controller) setState({ view, loading: false, error: null, restored: true });
+      if (!controller.signal.aborted && active.current === controller) setState({ view, loading: false, error: null, restored: !leftRunning.current.delete(view.id) });
     } catch (error) {
       if (active.current === controller && !controller.signal.aborted) setState(previous => ({ ...previous, loading: false,
         error: error instanceof TypeError ? "The server could not be reached. Reconnect and open this chat again." : error instanceof Error ? error.message : "The saved plan could not be loaded." }));
@@ -342,11 +359,30 @@ export function useWorkflow(wallet: string | null = null) {
     } catch { setState(previous => ({ ...previous, loading: false, error: "The plan could not be refreshed. Its approved steps remain recorded." })); }
   }, [state.view, state.loading, runUntilPaused]);
   const reset = useCallback(() => {
-    active.current?.abort();
+    /**
+     * Leaving a chat does not stop a run that is under way. One whose loop is already going (an approval in flight) is
+     * detached - its late screen updates are ignored - and keeps issuing steps; one waiting on a ledger with no loop going is
+     * handed to the same loop. Anything else is aborted as before.
+     */
+    const leaving = viewRef.current;
+    const underWay = !!leaving && running(leaving);
+    if (leaving && (underWay || (loadingRef.current && !finished(leaving)))) leftRunning.current.add(leaving.id);
+    // The approval itself may still be in flight (the plan reads "proposed" until it returns), so any request under way for
+    // the plan on screen is left to finish unseen, not only one whose view already says it is running.
+    if (leaving && loadingRef.current && active.current) active.current = null;
+    else {
+      active.current?.abort();
+      if (underWay) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 180_000);
+        viewRef.current = null;
+        void runUntilPaused(leaving!, controller.signal).catch(() => undefined).finally(() => clearTimeout(timer));
+      }
+    }
     viewRef.current = null;
     if (storageKey) try { localStorage.removeItem(storageKey); } catch { /* storage unavailable */ }
     setState({ view: null, loading: false, error: null, restored: false });
-  }, [storageKey]);
+  }, [storageKey, runUntilPaused]);
   const cancelPlan = useCallback(async () => {
     if (!state.view || state.loading) return;
     const controller = new AbortController(); active.current?.abort(); active.current = controller;

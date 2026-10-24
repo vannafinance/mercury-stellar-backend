@@ -320,18 +320,19 @@ describe("resolvePlans - the 13 Sep prompt gets its options", () => {
     it("refuses a leverage multiple that would take the health factor below the stated floor, naming it as such", () => {
       const legs: ProposedPlan["legs"] = [
         { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "10", sourceQuote: "deposit 10 xlm" } },
-        { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "50", sourceQuote: "50x leverage" } },
+        { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "10", sourceQuote: "10x leverage" } },
         { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
       ];
       /**
        * The protocol's own gross-asset model - borrowed funds enter the account and raise
        * BOTH collateral and debt - means HF from a zero base is 1 + 1/(multiple − 1), not
        * something that crashes toward zero with ordinary leverage: 6x alone lands exactly
-       * at 1.2, still above a 1.19 floor. 50x (HF → 1.0204) is unambiguously the case this
-       * check exists for, without depending on rounding at the edge of the floor.
+       * at 1.2, still above a 1.19 floor. 10x (HF → 1.111, the most the product allows) is below a 1.19 floor, so it is the case this
+       * check exists for without depending on rounding at the edge of the floor. (50x was used until 24 Oct, when the cap began to
+       * refuse anything above 10x before it reached this check.)
        */
       const { candidates, rejected } = resolvePlans([plan("Unsafe leverage", legs)], ctx({
-        messages: ["deposit 10 xlm and borrow with 50x leverage, deploy in farm"],
+        messages: ["deposit 10 xlm and borrow with 10x leverage, deploy in farm"],
         capacity: { grossCollateralUsd: "0", debtUsd: "0", floor: "1.19" },
       }));
       expect(candidates).toEqual([]);
@@ -1688,6 +1689,23 @@ describe("a leverage multiple is anchored once for the borrows one deposit funds
     expect(Number(steps[2].amount)).toBeCloseTo(50, 5);
   });
 
+  it("sizes a dual borrow whose borrows are each followed by the step that uses them, to the same amounts as the adjacent order (live #41, 24 Oct)", () => {
+    const adjacent = resolvePlans([plan("Dual borrow", legs({ multiple: "2", sourceQuote: "XLM" }))], ctx({ messages }));
+    const interleaved: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+      { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x BLUSDC" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+      { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "2", sourceQuote: "XLM" } },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+    ];
+    const { candidates, rejected } = resolvePlans([plan("Dual borrow, each supplied", interleaved)], ctx({ messages }));
+    expect(rejected.map((r) => r.reason)).toEqual([]);
+    const steps = candidates[0].steps!;
+    const base = adjacent.candidates[0].steps!;
+    expect(Number(steps[1].amount)).toBeCloseTo(Number(base[1].amount), 5);
+    expect(Number(steps.find((step) => step.op === "borrow" && step.asset === "XLM")!.amount)).toBeCloseTo(50, 5);
+  });
+
   it("does not let a sibling's quote anchor a different multiple", () => {
     const { candidates, rejected } = resolvePlans([plan("Dual borrow", legs({ multiple: "3", sourceQuote: "XLM" }))], ctx({ messages }));
     expect(candidates).toHaveLength(0);
@@ -1701,6 +1719,186 @@ describe("a leverage multiple is anchored once for the borrows one deposit funds
     ];
     const { rejected } = resolvePlans([plan("Lone borrow", lone)], ctx({ messages: ["deposit 100 XLM and borrow BLUSDC"] }));
     expect(rejected[0]?.reason).toMatch(/the 2x leverage does not appear in your request/);
+  });
+});
+
+/**
+ * A total the user stated, divided equally by the model, is still the user's total.
+ *
+ * 24 Oct, live: "Deposit 1 BLUSDC and take 3x leverage, split equally between SoUSDC and XLM" was refused with "the
+ * 1.5x leverage does not appear in your request". The model had done the dividing itself and written 1.5x on each leg;
+ * the guard wants every multiple in the user's words, and "1.5" is not there - "3" is. The sizer shares one ceiling
+ * (deposit x (multiple - 1)) between the siblings, so accepting 1.5 as given would have sized the plan to 1.5x in
+ * TOTAL, half of what was asked. The total is what the user wrote, so the total is what sizes the plan.
+ */
+describe("an equal split of a stated multiple is sized by the stated total", () => {
+  const messages = ["deposit 100 XLM and take 3x leverage, split equally between BLUSDC and XLM"];
+  const legs = (first: string, second: string, quote = "3x leverage"): ProposedPlan["legs"] => [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: first, sourceQuote: quote } },
+    { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: second, sourceQuote: quote } },
+  ];
+
+  it("accepts 1.5x on each of two legs for a stated 3x, and sizes it as 3x in total", () => {
+    const { candidates, rejected } = resolvePlans([plan("Split 3x", legs("1.5", "1.5"))], ctx({ messages }));
+    expect(rejected[0]?.reason ?? "").not.toMatch(/leverage does not appear/);
+    expect(candidates).toHaveLength(1);
+    // A 3x ceiling is deposit x 2, shared: the XLM leg is the whole deposit's worth (100), not a quarter of it.
+    expect(Number(candidates[0].steps![2].amount)).toBeCloseTo(100, 5);
+    // And it is exactly what the user's own 3x on both legs sizes to.
+    const stated = resolvePlans([plan("Stated 3x", legs("3", "3"))], ctx({ messages }));
+    expect(candidates[0].steps![1].amount).toBe(stated.candidates[0].steps![1].amount);
+    expect(candidates[0].steps![2].amount).toBe(stated.candidates[0].steps![2].amount);
+  });
+
+  it("does not accept an uneven split as an equal one", () => {
+    const { candidates, rejected } = resolvePlans([plan("Uneven", legs("2", "1"))], ctx({ messages }));
+    expect(candidates).toHaveLength(0);
+    expect(rejected[0]?.reason).toMatch(/leverage does not appear in your request/);
+  });
+
+  it("does not accept legs that add up to a total nobody stated", () => {
+    const { candidates, rejected } = resolvePlans([plan("Wrong total", legs("2", "2"))], ctx({ messages }));
+    expect(candidates).toHaveLength(0);
+    expect(rejected[0]?.reason).toMatch(/leverage does not appear in your request/);
+  });
+
+  it("never lets a lone borrow lean on a total", () => {
+    const lone: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+      { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "1.5", sourceQuote: "3x leverage" } },
+    ];
+    const { candidates } = resolvePlans([plan("Lone", lone)], ctx({ messages: ["deposit 100 XLM and take 3x leverage in BLUSDC"] }));
+    expect(candidates).toHaveLength(0);
+  });
+});
+
+/**
+ * A refusal that is really a request for more information says so.
+ *
+ * 24 Oct, N6: "Borrow some stablecoins and farm them" was answered with the planner's own rejected shape - "Borrow BLUSDC and
+ * supply to Blend farm - borrowing to the floor needs the health-factor floor you want kept..." - and THEN the question card
+ * asking which stablecoin, which venue and how much. The first line had chosen the asset and the venue before asking for them.
+ * Planner refusals that only wait on the user's answer carry `needsInput`, so the reply can be the question and nothing else.
+ */
+describe("a refusal that only waits for the user's answer is marked as such", () => {
+  const borrowToFloor: ProposedPlan["legs"] = [{ op: "borrow", asset: "BLUSDC", sizing: { kind: "to_floor" } }];
+
+  it("marks borrowing to a floor nobody stated", () => {
+    const { rejected } = resolvePlans([plan("Borrow BLUSDC", borrowToFloor)], ctx({ messages: ["Borrow some stablecoins and farm them."], capacity: { grossCollateralUsd: "1873.48", debtUsd: "26.90", floor: null } as never }));
+    expect(rejected[0]?.needsInput).toBe(true);
+  });
+
+  it("does not mark a refusal that nothing the user says next would lift", () => {
+    const forbidden = resolvePlans([plan("Borrow BLUSDC", borrowToFloor)], ctx({ messages: ["borrow max"], borrowing: "forbidden" as never }));
+    expect(forbidden.rejected[0]?.needsInput).toBeUndefined();
+  });
+});
+
+/**
+ * A leverage multiple above the product's cap is refused, with the cap.
+ *
+ * 24 Oct, negative test N1: "Borrow at 12x leverage on 500 XLM" was planned as a 5,500 XLM borrow against 500 XLM (and began to
+ * execute). The Margin page's slider stops at 10x, and the direct-action path already refuses past `copilotConfig.maxLeverage`;
+ * the planner never asked. It now asks the same place, so one number decides both.
+ */
+describe("a leverage multiple above the cap", () => {
+  const legs = (multiple: string): ProposedPlan["legs"] => [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "500", sourceQuote: "500 XLM" } },
+    { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple, sourceQuote: `${multiple}x leverage` } },
+  ];
+  const resolve = (multiple: string) => resolvePlans([plan("Lever", legs(multiple))], ctx({ messages: [`Borrow at ${multiple}x leverage on 500 XLM.`], capacity: { grossCollateralUsd: "1873.48", debtUsd: "26.90", floor: "1.2" } }));
+
+  it("refuses 12x and says what the maximum is", () => {
+    const { candidates, rejected } = resolve("12");
+    expect(candidates).toHaveLength(0);
+    expect(rejected[0]?.reason).toMatch(/10x/);
+    expect(rejected[0]?.reason).toMatch(/12x/);
+  });
+
+  it("still sizes the cap itself and anything under it", () => {
+    for (const multiple of ["10", "6", "2"]) {
+      const { rejected } = resolve(multiple);
+      expect(rejected.map((entry) => entry.reason).join(";"), multiple).not.toMatch(/maximum leverage/i);
+    }
+  });
+});
+
+/**
+ * "Half of the borrowed X" is half of what the borrow produced, not half of the account's X.
+ *
+ * 24 Oct, live: "Deposit 12 BLUSDC, take 3x leverage in SoUSDC, and swap half of the borrowed SoUSDC to XLM" borrowed 24
+ * (right: the Margin page's 3x is twice the deposit) and then planned to swap 31.63 SoUSDC. The plan language had a
+ * share of the wallet or of the position, and the position held the 24 just borrowed PLUS the ~39.25 SoUSDC already in
+ * the account, so "half" meant half of 63.25: about 19.6 SoUSDC of the user's own money they never asked to move.
+ * A share can now be taken of what an earlier step produced.
+ */
+describe("a share of what an earlier step produced", () => {
+  const SOROSWAP = obs("e7", "soroswap_pool_reserves",
+    { found: true, pool: { available: true, reserves: { XLM: "100000", SOUSDC: "18000" }, total_share: "100", fee: "0.0030" } }, { asset: "SOUSDC" });
+  const observations = [
+    obs("e1", "wallet_balances", { assets: [
+      { symbol: "XLM", balance: "5000", status: "ok" }, { symbol: "XLM_SAC", balance: "5000", decimals: 7, status: "ok" },
+      { symbol: "BLUSDC", balance: "50.0000000", decimals: 7, status: "ok" }, { symbol: "SOUSDC", balance: "0.0000000", decimals: 7, status: "ok" },
+    ], fee_reserve_xlm: "0.5" }),
+    obs("e2", "asset_price", { price_usd: "0.18" }, { asset: "XLM" }),
+    obs("e3", "asset_price", { price_usd: "1" }, { asset: "BLUSDC" }),
+    obs("e8", "asset_price", { price_usd: "1" }, { asset: "SOUSDC" }),
+    // The account already holds 39.25 SoUSDC as collateral: the share must not touch it.
+    obs("posted", "account_collateral", { collateral: [{ symbol: "SOUSDC", balance: "39.25" }, { symbol: "XLM", balance: "100" }] }),
+    SOROSWAP,
+  ];
+  /** The account as the Margin page showed it: $1,873.48 collateral, $26.90 debt. */
+  const ACCOUNT = { grossCollateralUsd: "1873.48", debtUsd: "26.90", floor: "1.2" };
+  const messages = ["Deposit 12 BLUSDC, take 3x leverage in SoUSDC, and swap half of the borrowed SoUSDC to XLM."];
+  const legs = (of: "previous_leg" | "position"): ProposedPlan["legs"] => [
+    { op: "deposit_collateral", asset: "BLUSDC", sizing: { kind: "literal", amount: "12", sourceQuote: "Deposit 12 BLUSDC" } },
+    { op: "borrow", asset: "SOUSDC", sizing: { kind: "leverage", multiple: "3", sourceQuote: "3x leverage" } },
+    { op: "swap", asset: "SOUSDC", assetOut: "XLM", sizing: { kind: "fraction", percent: "50", of, sourceQuote: "half of the borrowed SoUSDC" } },
+  ];
+  const resolve = (of: "previous_leg" | "position") => resolvePlans([plan("Lever and swap half", legs(of))], ctx({ messages, observations, capacity: ACCOUNT }));
+
+  it("swaps half of the 24 borrowed, and none of the SoUSDC already in the account", () => {
+    const { candidates, rejected } = resolve("previous_leg");
+    expect(rejected.map((r) => r.reason)).toEqual([]);
+    expect(candidates).toHaveLength(1);
+    const steps = candidates[0].steps!;
+    expect(Number(steps[1].amount)).toBeCloseTo(24, 5);
+    expect(Number(steps[2].amount)).toBeCloseTo(12, 5);
+  });
+
+  it("hands the LP the half that is left after the swap took its half, not the whole borrow (live #38, 24 Oct)", () => {
+    const withLp = [...legs("previous_leg"),
+      { op: "add_liquidity" as const, asset: "SOUSDC", assetOut: "XLM", sizing: { kind: "previous_leg" as const } }];
+    const { candidates, rejected } = resolvePlans([plan("Lever, swap half, LP the rest", withLp)], ctx({ messages, observations, capacity: ACCOUNT }));
+    expect(rejected.map((r) => r.reason)).toEqual([]);
+    const steps = candidates[0].steps!;
+    expect(Number(steps[1].amount)).toBeCloseTo(24, 5);
+    expect(Number(steps[2].amount)).toBeCloseTo(12, 5);
+    expect(Number(steps[3].amount)).toBeCloseTo(12, 5);
+  });
+
+  it("is anchored to the user's own share: a percent they did not say is refused", () => {
+    const wrong = legs("previous_leg").map((leg) => leg.op === "swap" ? { ...leg, sizing: { kind: "fraction" as const, percent: "40", of: "previous_leg" as const, sourceQuote: "half of the borrowed SoUSDC" } } : leg);
+    const { candidates } = resolvePlans([plan("Wrong share", wrong)], ctx({ messages, observations, capacity: ACCOUNT }));
+    expect(candidates).toHaveLength(0);
+  });
+
+  it("will not hand out more than the step produced across several shares", () => {
+    const three = [...legs("previous_leg"), { op: "swap" as const, asset: "SOUSDC", assetOut: "XLM",
+      sizing: { kind: "fraction" as const, percent: "75", of: "previous_leg" as const, sourceQuote: "three quarters" } }];
+    const { candidates } = resolvePlans([plan("Too much", three)], ctx({ messages: [...messages, "and three quarters"], observations, capacity: ACCOUNT }));
+    expect(candidates).toHaveLength(0);
+  });
+
+  it("refuses a share of a step that produced nothing in that asset", () => {
+    const orphan: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "BLUSDC", sizing: { kind: "literal", amount: "12", sourceQuote: "Deposit 12 BLUSDC" } },
+      { op: "swap", asset: "SOUSDC", assetOut: "XLM", sizing: { kind: "fraction", percent: "50", of: "previous_leg", sourceQuote: "half of the borrowed SoUSDC" } },
+    ];
+    const { candidates, rejected } = resolvePlans([plan("Nothing produced it", orphan)], ctx({ messages, observations, capacity: ACCOUNT }));
+    expect(candidates).toHaveLength(0);
+    expect(rejected[0]?.reason).toMatch(/earlier step/i);
   });
 });
 

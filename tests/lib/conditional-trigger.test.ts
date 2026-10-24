@@ -31,7 +31,11 @@ describe("future conditions are a field, not a phrase", () => {
     const message = "repay when XLM hits $0.30";
     const parsed = parseDecision(goal({ kind: "future_condition", sourceQuote: "when XLM hits $0.30" }));
     if (!parsed || parsed.kind !== "research_complete") throw new Error("decision did not parse");
-    expect(futureConditionRefusal(parsed.goal.trigger, [message])).toBe(CONDITIONAL_REFUSAL);
+    const text = futureConditionRefusal(parsed.goal.trigger, [message]);
+    // In the user's own words, so they can see which clause was read as a condition (24 Oct, N7), and it says nothing was done.
+    expect(text).toContain("“when XLM hits $0.30”");
+    expect(text).toMatch(/so I did nothing/);
+    expect(text).toMatch(/tell me the action itself/);
   });
 
   // Fails safe (Claude's audit, 24 Sep): a wrong pass would execute now what the user wanted later.
@@ -57,5 +61,18 @@ describe("future conditions are a field, not a phrase", () => {
       Date.now(), ["supply XLM when XLM hits $0.30"], [], true, trigger,
     );
     expect(questionnaire?.trigger).toEqual(trigger);
+  });
+});
+
+describe("the refusal names the clause it read as a condition", () => {
+  const trigger = (quote: string) => ({ kind: "future_condition" as const, sourceQuote: quote });
+  it("quotes it when the user wrote it, as in N7", () => {
+    const text = futureConditionRefusal(trigger("when my debt is 2,400"), ["Repay 5,000 SoUSDC when my debt is 2,400."]);
+    expect(text).toContain("\u201cwhen my debt is 2,400\u201d");
+  });
+  it("never quotes words the user did not write", () => {
+    const text = futureConditionRefusal(trigger("when the moon rises"), ["Repay 5,000 SoUSDC when my debt is 2,400."]);
+    expect(text).toBe(CONDITIONAL_REFUSAL);
+    expect(text).not.toContain("moon");
   });
 });

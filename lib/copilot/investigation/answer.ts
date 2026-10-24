@@ -268,6 +268,30 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string, 
     return `${pct.toFixed(2)}% APY`;
   };
   if (rates.length) sentences.push(`Supply APY: ${rates.map(f => `${f.label.replace(" supply APR", "")} ${shownApy(f)}`).join("; ")}.`);
+  /**
+   * The rest of what a market read returned, by field and not by the question's words: the borrow rate and the
+   * utilization sat in the facts and the plain reply printed neither (24 Oct, live: asked for supply APY, borrow APY and
+   * utilization, only the first came back when the written reply timed out). Earn quotes its rates as the page does, as
+   * they are; a Blend rate keeps its own basis. One line per field, one entry per market.
+   */
+  const marketFields = new Map<string, Map<string, ResearchFact>>();
+  for (const fact of selected) {
+    const field = fact.sourcePath.split(/[.:]/).at(-1) ?? "";
+    if (!["earn", "blend"].includes(fact.venue) || !field.endsWith("_pct") || /^supply_/.test(field)) continue;
+    marketFields.set(field, (marketFields.get(field) ?? new Map()).set(fact.label, fact));
+  }
+  for (const [field, entries] of marketFields) {
+    const words = field.replace(/_pct$/, "").split("_");
+    const heading = words.map((word) => (/^ap[ry]$/.test(word) ? word.toUpperCase() : word)).join(" ");
+    const title = heading.charAt(0).toUpperCase() + heading.slice(1);
+    const shown = (fact: ResearchFact) => {
+      const n = Number(fact.value);
+      if (!Number.isFinite(n)) return amount(fact);
+      return fact.unit === "% APR" && fact.venue === "earn" ? `${n.toFixed(2)}% APY` : `${n.toFixed(2)}${fact.unit}`;
+    };
+    const market = (fact: ResearchFact) => fact.label.replace(new RegExp(`\\s+${words.join("\\s+")}$`, "i"), "");
+    sentences.push(`${title}: ${[...entries.values()].map((fact) => `${market(fact)} ${shown(fact)}`).join("; ")}.`);
+  }
   if (sentences.length > scalarStart) blocks?.push({ type: "paragraph", segments: [{ text: sentences.slice(scalarStart).join(" ") }] });
   /**
    * Facts a read declared as one group (`ResearchFact.group`), printed under the name the read gave them. This plain
@@ -459,6 +483,11 @@ export function strategyReply(input: {
       : "";
     return `${body}.${ruledOut}`;
   }
+  // Asking, and every shape was refused only for want of the answer: the reply is the question. Reciting the rejected shape here
+  // named an asset and a venue the planner had chosen for the user a line before the question asked them to choose (24 Oct, N6).
+  if (input.question && input.candidates?.rejected.length && input.candidates.rejected.every((row) => row.needsInput)) {
+    return input.question;
+  }
   if (input.candidates?.rejected.length) {
     // Say why each shape was ruled out - the reasons are the analysis; there is no stock verdict.
     // One cause for everything refused is said once, to the person, with no count of shapes in front of it.
@@ -475,7 +504,7 @@ export function strategyReply(input: {
      * lie half the time (13 Sep: a false "no Aquarius pool" read was shown as a choice).
      */
     return input.question
-      ? `I’ve checked the available information. Before a plan can be prepared, this is unresolved: ${input.question}`
+      ? input.question
       : "I’ve checked the available information. One point needs your input before a plan can be prepared.";
   }
   if (input.status === "blocked") {
@@ -492,12 +521,12 @@ export function strategyReply(input: {
       return "This run was cancelled before it finished - a reload or a new prompt replaces the one in flight. Nothing was executed.";
     }
     if (input.stopReason === "deadline") {
-      return "The investigation ran out of time before it could finish. The completed reads are shown below; no strategy was executed.";
+      return "The investigation ran out of time before it could finish. Nothing was executed - please try again.";
     }
     if (input.stopReason === "invalid_evidence" || input.stopReason === "invalid_decision") {
       return "The investigation could not be completed from the reads it made. Nothing was executed - please try again.";
     }
-    return "The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed.";
+    return "The investigation stopped before it could finish. Nothing was executed - please try again.";
   }
   if (input.intent === "strategy") {
     /**

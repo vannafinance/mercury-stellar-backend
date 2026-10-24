@@ -6,13 +6,14 @@ vi.mock("google-auth-library", () => ({
   },
 }));
 
-import { generateInvestigationJson, INVESTIGATION_MAX_OUTPUT_TOKENS } from "@/lib/copilot/vertex";
+import { generateInvestigationJson, INVESTIGATION_MAX_OUTPUT_TOKENS, resetModelFailover } from "@/lib/copilot/vertex";
 
 beforeEach(() => {
   vi.stubEnv("GOOGLE_WORKLOAD_IDENTITY_AUDIENCE", "");
   vi.stubEnv("GOOGLE_SERVICE_ACCOUNT_JSON", JSON.stringify({ client_email: "fixture@example.test", private_key: "fixture" }));
 });
-afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+// The failover remembers a slow or refused primary for minutes; no test may inherit another's memory.
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); resetModelFailover(); });
 
 function response(
   parts: Array<{ text?: string; thought?: boolean; functionCall?: { name: string; args?: Record<string, unknown> } }>,
@@ -28,11 +29,16 @@ describe("Vertex investigation transport", () => {
       { text: "private thinking must not become output", thought: true }, { text: JSON.stringify(decision) },
     ]));
     vi.stubGlobal("fetch", fetcher);
-    const signal = new AbortController().signal;
+    const controller = new AbortController();
+    const signal = controller.signal;
     expect(await generateInvestigationJson("gemini-3.8-flash", "system", "user", signal)).toEqual(decision);
     const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("gemini-3.8-flash:generateContent");
-    expect(init.signal).toBe(signal);
+    // The caller's cancel must still reach the request. (It is raced with the failover's slowness timer, so the very
+    // same signal object is no longer what fetch receives, but aborting the caller's signal aborts it.)
+    expect(init.signal?.aborted).toBe(false);
+    controller.abort();
+    expect(init.signal?.aborted).toBe(true);
     const body = JSON.parse(String(init.body));
     expect(body.generationConfig).toEqual({
       responseMimeType: "application/json", maxOutputTokens: INVESTIGATION_MAX_OUTPUT_TOKENS, thinkingConfig: { thinkingLevel: "MEDIUM" },
@@ -43,13 +49,16 @@ describe("Vertex investigation transport", () => {
     expect(body).not.toHaveProperty("tools");
   });
 
-  it("does not retry another model or expose error response bodies", async () => {
+  it("tries the fallback model once when the primary is unavailable, and exposes no error response body", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const fetcher = vi.fn(async () => new Response("sensitive provider diagnostics", { status: 503 }));
     vi.stubGlobal("fetch", fetcher);
     await expect(generateInvestigationJson("gemini-3.8-flash", "system", "user", new AbortController().signal))
       .rejects.toThrow(/^Vertex investigation HTTP 503$/);
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    // Primary, then the registry's fallback, then it stops: a refused primary is no longer the end of the turn (24 Oct).
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(String((fetcher.mock.calls[0] as unknown as [string])[0])).toContain("gemini-3.8-flash:generateContent");
+    expect(String((fetcher.mock.calls[1] as unknown as [string])[0])).toContain("gemini-3.5-flash:generateContent");
     expect(JSON.stringify(logged.mock.calls)).toMatch(/sensitive provider diagnostics/);
     logged.mockRestore();
   });

@@ -330,3 +330,64 @@ describe("strategyReply", () => {
     expect(reply).not.toMatch(/BLUSDC/);
   });
 });
+
+/**
+ * 24 Oct, live: a run that stopped with no reads said "The completed reads are shown below", and nothing was
+ * below. A stop must say what happened and what the user can do, and claim nothing about what is on screen.
+ */
+describe("an incomplete run's message", () => {
+  const stopped = (stopReason: string) => strategyReply({
+    status: "incomplete", facts: [], candidates: null, capacity: null, question: null, stopReason,
+  });
+  it.each(["deadline", "tool_budget", "turn_budget", "model_unavailable"])("%s claims no reads are shown below and says nothing ran", (reason) => {
+    const text = stopped(reason);
+    expect(text).not.toMatch(/shown below/i);
+    expect(text).toMatch(/nothing was executed/i);
+    expect(text).toMatch(/try again/i);
+  });
+  it("a time-out says it ran out of time; a cancel does not invite a retry", () => {
+    expect(stopped("deadline")).toMatch(/ran out of time/i);
+    expect(stopped("cancelled")).not.toMatch(/try again/i);
+  });
+});
+
+/**
+ * 24 Oct, N6: asked "Borrow some stablecoins and farm them", the reply recited the rejected shape (which had silently chosen BLUSDC and
+ * Blend) and then the question card asked which stablecoin and venue. When every refused shape was only waiting for the user's answer,
+ * the reply is the question itself.
+ */
+describe("a turn that is asking, and was refused only for want of the answer", () => {
+  const ASK = "Which stablecoin (AQUSDC, BLUSDC, or SOUSDC) and farming venue (Blend or LP) do you prefer, and how much?";
+  const rejected = (extra: Record<string, unknown> = {}) => ({ label: "Borrow BLUSDC and supply to Blend farm", reason: "Borrow BLUSDC: needs a floor.", cause: "needs a floor.", asset: "BLUSDC", ...extra });
+  const reply = (rows: ReturnType<typeof rejected>[], question: string | null = ASK) => strategyReply({
+    status: "needs_input", facts: [], candidates: { feasible: [], rejected: rows } as never, capacity: null, question, intent: "strategy",
+  });
+
+  it("says the question, and does not name the shape that chose for the user", () => {
+    const text = reply([rejected({ needsInput: true })]);
+    expect(text).toBe(ASK);
+    expect(text).not.toMatch(/BLUSDC and supply to Blend|Nothing was executed/);
+  });
+
+  it("still tells the user why when something was truly refused", () => {
+    const text = reply([rejected({ needsInput: true }), rejected({ label: "Withdraw all", reason: "Withdraw all: the protocol refuses.", cause: "the protocol refuses." })]);
+    expect(text).toMatch(/protocol refuses/);
+  });
+
+  it("without a question, a refusal is still stated", () => {
+    expect(reply([rejected({ needsInput: true })], null)).toMatch(/Nothing was executed/);
+  });
+});
+
+describe("a turn that needs the user's input", () => {
+  const ask = (question: string | null) => strategyReply({ status: "needs_input", facts: [], candidates: null, capacity: null, question, intent: "strategy" });
+
+  it("is the question itself, with no preamble about what was checked or what is 'unresolved'", () => {
+    const question = "Which stablecoin would you like to borrow, how much of it, and where would you like to farm it?";
+    expect(ask(question)).toBe(question);
+  });
+
+  it("without a question still says that something is needed", () => {
+    expect(ask(null)).toMatch(/needs your input/i);
+  });
+});

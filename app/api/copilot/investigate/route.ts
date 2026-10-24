@@ -19,8 +19,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-/** The route's own deadline; research and the writing step share it. */
-const ROUTE_DEADLINE_MS = 75_000;
+/**
+ * The route's own deadline; research and the writing step share it. 100 s, up from 75 s, with the loop at 55 s
+ * (24 Oct: Gemini's tail ran 13-51 s per call and a deep-pool max_borrow read 24-30 s, so a healthy run no longer
+ * fits in 45 s). It stays under the 120 s ceiling above and 20 s short of the browser's backstop.
+ */
+const ROUTE_DEADLINE_MS = 100_000;
 
 async function inputFrom(req: NextRequest): Promise<ResearchInput> {
   if (!req.body) throw new ResearchError("invalid_request", "Enter a question to investigate.", 400);
@@ -183,7 +187,7 @@ export async function POST(req: NextRequest) {
             // A store that cannot record the turn must not cost the user their answer - but a
             // silent failure would mean history quietly stops working in prod, so it is logged.
             const recorded = bound
-              ? await appendSessionTurn({ subject, conversationId: input.conversationId, user: input.message, result })
+              ? await appendSessionTurn({ subject, conversationId: input.conversationId, user: input.message, result, completesPrompt: Boolean(input.answers) })
                 .catch((error) => { logUnexpected("conversation not recorded", { request_id, subject, error }); return null; })
               : null;
             send({ type: "result", result, ...(recorded ? { conversationId: recorded.id } : {}) });

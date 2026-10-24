@@ -142,7 +142,11 @@ export interface CandidateSet {
    */
   rejected: Array<{ label: string; reason: string; /** The reason without the leg it is prefixed with, so refusals with one cause can be said once. */ cause?: string; asset: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] };
     /** The protocol refused a borrow of this asset on a pool limit (its structured `limiting_factor`, not the sentence), so a smaller amount may pass. */
-    poolLimited?: { asset: string }; borrowLimit?: import("./view").BorrowLimitRefusal }>;
+    poolLimited?: { asset: string };
+    /** The protocol refused a borrow of this asset, for any reason: its own ceiling is read next, so the refusal can state the real limit. */
+    ceilingNeeded?: { asset: string };
+    /** The refusal only waited for an answer the user has not given, so the reply can be the question itself. */
+    needsInput?: true; borrowLimit?: import("./view").BorrowLimitRefusal }>;
 }
 
 function signedWad(value: string): bigint {
@@ -456,7 +460,7 @@ export function onlyNamedAssets(set: CandidateSet | null, messages: readonly str
 
 export function mergeCandidateSets(
   fixed: CandidateSet | null,
-  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; acceptable?: true; accountRequired?: { code: "accountRequired"; actions: string[] }; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string }; borrowLimit?: import("./view").BorrowLimitRefusal }> },
+  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; acceptable?: true; needsInput?: true; accountRequired?: { code: "accountRequired"; actions: string[] }; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string }; borrowLimit?: import("./view").BorrowLimitRefusal }> },
   borrowing: CandidateInput["borrowing"] = "unspecified",
 ): CandidateSet {
   // The op sequence a fixed shape compiles to, so it can be matched against a composed plan's steps.
@@ -481,6 +485,7 @@ export function mergeCandidateSets(
         cause: `${entry.reason}.`,
         asset: entry.leg?.split(" ").pop() ?? "",
         ...(entry.acceptable ? { acceptable: true as const } : {}),
+        ...(entry.needsInput ? { needsInput: true as const } : {}),
         ...(entry.accountRequired ? { accountRequired: entry.accountRequired } : {}),
         ...(entry.pocket ? { pocket: entry.pocket } : {}),
         ...(entry.borrowLimit ? { borrowLimit: entry.borrowLimit } : {}),

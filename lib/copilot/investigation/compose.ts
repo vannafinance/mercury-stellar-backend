@@ -36,6 +36,14 @@ export function composeBudgetMs(): number {
   return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_COMPOSE_BUDGET_MS;
 }
 
+/**
+ * What the summary of a finished run may wait. It must outlast the failover to the fallback model (a slow primary is given
+ * 15 s before it is replaced) and leave the fallback time to answer: at 15 s, the old budget, a degraded primary ended the
+ * summary before the failover could finish and the user got the receipt-only "Done." (24 Oct). A run that has settled is
+ * worth the wait; the browser is told to wait longer than this (hooks/composed-completion.ts).
+ */
+const COMPLETION_COMPOSE_BUDGET_MS = 28_000;
+
 /** The most the writing step may wait, however much of the route is left: past this a reply is not worth the wait. */
 const MAX_COMPOSE_BUDGET_MS = 45_000;
 /** Kept back so the response can still be sent before the route's own deadline cuts the stream. */
@@ -80,7 +88,8 @@ const COMPLETION_SYSTEM = `You write the reply shown once a user's transactions 
 You are given the user's request and FACTS: each settled step (what was done, the amount), any previously observed rates, and, when it was read after the run, the account's health factor now.
 Only supplied settled steps completed. Use workflow status and step statuses to distinguish settled, pending, failed and unsubmitted work. Rates come from the supplied sealed comparisons; they are not a new post-run read. If stopped is given, distinguish what ran from what did not. Do not invent current health or next actions.
 Connect the settled outcome to the original request and approved constraints. When a health-floor fact is supplied, include it as a fact reference and explain that it was the approved safety target for the run. Distinguish this target from freshly observed health: only health_now is a post-run observation, and a target alone does not prove the resulting health or that the whole request completed. Use your own concise wording rather than a fixed sentence.
-Write one combined summary for the whole run, short: open with one or two plain sentences saying what was done overall and, when health_now is supplied, what the health factor is now. Add no other paragraphs, headings or tables. The renderer draws each transaction as its own row with a tick and its explorer link, so never write hashes, links or ledgers. When more than one transaction settled, follow the sentences with one bullet per transaction, in the order given: a short past-tense line saying what that transaction did, which becomes that transaction's row. With a single transaction, the sentences are enough. Do not ask for approval or narrate waiting for signatures when the workflow is completed.
+Write one combined summary for the whole run, short: open with one or two plain sentences saying what was done overall and, when health_now is supplied, what the health factor is now. Add no headings or tables, and no paragraphs beyond the answer to anything else the request asked (below). The renderer draws each transaction as its own row with a tick and its explorer link, so never write hashes, links or ledgers. When more than one transaction settled, follow the sentences with one bullet per transaction, in the order given: a short past-tense line saying what that transaction did, which becomes that transaction's row. With a single transaction, the sentences are enough. Do not ask for approval or narrate waiting for signatures when the workflow is completed.
+One request gets one reply. When the request also asked for something beyond the transactions (a figure to show, a price to tell, something to check), answer it in this same reply, in a sentence or two after the transactions, from the supplied facts, and give only what was asked: never the other figures. Account figures read after the run (leverage, liquidation prices, whether a margin account exists) are supplied for that, and are cited like any other fact. If no supplied fact covers what was asked, say in a few words that it could not be read just now; never leave a part of the request unanswered. When part of the request needed no transaction (the margin account already exists, so none was opened), say so in a few words.
 ${PRESENTATION}
 ${CHAT_STYLE}`;
 
@@ -115,6 +124,29 @@ function borrowRefusalContext(view: ResearchView) {
   return { facts, rejections };
 }
 
+const CAUSE_REFUSAL_SYSTEM = `You tell the user, in plain words, why the requested step could not be prepared and what they can do next. Use only the supplied reasons; never add a cause, a number or a replacement plan. Name the refused step by citing its fact reference. Say the cause in everyday language: no protocol or system jargon, no names of internal limits or checks, no unit names such as CPU or ledger. Say what to change (for example state an amount, pick a smaller size, or a different asset) only when a supplied reason says so. End by saying nothing was submitted.
+${PRESENTATION}
+${CHAT_STYLE}
+Return one short paragraph, two sentences at most. Write no digits yourself; the only figure allowed is the cited step.`;
+
+/**
+ * A refusal whose cause is a sentence, not a measured ceiling: the planner's or protocol's reason is
+ * reworded plainly around the audited step label. Turns that carry their own action (an account button,
+ * an "accept the loss" choice, a missing-amount question, a wrong-pocket remedy) keep their own reply.
+ */
+function causeRefusalContext(view: ResearchView) {
+  const rejected = view.candidates?.rejected ?? [];
+  if (view.status !== "researched" || view.candidates?.feasible.length || view.questionnaire || view.pendingWrite || view.choices?.length || view.proposalCandidateId ||
+    !rejected.length || rejected.some(row => row.borrowLimit || row.accountRequired || row.poolLimited || row.ceilingNeeded || row.needsInput || row.acceptable)) return null;
+  const facts: ResearchFact[] = [];
+  const rejections = rejected.slice(0, 3).map((row, index) => {
+    const id = `refused${String.fromCharCode(65 + index)}:step`;
+    facts.push({ id, label: "Refused step", value: row.label, unit: "", venue: "margin", evidenceId: "refusal", sourcePath: "label", readAt: 0, requiredInReply: true });
+    return { stepFact: id, reason: row.cause ?? row.reason };
+  });
+  return { facts, rejections };
+}
+
 /** Aggregatable lifecycle data only: no request text, account identifiers or fact values. */
 function compositionEvent(lane: ReplyLane | "other", outcome: "composed" | "skipped" | "off" | "refused" | "unavailable", ms = 0, blocks: readonly ReplyBlock[] = [], reason?: string) {
   console.info("[copilot] reply composition", {
@@ -128,7 +160,7 @@ function scopeContext(view: ResearchView) {
 }
 
 const defaultGenerate: Generate = (system, user, signal) =>
-  generateInvestigationJson(copilotConfig.vertexModel, system, user, signal, "LOW", [], REPLY_SCHEMA);
+  generateInvestigationJson(copilotConfig.vertexComposeModel, system, user, signal, "LOW", [], REPLY_SCHEMA);
 
 /** Plan cards the composer may introduce: a strategy's own options, not a direct action. */
 export function composablePlans(view: ResearchView): boolean {
@@ -238,7 +270,7 @@ export function planFacts(view: ResearchView): {
  * A finished run's facts: each settled step from the journal (never the browser's copy), the
  * rate it earns or costs from the sealed reads, and the health factor read after it ran.
  */
-export function completionFacts(view: WorkflowView, comparisons: readonly RateComparison[], healthNow: string | null, positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number }, healthFloor?: string | null): ResearchFact[] {
+export function completionFacts(view: WorkflowView, comparisons: readonly RateComparison[], healthNow: string | null, positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number }, healthFloor?: string | null, extra: readonly ResearchFact[] = []): ResearchFact[] {
   const facts: ResearchFact[] = [];
   const add = (id: string, label: string, value: string, unit: string) =>
     facts.push({ id, label, value, unit, venue: "margin", evidenceId: "run", sourcePath: id, readAt: 0 });
@@ -270,6 +302,9 @@ export function completionFacts(view: WorkflowView, comparisons: readonly RateCo
   }
   if (healthFloor) facts.push({ id: "account:health_floor", label: "approved minimum health factor target", value: healthFloor,
     unit: "HF", venue: "margin", evidenceId: "approved-proposal", sourcePath: "floor", readAt: 0, quantity: true, requiredInReply: true });
+  // Figures read from the account after the run, offered for a request that asked for them. Never required: a reply
+  // that was not asked for a liquidation price does not carry one.
+  for (const fact of extra) facts.push({ ...fact, requiredInReply: false });
   return facts;
 }
 
@@ -286,9 +321,11 @@ export async function composeCompletion(input: {
   healthFloor?: string | null;
   constraints?: readonly string[];
   positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number };
+  /** Post-run figures (leverage, liquidation, whether the account exists) offered for what the request asked. */
+  extraFacts?: readonly ResearchFact[];
 }, signal: AbortSignal, generate: Generate = defaultGenerate): Promise<{ message: string; blocks: ReplyBlock[] } | null> {
   if (process.env.COPILOT_COMPOSED_REPLIES === "off") { compositionEvent("completion", "off"); return null; }
-  const facts = completionFacts(input.view, input.comparisons, input.healthNow, input.positionNow, input.healthFloor);
+  const facts = completionFacts(input.view, input.comparisons, input.healthNow, input.positionNow, input.healthFloor, input.extraFacts);
   if (!facts.length) { compositionEvent("completion", "skipped", 0, [], "no_facts"); return null; }
   const stopped = input.view.status !== "completed";
   const user = JSON.stringify({
@@ -300,7 +337,7 @@ export async function composeCompletion(input: {
     ...(stopped ? { stopped: { status: input.view.status } } : {}),
     draft: input.draft,
   });
-  const bound = await boundReply(COMPLETION_SYSTEM, user, facts, signal, generate, "completion");
+  const bound = await boundReply(COMPLETION_SYSTEM, user, facts, signal, generate, "completion", COMPLETION_COMPOSE_BUDGET_MS);
   return bound ? { message: plainReply(bound), blocks: bound } : null;
 }
 
@@ -394,6 +431,13 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
     system = REFUSAL_SYSTEM;
     facts = refusal.facts;
     user = JSON.stringify({ request, facts: facts.map(replyFactContext), rejections: refusal.rejections,
+      context: { category: "refusal", status: view.status, executionSubmitted: false }, draft: view.message });
+  } else if (!composableUnpreparedStrategy(view) && causeRefusalContext(view)) {
+    const cause = causeRefusalContext(view)!;
+    lane = "refusal";
+    system = CAUSE_REFUSAL_SYSTEM;
+    facts = cause.facts;
+    user = JSON.stringify({ request, facts: facts.map(replyFactContext), rejections: cause.rejections,
       context: { category: "refusal", status: view.status, executionSubmitted: false }, draft: view.message });
   } else if (view.status === "researched" && view.understanding?.intent === "answer" && !view.facts.length
     && view.message.trim() && !view.question && !view.questionnaire && !view.pendingWrite && !view.choices?.length

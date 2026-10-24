@@ -22,6 +22,7 @@
  * - Nothing here changes an amount. A blocked step is a refusal, not a resize.
  */
 
+import { tidyFigures } from "./figures";
 import type { MCPClient } from "../mcp-client";
 import type { Venue } from "../registry/assets";
 import { OP_FLOW, SIZED_OPS, type ProposalStep, type WorkflowOp } from "../workflow/types";
@@ -198,7 +199,7 @@ function summarise(steps: readonly ProposalStep[], results: StepSimulation[]): P
   const blocked = results.find((r) => r.verdict === "blocked");
   const label = (id: string) => steps.find((s) => s.id === id)?.label ?? id;
   if (blocked) {
-    return { verdict: "blocked", steps: results, summary: `The protocol refuses "${label(blocked.stepId)}": ${blocked.reason}` };
+    return { verdict: "blocked", steps: results, summary: `The protocol refuses "${label(blocked.stepId)}": ${tidyFigures(blocked.reason)}` };
   }
   const allowed = results.filter((r) => r.verdict === "allowed");
   const dependent = results.filter((r) => r.verdict === "dependent");
@@ -280,7 +281,10 @@ export async function simulateCandidates(
       const planStep = candidate.steps?.find((step) => step.id === blockedStep?.stepId);
       const poolLimited = planStep && OP_FLOW[planStep.op].from === "debt" && blockedStep?.limitingFactor && blockedStep.limitingFactor !== "collateral_health"
         ? { poolLimited: { asset: planStep.asset } } : {};
-      rejected.push({ label: candidate.label, reason: simulation.summary, asset: candidate.asset, ...poolLimited });
+      // Any refused borrow is the moment the protocol's own ceiling is wanted: it is no longer read up front for a stated
+      // amount, so the refusal that follows tells the user the real limit, whichever limit refused it.
+      const ceilingNeeded = planStep && OP_FLOW[planStep.op].from === "debt" ? { ceilingNeeded: { asset: planStep.asset } } : {};
+      rejected.push({ label: candidate.label, reason: simulation.summary, asset: candidate.asset, ...poolLimited, ...ceilingNeeded });
       continue;
     }
     feasible.push({ ...candidate, simulation });

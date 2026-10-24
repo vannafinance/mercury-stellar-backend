@@ -152,4 +152,14 @@ describe("an LP exit feeds the next leg in that token", () => {
     expect(candidates).toEqual([]);
     expect(rejected[0]?.reason).toBe(UNKNOWN);
   });
+  it("sizes a swap from the removal's payout when the pool was read, and keeps the refusal when it was not", () => {
+    const swap = { op: "swap" as const, asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "previous_leg" as const } };
+    // The fixture pool is thin, so the swap's own price-impact guard speaks: it quotes the removal's 100 XLM.
+    const read = run([exit, swap], true);
+    expect(read.rejected[0]?.reason).toContain("100 XLM");
+    expect(read.rejected[0]?.reason).not.toBe(UNKNOWN);
+    const unread = run([exit, swap], false);
+    expect(unread.candidates).toEqual([]);
+    expect(unread.rejected[0]?.reason).toBe(UNKNOWN);
+  });
 });

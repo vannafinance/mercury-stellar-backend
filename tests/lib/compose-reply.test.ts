@@ -42,9 +42,39 @@ describe("binding the model's blocks", () => {
     expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
     expect(generate).toHaveBeenCalledTimes(2);
   });
-  it("does not replace a mixed-cause refusal with a borrow-only explanation", async () => {
+  it("does not wrap a mixed borrow and non-borrow refusal in the borrow-ceiling explanation", async () => {
     const original = refusalView();
     original.candidates!.rejected.push({ label: "Supply", asset: "SOUSDC", reason: "Unsupported venue" });
+    const generate = vi.fn(async (system: string) => { expect(system).not.toContain("protocol ceiling"); return { blocks: [{ type: "paragraph", text: "x" }] }; });
+    expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
+  });
+  const causeView = (extra: Record<string, unknown> = {}) => view({ facts: [], message: "Swap 5 XLM - the pool is too thin.",
+    understanding: { intent: "strategy", objective: "Swap", constraints: [], borrowing: "unspecified" },
+    candidates: { feasible: [], rejected: [{ label: "Swap 5 XLM", asset: "XLM", reason: "the pool is too thin for that size", ...extra }] },
+  } as unknown as Partial<ResearchView>);
+  it("words a refusal that has only a cause, around the audited step and without typed figures", async () => {
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", segments: [
+      { type: "text", text: "I could not prepare " }, { type: "fact", factId: "refusedA:step" },
+      { type: "text", text: " because the pool is too thin for that size. Nothing was submitted." },
+    ] }] }));
+    const out = await composeReply(causeView(), new AbortController().signal, generate);
+    expect(out.message).toContain("Swap 5 XLM");
+    expect(out.message).toContain("Nothing was submitted");
+    expect(out.message).not.toBe(causeView().message);
+  });
+  it("keeps the deterministic reply when the model types a figure", async () => {
+    const original = causeView();
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", segments: [
+      { type: "fact", factId: "refusedA:step" }, { type: "text", text: " fails by 9 percent." },
+    ] }] }));
+    expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
+  });
+  it.each([
+    ["accountRequired", { accountRequired: { code: "accountRequired", actions: ["open"] } }],
+    ["needsInput", { needsInput: true }],
+    ["acceptable", { acceptable: true }],
+  ])("leaves a %s refusal to its own reply", async (_name, extra) => {
+    const original = causeView(extra);
     const generate = vi.fn();
     expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
     expect(generate).not.toHaveBeenCalled();
@@ -441,6 +471,45 @@ describe("composing the reply once a run has finished", () => {
     expect(byId["stepA:amount"]).toBe("5");
     expect(Number(byId["stepA:rate"])).toBeGreaterThan(12); // APY from the read APR
     expect(byId["account:health_now"]).toBe("2.41");
+  });
+
+  /**
+   * 24 Oct, live: "Deposit 1 BLUSDC and borrow 0.5 SoUSDC, then show my new health factor" and "...and tell me my
+   * liquidation price" settled, and the summary was a list of transactions that never answered the last part. One
+   * request gets one reply: what ran, and whatever else was asked, from the account as it stands after the run.
+   * Those figures are offered, never required: a reply that did not ask for them does not carry them.
+   */
+  describe("answers what the request asked beyond the transactions", () => {
+    const extra = [
+      { id: "account:liquidation:xlm_price", label: "XLM liquidation price", value: "0.0421", unit: "USD", venue: "margin", evidenceId: "post-settlement-account-read", sourcePath: "xlm", readAt: 5, group: "Liquidation" },
+      { id: "account:leverage_now", label: "account leverage now", value: "1.31", unit: "x", venue: "margin", evidenceId: "post-settlement-account-read", sourcePath: "leverage", readAt: 5 },
+    ] as never;
+
+    it("offers the post-run figures to the writer, none of them required", async () => {
+      const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "{{stepA:done}}." }] }));
+      await composeCompletion({ view: run("completed", [settled]), request: "supply 5 xlm to blend then tell me my xlm liquidation price", draft: "Done.", comparisons, healthNow: null, extraFacts: extra }, new AbortController().signal, generate);
+      const input = JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1]);
+      const offered = input.facts.filter((fact: { id: string }) => fact.id.startsWith("account:liquidation") || fact.id === "account:leverage_now");
+      expect(offered).toHaveLength(2);
+      for (const fact of offered) expect(fact.requiredInReply).toBeFalsy();
+    });
+
+    it("lets the reply cite a liquidation figure it was asked for", async () => {
+      const out = await composeCompletion({ view: run("completed", [settled]), request: "supply 5 xlm to blend then tell me my xlm liquidation price", draft: "Done.", comparisons, healthNow: null, extraFacts: extra },
+        new AbortController().signal, async () => ({ blocks: [{ type: "paragraph", segments: [
+          { type: "fact", factId: "stepA:done" }, { type: "text", text: ". Your XLM liquidation price is " }, { type: "fact", factId: "account:liquidation:xlm_price" }, { type: "text", text: "." },
+        ] }] }));
+      expect(out?.message).toContain("0.0421");
+    });
+
+    it("tells the writer to answer every part of the request and to say so when a figure was not read", async () => {
+      const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "{{stepA:done}}." }] }));
+      await composeCompletion({ view: run("completed", [settled]), request: "x", draft: "Done.", comparisons, healthNow: null }, new AbortController().signal, generate);
+      const system = String((generate.mock.calls[0] as unknown as [string, string])[0]);
+      expect(system).toMatch(/also asked/i);
+      expect(system).toMatch(/could not be read/i);
+      expect(system).toMatch(/only what (was|is) asked/i);
+    });
   });
 
   it("counts only settled steps, and says a stopped run stopped", async () => {
