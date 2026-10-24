@@ -6,7 +6,7 @@ import { getMcpClient } from "@/lib/copilot/mcp-client";
 import { copilotConfig } from "@/lib/copilot/config";
 import { createFlashResearchModel } from "@/lib/copilot/investigation/flash";
 import { researchTurn, type ResearchInput } from "@/lib/copilot/investigation/service";
-import { composeReply } from "@/lib/copilot/investigation/compose";
+import { composeBudgetAfter, composeReply } from "@/lib/copilot/investigation/compose";
 import "@/lib/copilot/investigation/proposal";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
 import { INVESTIGATION_MESSAGE_LIMIT } from "@/lib/copilot/domain-classifier";
@@ -18,6 +18,13 @@ import type { ResearchStreamEvent } from "@/lib/copilot/investigation/view";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
+
+/**
+ * The route's own deadline; research and the writing step share it. 100 s, up from 75 s, with the loop at 55 s
+ * (24 Oct: Gemini's tail ran 13-51 s per call and a deep-pool max_borrow read 24-30 s, so a healthy run no longer
+ * fits in 45 s). It stays under the 120 s ceiling above and 20 s short of the browser's backstop.
+ */
+const ROUTE_DEADLINE_MS = 100_000;
 
 async function inputFrom(req: NextRequest): Promise<ResearchInput> {
   if (!req.body) throw new ResearchError("invalid_request", "Enter a question to investigate.", 400);
@@ -94,7 +101,7 @@ export async function POST(req: NextRequest) {
   // Covers body parse and auth, not only the stream. When this sat inside start(),
   // a hang before the stream opened left the client's 120s abort as the only backstop.
   let onDeadline = () => abort.abort();
-  const timer = setTimeout(() => onDeadline(), 75_000);
+  const timer = setTimeout(() => onDeadline(), ROUTE_DEADLINE_MS);
   const elapsed = () => Date.now() - startedAt;
   try {
     const origin = req.headers.get("origin");
@@ -173,13 +180,14 @@ export async function POST(req: NextRequest) {
               onProgress: (event) => send({ type: "progress", event }),
             });
             // The model words a factual answer around the audited figures; unchanged if it cannot.
-            const result = await composeReply(researched, signal);
+            // The writing step gets the time research left, not a fixed slice: a call already made should finish.
+            const result = await composeReply(researched, signal, undefined, { budgetMs: composeBudgetAfter(elapsed(), ROUTE_DEADLINE_MS) });
             // The turn is recorded before the result goes out, so the client learns which
             // conversation it landed in and carries that id on the next turn.
             // A store that cannot record the turn must not cost the user their answer - but a
             // silent failure would mean history quietly stops working in prod, so it is logged.
             const recorded = bound
-              ? await appendSessionTurn({ subject, conversationId: input.conversationId, user: input.message, result })
+              ? await appendSessionTurn({ subject, conversationId: input.conversationId, user: input.message, result, completesPrompt: Boolean(input.answers) })
                 .catch((error) => { logUnexpected("conversation not recorded", { request_id, subject, error }); return null; })
               : null;
             send({ type: "result", result, ...(recorded ? { conversationId: recorded.id } : {}) });

@@ -45,6 +45,8 @@ export function formatFactValue(fact: ResearchFact): string {
   const n = Number(fact.value);
   // A health factor reads as the Margin page shows it: two places, no unit.
   if (fact.unit === "HF") return Number.isFinite(n) ? n.toFixed(2) : fact.value;
+  // Leverage reads as the Margin page shows it: two places and an x ("1.01x").
+  if (fact.unit === "x") return Number.isFinite(n) ? `${n.toFixed(2)}x` : fact.value;
   // A rate reads as a rate: "5.12% APY", not "5.123456 % APY".
   if (fact.unit.startsWith("%")) return Number.isFinite(n) ? `${n.toFixed(2)}${fact.unit}` : fact.value;
   if (fact.quantity && Number.isFinite(n)) return `${formatTokenAmount(n)} ${fact.unit}`.trim();

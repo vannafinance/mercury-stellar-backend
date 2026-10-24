@@ -122,6 +122,24 @@ export function useInvestigation(wallet: string | null) {
   const abort = useRef<AbortController | null>(null);
   /** The controller of the latest open-conversation request; lets `open` tell it from a reply run. */
   const openRequest = useRef<AbortController | null>(null);
+  /** The sequence id of the reply run in flight, or null between runs. */
+  const runningId = useRef<number | null>(null);
+  /**
+   * Replies still being worked out for a chat the user has left. Leaving a chat used to abort its run, so the answer to
+   * a prompt was lost the moment the user looked at another chat (24 Oct). The run now keeps going and its answer is filed
+   * under the chat it belongs to; opening that chat again picks the run back up while it is still working.
+   */
+  const detached = useRef(new Map<number, { controller: AbortController; origin: string | null; prompt: string }>());
+  /** A run picked back up from a local chat: when its answer lands under a saved conversation, the local copy goes. */
+  const pickedUpFrom = useRef(new Map<number, string>());
+  /**
+   * Answers that landed while their chat was not on screen, by the ids the chat can be opened by. A plan is prepared and run
+   * by the screen only for an answer it receives live, so one that finished in the background would sit there as plain text
+   * (24 Oct: "Lend 1 BLUSDC ... then deposit 3 XLM" came back as a sentence and nothing ran). Opened within a few minutes it
+   * is treated as just received; later than that it is history, as before.
+   */
+  const landedAway = useRef(new Map<string, { continuation: string; at: number }>());
+  const LANDED_AWAY_FRESH_MS = 240_000;
   const sequence = useRef(0);
   const continuation = useRef<string | null>(null);
   const conversationId = useRef<string | null>(null);
@@ -164,6 +182,33 @@ export function useInvestigation(wallet: string | null) {
       writeStoredConversations(owner, next);
       return next;
     });
+  }, []);
+
+  /**
+   * Leave the reply run in flight running. `origin` is the id the chat can be opened by afterwards (a saved conversation
+   * or a local one). A run that is not a reply (an open request) or has already finished is simply aborted as before.
+   */
+  const detachRun = useCallback((origin: string | null, reason: string) => {
+    const controller = abort.current;
+    const id = runningId.current;
+    if (!controller) return;
+    if (id === null || controller === openRequest.current || controller.signal.aborted || !origin) {
+      controller.abort(reason);
+      return;
+    }
+    // Two parked replies at most: the oldest gives way, so a run cannot be left running forever unseen.
+    if (detached.current.size >= 2) {
+      const [oldest] = detached.current.keys();
+      detached.current.get(oldest)?.controller.abort("too many detached runs");
+      detached.current.delete(oldest);
+    }
+    detached.current.set(id, { controller, origin, prompt: "" });
+    abort.current = null;
+    runningId.current = null;
+  }, []);
+  const abortDetached = useCallback(() => {
+    for (const run of detached.current.values()) run.controller.abort("wallet changed");
+    detached.current.clear();
   }, []);
 
   const refreshConversations = useCallback(async (owner: string | null) => {
@@ -295,6 +340,7 @@ export function useInvestigation(wallet: string | null) {
   useEffect(() => {
     const wallet = effectiveWallet;
     abort.current?.abort("wallet changed");
+    abortDetached();
     sequence.current += 1;
     const listed = wallet ? readStoredConversations(wallet) : [];
     const stored = readStoredThread(wallet);
@@ -357,7 +403,7 @@ export function useInvestigation(wallet: string | null) {
       } catch { /* sessionStorage remains the live thread; the list appears on the next load */ }
     })();
     return () => { restore.abort("wallet effect cleanup"); abort.current?.abort(); sequence.current += 1; };
-  }, [effectiveWallet, applyBlank, applyThread]);
+  }, [effectiveWallet, applyBlank, applyThread, abortDetached]);
 
   const cancel = useCallback(() => {
     holding.current = false;
@@ -450,9 +496,9 @@ export function useInvestigation(wallet: string | null) {
 
   /** Start a new chat: the screen clears; the conversation stays in the list; nothing is created until the first turn. */
   const newChat = useCallback(() => {
-    abort.current?.abort("new chat");
     sequence.current += 1;
     const owner = activeWallet.current;
+    if (!owner) abort.current?.abort("new chat");
     if (owner) {
       const currentStored = readStoredThread(owner);
       const newLocalId = `local:${Date.now()}`;
@@ -462,6 +508,8 @@ export function useInvestigation(wallet: string | null) {
           conversationId: newLocalId,
         });
       }
+      // A reply still being worked out keeps going; its chat is the one just saved.
+      detachRun(currentStored && currentStored.turns.length > 0 ? newLocalId : conversationId.current, "new chat");
       setConversations((previous) => {
         const live = previous.find((item) => item.id === LIVE_CONVERSATION_ID);
         const next = live
@@ -480,7 +528,16 @@ export function useInvestigation(wallet: string | null) {
         await fetch("/api/copilot/session", { method: "DELETE", headers, cache: "no-store" });
       } catch { /* the pointer clears on the next turn anyway */ }
     })();
-  }, [applyBlank]);
+  }, [applyBlank, detachRun]);
+
+  /** An answer that landed while this chat was away, opened soon enough, is handled as just received. */
+  const takeLandedAway = useCallback((id: string, result: ResearchView | null | undefined) => {
+    const away = landedAway.current.get(id);
+    if (!away) return;
+    landedAway.current.delete(id);
+    if (!result || result.continuation !== away.continuation || Date.now() - away.at > LANDED_AWAY_FRESH_MS) return;
+    setState((previous) => ({ ...previous, resultOrigin: "live" as const }));
+  }, []);
 
   /** Open a conversation from the list. */
   const open = useCallback(async (id: string) => {
@@ -497,10 +554,13 @@ export function useInvestigation(wallet: string | null) {
       return;
     }
     // If the user was in an unsaved live chat or a local chat, preserve it before switching
+    // `origin` is the id the chat being left can be opened by afterwards; a reply still running for it keeps running.
+    let origin: string | null = conversationId.current;
     if (owner && !conversationId.current) {
       const currentStored = readStoredThread(owner);
       if (currentStored && currentStored.turns.length > 0) {
         const localId = `local:${Date.now()}`;
+        origin = localId;
         writeStoredLocalThread(owner, localId, { ...currentStored, conversationId: localId });
         setConversations((prev) => {
           const next = prev.map((item) => (item.id === LIVE_CONVERSATION_ID ? { ...item, id: localId } : item));
@@ -516,7 +576,7 @@ export function useInvestigation(wallet: string | null) {
     }
 
     if (isLocalConversationId(id)) {
-      abort.current?.abort("opened another chat");
+      detachRun(origin, "opened another chat");
       sequence.current += 1;
       const stored = readStoredLocalThread(owner, id);
       if (stored) {
@@ -529,12 +589,24 @@ export function useInvestigation(wallet: string | null) {
           directResponse: stored.directResponse ?? null,
           directSubmitted: stored.directSubmitted ?? null,
         });
+        takeLandedAway(id, stored.result);
+        // The reply for this chat is still being worked out: pick the run back up so its answer lands here.
+        const parked = [...detached.current.entries()].find(([, run]) => run.origin === id);
+        if (parked) {
+          const [runId, run] = parked;
+          detached.current.delete(runId);
+          sequence.current = runId;
+          abort.current = run.controller;
+          runningId.current = runId;
+          pickedUpFrom.current.set(runId, id);
+          setState((previous) => ({ ...previous, loading: true, error: null, progress: { kind: "scope", label: "Still working on your request" } }));
+        }
       } else {
         setState((previous) => ({ ...previous, error: "That conversation is no longer cached in this session." }));
       }
       return;
     }
-    abort.current?.abort("opened another chat");
+    detachRun(origin, "opened another chat");
     const requestSequence = ++sequence.current;
     const controller = new AbortController();
     abort.current = controller;
@@ -558,11 +630,12 @@ export function useInvestigation(wallet: string | null) {
       };
       writeStoredThread(owner, { wallet: owner, ...thread });
       applyThread(owner, thread);
+      takeLandedAway(id, conversation.result);
     } catch {
       if (activeWallet.current === owner && requestSequence === sequence.current && !controller.signal.aborted)
         setState((previous) => ({ ...previous, error: "That conversation could not be opened. Try again." }));
     }
-  }, [applyThread]);
+  }, [applyThread, detachRun, takeLandedAway]);
 
   /** Delete a conversation. If it is the one on screen, the screen clears. */
   const remove = useCallback(async (id: string) => {
@@ -771,7 +844,7 @@ export function useInvestigation(wallet: string | null) {
     }, 60_000);
   }, []);
 
-  const run = useCallback(async (message: string, signal?: AbortSignal, answers?: QuestionnaireAnswers, onResult?: (result: ResearchView) => void, options?: { echoUser?: boolean }) => {
+  const run = useCallback(async (message: string, signal?: AbortSignal, answers?: QuestionnaireAnswers, onResult?: (result: ResearchView) => void, options?: { echoUser?: boolean; replaceLastReply?: boolean }) => {
     const prompt = message.trim();
     if (!prompt) return;
     holding.current = false;
@@ -784,8 +857,11 @@ export function useInvestigation(wallet: string | null) {
       console.warn("[copilot] investigation aborted", { reason: String(combined.reason ?? "unlabelled"), prompt: prompt.slice(0, 60) });
     }, { once: true });
     const id = ++sequence.current;
+    runningId.current = id;
     const owner = wallet;
     const current = () => sequence.current === id && activeWallet.current === owner && !combined.aborted;
+    // A run whose chat was left keeps going; only a wallet change or its own deadline stops it.
+    const parked = () => detached.current.has(id) && activeWallet.current === owner && !combined.aborted;
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; controller.abort("120s client deadline"); }, 120_000);
     const abortedCopy = () => timedOut
@@ -798,7 +874,13 @@ export function useInvestigation(wallet: string | null) {
     const startedIn = conversationId.current && !isLocalConversationId(conversationId.current)
       ? conversationId.current : null;
     setState((previous) => {
-      const turns = (options?.echoUser === false ? [...previous.turns] : [...previous.turns, { role: "user" as const, text: prompt }]).slice(-16);
+      // A retry replaces the reply it retries: the stopped answer leaves the thread instead of sitting above the new one.
+      // A questionnaire answer completes the prompt that asked (and its question): that prompt is replaced, not followed by a
+      // second one. Everything before it stays. A retry replaces the reply it retries.
+      const cut = (turns: ThreadTurn[]) => { let at = turns.length; while (at > 0 && turns[at - 1].role !== "user") at -= 1; return at > 0 ? turns.slice(0, at - 1) : turns; };
+      const kept = answers ? cut(previous.turns)
+        : options?.replaceLastReply && previous.turns.at(-1)?.role === "assistant" ? previous.turns.slice(0, -1) : previous.turns;
+      const turns = (options?.echoUser === false ? [...kept] : [...kept, { role: "user" as const, text: prompt }]).slice(-16);
       writeStoredThread(owner, {
         wallet: owner ?? "",
         continuation: continuation.current,
@@ -833,7 +915,7 @@ export function useInvestigation(wallet: string | null) {
     };
     try {
       const headers = await requestHeaders(getActiveWalletKind() === "freighter" ? combined : AbortSignal.any([combined, AbortSignal.timeout(10_000)]), owner);
-      if (sequence.current !== id || activeWallet.current !== owner) return;
+      if ((sequence.current !== id && !parked()) || activeWallet.current !== owner) return;
       if (combined.aborted) {
         settle({ error: abortedCopy() });
         return;
@@ -850,7 +932,40 @@ export function useInvestigation(wallet: string | null) {
       });
       trace("response_headers");
       await consumeResearchStream(response, (event) => {
-        if (!current()) return;
+        if (!current()) {
+          // The chat was left while this was being worked out: file the answer under that chat instead of dropping it.
+          if (event.type === "result" && parked()) {
+            const run = detached.current.get(id)!;
+            detached.current.delete(id);
+            const landedIn = event.conversationId ?? startedIn;
+            const away = { continuation: event.result.continuation, at: Date.now() };
+            if (run.origin) landedAway.current.set(run.origin, away);
+            if (landedIn) landedAway.current.set(landedIn, away);
+            if (run.origin && isLocalConversationId(run.origin)) {
+              if (landedIn && !isLocalConversationId(landedIn)) {
+                // The server recorded the turn: the saved conversation replaces the local copy of this chat.
+                clearStoredLocalThread(owner, run.origin);
+                setConversations((previous) => {
+                  const next = previous.filter((item) => item.id !== run.origin);
+                  writeStoredConversations(owner, next);
+                  return next;
+                });
+              } else {
+                const stored = readStoredLocalThread(owner, run.origin);
+                if (stored) writeStoredLocalThread(owner, run.origin, {
+                  ...stored, continuation: event.result.continuation, result: event.result,
+                  turns: [...stored.turns, {
+                    role: "assistant" as const, text: event.result.message, question: event.result.question,
+                    ...(event.result.questionnaire ? { quiet: true } : {}),
+                    ...(event.result.replyBlocks?.length ? { blocks: event.result.replyBlocks } : {}),
+                  }].slice(-16),
+                });
+              }
+            }
+            if (owner) void refreshConversations(owner);
+          }
+          return;
+        }
         if (event.type === "result") {
           trace("result");
           received = true;
@@ -892,6 +1007,16 @@ export function useInvestigation(wallet: string | null) {
               conversationId: landedIn, resultOrigin: "live" as const,
             };
           });
+          const local = pickedUpFrom.current.get(id);
+          if (local && owner && landedIn && !isLocalConversationId(landedIn)) {
+            pickedUpFrom.current.delete(id);
+            clearStoredLocalThread(owner, local);
+            setConversations((previous) => {
+              const next = previous.filter((item) => item.id !== local);
+              writeStoredConversations(owner, next);
+              return next;
+            });
+          }
         } else if (event.type === "error") {
           streamError = true;
           if (event.code === "context_expired" || event.code === "context_full") {
@@ -931,6 +1056,9 @@ export function useInvestigation(wallet: string | null) {
       });
     } finally {
       clearTimeout(timer);
+      if (runningId.current === id) runningId.current = null;
+      detached.current.delete(id);
+      pickedUpFrom.current.delete(id);
       if (!settled && sequence.current === id && activeWallet.current === owner) {
         setState((previous) => ({ ...previous, loading: false, progress: null }));
       }

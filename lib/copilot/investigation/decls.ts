@@ -40,7 +40,7 @@ function legSchema(extra?: { properties: Record<string, JsonSchema>; required: s
           amount: { type: "string", description: "literal only: the user's exact decimal." },
           multiple: { type: "string", description: "leverage only: the multiplier the user stated, e.g. '2' for '2x'." },
           percent: { type: "string", description: "fraction: the share the user stated, as a percentage, e.g. '25' for '25%' or '50' for 'half'. share: the percentage of the wallet's idle balance you allocate to this leg, between 0 and 100." },
-          of: { type: "string", enum: ["wallet", "position"], description: "fraction: wallet = the wallet's spendable balance; position = what the op spends (Earn position, posted collateral, debt). share: always wallet." },
+          of: { type: "string", enum: ["wallet", "position", "previous_leg"], description: "fraction: wallet = the wallet's spendable balance; position = what the op spends (Earn position, posted collateral, debt); previous_leg = a share of what an EARLIER STEP produced ('half of the borrowed SoUSDC' is previous_leg, never position: the position also holds what the account already had). share: always wallet." },
           reason: { type: "string", description: "share only: one sentence on why this leg gets this share of the asset, e.g. what the rest of the balance is for." },
           sourceQuote: { type: "string", description: "literal/fraction/leverage: exact substring of the user message containing the amount, share or multiplier. all_wallet: include ONLY when the user explicitly requested their idle, spendable or entire wallet balance; quote that sizing instruction. Omit when the model chose all_wallet for a strategy. A bare operation and asset do not specify whole-wallet sizing." },
           amountAsset: {
@@ -240,7 +240,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
             "previous_leg (the amount an earlier leg produced, including a same-pool swap output funding add_liquidity; the server quotes and measures that output), " +
             "literal (an amount the user typed, with sourceQuote), fraction (a share the user stated - '25%', 'half' - " +
             "of what the leg draws on: of=wallet for the wallet balance, of=position for the Earn position, the posted collateral " +
-            "or the debt; with sourceQuote), share (YOUR split of one wallet balance across the legs of this plan: percent, " +
+            "or the debt, of=previous_leg for a share of what an earlier step produced - 'half of the borrowed X'; with sourceQuote), share (YOUR split of one wallet balance across the legs of this plan: percent, " +
             "of=wallet and a reason; no quote). One wallet balance can fund only one all_wallet leg, so when two or more legs draw on " +
             "the same asset, give each a share of it, totalling at most 100. The server sizes, checks and ranks every plan.",
           items: {

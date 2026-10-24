@@ -176,7 +176,8 @@ export const CATALOG: readonly CatalogEntry[] = [
     modelArgs: {}, bind: (_, scope) => ({ wallet_address: scope.trader }),
   },
   {
-    name: "max_borrow", tool: "vanna_get_max_borrow", scope: "account", cost: "moderate",
+    // A search of the chain for the ceiling: 4-8 s for three pools, 24 s alone and 30 s beside others for the deepest (24 Oct).
+    name: "max_borrow", tool: "vanna_get_max_borrow", scope: "account", cost: "expensive",
     description: "Largest amount of one margin asset the account could borrow now. A READ - it does not borrow. Use can_borrow when the user named a specific amount. Bare USDC is ambiguous; pick a variant.",
     modelArgs: { asset: { type: "enum", values: marginAssets } },
     bind: (args, scope) => ({ smart_account: scope.smartAccount, symbol: symbolFor(args, "marginSymbol") }),

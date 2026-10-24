@@ -322,32 +322,33 @@ async function readAccountBalances(
 ): Promise<{ ok: true; balances: Record<string, string> } | { ok: false }> {
   const trader = scope.trader;
   if (!trader || !scope.smartAccount || assets.length === 0) return { ok: false };
-  let data: Record<string, unknown>;
+  /**
+   * What the margin account really holds, as the token contract reports it - NOT the recorded collateral row.
+   *
+   * This used to read `account_collateral`, the account's posted-collateral STORAGE, and difference it around a swap or a
+   * removal to learn what arrived. Storage and holdings are different ledgers (the catalogue says so: the token balance
+   * "includes borrowed proceeds and interest", the storage row does not) and they part company whenever a pool pays away
+   * from the oracle price. 24 Oct, live, #37: a swap paid 774.4468322 XLM on-chain (the margin account credited exactly
+   * that, per Horizon) while the storage row moved by 35.4064, the oracle value of what was sold; the check called a swap
+   * that landed on its estimate "outside the approved estimate" and stopped the next step.
+   */
   try {
-    const read = resolveRead("account_collateral", {}, scope);
-    const payload = await interruptible(
-      () => mcp.call(read.tool, read.args, trader),
-      AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
-    );
-    if (!isRecord(payload) || payload.error || !Array.isArray(payload.collateral)) return { ok: false };
-    data = payload;
+    const entries = await Promise.all([...new Set(assets)].map(async (asset) => {
+      const def = resolveAssetDef(asset);
+      if (!def) throw new Error("unknown asset");
+      const read = resolveRead("account_token_balance", { asset: def.id }, scope);
+      const payload = await interruptible(
+        () => mcp.call(read.tool, read.args, trader),
+        AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
+      );
+      if (!isRecord(payload) || payload.error || typeof payload.human !== "string") throw new Error("no balance");
+      decimalWad(payload.human);
+      return [asset, payload.human] as const;
+    }));
+    return { ok: true, balances: Object.fromEntries(entries) };
   } catch {
     return { ok: false };
   }
-  const balances: Record<string, string> = {};
-  for (const asset of assets) {
-    const def = resolveAssetDef(asset);
-    if (!def?.marginSymbol) return { ok: false };
-    const rows = data.collateral as unknown[];
-    const untrusted = rows.some((entry) => isRecord(entry)
-      && (entry.symbol === def.marginSymbol || entry.symbol === def.id)
-      && entry.balance_untrusted === true);
-    if (untrusted) return { ok: false };
-    const amount = positionRowIn(data, POSITION_ROWS.account_collateral, def.marginSymbol, def.id) ?? "0";
-    try { decimalWad(amount); } catch { return { ok: false }; }
-    balances[asset] = amount;
-  }
-  return { ok: true, balances };
 }
 
 /**

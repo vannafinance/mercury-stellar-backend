@@ -43,3 +43,31 @@ describe("investigation to deterministic comparison", () => {
     }
   });
 });
+
+describe("a misspelt ticker is read as the asset it is nearest to", () => {
+  const base = { subject: "user", server: "mcp-test", network: "testnet", secret: "a".repeat(32), signal: new AbortController().signal };
+  const reading = "deposit 5 XLM and dual borrow BLUSDC and SOUSDC";
+  const complete = () => ({ kind: "research_complete" as const, goal: { intent: "answer" as const, objective: "Explain", constraints: [], borrowing: "unspecified" as const, reading },
+    findings: [{ summary: "Nothing to read.", evidenceIds: [] }], openQuestions: [] });
+
+  it("shows the model the corrected message and tells the user what it read", async () => {
+    const seen: string[] = [];
+    const mcp = { call: vi.fn(async () => ({ sub: "user", has_assertion: true, bindings: [] })) };
+    const result = await researchTurn({ message: "deposit 5 xlm and dual borrow blusdc and soudsdc", wallet: null, continuation: null }, {
+      ...base, mcp, model: async (turn) => { seen.push(turn.message); return complete(); },
+    });
+    expect(seen[0]).toContain("SOUSDC");
+    expect(seen[0]).not.toContain("soudsdc");
+    expect(result.understanding?.reading).toBe(`${reading} (read "soudsdc" as SOUSDC)`);
+  });
+
+  it("leaves a correctly spelt message and its reading exactly as they are", async () => {
+    const seen: string[] = [];
+    const mcp = { call: vi.fn(async () => ({ sub: "user", has_assertion: true, bindings: [] })) };
+    const result = await researchTurn({ message: "deposit 5 xlm and dual borrow blusdc and sousdc", wallet: null, continuation: null }, {
+      ...base, mcp, model: async (turn) => { seen.push(turn.message); return complete(); },
+    });
+    expect(seen[0]).toBe("deposit 5 xlm and dual borrow blusdc and sousdc");
+    expect(result.understanding?.reading).toBe(reading);
+  });
+});

@@ -10,6 +10,7 @@ import type {
   Observation, ResearchModel,
   InvestigationProgress,
 } from "./types";
+import { copilotLog } from "../prod-log";
 
 /**
  * Budgets that must stay ordered: runtime (55s) + scope resolution (20s) <= the route's
@@ -32,7 +33,9 @@ const CEILINGS: Readonly<InvestigationLimits> = Object.freeze({
    * position is now seeded as evidence, so three reads and a turn or two came out of every
    * account question, and each remaining read is capped at 15s of its own.
    */
-  maxDurationMs: 45_000,
+  // 55 s, up from 45 s. It may not reach maxEvidenceAgeMs (60 s): a read taken early in the run is cited at its end, and
+  // evidence older than the freshness window is refused, so a longer loop would void its own early reads.
+  maxDurationMs: 55_000,
   /**
    * A single read gets 15s. Measured cause of a real zero-output run: MCP stalled (the
    * app's own `/api/analytics/accounts` was taking 100s+ against the same RPC at the time),
@@ -124,7 +127,7 @@ function clientSafeReadError(error: unknown): string {
 const SNAPSHOT_BACKED = new Set(["account_health", "account_debt", "account_collateral"]);
 
 function logPhase(phase: string, extra: Record<string, unknown>) {
-  console.info("[copilot] investigation phase", { phase, ...extra });
+  copilotLog("[copilot] investigation phase", { phase, ...extra });
 }
 
 /**
@@ -352,7 +355,11 @@ export async function runInvestigation(
       }
       span.setAttribute("vanna.investigation.decision", decision.kind);
       if (decision.kind === "research_complete") {
-        if (decision.goal.intent === "strategy" && decision.droppedPlans && !decision.plans?.length && !decision.goal.actions?.length) {
+        const nothingSurvived = !!decision.droppedPlans && !decision.plans?.length && !decision.goal.actions?.length;
+        // An action the user stated that was dropped while another survived would run as a smaller request, in
+        // silence. Asked once more; a second partial answer goes on with what survived, as it always has.
+        const lostAnAction = !!decision.droppedActions && !shapeRepairRequested;
+        if (decision.goal.intent === "strategy" && (nothingSurvived || lostAnAction)) {
           const reasons = decision.droppedPlanReasons?.join("; ") || "No valid action or plan survived structural validation";
           if (shapeRepairRequested) return finish({ kind: "stopped", reason: "invalid_decision" }, reasons);
           shapeRepairRequested = true;
@@ -382,7 +389,9 @@ export async function runInvestigation(
         return finish({ kind: "stopped", reason: "invalid_evidence" }, rejects.slice(0, 8).join("; "));
       }
       if (decision.kind !== "inspect") return finish(decision);
-      if (toolCalls >= limits.maxToolCalls || readBudgetLeft() <= 0) return finish({ kind: "stopped", reason: "tool_budget" });
+      if (toolCalls >= limits.maxToolCalls) return finish({ kind: "stopped", reason: "tool_budget" });
+      // The read TIME is spent (the conclusion keeps its reserve): that is the clock, and it is named as the clock.
+      if (readBudgetLeft() <= 0) return finish({ kind: "stopped", reason: "deadline" });
 
       // Resolve each read independently. A single bad argument used to abort the whole
       // investigation as `invalid_decision`; it is now one failed observation so the loop

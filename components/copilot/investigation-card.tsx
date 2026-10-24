@@ -31,6 +31,8 @@ export interface InvestigationCardProps {
   /** Act on what was understood - the plan card takes over from here. */
   onContinue?: () => void;
   continueLabel?: string;
+  /** Ask the same thing again after a run that stopped without finishing (never after a cancel). */
+  onRetry?: () => void;
   /** Prepare the journal proposal for one of the sized options. */
   onPropose?: (candidateId: string) => void;
   workflow?: WorkflowView | null;
@@ -373,7 +375,7 @@ const planLetter = (index: number) => String.fromCharCode(65 + index);
 const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
 
 export function InvestigationCard({
-  prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, continueLabel,
+  prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, continueLabel, onRetry,
   onPropose, workflow, planWithdrawn, planLiveFloor, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
   wallet = null, autoSign = false, onApproveCandidate, onReply, onWrite, accountAvailable = false, threadDefersReceipt = false, approvalQueued = false, approvingId = null,
 }: InvestigationCardProps) {
@@ -433,6 +435,12 @@ export function InvestigationCard({
   const completionSummaryReady = !!workflow && turns.some((turn) => turn.executionReceipt?.workflowId === workflow.id && completionMatches(turn.executionReceipt, turn.completion));
 
   const lastTurn = turns[turns.length - 1];
+  /**
+   * The newest reply's own run is finished and summarised: the thread draws it, so no plan from that reply is left to approve.
+   * `completionSummaryReady` only says so while the workflow is still held; once it is released the same plan used to come
+   * back under the summary and turn into a greyed "Expired: ask again" (24 Oct, live).
+   */
+  const latestRunDrawn = lastTurn?.role === "assistant" && completionMatches(lastTurn.executionReceipt, lastTurn.completion);
   /**
    * Hide the previous research while a new user turn is in flight (last row is
    * the question). Empty `turns` still shows `result` so a live research card -
@@ -500,7 +508,7 @@ export function InvestigationCard({
             * thread already carries it, so during a run the answer area stays empty and the
             * spinner is the only thing under the new question.
             */}
-          {result && resultIsLatest && !completionSummaryReady && !(loading && !workflow) && hasCardContent && (
+          {result && resultIsLatest && !completionSummaryReady && !latestRunDrawn && !(loading && !workflow) && hasCardContent && (
             <article aria-label="Copilot reply" className="flex flex-col" style={{ gap: REPLY_CARD_GAP_PX }}>
 
               {/*
@@ -742,6 +750,11 @@ export function InvestigationCard({
           )}
 
           {/* "New chat" lives in the page header now - one control, not one per card. */}
+          {!loading && onRetry && result?.status === "incomplete" && result.diagnostics?.stopReason !== "cancelled" && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={onRetry} className={BTN_QUIET}>Try again</button>
+            </div>
+          )}
           {!loading && onContinue && result && (
             <div className="flex flex-wrap items-center gap-2">
               <button type="button" onClick={onContinue} className={BTN_PRIMARY}>{continueLabel ?? "Continue"}</button>

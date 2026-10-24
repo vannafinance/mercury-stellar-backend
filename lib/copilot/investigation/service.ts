@@ -46,11 +46,13 @@ import { evaluateStandingOrders } from "../standing-orders";
 import { resolveLifecycleWrite } from "../workflow/lifecycle";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
-import { ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
+import { ASSET_SYMBOL_PATTERN, correctAssetSpellings, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
 import { OP_FLOW, WORKFLOW_OPS } from "../workflow/types";
 import { MAX_WORKFLOW_STEPS } from "../workflow/journal";
 import { resolveName } from "../intent/resolve-name";
 import { plainDashes } from "../plain-text";
+import { copilotLog } from "../prod-log";
+import { tryLiquidationObservation } from "./liquidation";
 
 /**
  * The three budgets that run OUTSIDE the investigation loop's own deadline, named so
@@ -177,9 +179,15 @@ export async function researchTurn(input: ResearchInput, dependencies: {
   return withInvestigationRun(input.promptName, async (span) => {
   const startedAt = Date.now();
   const logPhase = (phase: string, extra: Record<string, unknown> = {}) => {
-    console.info("[copilot] investigation phase", { phase, ms: Date.now() - startedAt, ...extra });
+    copilotLog("[copilot] investigation phase", { phase, ms: Date.now() - startedAt, ...extra });
   };
-  const view = await executeResearchTurn(input, { ...dependencies, logPhase });
+  // A ticker one slip from exactly one asset is that asset, from here on and for every path below (stated writes
+  // included); the reply says what was read. The user's own words stay on screen as they typed them.
+  const spelled = correctAssetSpellings(input.message);
+  const read = await executeResearchTurn(spelled.corrections.length ? { ...input, message: spelled.text } : input, { ...dependencies, logPhase });
+  const view = spelled.corrections.length && read.understanding?.reading
+    ? { ...read, understanding: { ...read.understanding, reading: `${read.understanding.reading} (read ${spelled.corrections.map((c) => `"${c.from}" as ${c.to}`).join(", ")})` } }
+    : read;
   logPhase("turn", { status: view.status });
   const elapsedMs = Math.max(0, Date.now() - startedAt);
   span.setAttribute("vanna.investigation.status", view.status);
@@ -237,7 +245,15 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     };
   }
   const fast = input.continuation ? null : matchFastPath(input.message);
-  if (fast?.kind === "price") {
+  /**
+   * The price shortcut answers from PUBLIC data, with no account in scope. That is right for a visitor
+   * with no wallet and wrong for anyone else: a connected user's "what is my XLM liquidation price?"
+   * says "price" and names one asset, was claimed here, and was answered "no connected wallet" (24 Oct,
+   * live) - or, when the price read was slow, fell through with the time already spent and stalled.
+   * Whether a short message is only a price lookup is for the loop, which can see the account; so the
+   * shortcut is kept for the one case where there is no account to see.
+   */
+  if (fast?.kind === "price" && !input.wallet) {
     try {
       const publicScope = {
         subject: dependencies.subject, trader: null, smartAccount: null, network: dependencies.network,
@@ -804,6 +820,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     if (page && (!contract || pageDebtAgreesWithContract(Number(page.debtUsd), Number(contract.data!.debt_usd)))) {
       const observation = healthObservations(page)[0];
       result.observations.push({ ...observation, id: `health-display-${result.observations.length}` });
+      // The price that liquidates the account, from the snapshot already in hand (no read of its own).
+      const liquidation = tryLiquidationObservation(page.snapshot, Date.now());
+      if (liquidation) result.observations.push(liquidation);
     } else if (page && contract?.data) {
       const posted = postedHealthFactorFromSnapshot(contract.data);
       if (posted) contract.data = { ...contract.data, posted_health_factor: posted, page_debt_mismatch: true, page_health_factor: page.healthFactor };
@@ -1449,7 +1468,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
        * utilization cap and the answer was "none could be prepared"). Read that ceiling for the assets concerned, size
        * once more with it in evidence, and put the result to the preview again.
        */
-      const poolLimited = [...new Set(candidates.rejected.flatMap((entry) => entry.poolLimited ? [entry.poolLimited.asset] : []))];
+      // Every refused borrow wants its ceiling read: a pool-limited one to be sized under it, any other (the account's own
+      // health) so the refusal names the real limit. The ceiling is not read up front for a stated amount any more.
+      const poolLimited = [...new Set(candidates.rejected.flatMap((entry) => entry.poolLimited ? [entry.poolLimited.asset] : entry.ceilingNeeded ? [entry.ceilingNeeded.asset] : []))];
       if (poolLimited.length && Date.now() - turnStartedAt <= RESIZE_START_BY_MS) {
         const resizeStarted = Date.now();
         try {

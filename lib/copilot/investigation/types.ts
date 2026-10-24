@@ -182,7 +182,7 @@ export type PlanSizing =
    * of theirs means ("half" → 50), anchored to their quote; code reads the base and sizes.
    */
   | {
-      kind: "fraction"; percent: string; of: "wallet" | "position"; sourceQuote: string;
+      kind: "fraction"; percent: string; of: "wallet" | "position" | "previous_leg"; sourceQuote: string;
       /**
        * Set when the MODEL chose this share, not the user: `sizing.kind: "share"` in the
        * declared schema, normalised to a fraction by `parseSizing`. There is no quote to anchor
@@ -286,6 +286,8 @@ export type ResearchDecision =
       plans?: ProposedPlan[];
       /** Plans the model sent that did not fit the contract and were dropped, so the card can say so. */
       droppedPlans?: number;
+      /** Of those, the actions the user stated that could not be used; the loop asks the model once more for these. */
+      droppedActions?: number;
       /** Why each dropped plan was dropped, in the validator's terms. Diagnostics only, never shown as is. */
       droppedPlanReasons?: string[];
       /** Findings that stated a figure with no read behind it; left out, and the card says so. */

@@ -137,6 +137,29 @@ describe.each(BACKENDS)("copilot conversation store (%s backend)", (backend) => 
     expect((await store.readConversation("alice", first.id))?.turns[1].text).toBe("Settled swap");
   });
 
+  /**
+   * 24 Oct: "deposit usdc" asked its questionnaire, and the user's choices were saved as a SECOND prompt, "Deposit 370.94
+   * AQUSDC", so the thread read as if they had typed two things. An answer completes the prompt that asked, so the prompt
+   * (and the question it drew) is replaced by the completed one, in the saved conversation as on screen. Earlier turns stay.
+   */
+  it("replaces the prompt a questionnaire answer completes, instead of adding a second one", async () => {
+    const first = await store.appendSessionTurn({ subject: "alice", user: "what is my health factor", result: view("Your health factor is 2.32") });
+    await store.appendSessionTurn({ subject: "alice", conversationId: first.id, user: "deposit usdc", result: view("Which asset?") });
+    await store.appendSessionTurn({ subject: "alice", conversationId: first.id, user: "Deposit 370.94 AQUSDC", completesPrompt: true, result: view("Deposit prepared") });
+    const turns = (await store.readConversation("alice", first.id))?.turns ?? [];
+    expect(turns.map((turn) => `${turn.role}:${turn.text}`)).toEqual([
+      "user:what is my health factor", "assistant:Your health factor is 2.32",
+      "user:Deposit 370.94 AQUSDC", "assistant:Deposit prepared",
+    ]);
+  });
+
+  it("without that flag a second prompt is still a second prompt", async () => {
+    const first = await store.appendSessionTurn({ subject: "alice", user: "deposit usdc", result: view("Which asset?") });
+    await store.appendSessionTurn({ subject: "alice", conversationId: first.id, user: "and my balance?", result: view("You hold 5 XLM") });
+    const turns = (await store.readConversation("alice", first.id))?.turns ?? [];
+    expect(turns.filter((turn) => turn.role === "user").map((turn) => turn.text)).toEqual(["deposit usdc", "and my balance?"]);
+  });
+
   it("starts a conversation on the first turn, titled by the prompt, and appends later turns to it", async () => {
     const first = await store.appendSessionTurn({ subject: "alice", user: "what's my health?", result: view("1.46") });
     const second = await store.appendSessionTurn({ subject: "alice", conversationId: first.id, user: "and my debt?", result: view("$3,312", "r2.token") });

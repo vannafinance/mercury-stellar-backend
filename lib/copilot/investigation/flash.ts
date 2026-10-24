@@ -7,7 +7,7 @@ import { assertFlashModel } from "./flash-policy";
 import { runInvestigation } from "./runtime";
 import type { InvestigationLimits, InvestigationRequest, ResearchModel, ResearchTurn } from "./types";
 
-import { ASSET_IDS, lpPairs, venueSpellings, venueTable, venueUsdc, type Venue } from "../registry/assets";
+import { allAssets, ASSET_IDS, isSupportedAsset, lpPairs, venueSpellings, venueTable, venueUsdc, type Venue } from "../registry/assets";
 import { OP_FLOW, WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { LIFECYCLE_WRITES } from "../workflow/lifecycle";
 import { PLAN_SIZINGS } from "./decision";
@@ -69,6 +69,13 @@ const EXECUTABLE_VENUES: Venue[] = [...new Set([
 const VENUE_TABLE_TEXT = venueTable()
   .map(({ venue, assets }) => `${venue} takes ${assets.join(", ")}${lpPairs().some((p) => p.venue === venue) ? " (an LP pool: XLM paired with that USDC)" : ""}`)
   .join("; ");
+/**
+ * Names the registry can recognise but no venue takes (no collateral, no Earn pool, no Blend, no LP). The asset enums carry
+ * them so a request naming one can be recognised and refused, which is not the same as supporting them: asked to lend an
+ * unknown token (24 Oct, "Lend 100 ETH") the model listed the whole nameable set as "supported". Derived from the same
+ * venue data `isSupportedAsset` reads, never listed by name.
+ */
+const UNSUPPORTED_NAMES_TEXT = allAssets().filter((def) => !isSupportedAsset(def)).map((def) => def.id).join(", ") || "none";
 const VENUE_USDC_TEXT = venueUsdc().map(({ venue, usdc }) => `${venue} → ${usdc}`).join(", ");
 const EXECUTABLE_VENUES_TEXT = EXECUTABLE_VENUES.join(", ");
 const NON_EXECUTABLE_VENUES_TEXT = venueTable().map((v) => v.venue).filter((v) => !EXECUTABLE_VENUES.includes(v)).join(", ") || "none";
@@ -93,7 +100,7 @@ Permission to borrow is optional, not an instruction to borrow. A generic strate
 not specify a budget or optimization objective. Read available facts before asking for facts
 you can obtain.
 CHOOSE, do not ask, whenever evidence can decide. Venues and what each takes, from the protocol
-registry: ${VENUE_TABLE_TEXT}. A venue the user names fixes the USDC variant (${VENUE_USDC_TEXT}) -
+registry: ${VENUE_TABLE_TEXT}. Recognised but not supported on any venue: ${UNSUPPORTED_NAMES_TEXT} - never offer them, and when an asset cannot be used, name as available only the assets a venue takes for that operation, from the table above (lending takes the earn venue's assets). A venue the user names fixes the USDC variant (${VENUE_USDC_TEXT}) -
 never ask which USDC. Venue spellings in reads: ${VENUE_SPELLINGS_TEXT} - name legs by the asset id (a debt or
 collateral row carries it as \`asset\`), never by the venue's word. Where one venue takes several variants (earn, margin) choose from held balances
 and rates in code, and state the choice. Executable through the operations below: ${EXECUTABLE_VENUES_TEXT};
@@ -156,6 +163,7 @@ If functions are unavailable, return exactly one JSON object with one of these s
 
 For a concrete request such as deposit, repay, borrow, lend, or supply to Blend with stated amounts,
 include goal.actions: [{"op":"${ACTION_OPS}","asset":"${ACTION_ASSETS}","sizing":{"kind":"literal","amount":"exact literal decimal from user","sourceQuote":"exact substring containing the amount"},"sourceQuote":"exact substring of the user message stating this action"}].
+A borrow with no stated amount, multiple or maximum ("borrow some stablecoins and farm them") is incomplete: do not size it with to_floor, which is only for an explicit maximum. Complete with openQuestions holding ONE question that names everything still open - which asset, how much, and where to put it when the user also named a use for it - and propose no plan for it yet.
 An explicit maximum loan is a concrete action. If its asset is unspecified, clarify with intent=action and missing [{op:"borrow",slots:["asset"],sizing:"to_floor",sourceQuote:the exact user's instruction}]. Do not ask for an amount or a health-factor floor: maximum sizing is already requested, and the server supplies the protocol safety floor unless the user stated a higher one.
 For a partially specified action, keep any user-stated amount or share in missing.knownSizing using the plan sizing schema. Ask only for the missing input. For a swap with a known spend asset and an unresolved receive asset, retain the spend asset as missing.inputAsset, put the unresolved receive asset or family in missing.asset, retain knownSizing, and ask only for asset. Never treat a requested receive asset as an existing holding to spend. Amounts stated as desired output retain amountAsset=assetOut.
 An instruction to use an asset's idle, spendable or entire wallet balance already specifies sizing={kind:all_wallet,sourceQuote:the exact words specifying that wallet balance}; its numeric balance is for reads and code to determine. Do not ask the user for that amount. If its operation and asset are known, retain it as a fully stated action in clarify.actions while asking about another incomplete action. If only its destination remains open, preserve all_wallet in missing.knownSizing and ask for that destination only. Preserve any user-stated reserves and safety constraints separately.
@@ -168,8 +176,10 @@ An open-ended strategy delegates a material choice of allocation, operation or v
 For an open-ended strategy (intent=strategy with delegated choices), YOU compose the strategy: include plans - one to three
 ordered shapes built from these operations only: ${PLAN_OPS_TEXT}. Each leg is sized by a WORD, never a number:
 ${PLAN_SIZINGS_TEXT} (literal carries the user's own quoted amount; fraction carries the share the user stated - "25%" as
-percent "25", "half" as "50" - with of=wallet for a share of the wallet balance and of=position for a share of the Earn
-position, the posted collateral or the debt, and the user's quote; share carries YOUR OWN split of one wallet balance
+percent "25", "half" as "50" - with of=wallet for a share of the wallet balance, of=position for a share of the Earn
+position, the posted collateral or the debt, and of=previous_leg for a share of what an EARLIER STEP of the plan produced
+("half of the borrowed SoUSDC", "a third of what the swap gives": the borrow is the step, never the account's whole balance of
+that asset, which also holds what it already had), and the user's quote; share carries YOUR OWN split of one wallet balance
 across the legs of a plan - percent, of=wallet and a one-sentence reason, no quote - and is how two legs draw on the same
 asset: a wallet balance funds one all_wallet leg, so otherwise give each leg a share and keep an asset's shares at or under
 100 in total; leverage carries the user's own stated multiple - "6x" as multiple "6" - and their quote). The server computes every amount,

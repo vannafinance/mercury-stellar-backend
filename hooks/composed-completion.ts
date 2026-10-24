@@ -17,7 +17,8 @@ export async function fetchComposedCompletion(
   conversationId?: string,
 ): Promise<({ message: string; replyBlocks: ReplyBlock[] } & Partial<WorkflowCompletionReply>) | null> {
   try {
-    const deadline = AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
+    // Longer than the server's own wait (health read 15 s + summary 28 s), so the server answers, not the browser giving up.
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(50_000)]);
     const headers = await withClientDeadline(copilotRequestHeaders(), deadline);
     const response = await fetch(`/api/copilot/workflow/${workflowId}/reply`, {
       method: "POST", headers, signal: deadline, cache: "no-store",

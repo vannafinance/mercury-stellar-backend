@@ -26,6 +26,12 @@
  */
 export const MODEL_DEFAULTS = {
   research: "gemini-3.8-flash",
+  /**
+   * Writes the reply the user reads (answers, plan cards, the summary after a run). It phrases facts the code already
+   * verified and decides nothing, so it does not need the research model - and sharing it meant a slow research model
+   * stalled the writing too (24 Oct: 3.8 took 18-104 s on a request 3.5 answered in 1.6-5 s).
+   */
+  compose: "gemini-3.5-flash",
   fallback: ["gemini-3.5-flash"],
   guide: "gemini-3.8-flash",
   guideFallback: ["gemini-3.5-flash-lite", "gemini-3.5-flash"],

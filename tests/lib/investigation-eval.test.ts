@@ -251,7 +251,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
       })),
     );
     expect(result.status).toBe("blocked");
-    expect(result.message).toBe(CONDITIONAL_REFUSAL);
+    expect(result.message).toMatch(/I can't hold an action until a condition is met, so I did nothing\./);
     expect(result.questionnaire).toBeUndefined();
     expect(result.executionAllowed).toBe(false);
     expect(mcp.call).not.toHaveBeenCalled();
@@ -271,7 +271,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
       })),
     );
     expect(result.status).toBe("blocked");
-    expect(result.message).toBe(CONDITIONAL_REFUSAL);
+    expect(result.message).toMatch(/I can't hold an action until a condition is met, so I did nothing\./);
     expect(result.message).not.toMatch(/Mandate/);
     expect(result.executionAllowed).toBe(false);
   });
@@ -314,7 +314,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
       },
     }, deps(mcp, model));
     expect(result.status).toBe("blocked");
-    expect(result.message).toBe(CONDITIONAL_REFUSAL);
+    expect(result.message).toMatch(/I can't hold an action until a condition is met, so I did nothing\./);
     expect(result.executionAllowed).toBe(false);
     expect(mcp.call).not.toHaveBeenCalled();
     expect(model).not.toHaveBeenCalled();

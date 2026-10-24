@@ -896,6 +896,58 @@ describe("a borrow the protocol refuses on a pool limit is sized under the proto
 });
 
 /**
+ * 24 Oct: a borrow of a stated amount is not planned with a search for the account's maximum (34 s of on-chain probing
+ * for a deep pool, which is what timed prompts out). The protocol's preview answers for the amount; only a refusal reads
+ * the ceiling, and the refusal then states it - the figure the up-front read used to supply.
+ */
+describe("a stated borrow asks the protocol yes or no, and reads the ceiling only when refused", () => {
+  const LIMIT_XLM = 1000;
+  const statedMcp = {
+    call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_preview_margin") {
+        return args.operation === "borrow" && Number(args.amount) > LIMIT_XLM
+          ? { allowed: false, reason: "not permitted", limiting_factor: "collateral_health" }
+          : { allowed: true, reason: "ok", limiting_factor: null };
+      }
+      if (tool === "vanna_get_max_borrow") return { max_borrow_human: String(LIMIT_XLM), symbol: "XLM", limiting_factor: "collateral_health" };
+      return mcp.call(tool, args);
+    }),
+  };
+  const borrowPlan = (amount: string) => ({
+    kind: "research_complete",
+    goal: { intent: "strategy", relation: "new", objective: `Borrow ${amount} XLM`, constraints: [], borrowing: "allowed" },
+    findings: [{ summary: "Wallet was read.", evidenceIds: ["e1"] }],
+    openQuestions: [],
+    plans: [{ title: `Borrow ${amount} XLM`, rationale: "Stated amount.", evidenceIds: ["e1"],
+      legs: [{ op: "borrow", asset: "XLM", sizing: { kind: "literal", amount, sourceQuote: `borrow ${amount} XLM` } }] }],
+  });
+  const run = (amount: string) => {
+    let turn = 0;
+    return researchTurn({ message: `borrow ${amount} XLM`, wallet: SCOPE.trader, continuation: null }, {
+      subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp: statedMcp, signal: new AbortController().signal,
+      model: async () => turn++ === 0 ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }] } : borrowPlan(amount),
+    });
+  };
+  const ceilingReads = () => statedMcp.call.mock.calls.filter(([tool]) => tool === "vanna_get_max_borrow").length;
+
+  it("makes no ceiling read at all for an amount the protocol accepts", async () => {
+    statedMcp.call.mockClear();
+    const view = await run("500");
+    expect(view.candidates?.feasible.some((c) => c.steps?.some((step) => step.op === "borrow" && Number(step.amount) === 500))).toBe(true);
+    expect(ceilingReads()).toBe(0);
+  });
+
+  it("reads the ceiling once, after the refusal, and states it", async () => {
+    statedMcp.call.mockClear();
+    const view = await run("5000");
+    expect(view.candidates?.feasible ?? []).toHaveLength(0);
+    expect(ceilingReads()).toBe(1);
+    const refusal = view.candidates?.rejected.find((entry) => entry.borrowLimit);
+    expect(refusal?.borrowLimit).toMatchObject({ asset: "XLM", maximumAmount: String(LIMIT_XLM) });
+  });
+});
+
+/**
  * Owner, 7 Oct: "loans ke bina bhi aur loans ke sath bhi options dena chahiye". Permission to borrow is not an
  * instruction to borrow, so when the model composes only the levered plan it is asked once for the one without a loan.
  */

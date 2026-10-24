@@ -35,6 +35,32 @@ export function composeBudgetMs(): number {
   const configured = Number(process.env.COPILOT_COMPOSE_BUDGET_MS);
   return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_COMPOSE_BUDGET_MS;
 }
+
+/**
+ * What the summary of a finished run may wait. It must outlast the failover to the fallback model (a slow primary is given
+ * 15 s before it is replaced) and leave the fallback time to answer: at 15 s, the old budget, a degraded primary ended the
+ * summary before the failover could finish and the user got the receipt-only "Done." (24 Oct). A run that has settled is
+ * worth the wait; the browser is told to wait longer than this (hooks/composed-completion.ts).
+ */
+const COMPLETION_COMPOSE_BUDGET_MS = 28_000;
+
+/** The most the writing step may wait, however much of the route is left: past this a reply is not worth the wait. */
+const MAX_COMPOSE_BUDGET_MS = 45_000;
+/** Kept back so the response can still be sent before the route's own deadline cuts the stream. */
+const ROUTE_RESPONSE_MARGIN_MS = 3_000;
+
+/**
+ * The writing step's budget once research has taken `elapsedMs` of a route that ends at `routeDeadlineMs`.
+ *
+ * A fixed 15 s cut the step off even when research had finished in 16 s of a 75 s route, and the reply
+ * fell back to a canned message that answered a different question (24 Oct, live). The call is already
+ * made and paid for; letting it finish costs nothing, throwing it away costs the answer. Never less
+ * than the configured default: a nearly spent route is cut by its own deadline, not by a smaller budget.
+ */
+export function composeBudgetAfter(elapsedMs: number, routeDeadlineMs: number): number {
+  const left = routeDeadlineMs - elapsedMs - ROUTE_RESPONSE_MARGIN_MS;
+  return Math.max(composeBudgetMs(), Math.min(MAX_COMPOSE_BUDGET_MS, left));
+}
 const PRESENTATION = `Organize the response around what the user needs to understand. Lead with the answer, then group related information. For a broad position overview, open with a brief explanation of the account breakdown before the grouped holdings. Distinguish collateral deposited, posted collateral and outstanding debt by their supplied basis. The supplied labels use the Margin page's own wording; name each figure the way the user asked for it, so a user who says "collateral" reads collateral, one who says "deposit" reads deposit, and one who says "borrowed" or "debt" reads that; separate holdings in other venues and never add overlapping valuations together. Honor the user's requested presentation format when it can represent the supplied evidence faithfully. Otherwise use paragraphs for a connected explanation, bullets for parallel points, steps only when order matters, and a table for genuinely comparable rows. Use short descriptive headings when they improve navigation. Choose the combination and length needed by this request; avoid a wall of text, unnecessary sections, and repeating what a card already shows. Match the user's language where practical.
 Return JSON with a blocks array. A paragraph or heading has segments; bullets or steps have items (an array of segment arrays); a table has columns (an array of segment arrays) and rows (an array of rows of segment arrays). Each segment is either {"type":"text","text":"your freely written words"} or {"type":"fact","factId":"an supplied fact id"}. Code renders fact segments with their verified value and unit. Never type a figure, amount, rate, address or numeric unit in text; use its fact reference, and do not repeat its unit. Do not use placeholder strings or markdown. Refer only to supplied facts. Keep each reference attached to its correct label, venue and meaning. Evidence timestamps describe when a read happened; absent timestamps do not establish a live observation. Do not invent causes, risk conclusions, events or outcomes. The draft is background meaning, not a required sentence or layout.`;
 
@@ -62,7 +88,8 @@ const COMPLETION_SYSTEM = `You write the reply shown once a user's transactions 
 You are given the user's request and FACTS: each settled step (what was done, the amount), any previously observed rates, and, when it was read after the run, the account's health factor now.
 Only supplied settled steps completed. Use workflow status and step statuses to distinguish settled, pending, failed and unsubmitted work. Rates come from the supplied sealed comparisons; they are not a new post-run read. If stopped is given, distinguish what ran from what did not. Do not invent current health or next actions.
 Connect the settled outcome to the original request and approved constraints. When a health-floor fact is supplied, include it as a fact reference and explain that it was the approved safety target for the run. Distinguish this target from freshly observed health: only health_now is a post-run observation, and a target alone does not prove the resulting health or that the whole request completed. Use your own concise wording rather than a fixed sentence.
-Write one combined summary for the whole run, short: open with one or two plain sentences saying what was done overall and, when health_now is supplied, what the health factor is now. Add no other paragraphs, headings or tables. The renderer draws each transaction as its own row with a tick and its explorer link, so never write hashes, links or ledgers. When more than one transaction settled, follow the sentences with one bullet per transaction, in the order given: a short past-tense line saying what that transaction did, which becomes that transaction's row. With a single transaction, the sentences are enough. Do not ask for approval or narrate waiting for signatures when the workflow is completed.
+Write one combined summary for the whole run, short: open with one or two plain sentences saying what was done overall and, when health_now is supplied, what the health factor is now. Add no headings or tables, and no paragraphs beyond the answer to anything else the request asked (below). The renderer draws each transaction as its own row with a tick and its explorer link, so never write hashes, links or ledgers. When more than one transaction settled, follow the sentences with one bullet per transaction, in the order given: a short past-tense line saying what that transaction did, which becomes that transaction's row. With a single transaction, the sentences are enough. Do not ask for approval or narrate waiting for signatures when the workflow is completed.
+One request gets one reply. When the request also asked for something beyond the transactions (a figure to show, a price to tell, something to check), answer it in this same reply, in a sentence or two after the transactions, from the supplied facts, and give only what was asked: never the other figures. Account figures read after the run (leverage, liquidation prices, whether a margin account exists) are supplied for that, and are cited like any other fact. If no supplied fact covers what was asked, say in a few words that it could not be read just now; never leave a part of the request unanswered. When part of the request needed no transaction (the margin account already exists, so none was opened), say so in a few words.
 ${PRESENTATION}
 ${CHAT_STYLE}`;
 
@@ -97,6 +124,29 @@ function borrowRefusalContext(view: ResearchView) {
   return { facts, rejections };
 }
 
+const CAUSE_REFUSAL_SYSTEM = `You tell the user, in plain words, why the requested step could not be prepared and what they can do next. Use only the supplied reasons; never add a cause, a number or a replacement plan. Name the refused step by citing its fact reference. Say the cause in everyday language: no protocol or system jargon, no names of internal limits or checks, no unit names such as CPU or ledger. Say what to change (for example state an amount, pick a smaller size, or a different asset) only when a supplied reason says so. End by saying nothing was submitted.
+${PRESENTATION}
+${CHAT_STYLE}
+Return one short paragraph, two sentences at most. Write no digits yourself; the only figure allowed is the cited step.`;
+
+/**
+ * A refusal whose cause is a sentence, not a measured ceiling: the planner's or protocol's reason is
+ * reworded plainly around the audited step label. Turns that carry their own action (an account button,
+ * an "accept the loss" choice, a missing-amount question, a wrong-pocket remedy) keep their own reply.
+ */
+function causeRefusalContext(view: ResearchView) {
+  const rejected = view.candidates?.rejected ?? [];
+  if (view.status !== "researched" || view.candidates?.feasible.length || view.questionnaire || view.pendingWrite || view.choices?.length || view.proposalCandidateId ||
+    !rejected.length || rejected.some(row => row.borrowLimit || row.accountRequired || row.poolLimited || row.ceilingNeeded || row.needsInput || row.acceptable)) return null;
+  const facts: ResearchFact[] = [];
+  const rejections = rejected.slice(0, 3).map((row, index) => {
+    const id = `refused${String.fromCharCode(65 + index)}:step`;
+    facts.push({ id, label: "Refused step", value: row.label, unit: "", venue: "margin", evidenceId: "refusal", sourcePath: "label", readAt: 0, requiredInReply: true });
+    return { stepFact: id, reason: row.cause ?? row.reason };
+  });
+  return { facts, rejections };
+}
+
 /** Aggregatable lifecycle data only: no request text, account identifiers or fact values. */
 function compositionEvent(lane: ReplyLane | "other", outcome: "composed" | "skipped" | "off" | "refused" | "unavailable", ms = 0, blocks: readonly ReplyBlock[] = [], reason?: string) {
   console.info("[copilot] reply composition", {
@@ -110,7 +160,7 @@ function scopeContext(view: ResearchView) {
 }
 
 const defaultGenerate: Generate = (system, user, signal) =>
-  generateInvestigationJson(copilotConfig.vertexModel, system, user, signal, "LOW", [], REPLY_SCHEMA);
+  generateInvestigationJson(copilotConfig.vertexComposeModel, system, user, signal, "LOW", [], REPLY_SCHEMA);
 
 /** Plan cards the composer may introduce: a strategy's own options, not a direct action. */
 export function composablePlans(view: ResearchView): boolean {
@@ -220,7 +270,7 @@ export function planFacts(view: ResearchView): {
  * A finished run's facts: each settled step from the journal (never the browser's copy), the
  * rate it earns or costs from the sealed reads, and the health factor read after it ran.
  */
-export function completionFacts(view: WorkflowView, comparisons: readonly RateComparison[], healthNow: string | null, positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number }, healthFloor?: string | null): ResearchFact[] {
+export function completionFacts(view: WorkflowView, comparisons: readonly RateComparison[], healthNow: string | null, positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number }, healthFloor?: string | null, extra: readonly ResearchFact[] = []): ResearchFact[] {
   const facts: ResearchFact[] = [];
   const add = (id: string, label: string, value: string, unit: string) =>
     facts.push({ id, label, value, unit, venue: "margin", evidenceId: "run", sourcePath: id, readAt: 0 });
@@ -252,6 +302,9 @@ export function completionFacts(view: WorkflowView, comparisons: readonly RateCo
   }
   if (healthFloor) facts.push({ id: "account:health_floor", label: "approved minimum health factor target", value: healthFloor,
     unit: "HF", venue: "margin", evidenceId: "approved-proposal", sourcePath: "floor", readAt: 0, quantity: true, requiredInReply: true });
+  // Figures read from the account after the run, offered for a request that asked for them. Never required: a reply
+  // that was not asked for a liquidation price does not carry one.
+  for (const fact of extra) facts.push({ ...fact, requiredInReply: false });
   return facts;
 }
 
@@ -268,9 +321,11 @@ export async function composeCompletion(input: {
   healthFloor?: string | null;
   constraints?: readonly string[];
   positionNow?: { grossCollateralUsd: string; debtUsd: string; observedAt: number };
+  /** Post-run figures (leverage, liquidation, whether the account exists) offered for what the request asked. */
+  extraFacts?: readonly ResearchFact[];
 }, signal: AbortSignal, generate: Generate = defaultGenerate): Promise<{ message: string; blocks: ReplyBlock[] } | null> {
   if (process.env.COPILOT_COMPOSED_REPLIES === "off") { compositionEvent("completion", "off"); return null; }
-  const facts = completionFacts(input.view, input.comparisons, input.healthNow, input.positionNow, input.healthFloor);
+  const facts = completionFacts(input.view, input.comparisons, input.healthNow, input.positionNow, input.healthFloor, input.extraFacts);
   if (!facts.length) { compositionEvent("completion", "skipped", 0, [], "no_facts"); return null; }
   const stopped = input.view.status !== "completed";
   const user = JSON.stringify({
@@ -282,15 +337,15 @@ export async function composeCompletion(input: {
     ...(stopped ? { stopped: { status: input.view.status } } : {}),
     draft: input.draft,
   });
-  const bound = await boundReply(COMPLETION_SYSTEM, user, facts, signal, generate, "completion");
+  const bound = await boundReply(COMPLETION_SYSTEM, user, facts, signal, generate, "completion", COMPLETION_COMPOSE_BUDGET_MS);
   return bound ? { message: plainReply(bound), blocks: bound } : null;
 }
 
 /** One budgeted model call, bound to `facts`, or null. Shared by every composed reply. */
-async function boundReply(system: string, user: string, facts: readonly ResearchFact[], signal: AbortSignal, generate: Generate, lane: ReplyLane): Promise<ReplyBlock[] | null> {
+async function boundReply(system: string, user: string, facts: readonly ResearchFact[], signal: AbortSignal, generate: Generate, lane: ReplyLane, budgetMs: number = composeBudgetMs()): Promise<ReplyBlock[] | null> {
   const start = performance.now();
   const deadline = new AbortController();
-  const timer = setTimeout(() => deadline.abort(new DOMException("compose deadline", "TimeoutError")), composeBudgetMs());
+  const timer = setTimeout(() => deadline.abort(new DOMException("compose deadline", "TimeoutError")), budgetMs);
   const budget = AbortSignal.any([signal, deadline.signal]);
   let onAbort: (() => void) | undefined;
   try {
@@ -316,7 +371,7 @@ async function boundReply(system: string, user: string, facts: readonly Research
         feedback = JSON.stringify({ ...JSON.parse(user), previousReplyRefused: `${bound.reason}. Write the reply again: type no digit in any text segment, and take every figure from a fact reference.` });
       } catch { feedback = null; }
       // A second attempt that cannot finish inside the budget only spends it: ask again only when the first came back early.
-      if (feedback && !budget.aborted && performance.now() - start < composeBudgetMs() / 2) bound = bindReplyBlocks(await ask(feedback), facts, mode);
+      if (feedback && !budget.aborted && performance.now() - start < budgetMs / 2) bound = bindReplyBlocks(await ask(feedback), facts, mode);
     }
     if (!bound.ok) {
       compositionEvent(lane, "refused", performance.now() - start, [], `invalid_output:${bound.reason}`);
@@ -363,7 +418,7 @@ function composableUnpreparedStrategy(view: ResearchView): boolean {
  * The view with its reply written by the model around the audited figures, or the view
  * unchanged. Never throws: a composed reply is an improvement, never a dependency.
  */
-export async function composeReply(view: ResearchView, signal: AbortSignal, generate: Generate = defaultGenerate): Promise<ResearchView> {
+export async function composeReply(view: ResearchView, signal: AbortSignal, generate: Generate = defaultGenerate, options: { budgetMs?: number } = {}): Promise<ResearchView> {
   if (process.env.COPILOT_COMPOSED_REPLIES === "off") { compositionEvent("other", "off"); return view; }
   const request = [view.originalRequest, ...view.refinements].filter(Boolean).join("\n");
   let system: string;
@@ -376,6 +431,13 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
     system = REFUSAL_SYSTEM;
     facts = refusal.facts;
     user = JSON.stringify({ request, facts: facts.map(replyFactContext), rejections: refusal.rejections,
+      context: { category: "refusal", status: view.status, executionSubmitted: false }, draft: view.message });
+  } else if (!composableUnpreparedStrategy(view) && causeRefusalContext(view)) {
+    const cause = causeRefusalContext(view)!;
+    lane = "refusal";
+    system = CAUSE_REFUSAL_SYSTEM;
+    facts = cause.facts;
+    user = JSON.stringify({ request, facts: facts.map(replyFactContext), rejections: cause.rejections,
       context: { category: "refusal", status: view.status, executionSubmitted: false }, draft: view.message });
   } else if (view.status === "researched" && view.understanding?.intent === "answer" && !view.facts.length
     && view.message.trim() && !view.question && !view.questionnaire && !view.pendingWrite && !view.choices?.length
@@ -421,7 +483,7 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
   // Raced, not only signalled, in `boundReply`: a step before the model call (the access token)
   // does not listen to the signal, and a reset there held a reply for 34 s (29 Sep, local).
   // Errors are logged by class only: provider errors can carry upstream detail (HANDOFF rule 11).
-  const blocks = await boundReply(system, user, facts, signal, generate, lane);
+  const blocks = await boundReply(system, user, facts, signal, generate, lane, options.budgetMs);
   if (blocks) return { ...view, message: plainReply(blocks), replyBlocks: blocks };
   if (lane === "answer") {
     const fallback = factualReplyBlocks(facts, request);

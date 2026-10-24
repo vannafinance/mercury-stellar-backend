@@ -268,6 +268,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     openQuestions: [...raw.openQuestions],
     ...(parsedPlans.plans.length ? { plans: parsedPlans.plans } : {}),
     ...(parsedPlans.dropped + droppedActions ? { droppedPlans: parsedPlans.dropped + droppedActions } : {}),
+    ...(droppedActions ? { droppedActions } : {}),
     ...(parsedPlans.reasons.length || actionDropReasons.length ? { droppedPlanReasons: [...parsedPlans.reasons, ...actionDropReasons] } : {}),
     ...(droppedFindings ? { droppedFindings } : {}),
   };
@@ -385,7 +386,7 @@ export function parseSizing(raw: unknown): PlanSizing | null {
   if (value.kind === "fraction") {
     if (!exactKeys(value, ["kind", "percent", "of", "sourceQuote"]) || typeof value.percent !== "string" ||
       !/^\d+(\.\d{1,6})?$/.test(value.percent) || Number(value.percent) <= 0 || Number(value.percent) > 100 ||
-      (value.of !== "wallet" && value.of !== "position") || !text(value.sourceQuote, 1600)) return drop(`fraction sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
+      (value.of !== "wallet" && value.of !== "position" && value.of !== "previous_leg") || !text(value.sourceQuote, 1600)) return drop(`fraction sizing malformed: ${JSON.stringify(value)?.slice(0, 160)}`);
     return { kind: "fraction", percent: value.percent, of: value.of, sourceQuote: value.sourceQuote };
   }
   if (value.kind === "share") {

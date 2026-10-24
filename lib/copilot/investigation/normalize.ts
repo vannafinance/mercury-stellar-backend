@@ -1,5 +1,6 @@
 import { isRecord } from "./decision";
 import { extractFactsByShape } from "./facts-by-shape";
+import { PAGE_BASIS_SOURCE } from "./health-basis";
 import type { Observation } from "./types";
 import type { ResearchFact } from "./view";
 
@@ -158,6 +159,102 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
             readAt: observation.observedAt,
           });
         }
+        /**
+         * Judgement: ONE health basis reaches the reply. The risk engine counts collateral POSTED
+         * to the contract; the Margin page counts everything the account HOLDS, and the page's is
+         * what the user is told (owner, 29 Sep). A posted-basis collateral figure labelled only
+         * "collateral" beside the debt, or a ratio the MCP computed from it, invites a second health
+         * factor (24 Oct, live: "70.25 (most recently observed 82.28)"). So a risk-engine read gives
+         * up those figures whenever the page's are present, and when it is the only basis it offers
+         * its ratio as what it is - the posted-collateral figure - which the reply cannot quote as the
+         * health factor. Which basis a read is on is what the read says about itself (`source`),
+         * never the wording of the question.
+         */
+        const onPageBasis = (other: typeof observation) =>
+          other.status === "ok" && isRecord(other.data) && other.data.source === PAGE_BASIS_SOURCE;
+        if (onPageBasis(observation)) {
+          consumed.add("net_leverage");
+          add("net_leverage", "Net leverage taken", data.net_leverage, "x", "margin");
+        } else {
+          const pageElsewhere = observations.some((other) => other !== observation && onPageBasis(other));
+          // The provenance block is metadata, not a measurement, and the MCP's own ratio is only ever
+          // offered below as the posted-basis figure.
+          consumed.add("source").add("health_factor");
+          if (pageElsewhere) {
+            // Everything the risk engine derives from posted collateral goes with it: the page states none of
+            // these, and a "distance to liquidation" ratio beside the page's liquidation answer reads as a
+            // second, unexplained one. Its plain verdict (`is_healthy`) is not a figure and stays.
+            consumed.add("collateral_usd").add("collateral_usd_wad").add("ltv_ratio")
+              .add("distance_to_liquidation").add("borrow_threshold").add("liquidation_threshold");
+          } else {
+            if (observation.capability === "account_health") {
+              // `liquidation_snapshot` already names itself by its source; `account_health` is the read
+              // whose "collateral" is indistinguishable from the page's, so it says what it is.
+              consumed.add("collateral_usd");
+              add("collateral_usd", "Collateral posted to the risk engine", data.collateral_usd, "USD", "margin");
+            }
+            // The ratio is kept as the posted-basis figure so the reply says it could not read the
+            // page's, instead of quoting this one as the health factor.
+            add("posted_health_factor", "Health factor on collateral posted to the risk engine", data.health_factor, "HF", "margin");
+          }
+        }
+        break;
+      }
+      /**
+       * Judgement: a liquidation price is a statement about each asset the account is exposed to, and
+       * "no price liquidates it" is an answer, not a missing value. Both are said in words the reply can
+       * cite ("none", with the health factor the account would still have near zero), never left as an
+       * absent number the model fills in. The figures are the Margin page's own (liquidation.ts).
+       */
+      case "account_liquidation": {
+        consumed.add("source").add("state").add("has_debt").add("exposures").add("all_together").add("pegged");
+        // These facts only make sense together (a price, and what it assumes), so they declare their group here.
+        const grouped = () => { for (const fact of facts.slice(before)) fact.group = "Liquidation"; };
+        const text = (path: string, label: string, value: string) => facts.push({
+          id: `${observation.id}:${path}`, label, value, unit: "", venue: "margin", evidenceId: observation.id,
+          sourcePath: path, readAt: observation.observedAt,
+        });
+        if (data.state === "nodebt") {
+          text("liquidation.status", "Liquidation status", "no debt, so no price liquidates the account");
+          grouped();
+          break;
+        }
+        if (data.state === "now") {
+          text("liquidation.status", "Liquidation status", "the account is at or below the liquidation health factor now");
+          grouped();
+          break;
+        }
+        const exposures = Array.isArray(data.exposures) ? data.exposures.filter(isRecord) : [];
+        exposures.forEach((exposure) => {
+          const symbol = typeof exposure.symbol === "string" ? exposure.symbol : null;
+          if (!symbol) return;
+          const at = `liquidation.${symbol}`;
+          const falling = isRecord(exposure.falling) ? exposure.falling : null;
+          const rising = isRecord(exposure.rising) ? exposure.rising : null;
+          if (falling) {
+            add(`${at}.falling_price`, `${symbol} liquidation price`, falling.price_usd, "USD", "margin");
+            const drop = decimal(falling.change_pct);
+            if (drop !== null) add(`${at}.falling_drop`, `${symbol} drop to liquidation`, String(Math.abs(Number(drop))), "%", "margin");
+          } else {
+            text(`${at}.falling_price`, `${symbol} liquidation price`, "none");
+            add(`${at}.health_factor_if_near_zero`, `Health factor if ${symbol} fell to near zero`, exposure.health_factor_if_near_zero, "HF", "margin");
+          }
+          if (rising) {
+            add(`${at}.rising_liquidation_price`, `${symbol} price that liquidates the account on a rise`, rising.price_usd, "USD", "margin");
+          }
+        });
+        (Array.isArray(data.pegged) ? data.pegged.filter(isRecord) : []).forEach((entry) => {
+          if (typeof entry.symbol === "string") {
+            text(`liquidation.${entry.symbol}.pegged`, `${entry.symbol} liquidation price`,
+              "none, a dollar-pegged token the Margin page holds at $1 and moves no price for");
+          }
+        });
+        if (exposures.length && isRecord(data.all_together)) {
+          const drop = decimal(data.all_together.falling_pct);
+          if (drop !== null) add("liquidation.all_together", "Fall in every volatile price at once that liquidates the account", String(Math.abs(Number(drop))), "%", "margin");
+          else text("liquidation.all_together", "Fall in every volatile price at once that liquidates the account", "none");
+        }
+        grouped();
         break;
       }
       /**
@@ -247,9 +344,19 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
 
     const shaped = extractFactsByShape(observation, consumed);
     const taken = new Set(facts.slice(before).map((fact) => fact.sourcePath));
+    /**
+     * Judgement: an Earn pool's `total_liquidity` is what is LEFT to borrow (total_assets minus total_borrows: 42,690 beside
+     * 120,470 supplied and 77,780 borrowed for XLM), not a total. Named "total liquidity" it read as a disagreement with the
+     * Earn page's "Assets Supplied" (24 Oct). The other two are what the page calls them.
+     */
+    const EARN_POOL_NAMES: Record<string, string> = {
+      total_liquidity: "available liquidity", total_assets: "supplied", total_borrows: "borrowed",
+    };
     for (const fact of shaped.facts) {
       if (taken.has(fact.path)) continue;
-      facts.push({ id: `${observation.id}:${fact.path}`, label: fact.label, value: fact.value, unit: fact.unit, venue: fact.venue, evidenceId: observation.id, sourcePath: fact.path, readAt: observation.observedAt, quantity: fact.quantity });
+      const poolWords = observation.capability === "earn_market" ? EARN_POOL_NAMES[fact.path.replace(/_human$/, "")] : undefined;
+      const label = poolWords ? `${String(observation.args.asset)} Earn ${poolWords}` : fact.label;
+      facts.push({ id: `${observation.id}:${fact.path}`, label, value: fact.value, unit: fact.unit, venue: fact.venue, evidenceId: observation.id, sourcePath: fact.path, readAt: observation.observedAt, quantity: fact.quantity });
     }
     for (const row of shaped.unavailable) {
       warnings.add(`${noun}: ${row.identity ?? row.path} was unavailable${row.message ? ` - ${row.message}` : "."}`);

@@ -322,6 +322,12 @@ export async function appendSessionTurn(input: {
   user: string;
   result: ResearchView;
   executionReceipt?: ExecutionReceiptSnapshot | null;
+  /**
+   * The user's text COMPLETES the prompt before it (a questionnaire answer: "deposit usdc" asked, "Deposit 370.94 AQUSDC"
+   * answered). That prompt, and the question it drew, are replaced instead of followed by a second prompt, so the thread
+   * does not read as two things the user typed (24 Oct). Everything before that prompt is kept.
+   */
+  completesPrompt?: boolean;
 }): Promise<{ id: string }> {
   const now = Date.now();
   const fresh: CopilotConversation = {
@@ -338,7 +344,7 @@ export async function appendSessionTurn(input: {
       ...current.turns.flatMap((turn) => turn.executionReceipt ? [turn.executionReceipt.workflowId] : []),
       ...(input.executionReceipt ? [input.executionReceipt.workflowId] : [])])],
     turns: [
-      ...current.turns,
+      ...(input.completesPrompt ? withoutLastPrompt(current.turns) : current.turns),
       { role: "user" as const, text: input.user },
       {
         role: "assistant" as const,
@@ -363,6 +369,13 @@ export async function appendSessionTurn(input: {
     };
   });
   return { id: updated.id };
+}
+
+/** The turns before the last user prompt: that prompt and whatever answered it are dropped. */
+function withoutLastPrompt<T extends { role: string }>(turns: readonly T[]): T[] {
+  let at = turns.length;
+  while (at > 0 && turns[at - 1].role !== "user") at -= 1;
+  return at > 0 ? turns.slice(0, at - 1) : [...turns];
 }
 
 /**

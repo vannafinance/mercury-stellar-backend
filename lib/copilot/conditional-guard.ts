@@ -103,8 +103,8 @@ export function detectAutomationGap(message: string, willWrite: boolean): Automa
 
 /** The investigation's refusal when the user asked to act on a future event. */
 export const CONDITIONAL_REFUSAL =
-  "I can't schedule or execute conditional financial actions. " +
-  "Please submit a specific action for review when you are ready.";
+  "I can't hold an action until a condition is met, so I did nothing. " +
+  "To go ahead now, tell me the action itself (for example the amount) and I'll check it against your account first.";
 
 /**
  * Refuse a future condition whenever the model names one.
@@ -120,7 +120,17 @@ export const CONDITIONAL_REFUSAL =
  */
 export function futureConditionRefusal(
   trigger: { kind: "none" | "future_condition"; sourceQuote?: string } | undefined,
-  _messages: readonly string[],
+  messages: readonly string[],
 ): string | null {
-  return trigger?.kind === "future_condition" ? CONDITIONAL_REFUSAL : null;
+  if (trigger?.kind !== "future_condition") return null;
+  /**
+   * Said to the person in their own words. The user's quote is repeated only when it really is in what they wrote (the model's
+   * quote is checked, never trusted), so they can see which clause was read as a condition - 24 Oct, N7: "Repay 5,000 SoUSDC when my
+   * debt is 2,400" was refused as a scheduling request with no hint which words were taken that way. The refusal itself is unchanged:
+   * it still stands whether or not the quote can be found.
+   */
+  const quote = trigger.sourceQuote?.trim();
+  if (!quote || !messages.some((message) => message.includes(quote))) return CONDITIONAL_REFUSAL;
+  return `I can't hold an action until a condition is met, so I did nothing. I read “${quote}” as a condition on something that has not happened yet. ` +
+    "To go ahead now, tell me the action itself (for example the amount) and I'll check it against your account first.";
 }

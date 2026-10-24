@@ -136,6 +136,14 @@ describe("simulateCandidates", () => {
     ]);
   });
 
+  it("quotes the protocol's reason with figures a person reads, not the contract's 18 decimals", async () => {
+    const mcp = { call: vi.fn(async () => ({ allowed: false, reason: "Withdrawing 5863.358152400000000000 XLM ($996.397732626120418858 USD) is NOT permitted: it would leave the account below the 1.1x health threshold.", limiting_factor: "collateral_health" })) };
+    const set = await simulateCandidates({ feasible: [candidate("a", [step("s0", "withdraw_collateral", "5863.3581524")])], rejected: [] }, SCOPE, mcp, signal());
+    expect(set.rejected[0].reason).toContain("Withdrawing 5863.3581524 XLM ($996.40 USD) is NOT permitted");
+    expect(set.rejected[0].reason).toContain("1.1x health threshold");
+    expect(set.rejected[0].reason).not.toMatch(/\d\.\d{8,}/);
+  });
+
   it("marks a borrow refused on a POOL limit, by the protocol's structured limiting factor, so a smaller amount can be tried", async () => {
     const mcp = { call: vi.fn(async () => ({ allowed: false, reason: "pool limit exceeded", limiting_factor: "pool_utilization_cap" })) };
     const set = await simulateCandidates({ feasible: [candidate("a", [step("s0", "borrow", "5000")])], rejected: [] }, SCOPE, mcp, signal());
@@ -147,5 +155,22 @@ describe("simulateCandidates", () => {
     const mcp = { call: vi.fn(async () => ({ allowed: false, reason: "not permitted", limiting_factor: "collateral_health" })) };
     const set = await simulateCandidates({ feasible: [candidate("a", [step("s0", "borrow", "5000")])], rejected: [] }, SCOPE, mcp, signal());
     expect(set.rejected[0]).not.toHaveProperty("poolLimited");
+  });
+
+  /**
+   * 24 Oct: the plan no longer reads the borrow ceiling up front for a stated amount (the search costs up to 34 s for a deep
+   * pool); the protocol's preview answers yes or no for that amount. A refused borrow is the moment the ceiling is wanted,
+   * so the user is told the real limit, whichever limit refused it.
+   */
+  it.each(["pool_utilization_cap", "collateral_health"])("marks any refused borrow as needing the ceiling read, whatever refused it: %s", async (factor) => {
+    const mcp = { call: vi.fn(async () => ({ allowed: false, reason: "not permitted", limiting_factor: factor })) };
+    const set = await simulateCandidates({ feasible: [candidate("a", [step("s0", "borrow", "5000")])], rejected: [] }, SCOPE, mcp, signal());
+    expect(set.rejected[0]).toMatchObject({ ceilingNeeded: { asset: "XLM" } });
+  });
+
+  it("does not ask for a ceiling when something other than a borrow was refused", async () => {
+    const mcp = { call: vi.fn(async () => ({ allowed: false, reason: "not permitted", limiting_factor: "collateral_health" })) };
+    const set = await simulateCandidates({ feasible: [candidate("a", [step("s0", "withdraw_collateral", "900")])], rejected: [] }, SCOPE, mcp, signal());
+    expect(set.rejected[0]).not.toHaveProperty("ceilingNeeded");
   });
 });

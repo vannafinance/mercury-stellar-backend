@@ -463,7 +463,7 @@ function modelUrl(model: string): string {
  * cache's fault, not the user's, and must not end their turn. A second 401, or a 403,
  * is a real credential or permission problem and is returned to the caller as-is.
  */
-async function postVertex(model: string, body: unknown, signal: AbortSignal): Promise<Response> {
+async function postVertexOnce(model: string, body: unknown, signal: AbortSignal): Promise<Response> {
   const send = async () => {
     const token = await getAccessToken();
     signal.throwIfAborted();
@@ -484,6 +484,66 @@ async function postVertex(model: string, body: unknown, signal: AbortSignal): Pr
   }
   if (res.status === 401 || res.status === 403) tokenCache = null;
   return res;
+}
+
+/**
+ * A primary model that is slow or down is replaced by the registry's fallback, for the call in hand and, briefly, for
+ * the calls after it.
+ *
+ * 24 Oct, live: the same research request against gemini-3.8-flash took 25, 18, 73, 67, 83, 48, 18 and 104 s in a row (the
+ * global endpoint's latency, Google's side) while gemini-3.5-flash answered it in 1.6-5.4 s. Two such calls spend the whole
+ * research budget, and the user saw "ran out of time" for prompts whose reads took a second.
+ *
+ * A call to the PRIMARY that outlasts `COPILOT_MODEL_SLOW_MS` (15 s; a healthy research turn is 4 s), or that the endpoint
+ * refuses as unavailable (429/5xx), is sent to the first usable fallback. The primary is then left alone for
+ * `COPILOT_MODEL_BREAKER_MS` (5 min), so a bad spell costs one slow call and not one per call. While the primary is healthy
+ * nothing is sent twice: this is a failover, not a hedge. The user's own cancel is never taken for slowness, a call to
+ * any model other than the primary is untouched, and the fallback's answer or error is final (no further hops).
+ */
+const UNAVAILABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+let primaryDegradedUntil = 0;
+
+/** Forget that the primary was ever slow (tests, and an operator's reset). */
+export function resetModelFailover(): void {
+  primaryDegradedUntil = 0;
+}
+
+function positiveEnvMs(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function failoverModel(model: string): string | null {
+  if (model !== copilotConfig.vertexModel) return null;
+  const fallbacks = copilotConfig.vertexModelFallbacks.filter((candidate) => candidate !== model);
+  return fallbacks.length ? usableModels(fallbacks)[0] ?? null : null;
+}
+
+function degradePrimary(model: string, fallback: string, reason: string): void {
+  const forMs = positiveEnvMs("COPILOT_MODEL_BREAKER_MS", 5 * 60_000);
+  primaryDegradedUntil = Date.now() + forMs;
+  console.warn("[copilot:vertex] primary model slow or unavailable - using the fallback", { model, fallback, reason, forMs });
+}
+
+async function postVertex(model: string, body: unknown, signal: AbortSignal): Promise<Response> {
+  const fallback = failoverModel(model);
+  if (!fallback) return postVertexOnce(model, body, signal);
+  if (Date.now() < primaryDegradedUntil) return postVertexOnce(fallback, body, signal);
+  const tooSlow = new AbortController();
+  const timer = setTimeout(() => tooSlow.abort(), positiveEnvMs("COPILOT_MODEL_SLOW_MS", 15_000));
+  try {
+    const res = await postVertexOnce(model, body, AbortSignal.any([signal, tooSlow.signal]));
+    if (!UNAVAILABLE_STATUSES.has(res.status)) return res;
+    await res.body?.cancel().catch(() => undefined);
+    degradePrimary(model, fallback, `HTTP ${res.status}`);
+  } catch (error) {
+    // The run's own cancel, or a failure that is not slowness, is the caller's to see as it always was.
+    if (signal.aborted || !tooSlow.signal.aborted) throw error;
+    degradePrimary(model, fallback, "slow");
+  } finally {
+    clearTimeout(timer);
+  }
+  return postVertexOnce(fallback, body, signal);
 }
 
 // ── prompt-cache instrumentation ───────────────────────────────────────────
