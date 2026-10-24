@@ -80,6 +80,26 @@ export class VertexError extends Error {
 
 let tokenCache: { token: string; expiryMs: number } | null = null;
 
+/**
+ * A token is cached until Google's own expiry minus this margin, never for a fixed term.
+ * The old flat 45 min outlived the token it held: on Cloud Run the metadata server hands
+ * out its current token with whatever life it has left, which can be minutes, and every
+ * call in the gap failed with 401 ACCESS_TOKEN_EXPIRED (24 Oct, vanna-app-dev, twice).
+ */
+const TOKEN_EXPIRY_MARGIN_MS = 5 * 60_000;
+/** `gcloud auth print-access-token` does not say how long its token lives, so hold it briefly. */
+const UNKNOWN_EXPIRY_TTL_MS = 5 * 60_000;
+
+function cacheToken(token: string, expiryDate?: number | null): string {
+  const now = Date.now();
+  const expiryMs = typeof expiryDate === "number" && Number.isFinite(expiryDate) && expiryDate > 0
+    ? expiryDate - TOKEN_EXPIRY_MARGIN_MS
+    : now + UNKNOWN_EXPIRY_TTL_MS;
+  // Still usable for the call in hand; just not worth keeping for the next one.
+  tokenCache = expiryMs > now ? { token, expiryMs } : null;
+  return token;
+}
+
 /** Resolve gcloud on Windows/macOS - Next.js child processes often lack shell PATH. */
 function resolveGcloudBin(): string | null {
   if (process.env.GCLOUD_PATH && existsSync(/* turbopackIgnore: true */ process.env.GCLOUD_PATH)) {
@@ -284,8 +304,7 @@ async function getAccessToken(): Promise<string> {
           `roles/aiplatform.user on ${copilotConfig.googleCloudProject}.`,
       );
     }
-    tokenCache = { token: res.token, expiryMs: Date.now() + 45 * 60_000 };
-    return res.token;
+    return cacheToken(res.token, client.credentials?.expiry_date);
   }
 
   // 1) Service account - machine-independent, and the only option that exists on a
@@ -307,8 +326,7 @@ async function getAccessToken(): Promise<string> {
           `and has roles/aiplatform.user on project ${copilotConfig.googleCloudProject}.`,
       );
     }
-    tokenCache = { token: res.token, expiryMs: Date.now() + 45 * 60_000 };
-    return res.token;
+    return cacheToken(res.token, client.credentials?.expiry_date);
   }
 
   // 2) google-auth-library ADC (works when application-default login is valid)
@@ -321,8 +339,7 @@ async function getAccessToken(): Promise<string> {
     const client = await auth.getClient();
     const res = await client.getAccessToken();
     if (res.token) {
-      tokenCache = { token: res.token, expiryMs: Date.now() + 45 * 60_000 };
-      return res.token;
+      return cacheToken(res.token, client.credentials?.expiry_date);
     }
   } catch {
     /* fall through - ADC is often broken with invalid_rapt */
@@ -333,8 +350,7 @@ async function getAccessToken(): Promise<string> {
   const errors: string[] = [];
   const tried = await tryGcloudAccessToken();
   if (tried.token) {
-    tokenCache = { token: tried.token, expiryMs: Date.now() + 45 * 60_000 };
-    return tried.token;
+    return cacheToken(tried.token);
   }
   if (tried.error) errors.push(tried.error);
 
@@ -441,6 +457,35 @@ function modelUrl(model: string): string {
   );
 }
 
+/**
+ * POST a generateContent body with the server's bearer token. A 401 drops the cached
+ * token and is retried once with a fresh one: a token Google has already expired is our
+ * cache's fault, not the user's, and must not end their turn. A second 401, or a 403,
+ * is a real credential or permission problem and is returned to the caller as-is.
+ */
+async function postVertex(model: string, body: unknown, signal: AbortSignal): Promise<Response> {
+  const send = async () => {
+    const token = await getAccessToken();
+    signal.throwIfAborted();
+    return fetch(modelUrl(model), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+      cache: "no-store",
+    });
+  };
+  let res = await send();
+  if (res.status === 401) {
+    tokenCache = null;
+    await res.body?.cancel().catch(() => undefined);
+    console.warn("[copilot:vertex] 401 from Vertex - retrying once with a fresh token", { model });
+    res = await send();
+  }
+  if (res.status === 401 || res.status === 403) tokenCache = null;
+  return res;
+}
+
 // ── prompt-cache instrumentation ───────────────────────────────────────────
 //
 // Implicit caching is on by default for Gemini 2.5 and newer, so there is nothing to
@@ -524,7 +569,6 @@ function logUsage(tag: string, parsed: unknown): void {
 export async function generateJson(system: string, user: string): Promise<Record<string, unknown>> {
   const model = copilotConfig.vertexModel;
   return withModelCall(model, { outputType: "json" }, async () => {
-  const token = await getAccessToken();
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: user }] }],
@@ -534,21 +578,10 @@ export async function generateJson(system: string, user: string): Promise<Record
     },
   };
 
-  const res = await fetch(modelUrl(model), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
-    cache: "no-store",
-  });
+  const res = await postVertex(model, body, AbortSignal.timeout(60_000));
 
   const text = await res.text();
   if (!res.ok) {
-    // token might be stale
-    if (res.status === 401 || res.status === 403) tokenCache = null;
     throw new VertexError(`Vertex ${model} HTTP ${res.status}: ${text.slice(0, 400)}`);
   }
 
@@ -610,31 +643,22 @@ export async function generateInvestigationJson(
     maxTokens: INVESTIGATION_MAX_OUTPUT_TOKENS,
   }, async () => {
   signal.throwIfAborted();
-  const token = await getAccessToken();
-  signal.throwIfAborted();
-  const res = await fetch(modelUrl(model), {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: "user", parts: [{ text: user }] }],
-      ...(useTools ? {
-        tools: [{ functionDeclarations }],
-        // ANY forces a declared function; JSON mime type is mutually exclusive with tools.
-        toolConfig: { functionCallingConfig: { mode: "ANY" } },
-      } : {}),
-      generationConfig: {
-        ...(useTools ? {} : { responseMimeType: "application/json", ...(responseSchema ? { responseSchema } : {}) }),
-        maxOutputTokens: INVESTIGATION_MAX_OUTPUT_TOKENS,
-        // 3.8 retires sampling knobs; reasoning level is set per turn by the caller.
-        ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel } } : { temperature: 0 }),
-      },
-    }),
-    signal,
-    cache: "no-store",
-  });
+  const res = await postVertex(model, {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: "user", parts: [{ text: user }] }],
+    ...(useTools ? {
+      tools: [{ functionDeclarations }],
+      // ANY forces a declared function; JSON mime type is mutually exclusive with tools.
+      toolConfig: { functionCallingConfig: { mode: "ANY" } },
+    } : {}),
+    generationConfig: {
+      ...(useTools ? {} : { responseMimeType: "application/json", ...(responseSchema ? { responseSchema } : {}) }),
+      maxOutputTokens: INVESTIGATION_MAX_OUTPUT_TOKENS,
+      // 3.8 retires sampling knobs; reasoning level is set per turn by the caller.
+      ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel } } : { temperature: 0 }),
+    },
+  }, signal);
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) tokenCache = null;
     const body = await res.text().catch(() => "");
     // Server log only - the thrown message stays a status code so tool internals
     // never reach the SSE payload.
@@ -723,26 +747,17 @@ export async function generateSocialLaneJson(
     maxTokens: 1024,
   }, async () => {
     signal.throwIfAborted();
-    const token = await getAccessToken();
-    signal.throwIfAborted();
-    const res = await fetch(modelUrl(model), {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: "user", parts: [{ text: user }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: SOCIAL_RESPONSE_SCHEMA,
-          maxOutputTokens: 1024,
-          thinkingConfig: { thinkingLevel: "MINIMAL" },
-        },
-      }),
-      signal,
-      cache: "no-store",
-    });
+    const res = await postVertex(model, {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: user }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: SOCIAL_RESPONSE_SCHEMA,
+        maxOutputTokens: 1024,
+        thinkingConfig: { thinkingLevel: "MINIMAL" },
+      },
+    }, signal);
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) tokenCache = null;
       const body = await res.text().catch(() => "");
       console.error("[copilot] Vertex social-lane HTTP error", {
         status: res.status, model, body: body.slice(0, 400),
@@ -855,7 +870,6 @@ async function generateTextOnce(
     outputType: "text",
     reasoningLevel: opts?.lowThinking ? "LOW" : undefined,
   }, async () => {
-  const token = await getAccessToken();
   const thinking = opts?.lowThinking ? lowThinkingConfig(model) : null;
   const body = {
     systemInstruction: { parts: [{ text: system }] },
@@ -866,19 +880,9 @@ async function generateTextOnce(
     },
   };
 
-  const res = await fetch(modelUrl(model), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(opts?.timeoutMs ?? 60_000),
-    cache: "no-store",
-  });
+  const res = await postVertex(model, body, AbortSignal.timeout(opts?.timeoutMs ?? 60_000));
   const text = await res.text();
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) tokenCache = null;
     throw new VertexError(`Vertex ${model} HTTP ${res.status}: ${text.slice(0, 400)}`);
   }
   const parsed = JSON.parse(text);
@@ -953,7 +957,6 @@ async function generateFunctionCall(
 ): Promise<{ name: string; args: Record<string, unknown> }> {
   const model = copilotConfig.vertexModel;
   return withModelCall(model, {}, async () => {
-  const token = await getAccessToken();
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     tools: [{ functionDeclarations: ROUTER_TOOL_DECLS }],
@@ -963,20 +966,10 @@ async function generateFunctionCall(
     generationConfig: { temperature: 0 },
   };
 
-  const res = await fetch(modelUrl(model), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
-    cache: "no-store",
-  });
+  const res = await postVertex(model, body, AbortSignal.timeout(60_000));
 
   const text = await res.text();
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) tokenCache = null;
     throw new VertexError(`Vertex ${model} function-call HTTP ${res.status}: ${text.slice(0, 400)}`);
   }
 
@@ -1417,7 +1410,6 @@ export async function vertexExplainStructured(
 
   const model = copilotConfig.vertexModel;
   return withModelCall(model, { outputType: "json", reasoningLevel: "LOW" }, async () => {
-  const token = await getAccessToken();
   const thinking = lowThinkingConfig(model);
   const bodyFor = (withThinking: boolean) => ({
     systemInstruction: { parts: [{ text: ANSWER_SYSTEM }] },
@@ -1432,13 +1424,7 @@ export async function vertexExplainStructured(
 
   try {
     const post = (withThinking: boolean) =>
-      fetch(modelUrl(model), {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify(bodyFor(withThinking)),
-        signal: AbortSignal.timeout(60_000),
-        cache: "no-store",
-      });
+      postVertex(model, bodyFor(withThinking), AbortSignal.timeout(60_000));
     let res = await post(true);
     let text = await res.text();
     // A 400 naming the thinking field means this model does not take it - the answer is
@@ -1449,7 +1435,6 @@ export async function vertexExplainStructured(
       text = await res.text();
     }
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) tokenCache = null;
       console.warn(`[copilot:vertex] structured answer HTTP ${res.status}: ${text.slice(0, 200)}`);
       return null;
     }
@@ -1570,25 +1555,17 @@ export async function vertexSummarizeExecution(
 
   const model = copilotConfig.vertexModel;
   return withModelCall(model, { outputType: "json" }, async () => {
-  const token = await getAccessToken();
   try {
-    const res = await fetch(modelUrl(model), {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: RECEIPT_SYSTEM }] },
-        contents: [{ role: "user", parts: [{ text: user }] }],
-        generationConfig: {
-          temperature: 0.2,
-          responseMimeType: "application/json",
-          responseSchema: ANSWER_RESPONSE_SCHEMA,
-        },
-      }),
-      signal: AbortSignal.timeout(45_000),
-      cache: "no-store",
-    });
+    const res = await postVertex(model, {
+      systemInstruction: { parts: [{ text: RECEIPT_SYSTEM }] },
+      contents: [{ role: "user", parts: [{ text: user }] }],
+      generationConfig: {
+        temperature: 0.2,
+        responseMimeType: "application/json",
+        responseSchema: ANSWER_RESPONSE_SCHEMA,
+      },
+    }, AbortSignal.timeout(45_000));
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) tokenCache = null;
       return null;
     }
     const parsed = JSON.parse(await res.text()) as {
@@ -1663,25 +1640,17 @@ export async function vertexGuideAnswer(
   const candidates = usableModels([copilotConfig.vertexGuideModel, ...copilotConfig.vertexGuideFallbacks]);
   for (const model of candidates) {
     const result = await withModelCall(model, { outputType: "json", reasoningLevel: "LOW" }, async () => {
-      const token = await getAccessToken();
       try {
-        const res = await fetch(modelUrl(model), {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: GUIDE_SYSTEM }] },
-            contents: [{ role: "user", parts: userContentParts(user, images) }],
-            generationConfig: {
-              ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel: "LOW" } } : { temperature: 0.2 }),
-              responseMimeType: "application/json",
-              responseSchema: GUIDE_RESPONSE_SCHEMA,
-            },
-          }),
-          signal: AbortSignal.timeout(45_000),
-          cache: "no-store",
-        });
+        const res = await postVertex(model, {
+          systemInstruction: { parts: [{ text: GUIDE_SYSTEM }] },
+          contents: [{ role: "user", parts: userContentParts(user, images) }],
+          generationConfig: {
+            ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel: "LOW" } } : { temperature: 0.2 }),
+            responseMimeType: "application/json",
+            responseSchema: GUIDE_RESPONSE_SCHEMA,
+          },
+        }, AbortSignal.timeout(45_000));
         if (!res.ok) {
-          if (res.status === 401 || res.status === 403) tokenCache = null;
           console.warn(`[copilot:vertex] guide HTTP ${res.status} (${model})`);
           return null;
         }
@@ -1713,20 +1682,10 @@ export async function vertexPing(): Promise<{ ok: boolean; model: string; error?
   const model = copilotConfig.vertexModel;
   return withModelCall(model, { outputType: "json", maxTokens: 32 }, async () => {
   try {
-    const token = await getAccessToken();
-    const res = await fetch(modelUrl(model), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: 'Reply JSON: {"ok":true}' }] }],
-        generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 32 },
-      }),
-      signal: AbortSignal.timeout(30_000),
-      cache: "no-store",
-    });
+    const res = await postVertex(model, {
+      contents: [{ role: "user", parts: [{ text: 'Reply JSON: {"ok":true}' }] }],
+      generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 32 },
+    }, AbortSignal.timeout(30_000));
     if (!res.ok) {
       const t = await res.text();
       return { ok: false, model, error: `HTTP ${res.status}: ${t.slice(0, 200)}` };
