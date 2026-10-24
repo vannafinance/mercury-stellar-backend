@@ -100,7 +100,8 @@ export const Navbar = (props: Navbar) => {
   const setAppMode = useAppModeStore((s) => s.set);
 
   // Pro/Lite toggle. Set false to hide Lite for testing and force Pro.
-  const LITE_MODE_ENABLED = true;
+  // Disabled for now: Lite mode is not needed, everyone runs in Pro.
+  const LITE_MODE_ENABLED = false;
   useEffect(() => {
     if (!LITE_MODE_ENABLED && appMode === "lite") {
       setAppMode({ mode: "pro" });
