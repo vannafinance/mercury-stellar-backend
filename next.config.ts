@@ -28,9 +28,12 @@ const nextConfig: NextConfig = {
     // calls across the app never ship to users — smaller bundles, no main-thread
     // logging cost, and no internal detail leaked in the console. console.error
     // is kept so genuine production errors remain visible (e.g. to monitoring).
+    // console.warn is kept too: the server's warn lines are the only record of why a
+    // copilot run stopped (decision/evidence refused, failed reads), and stripping them
+    // left "could not be completed" failures undiagnosable in Cloud Logging (24 Oct).
     // Dev builds keep all logging.
     removeConsole:
-      process.env.NODE_ENV === "production" ? { exclude: ["error"] } : false,
+      process.env.NODE_ENV === "production" ? { exclude: ["error", "warn"] } : false,
   },
 };
 
