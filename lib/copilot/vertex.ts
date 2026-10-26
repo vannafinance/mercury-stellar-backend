@@ -257,6 +257,11 @@ export function hasVertexServiceAccount(): boolean {
   return vertexAuthMode() !== "developer_login";
 }
 
+/** Test seam: hands the module a ready access token so a test of request shapes never reaches an auth provider. */
+export function primeAccessTokenForTests(token = "test-token"): void {
+  tokenCache = { token, expiryMs: Date.now() + 60 * 60_000 };
+}
+
 async function getAccessToken(): Promise<string> {
   if (tokenCache && Date.now() < tokenCache.expiryMs) return tokenCache.token;
 

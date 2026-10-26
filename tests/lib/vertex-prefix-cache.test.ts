@@ -11,10 +11,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 vi.mock("google-auth-library", () => ({
   GoogleAuth: class {
-    async getClient() { return { credentials: {}, getAccessToken: async () => ({ token: "token-1" }) }; }
+    async getClient() {
+      const client = {
+        credentials: {} as { expiry_date?: number },
+        getAccessToken: async () => {
+          client.credentials = { expiry_date: Date.now() + 60 * 60_000 };
+          return { token: "token-1" };
+        },
+      };
+      return client;
+    }
   },
 }));
-
 const decisionResponse = () => Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: '{"kind":"clarify","question":"Budget?"}' }] } }] });
 const cacheCreated = () => Response.json({ name: "projects/p/locations/global/cachedContents/1", expireTime: new Date(Date.now() + 600_000).toISOString() });
 const decls = [{ name: "read_balance", description: "Read the wallet balance.", parameters: { type: "object", properties: {} } }] as never;
@@ -35,12 +43,17 @@ const isWarmup = (call: Call) => JSON.stringify(call.body.contents).includes("Re
 const generations = (calls: Call[]) => calls.filter((call) => !isCreate(call) && !isWarmup(call));
 const tick = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function load() { vi.resetModules(); return import("@/lib/copilot/vertex"); }
+// These tests are about request shapes, not authentication: the module is handed a token, so none of them depends on
+// an auth provider (CI has no gcloud login, a laptop usually does).
+async function load() { vi.resetModules(); const vertex = await import("@/lib/copilot/vertex"); vertex.primeAccessTokenForTests(); return vertex; }
 const run = (vertex: Awaited<ReturnType<typeof load>>) =>
   vertex.generateInvestigationJson("gemini-3.8-flash", "the rules", "the user's message", new AbortController().signal, "LOW", decls);
 
 beforeEach(() => {
   vi.stubEnv("GOOGLE_WORKLOAD_IDENTITY_AUDIENCE", "");
+  // Same as the other Vertex tests: the mocked google-auth-library is reached through the service-account path, so the test
+  // never depends on a developer being logged in to gcloud (CI is not).
+  vi.stubEnv("GOOGLE_SERVICE_ACCOUNT_JSON", JSON.stringify({ client_email: "fixture@example.test", private_key: "fixture" }));
   vi.stubEnv("VERTEX_MODEL", "gemini-3.8-flash");
   vi.stubEnv("VERTEX_MODEL_FALLBACKS", "");
   vi.stubEnv("COPILOT_PROMPT_CACHE", "on");
