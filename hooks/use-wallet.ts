@@ -5,6 +5,7 @@ import { normalizeContractError } from '@/lib/errors/normalize';
 import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { setActiveWalletKind, getPrivyAuthControls, startPrivyConnect, type WalletKind } from '@/lib/wallet-adapter';
 import { clearWalletSession } from '@/lib/copilot/establish-wallet-session';
+import { readWalletChoice, writeWalletChoice } from '@/lib/wallet-choice';
 import { hasUnexpiredPrivySession } from '@/lib/privy-session';
 import { useUserStore } from '@/store/user';
 import { clearMarginAccount } from '@/store/margin-account-info-store';
@@ -141,6 +142,10 @@ export const useWallet = () => {
     if (manuallyDisconnected) {
       return;
     }
+    // The user's last explicit choice survives a reload. After a Disconnect, the Freighter extension being authorised for this
+    // site is not a reason to connect it again.
+    const choice = readWalletChoice();
+    if (choice === "none") return;
 
     const privy = getPrivyAuthControls();
     const persisted = hasUnexpiredPrivySession();
@@ -181,6 +186,10 @@ export const useWallet = () => {
       }
       return;
     }
+
+    // Chose Privy last time (or is returning from its login redirect): the Freighter extension must not answer first. The
+    // check runs again when Privy finishes hydrating or authenticates.
+    if (choice === "privy") return;
 
     const currentState = useUserStore.getState();
     const alreadyConnectedFreighter = Boolean(
@@ -243,6 +252,7 @@ export const useWallet = () => {
       // resyncs in that case so the click is not a dead button.
       try {
         useUserStore.getState().set({ manuallyDisconnected: false });
+        writeWalletChoice('privy');
         const result = startPrivyConnect();
         if (result === 'unavailable') {
           toast.error('Privy login is not available right now');
@@ -278,6 +288,7 @@ export const useWallet = () => {
           walletKind: 'freighter',
           manuallyDisconnected: false,
         });
+        writeWalletChoice('freighter');
 
         // Refresh balances asynchronously with timeout to prevent hanging
         refreshBalances(result.address).catch((error) => {
@@ -306,6 +317,7 @@ export const useWallet = () => {
       });
     }
     setActiveWalletKind(null);
+    writeWalletChoice('none');
     void clearWalletSession();
 
     // Reset in-memory state so the UI doesn't keep showing the

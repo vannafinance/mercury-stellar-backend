@@ -11,7 +11,7 @@ describe("ExecutionStepper", () => {
     expect(screen.getByText("Cancelled")).toBeTruthy();
     expect(screen.getByText("Not submitted")).toBeTruthy();
     expect(screen.queryByLabelText("In progress")).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Sign & execute/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Approve$/ })).toBeNull();
     expect(screen.queryByText("Signing…")).toBeNull();
     rerender(<ExecutionStepper currentStepIndex={0} autoApprove cancelled
       steps={[{ id: "s", op: "withdraw_collateral", label: "Withdraw 1 AQUSDC", asset: "AQUSDC", amount: "1", status: "uncertain", txHash: "ab".repeat(32) }]} />);
@@ -29,7 +29,7 @@ describe("ExecutionStepper", () => {
       />,
     );
     expect(screen.getByText("This is outside your auto-approve limits, so it needs your own signature.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /^Sign & execute/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Approve$/ }));
     expect(onSign).toHaveBeenCalledTimes(1);
     cleanup();
   });
@@ -129,7 +129,7 @@ describe("ExecutionStepper", () => {
     const onSign = vi.fn();
     render(<ExecutionStepper currentStepIndex={0} steps={[...two("signing", "pending")]} onSign={onSign} onStop={() => {}} />);
     expect(screen.getByText("Your signature needed")).toBeTruthy();
-    fireEvent.click(screen.getByText(/^Sign & execute/));
+    fireEvent.click(screen.getByText(/^Approve$/));
     expect(onSign).toHaveBeenCalled();
     expect(screen.queryByText("Nothing is sent without your signature.")).toBeNull();
     expect(screen.getByText("Cancel remaining steps")).toBeTruthy();
@@ -139,7 +139,7 @@ describe("ExecutionStepper", () => {
     const onSign = vi.fn();
     render(<ExecutionStepper currentStepIndex={0} autoApprove steps={[...two("signing", "pending")]} onSign={onSign} />);
     expect(screen.getByText("Your signature needed")).toBeTruthy();
-    fireEvent.click(screen.getByText(/^Sign & execute/));
+    fireEvent.click(screen.getByText(/^Approve$/));
     expect(onSign).toHaveBeenCalledTimes(1);
   });
 

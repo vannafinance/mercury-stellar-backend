@@ -87,18 +87,31 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
       AbortSignal.any([signal, AbortSignal.timeout(READ_MS)]),
     );
     const holders = holdersFor(proposal);
+    /**
+     * The contract's health read is four dependent RPC round trips (registry, risk-engine code, balance and debt, verdict) and does
+     * not depend on any price or balance read below, so it starts now and is awaited where its result is first needed. Run one
+     * after the other they came to ~9.7 s of an Approve (26 Oct, live). The same read, the same checks, the same order of verdicts.
+     */
+    const chainBound = AbortSignal.any([signal, AbortSignal.timeout(READ_MS)]);
+    const chainRead = margin && proposal.scope.smartAccount && (proposal.floor || project)
+      ? interruptible(() => readContractHealthState(proposal.scope.smartAccount!, { signal: chainBound }), chainBound)
+      : null;
+    chainRead?.catch(() => { /* surfaced where it is awaited; this keeps an early refusal from leaving it unhandled */ });
     await Promise.all(assets.map(async asset => {
       const contract = sep41Token(asset);
       if (!contract) fail("asset_not_validated");
-      if (project || proposal.floor) {
-        const priceRead = resolveRead("asset_price", { asset }, proposal.scope);
-        const price = asRecord(await read(priceRead.tool, priceRead.args));
-        if (price.error) fail("price_unavailable");
-        const value = decimalWad(String(price.price_usd));
-        if (value <= BigInt(0)) fail("price_unavailable");
-        prices.set(asset, value);
-      }
-      await Promise.all(holders.map(async holder => {
+      // The price and the balances are independent reads: one round trip, not two.
+      const priceTask = project || proposal.floor
+        ? (async () => {
+          const priceRead = resolveRead("asset_price", { asset }, proposal.scope);
+          const price = asRecord(await read(priceRead.tool, priceRead.args));
+          if (price.error) fail("price_unavailable");
+          const value = decimalWad(String(price.price_usd));
+          if (value <= BigInt(0)) fail("price_unavailable");
+          prices.set(asset, value);
+        })()
+        : Promise.resolve();
+      await Promise.all([priceTask, ...holders.map(async holder => {
         const balance = asRecord(await read("vanna_get_token_balance", { holder, token_contract: contract }));
         const reportedHolder = typeof balance.holder === "string" ? balance.holder : "";
         const reportedContract = typeof balance.contract === "string" ? balance.contract
@@ -114,7 +127,7 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
           if ((String(step.args.amount_b).split(".")[1]?.length ?? 0) > decimals) fail(`amount_precision:${asset}:${decimals}`);
         }
         funds.set(`${holder}:${asset}`, decimalWad(String(balance.human)));
-      }));
+      })]);
     }));
     const legs: LegRequest[] = [];
     for (const step of proposal.steps) {
@@ -181,11 +194,7 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
      * no stated floor was refused outright here even though it ends where it started.
      */
     if (!proposal.floor && !project) return null;
-    const bound = AbortSignal.any([signal, AbortSignal.timeout(READ_MS)]);
-    const chain = await interruptible(
-      () => readContractHealthState(proposal.scope.smartAccount!, { signal: bound }),
-      bound,
-    );
+    const chain = await chainRead!;
     if (chain.registryDiverged || chain.wasmHash !== VERIFIED_RISK_WASM) return "The current risk configuration could not be verified.";
     if (proposal.floor) {
       const floor = decimalWad(proposal.floor);

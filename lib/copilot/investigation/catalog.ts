@@ -178,7 +178,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   {
     // A search of the chain for the ceiling: 4-8 s for three pools, 24 s alone and 30 s beside others for the deepest (24 Oct).
     name: "max_borrow", tool: "vanna_get_max_borrow", scope: "account", cost: "expensive",
-    description: "Largest amount of one margin asset the account could borrow now. A READ - it does not borrow. Use can_borrow when the user named a specific amount. Bare USDC is ambiguous; pick a variant.",
+    description: "Largest amount of one margin asset the account could borrow now. A READ - it does not borrow. A chain search (5-30 s for one asset on its own): read it only when the user asks how much they can borrow; several assets requested in the same turn are served as one call, so ask for all of them together. Use can_borrow when the user named a specific amount. Bare USDC is ambiguous; pick a variant.",
     modelArgs: { asset: { type: "enum", values: marginAssets } },
     bind: (args, scope) => ({ smart_account: scope.smartAccount, symbol: symbolFor(args, "marginSymbol") }),
   },

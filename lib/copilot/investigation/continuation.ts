@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:cr
 import type { InvestigationScope } from "./types";
 import { ResearchError } from "./scope";
 import { isRecord } from "./decision";
-import { isResearchEvidence, type ResearchEvidence } from "./evidence";
+import { isResearchEvidence, RESEARCH_CONTEXT_TTL_MS, type ResearchEvidence } from "./evidence";
 import { CHAT_RETENTION_MS } from "../chat-retention";
 
 /** Pack adjacent prompts without paraphrasing the user's constraints or consent. */
@@ -42,7 +42,7 @@ export function researchCodec(secret: string, server: string, now = Date.now) {
       !isRecord(value.scope) || typeof value.scope.subject !== "string" ||
       typeof value.scope.network !== "string" ||
       ![value.scope.trader, value.scope.smartAccount].every((address) => address === null || typeof address === "string") ||
-      typeof value.expiresAt !== "number" || value.expiresAt <= now() - (renewing ? CHAT_RETENTION_MS : 0) || value.expiresAt > now() + 30 * 60_000 ||
+      typeof value.expiresAt !== "number" || value.expiresAt <= now() - (renewing ? CHAT_RETENTION_MS : 0) || value.expiresAt > now() + RESEARCH_CONTEXT_TTL_MS ||
       !Array.isArray(value.messages) || value.messages.length < 1 || value.messages.length > 8 ||
       !value.messages.every((message) => typeof message === "string" && message.trim().length > 0 && message.length <= 8_000) ||
       value.messages.join("").length > 24_000 ||
@@ -63,7 +63,7 @@ export function researchCodec(secret: string, server: string, now = Date.now) {
       return value;
     } catch (error) {
       if (error instanceof ResearchError) throw error;
-      throw new ResearchError("context_expired", "This investigation has expired or the connected account changed. Start a new investigation to refresh its context.");
+      throw new ResearchError("context_expired", "This plan has expired, or the connected account changed. Please ask again and I'll prepare a fresh one.");
     }
   };
   function encrypt(value: ResearchConversation): string {
@@ -80,14 +80,14 @@ export function researchCodec(secret: string, server: string, now = Date.now) {
     renew(token: string, scope: InvestigationScope): ResearchConversation {
       const value = read(token, true);
       if (value.scope.subject !== scope.subject || value.scope.trader !== scope.trader || value.scope.smartAccount !== scope.smartAccount || value.scope.network !== scope.network)
-        throw new ResearchError("context_expired", "The connected account changed. Start a fresh investigation.");
-      return { ...value, expiresAt: now() + 30 * 60_000, evidence: undefined, lastQuestion: null };
+        throw new ResearchError("context_expired", "The connected account changed, so this plan no longer applies. Please ask again.");
+      return { ...value, expiresAt: now() + RESEARCH_CONTEXT_TTL_MS, evidence: undefined, lastQuestion: null };
     },
     open(token: string, scope: InvestigationScope): ResearchConversation {
       const value = read(token);
       if (value.scope.subject !== scope.subject || value.scope.trader !== scope.trader ||
         value.scope.smartAccount !== scope.smartAccount || value.scope.network !== scope.network) {
-        throw new ResearchError("context_expired", "This investigation has expired or the connected account changed. Start a new investigation to refresh its context.");
+        throw new ResearchError("context_expired", "This plan has expired, or the connected account changed. Please ask again and I'll prepare a fresh one.");
       }
       return value;
     },
@@ -104,7 +104,7 @@ export function researchCodec(secret: string, server: string, now = Date.now) {
       evidence?: ResearchEvidence | null,
     ): string {
       const value: ResearchConversation = {
-        purpose: "vanna-research-v1", server, scope, messages, lastQuestion, expiresAt: now() + 30 * 60_000,
+        purpose: "vanna-research-v1", server, scope, messages, lastQuestion, expiresAt: now() + RESEARCH_CONTEXT_TTL_MS,
         ...(evidence ? { evidence } : {}),
       };
       if (!validate(value)) throw new ResearchError("context_full", "This investigation has reached its conversation limit. Start a new one with your current requirements.");
@@ -112,9 +112,9 @@ export function researchCodec(secret: string, server: string, now = Date.now) {
       // Evidence is an accelerator, not a requirement. If it blows the token budget,
       // drop it and let propose re-read rather than failing the investigation.
       if (token.length > 65_536) {
-        if (!evidence) throw new ResearchError("context_full", "This investigation has reached its conversation limit. Start a new investigation.");
+        if (!evidence) throw new ResearchError("context_full", "This chat has reached its length limit. Please start a new chat.");
         const fallback = encrypt({ ...value, evidence: undefined });
-        if (fallback.length > 65_536) throw new ResearchError("context_full", "This investigation has reached its conversation limit. Start a new investigation.");
+        if (fallback.length > 65_536) throw new ResearchError("context_full", "This chat has reached its length limit. Please start a new chat.");
         return fallback;
       }
       return token;

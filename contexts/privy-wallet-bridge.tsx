@@ -23,6 +23,7 @@ import {
 import { useUserStore } from "@/store/user";
 import { clearMarginAccount } from "@/store/margin-account-info-store";
 import { hasUnexpiredPrivySession } from "@/lib/privy-session";
+import { readWalletChoice, writeWalletChoice } from "@/lib/wallet-choice";
 
 function findStellarWallet(user: ReturnType<typeof usePrivy>["user"]): WalletWithMetadata | undefined {
   return user?.linkedAccounts.find(
@@ -130,9 +131,12 @@ export const PrivyWalletBridge = () => {
     if (!stellarWallet) return false;
 
     registerPrivyBridge({ address: stellarWallet.address, signRawHash });
-    // Keep Privy's signer warm without replacing an explicitly selected external wallet.
-    if (getActiveWalletKind() === "freighter" || (getActiveWalletKind() === null && useUserStore.getState().walletKind === "freighter")) return true;
+    // Keep Privy's signer warm without replacing a wallet the user EXPLICITLY chose. A Freighter that the passive reload check
+    // merely found authorised is not a choice: after a Privy login redirect it won the race and Privy never took over (26 Oct).
+    if (readWalletChoice() === "freighter" &&
+      (getActiveWalletKind() === "freighter" || (getActiveWalletKind() === null && useUserStore.getState().walletKind === "freighter"))) return true;
     setActiveWalletKind("privy");
+    writeWalletChoice("privy");
 
     useUserStore.getState().set({
       address: stellarWallet.address,

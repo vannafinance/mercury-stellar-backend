@@ -186,7 +186,7 @@ export function ExecutionStepper({
                     {onSign && (
                       <button type="button" onClick={onSign} disabled={busy}
                         className="min-h-9 rounded-lg bg-[image:var(--cp-gradient)] px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50">
-                        Sign & execute step {index + 1}
+                        Approve
                       </button>
                     )}
                     <span className="text-[12px] text-vgray-400">Your wallet will open to approve this one step.</span>

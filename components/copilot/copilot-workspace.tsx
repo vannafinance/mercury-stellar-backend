@@ -110,7 +110,7 @@ import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useLiveWorkflow } from "@/contexts/workflow-context";
 import { finished as finishedWorkflow } from "@/hooks/use-workflow";
 import { fetchComposedCompletion } from "@/hooks/composed-completion";
-import { InvestigationCard } from "./investigation-card";
+import { InvestigationCard, LiveRunStepper } from "./investigation-card";
 import { ClarifyQuestionnaire } from "./clarify-questionnaire";
 import { ConversationMenu } from "./conversation-menu";
 import { AutoApproveMenu } from "./auto-approve-menu";
@@ -6025,7 +6025,21 @@ export function CopilotWorkspace() {
   />
   ) : null;
   const liveRunOwnerIndex = !runIsPast ? unfinishedRunOwnerIndex(investigation.turns, workflow.view?.id, !!pendingUser) : -1;
-  const runCardOnOwnerTurn = !!runCardEl && liveRunOwnerIndex >= 0;
+  /** A single run (not a multi-leg strategy) draws its live steps through the investigation card; the same node, anchored. */
+  const liveStepperEl = workflow.view && !runCardEl && !completionSummaryReady && workflow.view.status !== "proposed" &&
+    workflow.view.status !== "validating" && workflow.view.status !== "blocked" ? (
+    <LiveRunStepper
+      workflow={workflow.view}
+      network={investigation.result?.scope.network ?? "testnet"}
+      autoSign={sessionSigning}
+      busy={workflow.loading || signingJournal}
+      onSign={() => { void signJournalXdr(false); }}
+      onResume={() => { void workflow.resume(); }}
+      onCancelPlan={() => { void workflow.cancelPlan(); }}
+    />
+  ) : null;
+  const anchoredRunEl = runCardEl ?? liveStepperEl;
+  const runCardOnOwnerTurn = !!anchoredRunEl && liveRunOwnerIndex >= 0;
 
 
   return (
@@ -6148,7 +6162,7 @@ export function CopilotWorkspace() {
             />
             {runCardOnOwnerTurn ? (
               <>
-                {runCardEl}
+                {anchoredRunEl}
                 <ChatTurns
                   turns={investigation.turns.slice(liveRunOwnerIndex + 1)}
                   pendingUser={pendingUser}
@@ -6195,6 +6209,7 @@ export function CopilotWorkspace() {
                     }
                   : undefined}
                 workflow={runIsPast ? null : workflow.view}
+                runAnchoredInThread={runCardOnOwnerTurn}
                 planWithdrawn={workflow.stale}
                 planLiveFloor={workflow.quote}
                 workflowError={workflow.error}

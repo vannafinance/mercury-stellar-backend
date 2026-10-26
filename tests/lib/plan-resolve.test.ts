@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from "vitest";
 import { sizeLegs } from "@/lib/copilot/investigation/sizing";
-import { resolvePlans, planCandidateId, withSharedLiteralAmount } from "@/lib/copilot/investigation/plan";
+import { ACCOUNT_UNCONFIRMED, resolvePlans, planCandidateId, withSharedLiteralAmount } from "@/lib/copilot/investigation/plan";
 import { mergeCandidateSets, generateCandidates } from "@/lib/copilot/investigation/candidates";
 import { compareObservedRates } from "@/lib/copilot/investigation/rate-comparison";
 import type { Observation, PlanSizing, ProposedPlan } from "@/lib/copilot/investigation/types";
@@ -1543,7 +1543,18 @@ describe("resolvePlans - redeem and withdraw", () => {
       observations: withEarn,
       capacity: { ...CAPACITY, issue: { reason: "sizing_contract_unavailable", app: { grossCollateralUsd: "1", debtUsd: "1" }, contract: null } },
     }));
-    expect(rejected[0].reason).toMatch(/could not be confirmed against the liquidation engine/);
+    expect(rejected[0].reason).toBe(ACCOUNT_UNCONFIRMED);
+  });
+
+  it("refuses a borrow in words a user can read when the contract basis could not be read, never naming the snapshot or the contract", () => {
+    // The contract developers: this internal wording must never reach a user (26 Oct: \"the contract's liquidation snapshot could not be read\").
+    const { rejected } = resolvePlans([plan("Borrow", [{ op: "borrow", asset: "SOUSDC", sizing: { kind: "literal", amount: "2", sourceQuote: "borrow 2 SOUSDC" } }])], ctx({
+      observations: withEarn,
+      capacity: { ...CAPACITY, issue: { reason: "sizing_contract_unavailable", app: { grossCollateralUsd: "1", debtUsd: "1" }, contract: null } },
+    }));
+    expect(rejected[0].reason).toBe(ACCOUNT_UNCONFIRMED);
+    expect(rejected[0].reason).not.toMatch(/snapshot|contract|liquidation engine|reads/i);
+    expect(rejected[0].reason).toMatch(/try again/i);
   });
 
   it("repays the whole debt of an asset from the account: with nothing held it says so, with some held it repays that much", () => {

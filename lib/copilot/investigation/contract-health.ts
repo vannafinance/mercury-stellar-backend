@@ -109,11 +109,15 @@ export async function readContractHealthState(
     throw new ContractHealthError("risk_engine_unresolved", "The registry did not return a RiskEngine address.");
   }
 
-  const instance = await rpc.getContractData(engine, StellarSdk.xdr.ScVal.scvLedgerKeyContractInstance());
-  const wasmHash = instance.val.contractData().val().instance().executable().wasmHash().toString("hex");
-  if (!/^[a-f0-9]{64}$/.test(wasmHash)) {
-    throw new ContractHealthError("wasm_hash_unavailable", "The RiskEngine's code hash could not be read.");
-  }
+  // The code hash and the balance/debt reads both need only the engine address, so they run together: one round trip fewer.
+  const codeHash = async () => {
+    const instance = await rpc.getContractData(engine, StellarSdk.xdr.ScVal.scvLedgerKeyContractInstance());
+    const hash = instance.val.contractData().val().instance().executable().wasmHash().toString("hex");
+    if (!/^[a-f0-9]{64}$/.test(hash)) {
+      throw new ContractHealthError("wasm_hash_unavailable", "The RiskEngine's code hash could not be read.");
+    }
+    return hash;
+  };
 
   const account = StellarSdk.nativeToScVal(smartAccount, { type: "address" });
   const totals = async () => {
@@ -123,8 +127,11 @@ export async function readContractHealthState(
     ]);
     return { balance, borrows };
   };
+  const wasmTask = codeHash();
+  wasmTask.catch(() => { /* awaited below */ });
   let reads = await totals();
   if (reads.balance.ledger !== reads.borrows.ledger) reads = await totals();
+  const wasmHash = await wasmTask;
   if (reads.balance.ledger !== reads.borrows.ledger) {
     throw new ContractHealthError(
       "inconsistent_ledger",

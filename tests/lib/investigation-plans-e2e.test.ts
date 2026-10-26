@@ -653,7 +653,7 @@ describe("model proposes, code disposes - end to end", () => {
     await expect(proposeWorkflow({
       continuation: view.continuation, candidateId: "composed:bo.XLM+bo.XLM+bo.XLM", subject: SCOPE.subject, secret: SECRET, server: "mcp-test",
       network: "testnet", mcp, signal: new AbortController().signal,
-    })).rejects.toThrow(/not proposed by the completed investigation/);
+    })).rejects.toThrow(/This option is no longer available. Please ask again./);
   });
 
   it("an option the code sized can be prepared even when the model left a note as an open question (14 Sep)", async () => {

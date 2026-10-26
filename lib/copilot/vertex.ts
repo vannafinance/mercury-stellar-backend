@@ -35,6 +35,7 @@
  * Uses the REST generateContent endpoint (no dependency on broken ADC alone).
  */
 
+import { createHash } from "crypto";
 import { execFile } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
@@ -684,6 +685,123 @@ export async function generateJson(system: string, user: string): Promise<Record
  */
 export const INVESTIGATION_MAX_OUTPUT_TOKENS = 16_384;
 
+// ── explicit prefix cache for the research loop ────────────────────────────
+//
+// Implicit caching only helps when the same prefix is sent again within minutes, and the research prompt (about 13k
+// tokens of rules and tool declarations) is the same for every user but sent seconds-to-minutes apart: the live log
+// showed `cached=0` on every call (26 Oct). An explicit cache holds that prefix for 15 minutes, shared by every request,
+// and a call that reads it has about 99.9% of its prompt cached (measured on gemini-3.8-flash: 11,763 of 11,771).
+//
+// Never waits for a cache, never fails a request because of one: a call that finds none is sent in full as before, a
+// cached call that errors or takes over 12 s is repeated in full, and a cache that failed is left alone for 10 minutes.
+type PrefixCache = { name: string | null; expiresAt: number; creating: boolean; retryAt: number };
+const prefixCaches = new Map<string, PrefixCache>();
+const PREFIX_CACHE_USE_MARGIN_MS = 30_000;
+const PREFIX_CACHE_RENEW_MARGIN_MS = 120_000;
+const PREFIX_CACHE_RETRY_AFTER_MS = 10 * 60_000;
+// Creating a cache took 4-29 s against the project's endpoint (26 Oct), and the first call that READS a new one took 3-7 s
+// (later ones about 3 s). Both happen in the background, so they may be slow; a user's call must never be the first reader.
+const PREFIX_CACHE_CREATE_TIMEOUT_MS = 60_000;
+const PREFIX_CACHE_WARMUP_TIMEOUT_MS = 45_000;
+/** The one tiny call that reads a new cache before any user call does; tests recognise it by this text. */
+export const PREFIX_CACHE_WARMUP_TEXT = "Reply with OK.";
+
+/** Off with COPILOT_PROMPT_CACHE=off; off under vitest unless a test turns it on with COPILOT_PROMPT_CACHE=on. */
+function prefixCacheEnabled(): boolean {
+  const setting = process.env.COPILOT_PROMPT_CACHE?.trim().toLowerCase();
+  if (setting === "off") return false;
+  return setting === "on" || !process.env.VITEST;
+}
+
+function prefixCacheTtlSeconds(): number {
+  return Math.min(3600, Math.max(120, Math.round(positiveEnvMs("COPILOT_PROMPT_CACHE_TTL_S", 900))));
+}
+
+function cachedContentsUrl(): string {
+  return `https://aiplatform.googleapis.com/v1/projects/${copilotConfig.googleCloudProject}/locations/global/cachedContents`;
+}
+
+async function createPrefixCache(model: string, system: string, functionDeclarations: FunctionDeclaration[], ttlSeconds: number): Promise<{ name: string; expiresAt: number }> {
+  const token = await getAccessToken();
+  const res = await fetch(cachedContentsUrl(), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: `projects/${copilotConfig.googleCloudProject}/locations/global/publishers/google/models/${model}`,
+      ttl: `${ttlSeconds}s`,
+      systemInstruction: { parts: [{ text: system }] },
+      tools: [{ functionDeclarations }],
+      toolConfig: { functionCallingConfig: { mode: "ANY" } },
+      // The create call needs a contents entry (without one gemini-3.8-flash never finished creating the cache).
+      contents: [{ role: "user", parts: [{ text: "The instructions and tools above are cached for this session." }] }],
+    }),
+    signal: AbortSignal.timeout(PREFIX_CACHE_CREATE_TIMEOUT_MS),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`cache create HTTP ${res.status}`);
+  const created = (await res.json()) as { name?: string; expireTime?: string };
+  if (!created.name) throw new Error("cache create returned no name");
+  const expiresAt = created.expireTime ? Date.parse(created.expireTime) : Date.now() + ttlSeconds * 1000;
+  return { name: created.name, expiresAt };
+}
+
+/** Read a new cache once, in the background, so the slow first read is not a user's. */
+async function warmPrefixCache(model: string, name: string): Promise<void> {
+  const token = await getAccessToken();
+  const res = await fetch(modelUrl(model), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      cachedContent: name,
+      contents: [{ role: "user", parts: [{ text: PREFIX_CACHE_WARMUP_TEXT }] }],
+      generationConfig: { maxOutputTokens: 16, ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel: "LOW" } } : {}) },
+    }),
+    signal: AbortSignal.timeout(PREFIX_CACHE_WARMUP_TIMEOUT_MS),
+    cache: "no-store",
+  });
+  await res.body?.cancel().catch(() => undefined);
+  if (!res.ok) throw new Error(`cache warm-up HTTP ${res.status}`);
+}
+
+/** The cache for this prefix, or null (send it in full). A missing or expiring cache is created in the background. */
+function prefixCacheFor(model: string, system: string, functionDeclarations: FunctionDeclaration[]): string | null {
+  if (!prefixCacheEnabled() || !functionDeclarations.length) return null;
+  const key = createHash("sha256").update(JSON.stringify([model, system, functionDeclarations])).digest("hex");
+  const now = Date.now();
+  let entry = prefixCaches.get(key);
+  if (!entry) {
+    if (prefixCaches.size >= 8) prefixCaches.clear(); // a deploy changed the prompt; the old ones expire by themselves
+    entry = { name: null, expiresAt: 0, creating: false, retryAt: 0 };
+    prefixCaches.set(key, entry);
+  }
+  if (!entry.creating && now >= entry.retryAt && entry.expiresAt - now < PREFIX_CACHE_RENEW_MARGIN_MS) {
+    const target = entry;
+    target.creating = true;
+    createPrefixCache(model, system, functionDeclarations, prefixCacheTtlSeconds())
+      .then(async (made) => {
+        await warmPrefixCache(model, made.name);
+        target.name = made.name;
+        target.expiresAt = made.expiresAt;
+        if (process.env.COPILOT_LOG) console.log(`[copilot:vertex] prefix cache ready: ${made.name}`);
+      })
+      .catch((error) => {
+        target.retryAt = Date.now() + PREFIX_CACHE_RETRY_AFTER_MS;
+        console.warn("[copilot:vertex] prefix cache unavailable, sending the prompt in full:", error instanceof Error ? error.message : error);
+      })
+      .finally(() => { target.creating = false; });
+  }
+  return entry.name && entry.expiresAt - now > PREFIX_CACHE_USE_MARGIN_MS ? entry.name : null;
+}
+
+function dropPrefixCache(name: string): void {
+  for (const entry of prefixCaches.values()) {
+    if (entry.name !== name) continue;
+    entry.name = null;
+    entry.expiresAt = 0;
+    entry.retryAt = Date.now() + PREFIX_CACHE_RETRY_AFTER_MS;
+  }
+}
+
 /** Bounded research turn. Separate from the legacy router; no model fallback. */
 export async function generateInvestigationJson(
   model: string,
@@ -703,20 +821,43 @@ export async function generateInvestigationJson(
     maxTokens: INVESTIGATION_MAX_OUTPUT_TOKENS,
   }, async () => {
   signal.throwIfAborted();
-  const res = await postVertex(model, {
+  const generationConfig = {
+    ...(useTools ? {} : { responseMimeType: "application/json", ...(responseSchema ? { responseSchema } : {}) }),
+    maxOutputTokens: INVESTIGATION_MAX_OUTPUT_TOKENS,
+    // 3.8 retires sampling knobs; reasoning level is set per turn by the caller.
+    ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel } } : { temperature: 0 }),
+  };
+  const userTurn = [{ role: "user", parts: [{ text: user }] }];
+  let res: Response | null = null;
+  const cached = useTools ? prefixCacheFor(model, system, functionDeclarations) : null;
+  if (cached) {
+    // The prefix (rules and tools) is in the cache; only this turn's message and the settings are sent.
+    try {
+      res = await postVertexOnce(model, { cachedContent: cached, contents: userTurn, generationConfig },
+        AbortSignal.any([signal, AbortSignal.timeout(positiveEnvMs("COPILOT_CACHED_CALL_TIMEOUT_MS", 12_000))]));
+      if (!res.ok) {
+        console.warn("[copilot:vertex] cached call refused, sending the prompt in full", { status: res.status });
+        await res.body?.cancel().catch(() => undefined);
+        dropPrefixCache(cached);
+        res = null;
+      }
+    } catch (error) {
+      // The run's own cancel is the caller's to see; a cache that hangs or errors is dropped and the call repeated in full.
+      if (signal.aborted) throw error;
+      console.warn("[copilot:vertex] cached call failed, sending the prompt in full:", error instanceof Error ? error.message : error);
+      dropPrefixCache(cached);
+      res = null;
+    }
+  }
+  res ??= await postVertex(model, {
     systemInstruction: { parts: [{ text: system }] },
-    contents: [{ role: "user", parts: [{ text: user }] }],
+    contents: userTurn,
     ...(useTools ? {
       tools: [{ functionDeclarations }],
       // ANY forces a declared function; JSON mime type is mutually exclusive with tools.
       toolConfig: { functionCallingConfig: { mode: "ANY" } },
     } : {}),
-    generationConfig: {
-      ...(useTools ? {} : { responseMimeType: "application/json", ...(responseSchema ? { responseSchema } : {}) }),
-      maxOutputTokens: INVESTIGATION_MAX_OUTPUT_TOKENS,
-      // 3.8 retires sampling knobs; reasoning level is set per turn by the caller.
-      ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel } } : { temperature: 0 }),
-    },
+    generationConfig,
   }, signal);
   if (!res.ok) {
     const body = await res.text().catch(() => "");

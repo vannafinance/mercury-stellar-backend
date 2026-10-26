@@ -11,7 +11,7 @@ import { isRecord } from "./decision";
 import { interruptible } from "./runtime";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { constantProductOut, isDangerousFill, liquidityFloor, poolReservesFrom, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
-import { WorkflowConflict, type StepReadiness } from "../workflow/journal";
+import { WorkflowConflict, type StepClaim, type StepReadiness } from "../workflow/journal";
 import { workflowView, type WorkflowProposal, type WorkflowView, type ProposalStep } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
 import { validateWorkflowRisk } from "../workflow/risk";
@@ -573,7 +573,22 @@ function hashOf(value: unknown): string | null {
   return value.toLowerCase();
 }
 
-export async function readyForStep(proposal: WorkflowProposal, step: ProposalStep): Promise<StepReadiness> {
+/**
+ * Approve runs the full risk check (balances, prices, contract health) and stamps `approvedAt` when it passes. The client calls
+ * advance a second or two later, and advance used to run the same check again for the first step (26 Oct, live: 4.5 s inside a
+ * 13 s advance). The FIRST step may rely on Approve's check for this long; nothing else may:
+ *  - a later step runs after an earlier one has moved balances and health, so it is always checked;
+ *  - a wallet popup or a slow client that waited past this window checks again.
+ * The stamp lives in the stored record (written by Approve itself), so it holds whichever server instance answers advance.
+ * Prepare-sign and submit still check before the wallet opens and before broadcast, and the protocol pre-flights inside the write.
+ */
+export const APPROVAL_CHECK_FRESH_MS = 20_000;
+
+export async function readyForStep(proposal: WorkflowProposal, step: ProposalStep, claim?: StepClaim, now = Date.now()): Promise<StepReadiness> {
+  if (claim?.index === 0 && typeof claim.approvedAt === "number" && now - claim.approvedAt >= 0 && now - claim.approvedAt <= APPROVAL_CHECK_FRESH_MS) {
+    console.info("[copilot] step readiness: Approve's check is still fresh, not repeated", { id: proposal.id, ageMs: now - claim.approvedAt });
+    return { kind: "ready" };
+  }
   const reason = await validateWorkflowRisk({ ...proposal, steps: [step] }, getMcpClient(), AbortSignal.timeout(45_000));
   return reason ? { kind: "stop", reason } : { kind: "ready" };
 }
@@ -672,7 +687,7 @@ export async function advanceWorkflow(input: {
   }, input.mcp, AbortSignal.any([input.signal, AbortSignal.timeout(20_000)]));
   if (scope.subject !== expected.subject || scope.trader !== expected.trader ||
     scope.smartAccount !== expected.smartAccount || scope.network !== expected.network) {
-    throw new ResearchError("context_expired", "This investigation has expired or the connected account changed. Start a new investigation to refresh its context.");
+    throw new ResearchError("context_expired", "This plan has expired, or the connected account changed. Please ask again and I'll prepare a fresh one.");
   }
   phase("scope");
   const identity = identityOf(stored.value.proposal);
@@ -994,7 +1009,7 @@ export async function confirmWorkflow(input: {
   }, input.mcp, AbortSignal.any([input.signal, AbortSignal.timeout(20_000)]));
   if (scope.subject !== expected.subject || scope.trader !== expected.trader ||
     scope.smartAccount !== expected.smartAccount || scope.network !== expected.network) {
-    throw new ResearchError("context_expired", "This investigation has expired or the connected account changed. Start a new investigation to refresh its context.");
+    throw new ResearchError("context_expired", "This plan has expired, or the connected account changed. Please ask again and I'll prepare a fresh one.");
   }
   const identity = identityOf(stored.value.proposal);
   const waiting = stored.value.steps.find((step) => step.status === "awaiting_signature");

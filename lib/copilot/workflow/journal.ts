@@ -14,6 +14,9 @@ import { PLAN_TTL_MS } from "../plan-ttl";
  * for a step whose amount was DERIVED from a constraint, only downward, and only within the
  * bound recorded in the proposal the user approved.
  */
+/** What the journal knows about this claim: which step it is, and when Approve's own full check passed. */
+export interface StepClaim { index: number; approvedAt?: number }
+
 export type StepReadiness =
   | { kind: "ready" }
   | { kind: "resize"; amountUsd: string }
@@ -141,7 +144,7 @@ export class WorkflowJournal {
    * readiness check's job, where it can be judged against fresh evidence.
    */
   async claimNext(id: string, identity: Identity,
-    ready?: (proposal: WorkflowProposal, step: ProposalStep) => Promise<StepReadiness>) {
+    ready?: (proposal: WorkflowProposal, step: ProposalStep, claim?: StepClaim) => Promise<StepReadiness>) {
     const record = await this.read(id, identity);
     if (!["approved", "running"].includes(record.value.status)) throw new WorkflowConflict("workflow_not_runnable");
     if (record.value.steps.some(s => !["pending", "settled"].includes(s.status))) throw new WorkflowConflict("step_already_claimed");
@@ -155,7 +158,7 @@ export class WorkflowJournal {
     if (!ready) return step;
 
     let verdict: StepReadiness;
-    try { verdict = await ready(structuredClone(record.value.proposal), step); }
+    try { verdict = await ready(structuredClone(record.value.proposal), step, { index, approvedAt: record.value.approvedAt }); }
     catch { verdict = { kind: "stop", reason: "Your position could not be re-checked before this step. Nothing was submitted." }; }
     if (verdict.kind === "ready") return step;
 

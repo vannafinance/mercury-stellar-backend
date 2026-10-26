@@ -22,6 +22,7 @@ import { withMcpCall } from "./telemetry";
 import { callNeedsUserToken, currentUser } from "./user-context";
 import { RETRY, withRetry } from "./retry-policy";
 import { normalizeOracleFreshness } from "./oracle-freshness";
+import { createMaxBorrowBatcher } from "./max-borrow-batch";
 
 export type MCPErrorCode = string;
 
@@ -181,6 +182,8 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_get_debt: { tool: "vanna_margin_status", action: "debt" },
   vanna_get_margin_snapshot: { tool: "vanna_margin_status", action: "snapshot" },
   vanna_get_max_borrow: { tool: "vanna_margin_status", action: "max_borrow" },
+  // Several assets' ceilings in one read; used only by max-borrow-batch.ts, never offered to the model.
+  vanna_get_max_borrow_all: { tool: "vanna_margin_status", action: "max_borrow_all" },
   vanna_get_liquidation_snapshot: { tool: "vanna_margin_status", action: "liquidation_snapshot" },
   // Propose-time simulation (simulate.ts): the read dispatcher's `preview` - RiskEngine snapshot
   // arithmetic plus the contract's is_borrow_allowed / is_withdraw_allowed and the pool ceiling.
@@ -965,12 +968,25 @@ function liveClientFor(tokens: TokenSource): LiveMCPClient {
  * cache-coherency problem here.
  */
 class RoutingMCPClient implements MCPClient {
+  /** Borrow-ceiling reads made in the same instant for one account travel as one call (see max-borrow-batch.ts). */
+  private readonly maxBorrow = createMaxBorrowBatcher({
+    single: (args, userId) => liveClientFor(m2mTokens).call("vanna_get_max_borrow", args, userId),
+    batch: (args, userId) => liveClientFor(m2mTokens).call("vanna_get_max_borrow_all", args, userId),
+    identity: (userId) => {
+      const bound = currentUser();
+      return String(bound?.sub ?? bound?.wallet ?? userId ?? "");
+    },
+    onPath: (path, detail) => console.info("[copilot] max_borrow path", { path, ...detail }),
+  });
+
   async call(
     tool: string,
     args: Record<string, unknown>,
     userId?: string,
   ): Promise<Record<string, unknown>> {
-    const data = await liveClientFor(m2mTokens).call(tool, args, userId);
+    const data = tool === "vanna_get_max_borrow"
+      ? await this.maxBorrow.read(args, userId)
+      : await liveClientFor(m2mTokens).call(tool, args, userId);
     return normalizeOracleFreshness(data);
   }
 }
