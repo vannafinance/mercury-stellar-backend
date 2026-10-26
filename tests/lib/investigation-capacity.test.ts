@@ -117,6 +117,41 @@ describe("borrow capacity", () => {
     info.mockRestore();
   });
 
+  it("reads the figures itself when the MCP read is slow, instead of letting it use the whole budget", async () => {
+    // 26 Oct, live: the MCP read took 16 s of a 15 s propose budget, so the direct read never ran and the borrow was refused.
+    vi.useFakeTimers();
+    try {
+      snapshot(4219.36, 1736.19);
+      vi.spyOn(console, "info").mockImplementation(() => {});
+      mocks.readLiquidationSnapshot.mockResolvedValue({ collateralUsd: 4219.36, debtUsd: 1736.19, unpriceablePlain: false, ledger: 1 });
+      const mcp = { call: vi.fn(() => new Promise(() => { /* never answers */ })) };
+      const pending = computeBorrowCapacity(ACCOUNT, ["keep health factor above 1.3"], undefined, undefined, { mcp: mcp as never, trader: "GTEST" });
+      await vi.advanceTimersByTimeAsync(6_100);
+      const capacity = await pending;
+      expect(capacity?.maxBorrowUsd).toBe("6541.043333333333333333");
+      expect(mocks.readLiquidationSnapshot).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still uses a slow MCP read when the app's own read fails, instead of giving up on it", async () => {
+    // The MCP answers at 9 s; the app's direct read fails at once. Before, the MCP read was cut off at 6 s and the borrow refused.
+    vi.useFakeTimers();
+    try {
+      snapshot(4219.36, 1736.19);
+      vi.spyOn(console, "info").mockImplementation(() => {});
+      mocks.readLiquidationSnapshot.mockRejectedValue(new Error("rpc busy"));
+      const mcp = { call: vi.fn(() => new Promise((resolve) => setTimeout(() => resolve({ collateral_usd: "4219.36", debt_usd: "1736.19", liquidatable: false }), 9_000))) };
+      const pending = computeBorrowCapacity(ACCOUNT, ["keep health factor above 1.3"], undefined, undefined, { mcp: mcp as never, trader: "GTEST" });
+      await vi.advanceTimersByTimeAsync(9_100);
+      const capacity = await pending;
+      expect(capacity?.maxBorrowUsd).toBe("6541.043333333333333333");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fetches the contract snapshot through MCP when one is not preloaded", async () => {
     snapshot(4219.36, 1736.19);
     const info = vi.spyOn(console, "info").mockImplementation(() => {});

@@ -4,7 +4,7 @@
  * out for a missing price. The reads a plan needs are derived from its legs.
  */
 import { describe, expect, it } from "vitest";
-import { readsForPlans, STRATEGY_READS } from "@/lib/copilot/investigation/strategy-reads";
+import { namesOnlyTypedAmounts, readsForPlans, STRATEGY_READS } from "@/lib/copilot/investigation/strategy-reads";
 import { allAssets } from "@/lib/copilot/registry/assets";
 import type { Observation, ProposedPlan } from "@/lib/copilot/investigation/types";
 
@@ -92,5 +92,27 @@ describe("readsForPlans", () => {
       expect(STRATEGY_READS).toContainEqual({ capability: "earn_market", args: { asset } });
       expect(STRATEGY_READS).toContainEqual({ capability: "asset_price", args: { asset } });
     }
+  });
+});
+
+describe("namesOnlyTypedAmounts - a stated request does not pay for the strategy market scan", () => {
+  const literal = (op: "deposit_collateral" | "borrow", asset: string, amount: string) =>
+    ({ op, asset, sizing: { kind: "literal" as const, amount, sourceQuote: `${op} ${amount} ${asset}` } });
+  const goal = (extra: Record<string, unknown> = {}) => ({ actions: undefined, ...extra }) as never;
+
+  it("is true when every leg carries an amount the user typed, whether stated or composed", () => {
+    // 26 Oct, live: "deposit 5 XLM as collateral then borrow 2 SOUSDC" read 8 markets and prices nobody used (12 s of 32 s).
+    const legs = [literal("deposit_collateral", "XLM", "5"), literal("borrow", "SOUSDC", "2")];
+    expect(namesOnlyTypedAmounts(goal({ actions: legs.map((l) => ({ ...l, sourceQuote: "q" })) }), undefined)).toBe(true);
+    expect(namesOnlyTypedAmounts(goal(), [plan(legs as never)])).toBe(true);
+  });
+
+  it("is false for a word-sized leg, an allocation request, a portfolio exit, or nothing stated", () => {
+    expect(namesOnlyTypedAmounts(goal(), [plan([{ op: "lend", asset: "XLM", sizing: { kind: "all_wallet" } }] as never)])).toBe(false);
+    expect(namesOnlyTypedAmounts(goal(), [plan([literal("borrow", "SOUSDC", "2"), { op: "lend", asset: "XLM", sizing: { kind: "to_floor" } }] as never)])).toBe(false);
+    expect(namesOnlyTypedAmounts(goal({ allocationRequest: { sourceQuote: "use my wallet" } }), [plan([literal("borrow", "SOUSDC", "2")] as never)])).toBe(false);
+    expect(namesOnlyTypedAmounts(goal({ portfolioExit: { destination: "wallet", sourceQuote: "exit" } }), [plan([literal("borrow", "SOUSDC", "2")] as never)])).toBe(false);
+    expect(namesOnlyTypedAmounts(goal(), [])).toBe(false);
+    expect(namesOnlyTypedAmounts(goal(), undefined)).toBe(false);
   });
 });

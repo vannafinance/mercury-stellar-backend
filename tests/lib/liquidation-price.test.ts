@@ -85,6 +85,28 @@ describe("liquidationObservation", () => {
   });
 });
 
+describe("health factor at a stated fall", () => {
+  // $1,000 of XLM + $1,000 of USDC against $800 of USDC debt: health 2000 / 800 = 2.5.
+  const ACCOUNT = snapshot({ XLM: row(10000, 1000), BLUSDC: row(1000, 1000) }, { BLUSDC: row(800, 800) });
+
+  it("states the health factor after each fall, not only near zero", () => {
+    const xlm = (data(liquidationObservation(ACCOUNT, 1000)).exposures[0] as unknown as {
+      health_factor_if_falls: Array<{ fall_pct: string; health_factor: string }>;
+    }).health_factor_if_falls;
+    const at = (pct: string) => Number(xlm.find((step) => step.fall_pct === pct)?.health_factor);
+    expect(at("10")).toBeCloseTo(2.375, 4); // (900 + 1000) / 800
+    expect(at("30")).toBeCloseTo(2.125, 4); // (700 + 1000) / 800
+    expect(at("50")).toBeCloseTo(1.875, 4); // (500 + 1000) / 800
+  });
+
+  it("the reply can cite the asked fall as its own fact", () => {
+    const { facts } = normalizeResearchFacts([liquidationObservation(ACCOUNT, 1000)]);
+    const thirty = facts.find((fact) => fact.label === "Health factor if XLM fell 30%");
+    expect(thirty).toMatchObject({ unit: "HF", venue: "margin" });
+    expect(Number(thirty?.value)).toBeCloseTo(2.125, 4);
+  });
+});
+
 describe("dollar-pegged tokens", () => {
   it("every pegged token the account holds or owes is listed, so a question about one has an answer", () => {
     const out = data(liquidationObservation(REAL, 1000));

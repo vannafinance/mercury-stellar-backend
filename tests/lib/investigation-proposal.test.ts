@@ -303,6 +303,71 @@ const SWAP_STEP = {
   },
 };
 
+describe("Approve when the live read of the protocol's account figures fails", () => {
+  // 26 Oct, live: Approve re-reads the card's data once it is older than a minute. The protocol's collateral and debt read took 16 s
+  // that time and the plan on screen was refused, although the card had just been sized from those figures and the transaction was fine.
+  const borrowPlan: ProposedPlan = { title: "Borrow and supply", rationale: "Supply at the observed Blend rate", evidenceIds: ["e2"], legs: [
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "literal", amount: "1", sourceQuote: "borrow 1 BLUSDC" } },
+    { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+  ] };
+  const stalePropose = async (plan: ProposedPlan, ageMs: number, basis: unknown) => {
+    const evidence = compactResearchEvidence([...evidenceObservations(), observation({ id: "wallet", capability: "wallet_balances", data: { assets: [{ symbol: "XLM", balance: "1000", status: "ok" }], fee_reserve_xlm: "0.5" } })], CAPACITY, NOW - ageMs);
+    evidence.plans = [plan];
+    evidence.floor = "1.3";
+    evidence.position = { grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, floor: "1.3", issue: null };
+    evidence.allowedCandidateIds = [planCandidateId(plan)];
+    harness.computeSizingBasis.mockResolvedValue(basis as never);
+    const mcp = {
+      call: vi.fn(async (tool: string) => {
+        if (tool === "vanna_get_wallet_balance") return { assets: [{ symbol: "XLM", balance: "1000" }, { symbol: "BLUSDC", balance: "0" }] };
+        if (tool === "vanna_get_price") return { price_usd: "1" };
+        if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "2", borrow_apr_pct: "4", utilization_pct: "60" };
+        if (tool === "vanna_list_blend_reserves") return { reserves: [{ venue: "blend", symbol: "USDC", supply_apr_pct: "10", borrow_apr_pct: "12", utilization_pct: "90" }] };
+        throw new Error(`unexpected ${tool}`);
+      }),
+    };
+    return proposeWorkflow({
+      continuation: researchCodec(SECRET, SERVER, () => NOW).seal(SCOPE, ["borrow 1 BLUSDC and supply it to Blend, keep HF above 1.3"], null, evidence),
+      candidateId: planCandidateId(plan), subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp, signal: new AbortController().signal, now: NOW,
+    });
+  };
+  const contractUnavailable = {
+    grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, source: "app", issue: "sizing_contract_unavailable",
+    app: { grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd }, contract: null,
+  };
+
+  it("prepares a typed-amount plan from the figures the card was sized with, with the same amounts, up to the card's 30 minutes", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const view = await stalePropose(borrowPlan, 25 * 60_000, contractUnavailable);
+    expect(view.status).toBe("proposed");
+    expect(view.steps.map((step) => [step.op, step.asset, step.amount])).toEqual([["borrow", "BLUSDC", "1"], ["supply_blend", "BLUSDC", "1"]]);
+  });
+
+  it("does the same when the live basis could not be read at all", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const view = await stalePropose(borrowPlan, 120_000, null);
+    expect(view.status).toBe("proposed");
+  });
+
+  it("does NOT use old figures for a size worked out from them (the most the floor allows)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const toFloor: ProposedPlan = { ...borrowPlan, legs: [{ op: "borrow", asset: "BLUSDC", sizing: { kind: "to_floor" } }, borrowPlan.legs[1]] };
+    await expect(stalePropose(toFloor, 120_000, contractUnavailable)).rejects.toThrow(/couldn't confirm your account with the protocol/);
+  });
+
+  it("does NOT use figures older than the card is valid (30 minutes)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(stalePropose(borrowPlan, 31 * 60_000, contractUnavailable)).rejects.toThrow(/couldn't confirm your account with the protocol/);
+  });
+
+  it("says nothing technical when it still cannot be prepared", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = await stalePropose(borrowPlan, 31 * 60_000, contractUnavailable).catch((e: Error) => e);
+    expect((error as Error).message).not.toMatch(/snapshot|contract|liquidation engine|Start a new investigation/i);
+  });
+});
+
 describe("proposeWorkflow requested_actions", () => {
   it.each(["1.100000000000000001", "1.7"])("preserves sealed HF floor %s when display capacity is withheld", async (floor) => {
     const codec = researchCodec(SECRET, SERVER, () => NOW);

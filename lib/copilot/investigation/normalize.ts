@@ -208,6 +208,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
        */
       case "account_liquidation": {
         consumed.add("source").add("state").add("has_debt").add("exposures").add("all_together").add("pegged");
+        // `health_factor_if_falls` sits inside each exposure, so it is read with it, not as a top-level key.
         // These facts only make sense together (a price, and what it assumes), so they declare their group here.
         const grouped = () => { for (const fact of facts.slice(before)) fact.group = "Liquidation"; };
         const text = (path: string, label: string, value: string) => facts.push({
@@ -239,6 +240,10 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
             text(`${at}.falling_price`, `${symbol} liquidation price`, "none");
             add(`${at}.health_factor_if_near_zero`, `Health factor if ${symbol} fell to near zero`, exposure.health_factor_if_near_zero, "HF", "margin");
           }
+          (Array.isArray(exposure.health_factor_if_falls) ? exposure.health_factor_if_falls.filter(isRecord) : []).forEach((step) => {
+            const pct = decimal(step.fall_pct);
+            if (pct !== null) add(`${at}.health_factor_if_falls.${pct}`, `Health factor if ${symbol} fell ${pct}%`, step.health_factor, "HF", "margin");
+          });
           if (rising) {
             add(`${at}.rising_liquidation_price`, `${symbol} price that liquidates the account on a rise`, rising.price_usd, "USD", "margin");
           }

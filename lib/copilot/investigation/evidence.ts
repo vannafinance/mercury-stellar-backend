@@ -128,6 +128,44 @@ export function reusableObservations(
   return researchEvidenceReusable(evidence, now) ? evidence.observations : [];
 }
 
+/** How long a card (its sealed investigation) stays valid; after that, Approve asks the user to ask again. */
+export const RESEARCH_CONTEXT_TTL_MS = 30 * 60_000;
+
+/** The longest a card's account figures may stand in for a live read that failed at Approve: as long as the card itself is valid. */
+export const SEALED_POSITION_MAX_AGE_MS = RESEARCH_CONTEXT_TTL_MS;
+
+/** A sizing that is worked out FROM the account's collateral and debt, so a stale figure would size it wrongly. */
+function sizedFromAccountFigures(sizing: import("./types").PlanSizing): boolean {
+  return sizing.kind === "to_floor" || sizing.kind === "all_position" || (sizing.kind === "fraction" && sizing.of === "position");
+}
+
+/**
+ * The account figures the card was sized with, for an Approve whose live re-read of them failed.
+ *
+ * Approve re-reads everything the card used once it is older than a minute, including the protocol's own collateral and debt.
+ * That read takes 0.6 s to 16 s depending on RPC load (26 Oct), and when it fails the plan the user is looking at used to be
+ * refused ("the contract's liquidation snapshot could not be read"), although the card had just been sized from those very
+ * figures and the transaction would have executed.
+ *
+ * Used ONLY when the live read failed (never instead of a read that worked) and only when the stale figures cannot size
+ * anything wrongly:
+ *  - the figures were whole when sealed (no disputed or missing basis), and are no older than the card is valid (30 minutes);
+ *  - no leg is sized FROM them ("borrow the most the floor allows", a share of the position): every amount is one the user
+ *    typed, or follows from one (the previous leg, a stated multiple). The figures then only check that the result stays
+ *    above the floor, and the protocol's own preview and the chain re-check at signing.
+ */
+export function sealedPositionFallback(
+  evidence: ResearchEvidence | undefined,
+  plan: import("./types").ProposedPlan | null | undefined,
+  now: number,
+): { position: NonNullable<ResearchEvidence["position"]>; capacity: ResearchCapacity | null } | null {
+  if (!evidence?.position || !plan?.legs.length) return null;
+  if (!Number.isFinite(evidence.capturedAt) || evidence.capturedAt > now || now - evidence.capturedAt > SEALED_POSITION_MAX_AGE_MS) return null;
+  if (evidence.position.issue) return null;
+  if (plan.legs.some((leg) => sizedFromAccountFigures(leg.sizing))) return null;
+  return { position: evidence.position, capacity: evidence.capacity };
+}
+
 export function researchEvidenceReusable(
   evidence: ResearchEvidence | undefined,
   now: number,

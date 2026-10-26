@@ -459,6 +459,27 @@ describe("composing the reply once a run has finished", () => {
     expect(input.context.healthProvided).toBe(false);
   });
 
+  it("answers only the latest request and tells the model never to say something could not be read", async () => {
+    const view = run("completed", [settled]);
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "{{stepA:done}}." }] }));
+    await composeCompletion({ view, request: "borrow me 5 aqusdc", earlierMessages: ["how much can i borrow?"], draft: "Done.", comparisons, healthNow: null },
+      new AbortController().signal, generate);
+    const [system, user] = generate.mock.calls[0] as unknown as [string, string];
+    const input = JSON.parse(user);
+    expect(input.request).toBe("borrow me 5 aqusdc");
+    expect(input.earlierMessages).toEqual(["how much can i borrow?"]);
+    expect(system).toMatch(/Answer only the latest request/);
+    expect(system).toMatch(/never write that something could not be read/);
+    expect(system).not.toMatch(/say in a few words that it could not be read/);
+  });
+
+  it("sends no earlier-messages field when there are none", async () => {
+    const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "{{stepA:done}}." }] }));
+    await composeCompletion({ view: run("completed", [settled]), request: "supply 5 xlm", draft: "Done.", comparisons, healthNow: null },
+      new AbortController().signal, generate);
+    expect(JSON.parse((generate.mock.calls[0] as unknown as [string, string])[1])).not.toHaveProperty("earlierMessages");
+  });
+
   it("refuses a completion that silently drops the approved safety target", async () => {
     const generate = vi.fn(async () => ({ blocks: [{ type: "paragraph", text: "{{stepA:done}}." }] }));
     expect(await composeCompletion({ view: run("completed", [settled]), request: "original", draft: "Done.", comparisons, healthNow: null, healthFloor: "1.73" }, new AbortController().signal, generate)).toBeNull();

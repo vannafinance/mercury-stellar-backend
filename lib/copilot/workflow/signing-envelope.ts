@@ -13,7 +13,7 @@ export function assertSigningTime(xdr: string, now = Date.now()) {
   const time = Math.floor(now / 1000);
   if (tx.timeBounds && (Number(tx.timeBounds.minTime) > time ||
       Number(tx.timeBounds.maxTime) !== 0 && Number(tx.timeBounds.maxTime) <= time)) {
-    throw new ResearchError("transaction_expired", "The wallet transaction expired before submission. Click Sign & execute again to prepare a fresh transaction.", 409);
+    throw new ResearchError("transaction_expired", "The wallet transaction expired before submission. Click Approve again to prepare a fresh transaction.", 409);
   }
   return tx;
 }
@@ -30,7 +30,7 @@ export async function checkSigningPreconditions(xdr: string,
     : BigInt(tx.minAccountSequence) <= sequence && sequence < BigInt(tx.sequence);
   if (!validSequence || tx.ledgerBounds && (inclusionLedger < tx.ledgerBounds.minLedger ||
       tx.ledgerBounds.maxLedger !== 0 && inclusionLedger >= tx.ledgerBounds.maxLedger)) {
-    throw new ResearchError("transaction_expired", "The account or ledger changed while signing. Click Sign & execute again to refresh the transaction.", 409);
+    throw new ResearchError("transaction_expired", "The account or ledger changed while signing. Click Approve again to refresh the transaction.", 409);
   }
   for (const op of tx.operations) {
     if (op.type !== "invokeHostFunction") continue;
@@ -38,7 +38,7 @@ export async function checkSigningPreconditions(xdr: string,
       if (auth.credentials().switch().name !== "sorobanCredentialsAddress") continue;
       const credentials = auth.credentials().address();
       if (credentials.signatureExpirationLedger() !== 0 && credentials.signatureExpirationLedger() < inclusionLedger)
-        throw new ResearchError("transaction_expired", "The transaction authorization expired while signing. Click Sign & execute again to refresh it.", 409);
+        throw new ResearchError("transaction_expired", "The transaction authorization expired while signing. Click Approve again to refresh it.", 409);
     }
   }
   assertSigningTime(xdr);

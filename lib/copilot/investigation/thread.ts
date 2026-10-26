@@ -242,3 +242,26 @@ export function runIsOnEarlierTurn(
   const newest = turns.map((turn) => turn.role).lastIndexOf("assistant");
   return owner < newest;
 }
+
+/**
+ * Where the live card of an UNFINISHED run belongs, as an index into `turns`, or -1 to leave it at the end of the thread.
+ *
+ * The card is drawn once, from the single workflow state, so it sat below whatever was said last. A question typed while a
+ * plan awaited its signature (or while the next prompt was still pending) put the plan's card under the answer to that
+ * question (26 Oct, live). It belongs under the reply that started it: found from the receipt attached to that turn, and
+ * only when a user turn follows it, so a reply that continues an account setup is never split from its first half.
+ */
+export function unfinishedRunOwnerIndex(
+  turns: readonly Pick<ThreadTurn, "role" | "executionReceipt">[],
+  runId: string | null | undefined,
+  nextPromptPending: boolean,
+): number {
+  if (!runId) return -1;
+  const owner = turns.findIndex((turn) => turn.role === "assistant" && turn.executionReceipt?.workflowId === runId);
+  if (owner === -1) return -1;
+  // The next prompt is a user turn after the owner, or still pending (not yet in `turns`) when the owner is the last turn.
+  const userFollows = turns[owner + 1]?.role === "user" || (owner === turns.length - 1 && nextPromptPending);
+  if (!userFollows) return -1;
+  const newest = turns.map((turn) => turn.role).lastIndexOf("assistant");
+  return owner < newest || nextPromptPending ? owner : -1;
+}

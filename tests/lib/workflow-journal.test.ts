@@ -120,6 +120,18 @@ describe("workflow approval and execution journal", () => {
     expect((await journal.read(p.id, identity)).value.steps[0].status).toBe("invoking");
   });
 
+  it("tells the readiness check which step this is and when Approve's own check passed", async () => {
+    const { journal, create } = fixture();
+    const { proposal: p } = await create();
+    await journal.approve(p.id, identity, 1, p.digest, async () => null);
+    const stamp = (await journal.read(p.id, identity)).value.approvedAt;
+    expect(typeof stamp).toBe("number");
+
+    let claim: unknown;
+    await journal.claimNext(p.id, identity, async (_proposal, _step, context) => { claim = context; return { kind: "ready" }; });
+    expect(claim).toEqual({ index: 0, approvedAt: stamp });
+  });
+
   it("blocks uncertain tool outcomes rather than issuing the write again", async () => {
     const { journal, create } = fixture();
     const { proposal: p } = await create();

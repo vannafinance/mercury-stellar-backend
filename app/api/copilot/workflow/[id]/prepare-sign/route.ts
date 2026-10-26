@@ -59,7 +59,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     return loaded.commit(NextResponse.json({
       code: known?.code ?? "signing_unavailable",
-      message: known?.message ?? "The transaction could not be refreshed. Your plan is saved. Reconnect and try Sign & execute again.",
+      message: known?.message ?? "The transaction could not be refreshed. Your plan is saved. Reconnect and try Approve again.",
     }, { status: known?.status ?? 503 }));
   } finally {
     clearTimeout(timer);

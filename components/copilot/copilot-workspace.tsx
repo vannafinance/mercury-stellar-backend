@@ -110,11 +110,11 @@ import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useLiveWorkflow } from "@/contexts/workflow-context";
 import { finished as finishedWorkflow } from "@/hooks/use-workflow";
 import { fetchComposedCompletion } from "@/hooks/composed-completion";
-import { InvestigationCard } from "./investigation-card";
+import { InvestigationCard, LiveRunStepper } from "./investigation-card";
 import { ClarifyQuestionnaire } from "./clarify-questionnaire";
 import { ConversationMenu } from "./conversation-menu";
 import { AutoApproveMenu } from "./auto-approve-menu";
-import { bringsItsOwnPlan, isStaleFinishedRun, runIsOnEarlierTurn } from "@/lib/copilot/investigation/thread";
+import { bringsItsOwnPlan, isStaleFinishedRun, runIsOnEarlierTurn, unfinishedRunOwnerIndex } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
   status: string;
@@ -5973,6 +5973,75 @@ export function CopilotWorkspace() {
   }, [address, earnRaw, earnPrices]);
 
 
+  /**
+   * The live run card of a multi-step plan. It is drawn once, from the single workflow state; with nothing newer in the
+   * thread that is at the end of it, below its own reply. Once a newer question exists (or is pending) while the run is
+   * still unfinished, the card follows the reply that started it instead of moving below the new one (26 Oct, live:
+   * a refusal typed while a deposit awaited its signature drew the deposit's card under the refusal). A finished run
+   * already becomes a receipt on its own turn (`runIsOnEarlierTurn`).
+   */
+  const runCardEl = multiLeg && execLegs.length > 0 && (phase !== "done" || strategyOpen) ? (
+    <RunExecutionCard
+      eyebrow="02"
+      legs={execLegs}
+      hf={liveHf}
+      floor={
+        // "keep me above 1.4" in the prompt wins over the stored default.
+        strategyMetaRef.current.min_hf != null &&
+        Number.isFinite(Number(strategyMetaRef.current.min_hf))
+          ? Number(strategyMetaRef.current.min_hf)
+          : guardianFloor
+      }
+      busy={loading || signing}
+      signerLive={sessionSigning}
+      signerText={
+        sessionSigning
+          ? "vanna embedded signer"
+          : walletKind === "privy"
+            ? "privy wallet"
+            : "freighter wallet"
+      }
+      footerNote={
+        hfPaused
+          ? "Health factor dropped below the floor you asked for. Continue the remaining collateral/debt steps, or stop here. Settled legs stay on-chain."
+          : undefined
+      }
+      footerTone={hfPaused ? "warn" : undefined}
+      onCancel={loading || signing ? cancelInFlight : undefined}
+      onContinue={hfPaused ? continueRemainingLegs : undefined}
+      onStop={
+        hfPaused
+          ? stopRemainingLegs
+          : execLegs.some((l) => l.status === "failed")
+            ? reset
+            : undefined
+      }
+      onNewIntent={reset}
+      onViewTx={txHash ? () => window.open(txUrl(txHash), "_blank") : undefined}
+      onSubmitAmount={submitLegAmount}
+      onLpEntered={() => {
+        if (execLegs.length > 1) lpScrollPendingRef.current = true;
+      }}
+  />
+  ) : null;
+  const liveRunOwnerIndex = !runIsPast ? unfinishedRunOwnerIndex(investigation.turns, workflow.view?.id, !!pendingUser) : -1;
+  /** A single run (not a multi-leg strategy) draws its live steps through the investigation card; the same node, anchored. */
+  const liveStepperEl = workflow.view && !runCardEl && !completionSummaryReady && workflow.view.status !== "proposed" &&
+    workflow.view.status !== "validating" && workflow.view.status !== "blocked" ? (
+    <LiveRunStepper
+      workflow={workflow.view}
+      network={investigation.result?.scope.network ?? "testnet"}
+      autoSign={sessionSigning}
+      busy={workflow.loading || signingJournal}
+      onSign={() => { void signJournalXdr(false); }}
+      onResume={() => { void workflow.resume(); }}
+      onCancelPlan={() => { void workflow.cancelPlan(); }}
+    />
+  ) : null;
+  const anchoredRunEl = runCardEl ?? liveStepperEl;
+  const runCardOnOwnerTurn = !!anchoredRunEl && liveRunOwnerIndex >= 0;
+
+
   return (
     <div className="cp-root">
       <CopilotShell
@@ -6072,10 +6141,10 @@ export function CopilotWorkspace() {
             {(investigation.turns.length > 0 || pendingUser || investigation.loading || investigation.result || investigation.error || phase !== "idle") && (
             <section aria-label="Copilot conversation" className="min-w-0 flex flex-col" style={{ gap: REPLY_CARD_GAP_PX }}>
             <ChatTurns
-              turns={investigation.turns}
-              pendingUser={pendingUser}
-              working={Boolean(pendingUser && loading && !investigation.loading)}
-              liveAssistant={liveAssistant}
+              turns={runCardOnOwnerTurn ? investigation.turns.slice(0, liveRunOwnerIndex + 1) : investigation.turns}
+              pendingUser={runCardOnOwnerTurn ? null : pendingUser}
+              working={runCardOnOwnerTurn ? false : Boolean(pendingUser && loading && !investigation.loading)}
+              liveAssistant={runCardOnOwnerTurn ? null : liveAssistant}
               liveNote={!isError ? response?.answer?.note : null}
               liveTone={isError ? "error" : "default"}
               sessionSigning={sessionSigning}
@@ -6091,6 +6160,20 @@ export function CopilotWorkspace() {
                 return running ? runningPlanText(running, workflow.view?.status === "completed") : null;
               })()}
             />
+            {runCardOnOwnerTurn ? (
+              <>
+                {anchoredRunEl}
+                <ChatTurns
+                  turns={investigation.turns.slice(liveRunOwnerIndex + 1)}
+                  pendingUser={pendingUser}
+                  working={Boolean(pendingUser && loading && !investigation.loading)}
+                  liveAssistant={liveAssistant}
+                  liveNote={!isError ? response?.answer?.note : null}
+                  liveTone={isError ? "error" : "default"}
+                  sessionSigning={sessionSigning}
+                />
+              </>
+            ) : null}
             {txHash && !lifecycleCompletionText(action?.op) && !investigation.turns.some((turn) => turn.executionReceipt) ? (
               <div className="flex items-start gap-2.5 max-w-[85%]">
                 <div className="w-[18px] shrink-0" aria-hidden="true" />
@@ -6126,6 +6209,7 @@ export function CopilotWorkspace() {
                     }
                   : undefined}
                 workflow={runIsPast ? null : workflow.view}
+                runAnchoredInThread={runCardOnOwnerTurn}
                 planWithdrawn={workflow.stale}
                 planLiveFloor={workflow.quote}
                 workflowError={workflow.error}
@@ -6221,49 +6305,10 @@ export function CopilotWorkspace() {
                   {/* A multi-leg run gets the live execution card - one card that advances
                       in place, narrating each leg as it settles. The plain step list stays
                       for single-turn work, where there is no chain to narrate. */}
-                  {multiLeg && execLegs.length > 0 && (phase !== "done" || strategyOpen) ? (
-                    <RunExecutionCard
-                      eyebrow="02"
-                      legs={execLegs}
-                      hf={liveHf}
-                      floor={
-                        // "keep me above 1.4" in the prompt wins over the stored default.
-                        strategyMetaRef.current.min_hf != null &&
-                        Number.isFinite(Number(strategyMetaRef.current.min_hf))
-                          ? Number(strategyMetaRef.current.min_hf)
-                          : guardianFloor
-                      }
-                      busy={loading || signing}
-                      signerLive={sessionSigning}
-                      signerText={
-                        sessionSigning
-                          ? "vanna embedded signer"
-                          : walletKind === "privy"
-                            ? "privy wallet"
-                            : "freighter wallet"
-                      }
-                      footerNote={
-                        hfPaused
-                          ? "Health factor dropped below the floor you asked for. Continue the remaining collateral/debt steps, or stop here. Settled legs stay on-chain."
-                          : undefined
-                      }
-                      footerTone={hfPaused ? "warn" : undefined}
-                      onCancel={loading || signing ? cancelInFlight : undefined}
-                      onContinue={hfPaused ? continueRemainingLegs : undefined}
-                      onStop={
-                        hfPaused
-                          ? stopRemainingLegs
-                          : execLegs.some((l) => l.status === "failed")
-                            ? reset
-                            : undefined
-                      }
-                      onNewIntent={reset}
-                      onViewTx={txHash ? () => window.open(txUrl(txHash), "_blank") : undefined}
-                      onSubmitAmount={submitLegAmount}
-                      onLpEntered={() => {
-                        if (execLegs.length > 1) lpScrollPendingRef.current = true;
-                      }}
-                    />
+                  {runCardEl ? (
+                    // Drawn on its own turn (above) once a newer reply or a pending prompt exists, so the card of an
+                    // unfinished run does not move below a later question.
+                    runCardOnOwnerTurn ? null : runCardEl
                   ) : liveWriteUi ? (
                     <StepList steps={steps} running={loading} />
                   ) : null}

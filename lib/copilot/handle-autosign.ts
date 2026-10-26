@@ -371,7 +371,59 @@ async function handleBindStatus(
   return retried;
 }
 
+/**
+ * The page asks for the auto-sign state when a wallet connects, after each action and when the window regains focus. During one
+ * two-step run that was 7 identical reads of `vanna_auto_sign_status` (26 Oct, live), each a round trip to the MCP and the signer,
+ * for a setting nothing in the run changes. Only this polling path is shared: the check that GATES a signing step reads it fresh
+ * (execute.ts), and any auto-sign action (start, disable, use_defaults, custom, bind) forgets what was held, before and after.
+ */
+const AUTO_SIGN_STATUS_TTL_MS = 10_000;
+const recentAutoSignStatus = new Map<string, { at: number; value: Record<string, unknown> }>();
+const inflightAutoSignStatus = new Map<string, Promise<Record<string, unknown>>>();
+
+export function forgetAutoSignStatus(trader?: string): void {
+  if (trader) {
+    recentAutoSignStatus.delete(trader);
+    inflightAutoSignStatus.delete(trader);
+  } else {
+    recentAutoSignStatus.clear();
+    inflightAutoSignStatus.clear();
+  }
+}
+
+async function readAutoSignStatus(mcp: ReturnType<typeof getMcpClient>, trader: string, userId: string): Promise<Record<string, unknown>> {
+  const held = recentAutoSignStatus.get(trader);
+  if (held && Date.now() - held.at < AUTO_SIGN_STATUS_TTL_MS) return held.value;
+  const joined = inflightAutoSignStatus.get(trader);
+  if (joined) return joined;
+  const read = mcp.call("vanna_auto_sign_status", { wallet_address: trader }, userId)
+    .then((value) => {
+      // An error is never held: the next poll asks again.
+      if (value && typeof value === "object" && !(value as Record<string, unknown>).error) recentAutoSignStatus.set(trader, { at: Date.now(), value: value as Record<string, unknown> });
+      return value as Record<string, unknown>;
+    })
+    .finally(() => { inflightAutoSignStatus.delete(trader); });
+  inflightAutoSignStatus.set(trader, read);
+  return read;
+}
+
 export async function handleAutoSignAction(
+  req: ChatRequest,
+  request_id: string,
+  trader: string | null,
+  userId: string,
+): Promise<ChatResponse> {
+  // A status poll only reads. Every other action may change the setting, so a state held from before it must not be served after it.
+  const changes = (req.auto_sign?.action || "start") !== "status";
+  if (changes && trader) forgetAutoSignStatus(trader);
+  try {
+    return await handleAutoSignActionUncached(req, request_id, trader, userId);
+  } finally {
+    if (changes && trader) forgetAutoSignStatus(trader);
+  }
+}
+
+async function handleAutoSignActionUncached(
   req: ChatRequest,
   request_id: string,
   trader: string | null,
@@ -413,7 +465,7 @@ export async function handleAutoSignAction(
       // Read-only. A silent poll on wallet connect must not mint a connect
       // request, open the bind UI, or create a session - it only tells the
       // Autonomy card whether GET /sessions is already enforcing.
-      const r = await mcp.call("vanna_auto_sign_status", { wallet_address: trader }, userId);
+      const r = await readAutoSignStatus(mcp, trader, userId);
       const tx = Number(r.max_per_tx_tokens);
       const day = Number(r.max_per_day_tokens);
       const serverEnabled = r.enabled === true || r.status === "enabled";

@@ -145,6 +145,13 @@ export interface PocketMismatch {
   remedy: "withdraw_then_lend_or_skip" | "reduce_or_skip";
 }
 
+/**
+ * What the user reads when the protocol's own position read is unavailable and the plan lowers health. It never names the
+ * snapshot, the contract or the liquidation engine: that is internal, and the cause is a slow read that clears on its own.
+ * Nothing is sized or sent, so the honest advice is to try again.
+ */
+export const ACCOUNT_UNCONFIRMED = "I couldn't confirm your account with the protocol just now, so I haven't sized this. Nothing was sent. Please try again in a moment";
+
 export interface ResolvedPlans {
   candidates: Candidate[];
   rejected: RejectedPlan[];
@@ -1167,7 +1174,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * holding so much as one unposted token.
      */
     if (leg.op === "withdraw_collateral" && ctx.capacity?.issue?.reason === "sizing_contract_unavailable") {
-      throw new Reject(name, "the position could not be confirmed against the liquidation engine, so nothing that lowers health is sized");
+      throw new Reject(name, ACCOUNT_UNCONFIRMED);
     }
     // Owner rule (service.ts): permission to borrow is optional, not an instruction; "unspecified"
     // still offers a levered path beside the idle one. Only an explicit prohibition rules it out.
@@ -1188,7 +1195,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     }
     // Same gate as withdraw, same reason: only the missing-contract-basis case has nothing to size from.
     if (leg.op === "borrow" && ctx.capacity?.issue?.reason === "sizing_contract_unavailable") {
-      throw new Reject(name, "the contract's liquidation snapshot could not be read, so a borrow is not sized");
+      throw new Reject(name, ACCOUNT_UNCONFIRMED);
     }
 
     const sizing = leg.sizing;

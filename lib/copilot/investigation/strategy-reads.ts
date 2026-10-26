@@ -11,7 +11,7 @@ import { resolveRead } from "./capabilities";
 import { interruptible, readFailureText } from "./runtime";
 import { isRecord } from "./decision";
 import { PRICE_MAX_AGE_MS } from "./candidates";
-import type { InvestigationScope, Observation, ProposedPlan } from "./types";
+import type { GoalUnderstanding, InvestigationScope, Observation, ProposedPlan } from "./types";
 import { ASSET_OUT_OPS, deploysIntoPosition, OP_FLOW } from "../workflow/types";
 import { SEP41_ASSET_IDS } from "../token-contracts";
 
@@ -26,6 +26,24 @@ export const STRATEGY_READS: readonly StrategyRead[] = [
   ...EARN_ASSETS.map((asset) => ({ capability: "earn_market", args: { asset } })),
   { capability: "blend_markets", args: {} },
 ];
+
+/**
+ * A request whose every leg carries an amount the user typed ("deposit 5 XLM, then borrow 2 SOUSDC").
+ *
+ * Its plan is exactly those legs, so the only reads it needs are the ones `readsForPlans` derives from them. The fixed
+ * `STRATEGY_READS` list (the wallet, a price and an Earn market for EVERY asset, Blend) exists to rank options for an
+ * open-ended request; on a stated one it fetched eight reads nobody used and took 12 s of a 32 s turn (26 Oct, live).
+ * Never true for a leg sized by a word ("all my wallet", "to the floor", a leverage target), an allocation request or a
+ * portfolio exit, which keep the full list.
+ */
+export function namesOnlyTypedAmounts(
+  goal: Pick<GoalUnderstanding, "actions" | "allocationRequest" | "portfolioExit">,
+  plans: readonly ProposedPlan[] | undefined,
+): boolean {
+  if (goal.allocationRequest || goal.portfolioExit) return false;
+  const legs = [...(goal.actions ?? []), ...(plans ?? []).flatMap((plan) => plan.legs)];
+  return legs.length > 0 && legs.every((leg) => leg.sizing.kind === "literal");
+}
 
 export function looksLikeStatedWrite(message: string): boolean {
   const text = message.trim();

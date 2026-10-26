@@ -36,6 +36,8 @@ export interface InvestigationCardProps {
   /** Prepare the journal proposal for one of the sized options. */
   onPropose?: (candidateId: string) => void;
   workflow?: WorkflowView | null;
+  /** The workspace draws this run's live card under the reply that started it, so the card leaves it out. */
+  runAnchoredInThread?: boolean;
   /**
    * Why the waiting plan no longer holds, from the live re-check. A plan sized minutes ago
    * against a price that has since moved must stop offering Approve, and say why.
@@ -374,10 +376,38 @@ const planLetter = (index: number) => String.fromCharCode(65 + index);
 
 const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
 
+/**
+ * The live card of a run that has begun and not finished: its steps, the Sign button while a signature is awaited, Stop,
+ * and Check progress. A component of its own so the workspace can draw it under the reply that started the run when a newer
+ * question has since been asked (26 Oct, live: it sat below the answer to a different question).
+ */
+export function LiveRunStepper({ workflow, network, autoSign, busy, onSign, onResume, onCancelPlan }: {
+  workflow: WorkflowView;
+  network: string;
+  autoSign?: boolean;
+  busy?: boolean;
+  onSign?: () => void;
+  onResume?: () => void;
+  onCancelPlan?: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={network} autoApprove={!!autoSign}
+        busy={!!busy}
+        cancelled={workflow.status === "cancelled"}
+        onSign={workflow.status === "awaiting_signature" ? onSign : undefined}
+        onStop={["approved", "awaiting_signature"].includes(workflow.status) ? onCancelPlan : undefined} />
+      {["running", "approved"].includes(workflow.status) && onResume && (
+        <button type="button" disabled={busy} onClick={onResume} className={`${BTN_QUIET} self-start`}>Check progress</button>
+      )}
+    </div>
+  );
+}
+
 export function InvestigationCard({
   prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, continueLabel, onRetry,
   onPropose, workflow, planWithdrawn, planLiveFloor, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
-  wallet = null, autoSign = false, onApproveCandidate, onReply, onWrite, accountAvailable = false, threadDefersReceipt = false, approvalQueued = false, approvingId = null,
+  wallet = null, autoSign = false, onApproveCandidate, onReply, onWrite, accountAvailable = false, threadDefersReceipt = false, approvalQueued = false, approvingId = null, runAnchoredInThread = false,
 }: InvestigationCardProps) {
   /**
    * Cancel on a plan that was never prepared: nothing was sent, so it only closes the plans
@@ -646,17 +676,8 @@ export function InvestigationCard({
                 / Executing. The boxed section stays only where the card is NOT drawn here: a run
                 blocked before it started (a plain step list), or one whose receipt the thread draws.
               */}
-              {workflow && !completionSummaryReady && workflow.status !== "proposed" && workflow.status !== "blocked" && !stepperDrawnInThread && (
-                <div className="flex flex-col gap-2.5">
-                  <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={result.scope.network} autoApprove={!!autoSign}
-                    busy={!!workflowLoading}
-                    cancelled={workflow.status === "cancelled"}
-                    onSign={workflow.status === "awaiting_signature" ? onSign : undefined}
-                    onStop={["approved", "awaiting_signature"].includes(workflow.status) ? onCancelPlan : undefined} />
-                  {["running", "approved"].includes(workflow.status) && onResume && (
-                    <button type="button" disabled={workflowLoading} onClick={onResume} className={`${BTN_QUIET} self-start`}>Check progress</button>
-                  )}
-                </div>
+              {workflow && !completionSummaryReady && workflow.status !== "proposed" && workflow.status !== "blocked" && !stepperDrawnInThread && !runAnchoredInThread && (
+                <LiveRunStepper workflow={workflow} network={result.scope.network} autoSign={autoSign} busy={workflowLoading} onSign={onSign} onResume={onResume} onCancelPlan={onCancelPlan} />
               )}
               {/* A run stopped before anything settled is answered in words, like every other refusal, not boxed. */}
               {workflow && !completionSummaryReady && workflow.status === "blocked" && !workflow.steps.some((step) => step.status === "settled") && (
@@ -701,7 +722,7 @@ export function InvestigationCard({
                   <div className="mt-3 flex flex-wrap gap-2">
                     {/* Sign and Stop live on the execution card itself; the blocked list has neither. */}
                     {workflow.status === "awaiting_signature" && onSign && stepperDrawnInThread && (
-                      <button type="button" onClick={onSign} disabled={workflowLoading} className={BTN_PRIMARY}>Sign & execute</button>
+                      <button type="button" onClick={onSign} disabled={workflowLoading} className={BTN_PRIMARY}>Approve</button>
                     )}
                     {["running", "approved"].includes(workflow.status) && onResume && (
                       <button type="button" disabled={workflowLoading} onClick={onResume} className={BTN_QUIET}>Check progress</button>

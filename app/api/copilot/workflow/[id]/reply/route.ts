@@ -74,8 +74,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       computeAccountPosition(stored.value.proposal.scope.smartAccount, AbortSignal.any([signal, AbortSignal.timeout(HEALTH_READ_MS)]), finalTransaction?.hash).catch(() => null),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), HEALTH_READ_MS)),
     ]);
+    // The run answers the LAST message. Earlier ones (a question asked before, say) were answered in their own replies and
+    // must not be answered again here: joined into one "request" they made the model add a line about a figure nobody asked for now.
+    const spoken = stored.value.proposal.messages ?? [];
     const composed = await composeCompletion({
-      view, request: stored.value.proposal.messages?.join("\n") || view.objective, draft, comparisons,
+      view, request: spoken[spoken.length - 1] || view.objective, earlierMessages: spoken.slice(0, -1), draft, comparisons,
       healthFloor: stored.value.proposal.floor, constraints: stored.value.proposal.constraints,
       healthNow: position?.healthFactor ?? null,
       ...(position ? {

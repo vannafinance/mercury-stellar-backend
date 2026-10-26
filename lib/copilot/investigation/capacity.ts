@@ -20,6 +20,7 @@
  */
 
 import { computeMarginSnapshot, SnapshotTimeoutError } from "@/lib/account-snapshot";
+import { computeMarginSnapshotReused } from "./snapshot-reuse";
 import { statedFloorFrom } from "./floor";
 import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
 import { isUsable, unavailable, usable, type ReadResult } from "@/lib/usable-read";
@@ -174,6 +175,15 @@ export function parseLiquidationSnapshot(data: unknown): ContractLiquidationBasi
   };
 }
 
+/**
+ * The MCP read gets this long before the app starts reading the same figures itself, IN PARALLEL: whichever answers first is
+ * used, and a slow MCP read is never abandoned. Both are one on-chain simulation of the same RiskEngine function over every
+ * position the account holds, so the figures are identical; only their latency differs, and it swings with RPC load (0.6 s to
+ * 16 s in one session, 26 Oct). The MCP read alone used to consume the whole propose budget, so the app's own read never ran
+ * and a borrow was refused for a read that had worked a minute earlier.
+ */
+const MCP_SNAPSHOT_HEAD_START_MS = 6_000;
+
 async function resolveContractBasis(
   smartAccount: string,
   options?: SizingOptions,
@@ -186,30 +196,39 @@ async function resolveContractBasis(
     }
     throw new Error("sizing_contract_unavailable");
   }
-  if (options?.mcp) {
-    try {
-      const data = await options.mcp.call(
-        "vanna_get_liquidation_snapshot",
-        { smart_account: smartAccount },
-        options.trader ?? undefined,
-      );
+  const direct = async (): Promise<ContractLiquidationBasis> => {
+    const snap = await readLiquidationSnapshot(smartAccount, { signal });
+    return { collateralUsd: snap.collateralUsd, debtUsd: snap.debtUsd, unpriceablePlain: snap.unpriceablePlain };
+  };
+  const viaMcp = options?.mcp
+    ? (async (): Promise<ContractLiquidationBasis> => {
+      const data = await options.mcp!.call("vanna_get_liquidation_snapshot", { smart_account: smartAccount }, options.trader ?? undefined);
       const parsed = parseLiquidationSnapshot(data);
-      if (parsed) {
-        console.info("[copilot] liquidation_snapshot path", { path: "mcp", smartAccount });
-        return parsed;
-      }
+      // Live MCP may not have the action yet (or answered with an error): the direct read below is the fallback.
+      if (!parsed) throw new Error("the MCP did not return a usable liquidation snapshot");
+      return parsed;
+    })()
+    : null;
+  if (viaMcp) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const headStart = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("slow")), MCP_SNAPSHOT_HEAD_START_MS); });
+      const basis = await Promise.race([viaMcp, headStart]);
+      console.info("[copilot] liquidation_snapshot path", { path: "mcp", smartAccount });
+      return basis;
     } catch {
-      // Live MCP may not have the action yet; fall through to a direct simulate.
+      // Slow or failed: read it directly while the MCP read, if it is only slow, keeps running.
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
   try {
-    const snap = await readLiquidationSnapshot(smartAccount, { signal });
-    console.info("[copilot] liquidation_snapshot path", { path: "simulate_fallback", smartAccount });
-    return {
-      collateralUsd: snap.collateralUsd,
-      debtUsd: snap.debtUsd,
-      unpriceablePlain: snap.unpriceablePlain,
-    };
+    const winner = await Promise.any([
+      ...(viaMcp ? [viaMcp.then((basis) => ({ path: "mcp" as const, basis }))] : []),
+      direct().then((basis) => ({ path: "simulate_fallback" as const, basis })),
+    ]);
+    console.info("[copilot] liquidation_snapshot path", { path: winner.path, smartAccount });
+    return winner.basis;
   } catch {
     throw new Error("sizing_contract_unavailable");
   }
@@ -312,7 +331,7 @@ export async function computeSizingBasis(
   let snapshot = shared ?? null;
   if (!snapshot && !(options && Object.prototype.hasOwnProperty.call(options, "app"))) {
     try {
-      snapshot = await computeMarginSnapshot(smartAccount);
+      snapshot = await computeMarginSnapshotReused(smartAccount);
     } catch (error) {
       console.warn("[copilot] sizing app snapshot failed", {
         error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
@@ -369,7 +388,7 @@ export async function computeAccountPosition(
   if (!smartAccount) return null;
   let snapshot: MarginSnapshot;
   try {
-    snapshot = await computeMarginSnapshot(smartAccount, freshAfter ? { freshAfter } : undefined);
+    snapshot = await computeMarginSnapshotReused(smartAccount, freshAfter ? { freshAfter } : undefined);
   } catch (error) {
     if (error instanceof SnapshotTimeoutError) {
       console.warn("[copilot] account snapshot timed out", { smartAccount, message: error.message });

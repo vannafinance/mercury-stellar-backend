@@ -17,14 +17,14 @@ import {
 import { collectStrategyReads, readsForPlans, STRATEGY_READS } from "./strategy-reads";
 import { parseCandidateId, requiresMarginAccount, REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { statedFloorFrom } from "./floor";
-import { planCandidateId, resolvePlans } from "./plan";
+import { ACCOUNT_UNCONFIRMED, planCandidateId, resolvePlans } from "./plan";
 import { sizePlansWithFees, walletFeeReserveFor } from "./fee-sizing";
 import { enforcePortfolioExit, portfolioExitCoverage } from "./portfolio-exit";
 import { missingPositionReads } from "./position-coverage";
 import { compareObservedRates } from "./rate-comparison";
 import { compileProposal } from "./compile";
 import { researchCodec } from "./continuation";
-import { researchEvidenceReusable } from "./evidence";
+import { researchEvidenceReusable, sealedPositionFallback } from "./evidence";
 import { resolveInvestigationScope, ResearchError } from "./scope";
 import { WorkflowJournal, WorkflowConflict } from "../workflow/journal";
 import { workflowStore } from "../workflow/store";
@@ -87,23 +87,23 @@ export async function proposeWorkflow(input: {
   const codec = researchCodec(input.secret, input.server, () => wallNow);
   const prior = codec.read(input.continuation);
   if (!prior.evidence?.allowedCandidateIds?.includes(input.candidateId))
-    throw new ResearchError("candidate_unavailable", "This option was not proposed by the completed investigation. Start a fresh investigation.");
+    throw new ResearchError("candidate_unavailable", "This option is no longer available. Please ask again.");
   if (prior.scope.subject !== input.subject) {
-    throw new ResearchError("context_expired", "This investigation has expired or the connected account changed. Start a new investigation to refresh its context.");
+    throw new ResearchError("context_expired", "This plan has expired, or the connected account changed. Please ask again and I'll prepare a fresh one.");
   }
   const scope = await resolveInvestigationScope({
     subject: input.subject, wallet: prior.scope.trader, network: input.network,
   }, input.mcp, AbortSignal.any([input.signal, AbortSignal.timeout(20_000)]));
   if (scope.subject !== prior.scope.subject || scope.trader !== prior.scope.trader ||
     scope.smartAccount !== prior.scope.smartAccount || scope.network !== prior.scope.network) {
-    throw new ResearchError("context_expired", "This investigation has expired or the connected account changed. Start a new investigation to refresh its context.");
+    throw new ResearchError("context_expired", "This plan has expired, or the connected account changed. Please ask again and I'll prepare a fresh one.");
   }
   /**
    * `allowedCandidateIds` above is the authority; parsing only recovers the kind so the
    * account check and the generator gate can be decided before any read is paid for.
    */
   const parsed = parseCandidateId(input.candidateId);
-  if (!parsed) throw new ResearchError("candidate_unavailable", "This option was not proposed by the completed investigation. Start a fresh investigation.");
+  if (!parsed) throw new ResearchError("candidate_unavailable", "This option is no longer available. Please ask again.");
   if (parsed.kind === REQUESTED_ACTIONS_ID) {
     const steps = prior.evidence?.requestedSteps;
     if (!steps?.length) throw new ResearchError("candidate_unavailable", "The requested actions are unavailable. Investigate again.");
@@ -143,7 +143,7 @@ export async function proposeWorkflow(input: {
     ? prior.evidence?.plans?.find((plan) => planCandidateId(plan) === input.candidateId) ?? null
     : null;
   if (parsed.kind === "composed" && !sealedPlan) {
-    throw new ResearchError("candidate_unavailable", "This option was not proposed by the completed investigation. Start a fresh investigation.");
+    throw new ResearchError("candidate_unavailable", "This option is no longer available. Please ask again.");
   }
   const marginNeeded = sealedPlan ? sealedPlan.legs.some((leg) => leg.op !== "lend") : requiresMarginAccount(parsed.traits);
   if (!scope.trader || (marginNeeded && !scope.smartAccount)) {
@@ -208,14 +208,22 @@ export async function proposeWorkflow(input: {
       // Bounded like the two reads above it: an unbounded contract read here rode on
       // whatever the client's 90s had left, with nothing local to degrade to on a stall.
       liveBasis = await computeSizingBasis(scope.smartAccount, null, { mcp: input.mcp, trader: scope.trader, app },
-        AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]));
+        AbortSignal.any([input.signal, AbortSignal.timeout(25_000)]));
     } catch (error) {
       console.warn("[copilot] propose sizing basis failed", { error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
     }
   }
   const liveFloor = prior.evidence?.floor ?? statedFloorFrom(prior.messages);
+  // The live re-read of the protocol's account figures failed (or only the app's own figures came back): stand on the figures the
+  // card was sized with, when that is safe for this plan. A read that worked is never replaced.
+  const liveUnavailable = !reused && !!scope.smartAccount && (!liveBasis || liveBasis.issue === "sizing_contract_unavailable");
+  const sealedFallback = liveUnavailable ? sealedPositionFallback(prior.evidence, sealedPlan, now) : null;
+  if (sealedFallback) {
+    console.warn("[copilot] propose stood on the account figures sealed with the card: the live protocol read was unavailable", { ageMs: now - prior.evidence!.capturedAt });
+  }
   const capacity = reused
     ? prior.evidence!.capacity
+    : sealedFallback ? sealedFallback.capacity
     : liveBasis && liveFloor ? capacityFromBasis(liveBasis, liveFloor) : null;
   const requestedBorrow = requestedBorrowFrom(prior.evidence?.statedBorrow, observations, now);
   const comparisons = compareObservedRates(observations, now);
@@ -249,6 +257,7 @@ export async function proposeWorkflow(input: {
   // The basis the plan is sized against: sealed while fresh; the single live basis when stale.
   const planPosition = reused
     ? prior.evidence!.position ?? null
+    : sealedFallback ? sealedFallback.position
     : liveBasis
       ? { grossCollateralUsd: liveBasis.grossCollateralUsd, debtUsd: liveBasis.debtUsd, floor: liveFloor, issue: liveBasis.issue ? { reason: liveBasis.issue, app: liveBasis.app, contract: liveBasis.contract } : null }
       : null;
@@ -290,9 +299,11 @@ export async function proposeWorkflow(input: {
     // The reason the plan no longer sizes is the fact the user needs; never swallow it.
     const why = resolved?.rejected.map((r) => `${r.leg}: ${r.reason}`).join("; ");
     console.warn("[copilot] proposal candidate no longer resolves", { candidateId: input.candidateId, reused, why: why ?? null });
+    // A transient read failure is not a reason to start over: say what happened and that trying again is enough.
+    if (resolved?.rejected.some((r) => r.reason === ACCOUNT_UNCONFIRMED)) throw new ResearchError("candidate_unavailable", `${ACCOUNT_UNCONFIRMED}.`);
     throw new ResearchError("candidate_unavailable", why
-      ? `That option no longer sizes on the current reads - ${why}. Start a new investigation.`
-      : "That option is no longer available at the current rates and position. Start a new investigation.");
+      ? `That option no longer sizes on the current reads - ${why}. Please ask again.`
+      : "That option is no longer available at the current rates and position. Please ask again.");
   }
 
   const proposalFloor = liveFloor ?? capacity?.floor ?? null;
@@ -364,7 +375,7 @@ function reserveConstraints(reserves: WorkflowProposal["walletReserves"]): strin
 function compileMessage(reason: string): string {
   switch (reason) {
     case "missing_price": return "No oracle price was read for this asset, so a plan could not be sized.";
-    case "stale_price": return "The oracle price for this asset is too old to size a plan. Start a new investigation.";
+    case "stale_price": return "The price for this asset is too old to size a plan. Please ask again.";
     case "unpriceable_amount": return "The amount could not be converted to tokens from the read price.";
     case "zero_amount": return "The converted token amount was zero, so no plan was built.";
     case "unsupported_venue": return "This venue cannot be turned into an executable plan yet.";

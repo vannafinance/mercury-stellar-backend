@@ -85,11 +85,11 @@ ${PRESENTATION}
 ${CHAT_STYLE}`;
 
 const COMPLETION_SYSTEM = `You write the reply shown once a user's transactions have finished, in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar). Say what happened and what it means now, the way a helpful analyst would confirm a completed trade in a chat app.
-You are given the user's request and FACTS: each settled step (what was done, the amount), any previously observed rates, and, when it was read after the run, the account's health factor now.
+You are given the user's LATEST request, earlier messages of the conversation (context only), and FACTS: each settled step (what was done, the amount), any previously observed rates, and, when it was read after the run, the account's health factor now.
 Only supplied settled steps completed. Use workflow status and step statuses to distinguish settled, pending, failed and unsubmitted work. Rates come from the supplied sealed comparisons; they are not a new post-run read. If stopped is given, distinguish what ran from what did not. Do not invent current health or next actions.
 Connect the settled outcome to the original request and approved constraints. When a health-floor fact is supplied, include it as a fact reference and explain that it was the approved safety target for the run. Distinguish this target from freshly observed health: only health_now is a post-run observation, and a target alone does not prove the resulting health or that the whole request completed. Use your own concise wording rather than a fixed sentence.
 Write one combined summary for the whole run, short: open with one or two plain sentences saying what was done overall and, when health_now is supplied, what the health factor is now. Add no headings or tables, and no paragraphs beyond the answer to anything else the request asked (below). The renderer draws each transaction as its own row with a tick and its explorer link, so never write hashes, links or ledgers. When more than one transaction settled, follow the sentences with one bullet per transaction, in the order given: a short past-tense line saying what that transaction did, which becomes that transaction's row. With a single transaction, the sentences are enough. Do not ask for approval or narrate waiting for signatures when the workflow is completed.
-One request gets one reply. When the request also asked for something beyond the transactions (a figure to show, a price to tell, something to check), answer it in this same reply, in a sentence or two after the transactions, from the supplied facts, and give only what was asked: never the other figures. Account figures read after the run (leverage, liquidation prices, whether a margin account exists) are supplied for that, and are cited like any other fact. If no supplied fact covers what was asked, say in a few words that it could not be read just now; never leave a part of the request unanswered. When part of the request needed no transaction (the margin account already exists, so none was opened), say so in a few words.
+One request gets one reply. When the request also asked for something beyond the transactions (a figure to show, a price to tell, something to check), answer it in this same reply, in a sentence or two after the transactions, from the supplied facts, and give only what was asked: never the other figures. Account figures read after the run (leverage, liquidation prices, whether a margin account exists) are supplied for that, and are cited like any other fact. Answer only the latest request. Use the earlier messages only to understand what the latest one refers to (it may continue or answer something said before); a figure an earlier message asked for belongs in this reply only when the latest message repeats or depends on it, since earlier questions were answered in their own replies. If a figure the latest request asked for is not among the supplied facts, leave it out; never write that something could not be read, is unavailable or was not checked. When part of the request needed no transaction (the margin account already exists, so none was opened), say so in a few words.
 ${PRESENTATION}
 ${CHAT_STYLE}`;
 
@@ -314,7 +314,10 @@ export function completionFacts(view: WorkflowView, comparisons: readonly RateCo
  */
 export async function composeCompletion(input: {
   view: WorkflowView;
+  /** The latest thing the user asked: the message that produced this run. */
   request: string;
+  /** Earlier messages of the conversation, for context only; they have their own replies. */
+  earlierMessages?: readonly string[];
   draft: string;
   comparisons: readonly RateComparison[];
   healthNow: string | null;
@@ -330,6 +333,7 @@ export async function composeCompletion(input: {
   const stopped = input.view.status !== "completed";
   const user = JSON.stringify({
     request: input.request,
+    ...(input.earlierMessages?.length ? { earlierMessages: input.earlierMessages } : {}),
     facts: facts.map(replyFactContext),
     context: { category: "completion", workflowStatus: input.view.status,
       steps: input.view.steps.map((step) => ({ op: step.op, asset: step.asset, status: step.status })),

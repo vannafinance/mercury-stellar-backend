@@ -30,6 +30,47 @@ beforeEach(() => {
   mocks.chain.mockResolvedValue({ balanceWad: decimalWad("200").toString(), debtWad: decimalWad("100").toString(),
     registryDiverged: false, wasmHash: "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960" });
 });
+describe("approve-time reads run together", () => {
+  it("starts the contract health read before the price and balance reads have answered", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    mcp.call.mockImplementation(async (tool: string, args: Record<string, unknown>) => { await hold; return defaultCall(tool, args); });
+    const pending = validate(proposal("50"));
+    await vi.waitFor(() => expect(mocks.chain).toHaveBeenCalledTimes(1));
+    // Nothing from the MCP has answered yet: the chain read did not wait for it.
+    release();
+    expect(await pending).toBeNull();
+  });
+
+  it("asks for the price and the balance together, not one after the other", async () => {
+    const started: string[] = [];
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    mcp.call.mockImplementation(async (tool: string, args: Record<string, unknown>) => { started.push(tool); await hold; return defaultCall(tool, args); });
+    // A deposit spends wallet tokens (a balance read) and, with a floor, also needs a price.
+    const p = proposal("1");
+    p.steps = [{ id: "deposit", op: "deposit_collateral", asset: "XLM", amount: "1", label: "Deposit XLM",
+      tool: "vanna_deposit_collateral", args: writeArgsFor("deposit_collateral", "XLM", "1", scope) }];
+    const pending = validate(p);
+    await vi.waitFor(() => expect(started).toEqual(expect.arrayContaining(["vanna_get_price", "vanna_get_token_balance"])));
+    release();
+    expect(await pending).toBeNull();
+  });
+
+  it("a refusal from an early check is still the answer, with the chain read left to finish quietly", async () => {
+    mocks.chain.mockRejectedValue(new Error("rpc down"));
+    const p = proposal("1");
+    p.steps = [{ id: "deposit", op: "deposit_collateral", asset: "XLM", amount: "1001", label: "Deposit XLM",
+      tool: "vanna_deposit_collateral", args: writeArgsFor("deposit_collateral", "XLM", "1001", scope) }];
+    expect(await validate(p)).toMatch(/not enough XLM/);
+  });
+
+  it("the chain read failing still fails the check when everything else passes", async () => {
+    mocks.chain.mockRejectedValue(new Error("rpc down"));
+    expect(await validate(proposal("50"))).toMatch(/could not|unavailable|verified/i);
+  });
+});
+
 describe("deterministic execution risk", () => {
   it("validates a health-neutral remaining Blend step against the current floor", async () => {
     const p = proposal("100");

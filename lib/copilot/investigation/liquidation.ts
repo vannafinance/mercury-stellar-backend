@@ -20,6 +20,9 @@ import type { Observation } from "./types";
 /** The lowest price multiplier the scan reaches ("fell to near zero"), as `liqMultiplier` scans. */
 const NEAR_ZERO = 0.001;
 
+/** Falls (in percent) at which the health factor is stated, so a question about a given fall finds its own figure. */
+const FALL_STEPS_PCT = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90];
+
 const lines = (balances: MarginSnapshot["collateralBalances"]) =>
   Object.entries(balances)
     .map(([symbol, balance]) => ({ symbol, usd: Number(balance.usdValue) || 0, amount: Number(balance.amount) || 0 }))
@@ -63,9 +66,16 @@ export function liquidationObservation(snapshot: MarginSnapshot, observedAt: num
     const falling = move("long");
     const rising = move("short");
     const nearZero = healthFactor(state, (k) => (k === key ? NEAR_ZERO : 1));
+    // "What happens to my health factor if XLM drops 30%?" asks for the figure at THAT fall, not at zero. The page's own
+    // model gives it for every step, so the reply can state the asked scenario instead of the extreme one.
+    const ifFalls = FALL_STEPS_PCT.flatMap((pct) => {
+      const hf = healthFactor(state, (k) => (k === key ? 1 - pct / 100 : 1));
+      return Number.isFinite(hf) ? [{ fall_pct: String(pct), health_factor: fixed(hf, 4) }] : [];
+    });
     return [{
       symbol: key, price_usd: priceText(price), falling, rising,
       health_factor_if_near_zero: falling === null && Number.isFinite(nearZero) ? fixed(nearZero, 4) : null,
+      health_factor_if_falls: ifFalls,
     }];
   });
   // Dollar-pegged tokens the account holds or owes. The page holds them at $1 and moves no price for them

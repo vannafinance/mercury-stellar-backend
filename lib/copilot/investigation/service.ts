@@ -39,7 +39,7 @@ import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
 import { appendDiagnostics } from "./diagnostics-log";
 import type { ResearchConversation } from "./continuation";
-import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans, STRATEGY_READS, type StrategyRead } from "./strategy-reads";
+import { collectStrategyReads, looksLikeStatedWrite, namesOnlyTypedAmounts, needsMarketSeed, readsForPlans, STRATEGY_READS, type StrategyRead } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath, pageDebtAgreesWithContract, postedHealthFactorFromSnapshot } from "./fast-path";
 import { futureConditionRefusal } from "../conditional-guard";
 import { evaluateStandingOrders } from "../standing-orders";
@@ -1035,7 +1035,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * marked `intent: "strategy"`, had rates but no idle amounts, so it offered nothing (25 Sep,
    * live). Whatever of that list is not already fresh is read before the plans are built.
    */
-  if (!lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy") {
+  if (!lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && !namesOnlyTypedAmounts(outcome.goal, outcome.plans)) {
     const stale = STRATEGY_READS.filter((read) => !result.observations.some((item) =>
       item.capability === read.capability && item.status === "ok" && observedNow - item.observedAt <= 60_000
       && (read.args.asset === undefined || item.args.asset === read.args.asset)));

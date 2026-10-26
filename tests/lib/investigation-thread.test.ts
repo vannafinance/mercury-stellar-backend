@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bringsItsOwnPlan, isStaleFinishedRun, runIsOnEarlierTurn } from "@/lib/copilot/investigation/thread";
+import { bringsItsOwnPlan, isStaleFinishedRun, runIsOnEarlierTurn, unfinishedRunOwnerIndex } from "@/lib/copilot/investigation/thread";
 import { inheritsThread, shownPlans } from "@/lib/copilot/investigation/thread-context";
 
 /** Whether a message continues the plan on screen is the model's reading; these are the rules code applies to its answer. */
@@ -78,5 +78,30 @@ describe("a finished run that stands in the way of the next plan", () => {
     for (const status of ["proposed", "approved", "running", "validating"]) expect(isStaleFinishedRun({ status }, "r1.earlier", "r1.now")).toBe(false);
     for (const status of ["completed", "cancelled", "blocked"]) expect(isStaleFinishedRun({ status }, "r1.earlier", "r1.now")).toBe(true);
     expect(isStaleFinishedRun(null, null, "r1.now")).toBe(false);
+  });
+});
+
+describe("the card of an unfinished run stays under the reply that started it", () => {
+  const receipt = (workflowId: string) => ({ workflowId, status: "awaiting_signature", network: "testnet", steps: [] }) as never;
+  const user = { role: "user" as const };
+  const owner = { role: "assistant" as const, executionReceipt: receipt("wf-1") };
+
+  it("is that reply once a newer question has been answered (26 Oct: a refusal drew the deposit's card under itself)", () => {
+    expect(unfinishedRunOwnerIndex([user, owner, user, { role: "assistant" as const }], "wf-1", false)).toBe(1);
+  });
+
+  it("is that reply while the next prompt is still pending, before its bubble is in the thread", () => {
+    expect(unfinishedRunOwnerIndex([user, owner], "wf-1", true)).toBe(1);
+    expect(unfinishedRunOwnerIndex([user, owner, user], "wf-1", true)).toBe(1);
+  });
+
+  it("stays at the end of the thread while its own reply is the newest", () => {
+    expect(unfinishedRunOwnerIndex([user, owner], "wf-1", false)).toBe(-1);
+  });
+
+  it("is never found for another run, no run, or a reply that continues an account setup", () => {
+    expect(unfinishedRunOwnerIndex([user, owner, user, { role: "assistant" as const }], "wf-2", false)).toBe(-1);
+    expect(unfinishedRunOwnerIndex([user, owner, user, { role: "assistant" as const }], null, false)).toBe(-1);
+    expect(unfinishedRunOwnerIndex([user, owner, { role: "assistant" as const }], "wf-1", false)).toBe(-1);
   });
 });

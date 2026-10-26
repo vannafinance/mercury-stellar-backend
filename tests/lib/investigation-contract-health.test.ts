@@ -102,6 +102,33 @@ describe("contract health simulator", () => {
     });
   });
 
+  it("reads the risk engine's code hash while the balance and debt are being read, not before", async () => {
+    const rpc = rpcStub({});
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const names: string[] = [];
+    const simulate = rpc.simulateTransaction as unknown as (tx: StellarSdk.Transaction) => Promise<unknown>;
+    const spy = vi.fn(async (tx: StellarSdk.Transaction) => {
+      const op = tx.operations[0] as { func?: { invokeContract?: () => { functionName: () => { toString: () => string } } } };
+      names.push(op.func?.invokeContract?.().functionName().toString() ?? "");
+      return simulate(tx);
+    });
+    // The code-hash read stays pending until the balance read has been sent.
+    const getContractData = vi.fn(async () => { await hold; return contractInstance(WASM) as never; });
+    const pending = readContractHealthState(ACCOUNT, { rpc: { simulateTransaction: spy as never, getContractData }, now: () => 1 });
+    await vi.waitFor(() => expect(names).toContain("get_current_total_balance"));
+    expect(getContractData).toHaveBeenCalledTimes(1);
+    release();
+    expect((await pending).wasmHash).toBe(WASM);
+  });
+
+  it("a code hash that cannot be read is still an error, never a health factor", async () => {
+    const rpc = rpcStub({});
+    const getContractData = vi.fn(async () => contractInstance("not-a-hash") as never);
+    await expect(readContractHealthState(ACCOUNT, { rpc: { simulateTransaction: rpc.simulateTransaction, getContractData } }))
+      .rejects.toMatchObject({ code: "wasm_hash_unavailable" });
+  });
+
   it("produces a state validateHealthPath accepts, and enforces the floor on it", async () => {
     const rpc = rpcStub({});
     const state = await readContractHealthState(ACCOUNT, { rpc, now: () => 5_000 });

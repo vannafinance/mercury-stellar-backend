@@ -38,7 +38,8 @@ describe("server-owned completion route", () => {
     } } });
     expect((await call({ conversationId: "conversation", healthFloor: "9", request: "fake" })).status).toBe(200);
     expect(m.compose.mock.calls[0][0]).toMatchObject({
-      request: "Place my idle balance and borrow safely above my chosen health floor\nBorrow SOUSDC",
+      request: "Borrow SOUSDC",
+      earlierMessages: ["Place my idle balance and borrow safely above my chosen health floor"],
       healthFloor: "1.73", constraints: ["Keep my chosen safety floor"],
     });
   });
