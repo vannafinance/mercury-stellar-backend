@@ -1349,7 +1349,8 @@ html.dark .run-card,
 .cp-rail-mix:hover, .cp-auto-mix:hover, .cp-rail-mix[aria-expanded="true"], .cp-auto-mix[aria-expanded="true"], .cp-legacy-mini > button:hover { background: var(--g50); color: var(--g900); }
 .cp-rail-flyout { position: fixed; z-index: 100; width: min(264px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; padding: 16px; border: 1px solid var(--g100); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-vanna); scrollbar-width: none; }
 .cp-rail-flyout::-webkit-scrollbar { display: none; }
-.cp-rail-flyout .cp-rail-row { margin-inline: 0; }
+.cp-rail-flyout .cp-rail-row { margin-inline: 0; padding-inline: 0; width: 100%; }
+.cp-rail-flyout .cp-rail-caret { display: none; }
 @keyframes cp-zap-wiggle { 0%,100% { transform: scale(1); } 40% { transform: scale(1.18) translateY(-1px); } }
 @media (prefers-reduced-motion: no-preference) {
   .cp-icon-button:hover .cp-zap-path, .cp-icon-button:focus-visible .cp-zap-path { animation: cp-zap-wiggle 500ms ease-in-out; transform-origin: center; }

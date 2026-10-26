@@ -90,7 +90,7 @@ function RailFlyout({ label, icon, summary, heading, children, order }: {
       {icon}{summary}
     </button>
     {open && createPortal(<div ref={panel} className="cp-root cp-rail-flyout" role="dialog" aria-label={label} style={{ ...position, maxHeight: `calc(100dvh - ${position.top + 8}px)` }} onMouseEnter={clear} onMouseLeave={leave} onFocus={clear} onBlur={leave}>
-      <div className="mb-3 text-[14px] font-semibold text-vgray-900">{label}</div>{heading}{children}
+      {heading}{children}
     </div>, document.body)}
   </div>;
 }
@@ -122,7 +122,7 @@ function Caret({ open }: { open: boolean }) {
   return (
     <span
       aria-hidden
-      className="inline-flex flex-none text-vgray-400"
+      className="cp-rail-caret inline-flex flex-none text-vgray-400"
       style={{ transform: open ? "rotate(180deg)" : "none" }}
     >
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M6 9l6 6 6-6" /></svg>
@@ -207,7 +207,7 @@ export function CopilotRailBody({
           the collateral/borrowed strip stay off the rail by design. */}
       <RailFlyout order={2} label="Health factor" icon={<HealthIcon />} summary={<span className="text-[11px] font-semibold text-vgray-900"><HealthValue value={healthFactor} /></span>} heading={
       <div className="cp-rail-row cp-health-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <HealthIcon />
+        <span className="inline-flex w-[22px] flex-none"><HealthIcon /></span>
         <div className="flex-1 text-[14px] leading-[21px] font-semibold text-vgray-900">Health factor</div>
         <div className="flex flex-none items-center gap-1.5" style={{ minWidth: 0 }}>
           <div className="text-[13px] leading-[20px] font-semibold text-vgray-900" style={{ fontFamily: VANNA_FONT }}>
@@ -360,7 +360,7 @@ function RecentsList({
         aria-expanded={recentsOpen}
         className="cp-rail-row cp-icon-button flex w-full cursor-pointer items-center gap-2.5 text-vgray-900 transition-colors"
       >
-        <RecentIcon size={14} />
+        <span className="inline-flex w-[22px] flex-none"><RecentIcon size={16} /></span>
         <span title="Chats expire after 30 days of inactivity. Pinned chats and pending transactions are protected." className="flex-1 text-left text-[14px] leading-[21px] font-semibold">Recents</span>
         <Caret open={recentsOpen} />
       </button>
