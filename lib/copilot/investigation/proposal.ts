@@ -375,7 +375,7 @@ function reserveConstraints(reserves: WorkflowProposal["walletReserves"]): strin
 function compileMessage(reason: string): string {
   switch (reason) {
     case "missing_price": return "No oracle price was read for this asset, so a plan could not be sized.";
-    case "stale_price": return "The price for this asset is too old to size a plan. Please ask again.";
+    case "stale_price": return "Prices are still updating, so a plan could not be sized. Please ask again.";
     case "unpriceable_amount": return "The amount could not be converted to tokens from the read price.";
     case "zero_amount": return "The converted token amount was zero, so no plan was built.";
     case "unsupported_venue": return "This venue cannot be turned into an executable plan yet.";

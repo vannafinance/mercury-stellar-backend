@@ -40,7 +40,7 @@ import { compactResearchEvidence, reusableObservations } from "./evidence";
 import { appendDiagnostics } from "./diagnostics-log";
 import type { ResearchConversation } from "./continuation";
 import { collectStrategyReads, looksLikeStatedWrite, namesOnlyTypedAmounts, needsMarketSeed, readsForPlans, STRATEGY_READS, type StrategyRead } from "./strategy-reads";
-import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath, pageDebtAgreesWithContract, postedHealthFactorFromSnapshot } from "./fast-path";
+import { capacityView, readCapacityFastPath, matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath, pageDebtAgreesWithContract, postedHealthFactorFromSnapshot } from "./fast-path";
 import { futureConditionRefusal } from "../conditional-guard";
 import { evaluateStandingOrders } from "../standing-orders";
 import { resolveLifecycleWrite } from "../workflow/lifecycle";
@@ -76,6 +76,8 @@ export const POSITION_BUDGET_MS = 8_000;
 // does not own: waiting longer here could never produce a result.
 export const ACCOUNT_READ_BUDGET_MS = 12_000;
 export const HEALTH_READ_BUDGET_MS = ACCOUNT_READ_BUDGET_MS;
+/** The capacity table's reads: each asset's `max_borrow` may take 15 s on its own (3x its class), so the whole table is bounded well inside the route. */
+const CAPACITY_READ_BUDGET_MS = 40_000;
 export const CAPACITY_BUDGET_MS = 15_000;
 /**
  * One more attempt at the plans the sizer refused for how they were built (two legs spending one
@@ -244,7 +246,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       continuation: "", executionAllowed: false,
     };
   }
-  const fast = input.continuation ? null : matchFastPath(input.message);
+  const fastMatch = matchFastPath(input.message);
+  // The client sends its last continuation with every message, so a continuation alone does not make a message a follow-up.
+  // The bare capacity question reads the same whatever came before it; the branch below still steps aside for an open question.
+  const fast = input.continuation && fastMatch?.kind !== "capacity" ? null : fastMatch;
   /**
    * The price shortcut answers from PUBLIC data, with no account in scope. That is right for a visitor
    * with no wallet and wrong for anyone else: a connected user's "what is my XLM liquidation price?"
@@ -406,6 +411,20 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       message: input.message, scope, observations,
       secret: dependencies.secret, server: dependencies.server,
     });
+  }
+  /**
+   * "How much can I borrow?", asked bare: the figure is the MCP's own `max_borrow` per asset, so the code reads them (one MCP call, see
+   * max-borrow-batch.ts) and lays them out as a table. No model turn reads the question, none words the answer (26 Oct, live: 41 s, of
+   * which the read was 15 s). If nothing could be read, or there is no margin account, the investigation loop answers as before.
+   */
+  if (fast?.kind === "capacity" && scope.smartAccount && !input.answers && !prior?.lastQuestion && !prior?.evidence?.questionnaire) {
+    const capacityStarted = Date.now();
+    const observations = await readCapacityFastPath({ scope, mcp: scopedMcp, signal: dependencies.signal, budgetMs: CAPACITY_READ_BUDGET_MS });
+    const usable = observations.filter((observation) => observation.status === "ok");
+    logPhase("capacity_fast_path", { ms: Date.now() - capacityStarted, ok: usable.length, of: observations.length });
+    if (usable.length) {
+      return capacityView({ message: input.message, scope, observations: usable, secret: dependencies.secret, server: dependencies.server });
+    }
   }
   /**
    * The authoritative position, read BEFORE the loop and handed to the model as evidence.

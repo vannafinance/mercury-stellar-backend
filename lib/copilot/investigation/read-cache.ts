@@ -14,6 +14,14 @@ const WRITE_OR_PLAN =
 const HEALTH_ASK =
   /^(?:hey[, ]+|hi[, ]+|hello[, ]+)?(?:what(?:'s| is)|whats|show(?: me)?|tell me|how(?:'s| is)|check)\s+(?:my\s+)?(?:health(?:\s+factor)?|hf)\b|\bam i (?:safe|at risk|close to liquidation)\b|\b(?:my )?health factor\b\??$/i;
 
+/**
+ * "How much can I borrow?" with no asset and nothing else: the answer is the most of each margin asset the account can borrow now.
+ * Checked before the write/plan guard below, because the word "borrow" is in the question itself; anything more than the bare
+ * question (a condition, an amount, an asset, a second clause) does not match and goes to the investigation.
+ */
+const CAPACITY_ASK =
+  /^(?:hey[, ]+|hi[, ]+|please\s+)?(?:how much (?:can|could|may) i (?:safely )?borrow|what(?:'s| is) my (?:max(?:imum)? )?(?:borrow(?:ing)? (?:capacity|limit|power)|max borrow)|(?:my )?(?:max(?:imum)? borrow|borrow(?:ing)? (?:capacity|limit|power)))[\s?.!]*$/i;
+
 const PRICE_ASK =
   /\b(?:price|oracle|worth|trading at|value)\b/i;
 
@@ -40,12 +48,15 @@ function onlyAsset(text: string): AssetId | null {
 
 export type FastPathMatch =
   | { kind: "health" }
+  | { kind: "capacity" }
   | { kind: "price"; asset: AssetId };
 
 export function matchFastPath(message: string): FastPathMatch | null {
   const text = message.trim();
-  if (!text || text.length > 120 || WRITE_OR_PLAN.test(text)) return null;
+  if (!text || text.length > 120) return null;
   const compact = text.toLowerCase().replace(/\s+/g, " ");
+  if (CAPACITY_ASK.test(compact)) return { kind: "capacity" };
+  if (WRITE_OR_PLAN.test(text)) return null;
   if (HEALTH_ASK.test(compact) && !PRICE_ASK.test(compact)) return { kind: "health" };
   if (PRICE_ASK.test(compact)) {
     const asset = onlyAsset(text);

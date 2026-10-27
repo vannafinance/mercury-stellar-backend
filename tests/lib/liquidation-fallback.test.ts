@@ -42,7 +42,7 @@ describe("the plain reply when the written one is unavailable", () => {
     expect(factualAnswer(only, "what is my health factor?")).not.toMatch(/liquidation price/i);
   });
 
-  it("composeReply falls back to it, liquidation answer included, when the model fails", async () => {
+  it("composeReply never prints the whole liquidation list when the model fails: a short line instead (owner, 27 Oct)", async () => {
     const view = {
       status: "researched", message: "Your reported health factor is 82.21.", originalRequest: "What is my BLUSDC liquidation price?",
       refinements: [], understanding: { intent: "answer", objective: "liquidation", constraints: [], borrowing: "unspecified" },
@@ -50,7 +50,7 @@ describe("the plain reply when the written one is unavailable", () => {
       scope: { wallet: "G", smartAccount: "C", network: "testnet" }, continuation: "c", executionAllowed: false,
     } as unknown as ResearchView;
     const out = await composeReply(view, new AbortController().signal, async () => { throw new Error("late"); });
-    expect(out.message).toContain("BLUSDC liquidation price: none, a dollar-pegged token");
+    expect(out.message).toBe("I could not put that into a short answer just now. Please ask again.");
   });
 
   it("prints any read's declared group under its own name, with no code that knows the read", () => {

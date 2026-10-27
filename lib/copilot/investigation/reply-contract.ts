@@ -55,8 +55,13 @@ export type BoundReply = { ok: true; blocks: ReplyBlock[] } | { ok: false; reaso
 const record = (x: unknown): x is Record<string, unknown> => x !== null && typeof x === "object" && !Array.isArray(x);
 const only = (x: Record<string, unknown>, keys: string[]) => Object.keys(x).every((key) => keys.includes(key));
 
+/** Every run of digits (with its decimal part) in `text`; "30%" gives ["30"], "x9y" gives ["9"]. */
+const numbersIn = (text: string): string[] => text.match(/\d+(?:\.\d+)?/g) ?? [];
+
 /** Validate generated blocks and bind figures before they reach the browser. */
-export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[], mode: "factual" | "conceptual" = "factual"): BoundReply {
+export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[], mode: "factual" | "conceptual" = "factual", typedByUser = ""): BoundReply {
+  // A number the person typed in their own request ("drops 30%") is theirs to read back; any other digit in text is still refused.
+  const typed = new Set(numbersIn(typedByUser));
   if (!record(raw) || !only(raw, ["blocks"]) || !Array.isArray(raw.blocks)
     || !raw.blocks.length || raw.blocks.length > REPLY_LIMITS.blocks) return { ok: false, reason: "no usable blocks" };
   const byId = new Map(facts.map((fact) => [fact.id, fact]));
@@ -94,7 +99,7 @@ export function bindReplyBlocks(raw: unknown, facts: readonly ResearchFact[], mo
         textLength += text.length;
         if (textLength > REPLY_LIMITS.text) { reason = "paragraph text too long"; return null; }
         // This is display validation, never natural-language intent parsing.
-        if ([...text].some((c) => c >= "0" && c <= "9")) { reason = "reply contains a figure the model wrote itself"; return null; }
+        if (numbersIn(text).some((n) => !typed.has(n))) { reason = "reply contains a figure the model wrote itself"; return null; }
         if (["<", ">", "`", "*", "#", "_", "{{", "}}", "](", "://", "www."].some((token) => text.toLowerCase().includes(token))) {
           reason = "reply contains markup or a link"; return null;
         }

@@ -2,7 +2,7 @@ import { copilotConfig } from "../config";
 import { generateInvestigationJson } from "../vertex";
 import { factualReplyBlocks, healthOnContractBasis } from "./answer";
 import { formatFactValue } from "./answer-prose";
-import { bindReplyBlocks, plainReply, REPLY_SCHEMA, replyFactContext } from "./reply-contract";
+import { bindReplyBlocks, plainReply, REPLY_LIMITS, REPLY_SCHEMA, replyFactContext } from "./reply-contract";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { OP_FLOW, type ProposalStep, type WorkflowOp, type WorkflowView } from "../workflow/types";
 import { lpPairs, resolveAssetDef, venueTable, venueSpellings, venueUsdc } from "../registry/assets";
@@ -64,7 +64,7 @@ export function composeBudgetAfter(elapsedMs: number, routeDeadlineMs: number): 
 const PRESENTATION = `Organize the response around what the user needs to understand. Lead with the answer, then group related information. For a broad position overview, open with a brief explanation of the account breakdown before the grouped holdings. Distinguish collateral deposited, posted collateral and outstanding debt by their supplied basis. The supplied labels use the Margin page's own wording; name each figure the way the user asked for it, so a user who says "collateral" reads collateral, one who says "deposit" reads deposit, and one who says "borrowed" or "debt" reads that; separate holdings in other venues and never add overlapping valuations together. Honor the user's requested presentation format when it can represent the supplied evidence faithfully. Otherwise use paragraphs for a connected explanation, bullets for parallel points, steps only when order matters, and a table for genuinely comparable rows. Use short descriptive headings when they improve navigation. Choose the combination and length needed by this request; avoid a wall of text, unnecessary sections, and repeating what a card already shows. Match the user's language where practical.
 Return JSON with a blocks array. A paragraph or heading has segments; bullets or steps have items (an array of segment arrays); a table has columns (an array of segment arrays) and rows (an array of rows of segment arrays). Each segment is either {"type":"text","text":"your freely written words"} or {"type":"fact","factId":"an supplied fact id"}. Code renders fact segments with their verified value and unit. Never type a figure, amount, rate, address or numeric unit in text; use its fact reference, and do not repeat its unit. Do not use placeholder strings or markdown. Refer only to supplied facts. Keep each reference attached to its correct label, venue and meaning. Evidence timestamps describe when a read happened; absent timestamps do not establish a live observation. Do not invent causes, risk conclusions, events or outcomes. The draft is background meaning, not a required sentence or layout.`;
 
-const CHAT_STYLE = `Address the person as you or your, never as the user or a third-person research subject. For a focused answer, lead with the useful conclusion in one short sentence. Add only the supporting comparison, next step or blocker the person needs. Keep paragraphs to one or two short sentences and use bullets for distinct parallel points. State each supporting comparison once: either include its figures in the lead sentence or put them in bullets below a conclusion without figures. Never repeat the same figures in both places. If one sentence fully answers the question, end there without bullets. Prefer one rate convention in a comparison; do not repeat both APR and APY for the same option unless that distinction was requested. Omit unrelated rates, empty holdings and zero balances unless they explain the blocker. Keep required facts and relevant limitations. Do not narrate the investigation or describe planning internals. Do not use em dashes or the word idle.`;
+const CHAT_STYLE = `Address the person as you or your, never as the user or a third-person research subject. For a focused answer, lead with the useful conclusion in one short sentence. Add only the supporting comparison, next step or blocker the person needs. Keep paragraphs to one or two short sentences and use bullets for distinct parallel points. State each supporting comparison once: either include its figures in the lead sentence or put them in bullets below a conclusion without figures. Never repeat the same figures in both places. If one sentence fully answers the question, end there without bullets. Prefer one rate convention in a comparison; do not repeat both APR and APY for the same option unless that distinction was requested. Omit unrelated rates, empty holdings and zero balances unless they explain the blocker. Keep required facts and relevant limitations. Do not narrate the investigation or describe planning internals. Never mention stale, old or outdated prices or how fresh an oracle is; state a price as given. Do not use em dashes or the word idle. Shape of an answer (same on every chain): one short sentence with the conclusion. Use a table block only when the answer compares states or options across several measures (before and after, one row per asset); a single figure or a short list never gets one. Never state a figure in the sentence that the table also states, except the one headline figure the question asked for.`;
 
 const SYSTEM = `You write the reply a user reads in the chat of a DeFi copilot (Vanna: margin account, lending, liquidity on Stellar).
 You are given the user's question and FACTS read live from their account and the protocol. Write the answer the way a sharp, friendly analyst would reply in a chat app.
@@ -346,7 +346,7 @@ export async function composeCompletion(input: {
 }
 
 /** One budgeted model call, bound to `facts`, or null. Shared by every composed reply. */
-async function boundReply(system: string, user: string, facts: readonly ResearchFact[], signal: AbortSignal, generate: Generate, lane: ReplyLane, budgetMs: number = composeBudgetMs()): Promise<ReplyBlock[] | null> {
+async function boundReply(system: string, user: string, facts: readonly ResearchFact[], signal: AbortSignal, generate: Generate, lane: ReplyLane, budgetMs: number = composeBudgetMs(), typedByUser = ""): Promise<ReplyBlock[] | null> {
   const start = performance.now();
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new DOMException("compose deadline", "TimeoutError")), budgetMs);
@@ -362,7 +362,7 @@ async function boundReply(system: string, user: string, facts: readonly Research
       }),
     ]);
     const mode = lane === "conceptual" ? "conceptual" : "factual";
-    let bound = bindReplyBlocks(await ask(user), facts, mode);
+    let bound = bindReplyBlocks(await ask(user), facts, mode, typedByUser);
     if (!bound.ok) {
       /**
        * A refused reply is told why, once: the validator's reason is a fixed sentence ("reply contains a figure the
@@ -375,7 +375,7 @@ async function boundReply(system: string, user: string, facts: readonly Research
         feedback = JSON.stringify({ ...JSON.parse(user), previousReplyRefused: `${bound.reason}. Write the reply again: type no digit in any text segment, and take every figure from a fact reference.` });
       } catch { feedback = null; }
       // A second attempt that cannot finish inside the budget only spends it: ask again only when the first came back early.
-      if (feedback && !budget.aborted && performance.now() - start < budgetMs / 2) bound = bindReplyBlocks(await ask(feedback), facts, mode);
+      if (feedback && !budget.aborted && performance.now() - start < budgetMs / 2) bound = bindReplyBlocks(await ask(feedback), facts, mode, typedByUser);
     }
     if (!bound.ok) {
       compositionEvent(lane, "refused", performance.now() - start, [], `invalid_output:${bound.reason}`);
@@ -424,6 +424,8 @@ function composableUnpreparedStrategy(view: ResearchView): boolean {
  */
 export async function composeReply(view: ResearchView, signal: AbortSignal, generate: Generate = defaultGenerate, options: { budgetMs?: number } = {}): Promise<ResearchView> {
   if (process.env.COPILOT_COMPOSED_REPLIES === "off") { compositionEvent("other", "off"); return view; }
+  // A reply the code already laid out from audited figures (the capacity table) is final; the model must not reshape it.
+  if (view.replyBlocks?.length) { compositionEvent("other", "skipped", 0, [], "code_composed"); return view; }
   const request = [view.originalRequest, ...view.refinements].filter(Boolean).join("\n");
   let system: string;
   let user: string;
@@ -487,10 +489,20 @@ export async function composeReply(view: ResearchView, signal: AbortSignal, gene
   // Raced, not only signalled, in `boundReply`: a step before the model call (the access token)
   // does not listen to the signal, and a reset there held a reply for 34 s (29 Sep, local).
   // Errors are logged by class only: provider errors can carry upstream detail (HANDOFF rule 11).
-  const blocks = await boundReply(system, user, facts, signal, generate, lane, options.budgetMs);
+  const blocks = await boundReply(system, user, facts, signal, generate, lane, options.budgetMs, request);
   if (blocks) return { ...view, message: plainReply(blocks), replyBlocks: blocks };
   if (lane === "answer") {
     const fallback = factualReplyBlocks(facts, request);
+    /**
+     * Exception to the model-decides rule, on purpose: the plain reply prints every fact it was given, so one question
+     * (27 Oct, live: a 30% what-if, both written attempts refused) came back as the whole account, 35 bullets deep. A
+     * reply the model may not write longer than REPLY_LIMITS must not be written longer by code either; past that it is
+     * a short line, never the dump.
+     */
+    if (fallback.length > REPLY_LIMITS.blocks || fallback.some((block) => block.type === "bullets" && block.items.length > REPLY_LIMITS.items)) {
+      const line = "I could not put that into a short answer just now. Please ask again.";
+      return { ...view, message: line, replyBlocks: [{ type: "paragraph", segments: [{ text: line }] }] };
+    }
     if (fallback.some((block) => block.type !== "paragraph")) return { ...view, message: plainReply(fallback), replyBlocks: fallback };
     return { ...view, replyBlocks: [{ type: "paragraph", segments: [{ text: view.message }] }] };
   }

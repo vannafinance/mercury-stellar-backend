@@ -27,6 +27,31 @@ function view(over: Partial<ResearchView> = {}): ResearchView {
   } as ResearchView;
 }
 
+describe("when the written reply is refused", () => {
+  const rows = (n: number): ResearchFact[] => Array.from({ length: n }, (_, i) =>
+    ({ ...fact(`e0:fall${i}`, `Health factor if XLM fell ${5 * (i + 1)}%`, String(13 - i * 0.1), "HF"), group: "Liquidation" }));
+  const refused = async () => ({ blocks: [{ type: "paragraph", segments: [{ type: "text", text: "It falls 30%." }] }] });
+  it("never prints a list longer than a written reply may be: a short line instead", async () => {
+    const out = await composeReply(view({ facts: [...FACTS, ...rows(19)] }), new AbortController().signal, refused);
+    expect(plainReply(out.replyBlocks!)).toBe("I could not put that into a short answer just now. Please ask again.");
+    expect(out.replyBlocks).toHaveLength(1);
+  });
+  it("still prints a short plain list", async () => {
+    const out = await composeReply(view({ facts: [...FACTS, ...rows(3)] }), new AbortController().signal, refused);
+    expect(plainReply(out.replyBlocks!)).toContain("Health factor if XLM fell 5%");
+  });
+});
+
+describe("a reply the code already laid out", () => {
+  it("is final: the model is not called and the blocks stay as built", async () => {
+    const original = view({ replyBlocks: [{ type: "paragraph", segments: [{ text: "Here is the most you can borrow." }] },
+      { type: "table", columns: [[{ text: "Asset" }]], rows: [[[{ text: "XLM" }]]] }] } as Partial<ResearchView>);
+    const generate = vi.fn(async () => ({ blocks: [] }));
+    expect(await composeReply(original, new AbortController().signal, generate)).toBe(original);
+    expect(generate).not.toHaveBeenCalled();
+  });
+});
+
 describe("binding the model's blocks", () => {
   const refusalView = () => view({ facts: [], message: "Requested borrow exceeds the verified protocol ceiling.",
     understanding: { intent: "strategy", objective: "Borrow", constraints: [], borrowing: "required" },

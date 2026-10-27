@@ -183,6 +183,20 @@ describe("facts by shape - the reads that had no case", () => {
     expect(result.facts).toHaveLength(2);
   });
 
+  it("gives each asked USDC variant its own price fact from the USDC read, and invents none for an asset with its own feed", () => {
+    const prices = { XLM: { price_usd: "0.1677" }, USDC: { price_usd: "1" } };
+    const variants = normalizeResearchFacts([read("prices_batch", { prices, fetched: 1, requested: 1 }, { assets: ["BLUSDC", "AQUSDC"] })]);
+    expect(variants.facts.filter((f) => /^(BLUSDC|AQUSDC) price/.test(f.label)).map((f) => [f.label, f.value, f.unit])).toEqual([
+      ["BLUSDC price (the same as USDC)", "1", "USD"], ["AQUSDC price (the same as USDC)", "1", "USD"],
+    ]);
+    expect(new Set(variants.facts.map((f) => f.id)).size).toBe(variants.facts.length);
+    const own = normalizeResearchFacts([read("prices_batch", { prices }, { assets: ["XLM"] })]);
+    expect(own.facts.map((f) => f.label)).toEqual(["XLM oracle price", "USDC oracle price"]);
+    const single = normalizeResearchFacts([read("asset_price", { symbol: "USDC", price_usd: "1" }, { asset: "SOUSDC" })]);
+    // A one-asset read is already named for the asset that was asked; only the batch lacked the names.
+    expect(single.facts.map((f) => f.label)).toEqual(["SOUSDC oracle price"]);
+  });
+
   it("renders a capability nobody has written a branch for, on a symbol nobody enumerated", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = normalizeResearchFacts([read("some_future_read", {
