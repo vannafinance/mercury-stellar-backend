@@ -68,14 +68,23 @@ export function liquidationObservation(snapshot: MarginSnapshot, observedAt: num
     const nearZero = healthFactor(state, (k) => (k === key ? NEAR_ZERO : 1));
     // "What happens to my health factor if XLM drops 30%?" asks for the figure at THAT fall, not at zero. The page's own
     // model gives it for every step, so the reply can state the asked scenario instead of the extreme one.
+    // The collateral and debt behind each figure come from the same model state, so a table of now and after adds up to its own health factor.
+    const debtAt = (move: (k: string) => number) => debts.reduce((t, d) => t + d.usd * (isStable(d.symbol) ? 1 : move(priceKey(d.symbol))), 0);
+    const worth = (move: (k: string) => number) => {
+      const hf = healthFactor(state, move);
+      const debt = debtAt(move);
+      return Number.isFinite(hf) ? { health_factor: fixed(hf, 4), collateral_usd: fixed(hf * debt, 2), debt_usd: fixed(debt, 2) } : null;
+    };
     const ifFalls = FALL_STEPS_PCT.flatMap((pct) => {
-      const hf = healthFactor(state, (k) => (k === key ? 1 - pct / 100 : 1));
-      return Number.isFinite(hf) ? [{ fall_pct: String(pct), health_factor: fixed(hf, 4) }] : [];
+      const at = worth((k) => (k === key ? 1 - pct / 100 : 1));
+      return at ? [{ fall_pct: String(pct), ...at }] : [];
     });
+    const now = worth(() => 1);
     return [{
       symbol: key, price_usd: priceText(price), falling, rising,
       health_factor_if_near_zero: falling === null && Number.isFinite(nearZero) ? fixed(nearZero, 4) : null,
       health_factor_if_falls: ifFalls,
+      now,
     }];
   });
   // Dollar-pegged tokens the account holds or owes. The page holds them at $1 and moves no price for them

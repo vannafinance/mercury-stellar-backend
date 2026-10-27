@@ -319,7 +319,8 @@ describe("researchTurn fast path", () => {
     const limits: Record<string, [string, string]> = {
       XLM: ["34991.54", "pool_utilization_cap"], BLUSDC: ["571.53", "pool_utilization_cap"], AQUSDC: ["3482.85", "pool_utilization_cap"], SOUSDC: ["9478.0", "collateral_health"],
     };
-    const mcp = { call: vi.fn(async (_tool: string, args: Record<string, unknown>) => {
+    const mcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_get_prices_batch") return { prices: { XLM: { price_usd: "0.2" }, USDC: { price_usd: "1" } } };
       const asset = String(args.symbol);
       return { smart_account: SCOPE.smartAccount, symbol: asset, max_borrow_human: limits[asset]?.[0] ?? "0", limiting_factor: limits[asset]?.[1] ?? "collateral_health" };
     }) };
@@ -331,7 +332,8 @@ describe("researchTurn fast path", () => {
     const table = result.replyBlocks?.find((block) => block.type === "table");
     expect(table).toBeDefined();
     const cells = JSON.stringify(table);
-    for (const expected of ["XLM", "34,991.54 XLM", "9,478 SOUSDC", "pool capacity", "your collateral"]) expect(cells).toContain(expected);
+    for (const expected of ["XLM", "34,991.54 XLM", "9,478 SOUSDC", "Value", "$6,998.31", "$9,478.00"]) expect(cells).toContain(expected);
+    expect(cells).not.toMatch(/Limited by|pool capacity|your collateral/);
     expect(result.message).toMatch(/most you can borrow/i);
     expect(JSON.stringify(result)).not.toMatch(/stale|oracle|keeper/i);
   });
@@ -355,6 +357,32 @@ describe("researchTurn fast path", () => {
       await researchTurn({ message: "how much can i borrow?", wallet: SCOPE.trader, continuation: sealed("Which asset do you want to borrow?") }, deps({ mcp: mcpOk(), model })).catch(() => null);
       expect(model).toHaveBeenCalled();
     });
+  });
+
+  it("still shows the values when only the batch price read fails: each price is asked for on its own", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    const mcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_get_prices_batch") throw new Error("batch down");
+      if (tool === "vanna_get_price") return { symbol: String(args.symbol), price_usd: args.symbol === "XLM" ? "0.2" : "1" };
+      return { smart_account: SCOPE.smartAccount, symbol: String(args.symbol), max_borrow_human: "10", limiting_factor: "collateral_health" };
+    }) };
+    const result = await researchTurn({ message: "how much can i borrow?", wallet: SCOPE.trader, continuation: null }, deps({ mcp }));
+    const cells = JSON.stringify(result.replyBlocks?.find((block) => block.type === "table"));
+    expect(cells).toContain("$2.00"); // 10 XLM at 0.2
+    expect(cells).toContain("$10.00"); // 10 of a dollar token
+    expect(cells).not.toContain('"-"');
+  });
+
+  it("shows a dash for the value when the price read fails, and still lists the amounts", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    const mcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_get_prices_batch") throw new Error("price read down");
+      return { smart_account: SCOPE.smartAccount, symbol: String(args.symbol), max_borrow_human: "10", limiting_factor: "collateral_health" };
+    }) };
+    const result = await researchTurn({ message: "how much can i borrow?", wallet: SCOPE.trader, continuation: null }, deps({ mcp }));
+    const table = result.replyBlocks?.find((block) => block.type === "table");
+    expect(JSON.stringify(table)).toContain("10 XLM");
+    expect(JSON.stringify(table)).not.toContain("$");
   });
 
   it("leaves out an asset whose read failed instead of guessing it", async () => {

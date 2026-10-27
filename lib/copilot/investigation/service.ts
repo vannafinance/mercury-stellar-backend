@@ -422,7 +422,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     const observations = await readCapacityFastPath({ scope, mcp: scopedMcp, signal: dependencies.signal, budgetMs: CAPACITY_READ_BUDGET_MS });
     const usable = observations.filter((observation) => observation.status === "ok");
     logPhase("capacity_fast_path", { ms: Date.now() - capacityStarted, ok: usable.length, of: observations.length });
-    if (usable.length) {
+    if (usable.some((observation) => observation.capability === "max_borrow")) {
       return capacityView({ message: input.message, scope, observations: usable, secret: dependencies.secret, server: dependencies.server });
     }
   }

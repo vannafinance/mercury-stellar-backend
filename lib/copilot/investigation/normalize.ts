@@ -227,7 +227,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
           break;
         }
         const exposures = Array.isArray(data.exposures) ? data.exposures.filter(isRecord) : [];
-        exposures.forEach((exposure) => {
+        exposures.forEach((exposure, index) => {
           const symbol = typeof exposure.symbol === "string" ? exposure.symbol : null;
           if (!symbol) return;
           const at = `liquidation.${symbol}`;
@@ -243,8 +243,16 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
           }
           (Array.isArray(exposure.health_factor_if_falls) ? exposure.health_factor_if_falls.filter(isRecord) : []).forEach((step) => {
             const pct = decimal(step.fall_pct);
-            if (pct !== null) add(`${at}.health_factor_if_falls.${pct}`, `Health factor if ${symbol} fell ${pct}%`, step.health_factor, "HF", "margin");
+            if (pct === null) return;
+            add(`${at}.health_factor_if_falls.${pct}`, `Health factor if ${symbol} fell ${pct}%`, step.health_factor, "HF", "margin");
+            add(`${at}.collateral_if_falls.${pct}`, `Collateral counted for health if ${symbol} fell ${pct}%`, step.collateral_usd, "USD", "margin");
+            add(`${at}.debt_if_falls.${pct}`, `Debt if ${symbol} fell ${pct}%`, step.debt_usd, "USD", "margin");
           });
+          if (isRecord(exposure.now) && index === 0) {
+            add(`${at}.now_health_factor`, "Health factor now", exposure.now.health_factor, "HF", "margin");
+            add(`${at}.now_collateral`, "Collateral counted for health now", exposure.now.collateral_usd, "USD", "margin");
+            add(`${at}.now_debt`, "Debt now", exposure.now.debt_usd, "USD", "margin");
+          }
           if (rising) {
             add(`${at}.rising_liquidation_price`, `${symbol} price that liquidates the account on a rise`, rising.price_usd, "USD", "margin");
           }
