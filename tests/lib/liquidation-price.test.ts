@@ -158,7 +158,7 @@ describe("the facts the reply is built from", () => {
 
   it("nothing from the observation leaks as an unlabelled shape fact", () => {
     const { facts } = normalizeResearchFacts([liquidationObservation(REAL, 1000)]);
-    expect(facts.every((fact) => /liquidation|Health factor if|every volatile/i.test(fact.label))).toBe(true);
+    expect(facts.every((fact) => /liquidation|Health factor (?:if|now)|every volatile|counted for health (?:if|now)|Debt (?:if|now)/i.test(fact.label))).toBe(true);
   });
 });
 

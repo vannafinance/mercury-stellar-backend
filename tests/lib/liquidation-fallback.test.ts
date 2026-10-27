@@ -35,6 +35,19 @@ describe("the plain reply when the written one is unavailable", () => {
     expect(text).toContain("BLUSDC liquidation price: none, a dollar-pegged token");
   });
 
+  it("states collateral and debt now and after a fall, from the model the health factor uses, so the table adds up", () => {
+    const all = normalizeResearchFacts([liquidationObservation(SNAPSHOT, 1000)]).facts;
+    const value = (label: string) => Number(all.find((fact) => fact.label === label)?.value);
+    // Now: collateral 919.95 + 103.22 + 0.99 + 245.11 = 1269.27; debt 11.80 + 8.37 + 3.14 = 23.31.
+    expect(value("Collateral counted for health now")).toBeCloseTo(1269.27, 1);
+    expect(value("Debt now")).toBeCloseTo(23.31, 1);
+    expect(value("Health factor now")).toBeCloseTo(1269.27 / 23.31, 2);
+    // XLM falls 30%: its collateral 919.95 x 0.7 = 643.965 (stables unchanged, total 993.285); its debt 8.37 x 0.7 = 5.859 (total 20.799).
+    expect(value("Collateral counted for health if XLM fell 30%")).toBeCloseTo(993.285, 1);
+    expect(value("Debt if XLM fell 30%")).toBeCloseTo(20.799, 1);
+    expect(value("Health factor if XLM fell 30%")).toBeCloseTo(993.285 / 20.799, 2);
+  });
+
   it("a read with no liquidation facts adds nothing", () => {
     const only = normalizeResearchFacts([
       { ...healthObservations({ grossCollateralUsd: "1916.27", debtUsd: "23.31", healthFactor: "82.2086" })[0], id: "e0" },
@@ -42,7 +55,7 @@ describe("the plain reply when the written one is unavailable", () => {
     expect(factualAnswer(only, "what is my health factor?")).not.toMatch(/liquidation price/i);
   });
 
-  it("composeReply falls back to it, liquidation answer included, when the model fails", async () => {
+  it("composeReply never prints the whole liquidation list when the model fails: a short line instead (owner, 27 Oct)", async () => {
     const view = {
       status: "researched", message: "Your reported health factor is 82.21.", originalRequest: "What is my BLUSDC liquidation price?",
       refinements: [], understanding: { intent: "answer", objective: "liquidation", constraints: [], borrowing: "unspecified" },
@@ -50,7 +63,21 @@ describe("the plain reply when the written one is unavailable", () => {
       scope: { wallet: "G", smartAccount: "C", network: "testnet" }, continuation: "c", executionAllowed: false,
     } as unknown as ResearchView;
     const out = await composeReply(view, new AbortController().signal, async () => { throw new Error("late"); });
-    expect(out.message).toContain("BLUSDC liquidation price: none, a dollar-pegged token");
+    expect(out.message).toBe("I could not put that into a short answer just now. Please ask again.");
+  });
+
+  it("a what-if whose written reply is refused gets the short line, not a dump of every figure read", async () => {
+    const view = {
+      status: "researched", message: "Your reported health factor is 82.21.", originalRequest: "what happens to my health factor if XLM drops 30%?",
+      refinements: [], understanding: { intent: "answer", objective: "what-if", constraints: [], borrowing: "unspecified" },
+      question: null, facts: facts(), checks: [], warnings: [],
+      scope: { wallet: "G", smartAccount: "C", network: "testnet" }, continuation: "c", executionAllowed: false,
+    } as unknown as ResearchView;
+    const typesAFigure = async () => ({ blocks: [{ type: "paragraph", segments: [{ type: "text", text: "It would fall to 9." }] }] });
+    const out = await composeReply(view, new AbortController().signal, typesAFigure);
+    expect(out.message).toBe("I could not put that into a short answer just now. Please ask again.");
+    expect(out.replyBlocks).toHaveLength(1);
+    expect(out.message).not.toMatch(/Debt|Collateral|liquidation|oracle/i);
   });
 
   it("prints any read's declared group under its own name, with no code that knows the read", () => {

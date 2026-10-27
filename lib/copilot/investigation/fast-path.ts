@@ -10,6 +10,9 @@ import { factualAnswer } from "./answer";
 import type { AssetId } from "../registry/assets";
 import { WAD } from "./fixed";
 import { PAGE_BASIS_SOURCE } from "./health-basis";
+import { allAssets, resolveAssetDef } from "../registry/assets";
+import { isRecord } from "./decision";
+import type { ReplyBlock, ReplySegment } from "./view";
 
 export { matchFastPath, parseWithdrawCheck, type FastPathMatch };
 
@@ -34,14 +37,16 @@ function view(input: {
   observations: Observation[];
   secret: string;
   server: string;
+  /** A reply the code composed itself (a table, say), used instead of the one-sentence factual answer. */
+  reply?: { message: string; blocks: ReplyBlock[] };
 }): ResearchView {
   const { facts, warnings } = normalizeResearchFacts(input.observations);
   const healthFailedNoAccount = !input.scope.smartAccount && input.observations.some(
     (o) => o.capability === "liquidation_snapshot" && o.status === "error" && o.error === "no_account"
   );
-  const reply = healthFailedNoAccount
+  const reply = input.reply?.message ?? (healthFailedNoAccount
     ? "A margin account is needed to check your health factor and none is connected."
-    : factualAnswer(facts) ?? "I could not read a live figure for that just now.";
+    : factualAnswer(facts) ?? "I could not read a live figure for that just now.");
   const evidence = compactResearchEvidence(input.observations, null, Date.now());
   evidence.allowedCandidateIds = [];
   return {
@@ -86,6 +91,7 @@ function view(input: {
     scope: { wallet: input.scope.trader, smartAccount: input.scope.smartAccount, network: input.scope.network },
     continuation: researchCodec(input.secret, input.server).seal(input.scope, [input.message], null, evidence),
     executionAllowed: false,
+    ...(input.reply ? { replyBlocks: input.reply.blocks } : {}),
     ...(healthFailedNoAccount ? {
       choices: [
         { id: "create_account", label: "Open a margin account", write: "create_account" as const },
@@ -303,4 +309,102 @@ export function fastPathView(input: {
   server: string;
 }): ResearchView {
   return view(input);
+}
+
+// ── "How much can I borrow?" ─────────────────────────────────────────────────
+
+/**
+ * The most of each margin asset the account can borrow now. The reads are the ones the investigation would make (`max_borrow` per asset);
+ * asked in the same instant they travel as one MCP call (max-borrow-batch.ts). An asset whose read fails is left out, never guessed.
+ */
+export async function readCapacityFastPath(input: {
+  scope: InvestigationScope;
+  mcp: { call: (tool: string, args: Record<string, unknown>, userId?: string) => Promise<Record<string, unknown>> };
+  signal: AbortSignal;
+  budgetMs: number;
+}): Promise<Observation[]> {
+  if (!input.scope.smartAccount) return [];
+  const budget = AbortSignal.any([input.signal, AbortSignal.timeout(input.budgetMs)]);
+  const assets = allAssets().filter((asset) => asset.marginSymbol).map((asset) => asset.id);
+  // The value of each amount comes from the same price read the price answers use, asked alongside so it adds no wait.
+  const symbols = [...new Set(allAssets().filter((asset) => asset.marginSymbol).map((asset) => asset.oracleSymbol))];
+  const prices = (async (): Promise<Observation> => {
+    const base = { id: "ep", capability: "prices_batch", args: { assets }, observedAt: Date.now() };
+    const found: Record<string, unknown> = {};
+    const read = async (tool: string, args: Record<string, unknown>) => {
+      try {
+        const data = await interruptible(() => input.mcp.call(tool, args, input.scope.trader ?? undefined), budget);
+        return payloadFailed(data) ? null : data;
+      } catch { return null; }
+    };
+    const batch = await read("vanna_get_prices_batch", { symbols });
+    if (batch && isRecord(batch.prices)) Object.assign(found, batch.prices);
+    // A symbol the batch did not return (or a batch that failed) is asked for on its own, so a value is not lost to one failed read.
+    await Promise.all(symbols.filter((symbol) => !(isRecord(found[symbol]) && Number.isFinite(Number((found[symbol] as Record<string, unknown>).price_usd))))
+      .map(async (symbol) => {
+        const one = await read("vanna_get_price", { symbol });
+        if (one && Number.isFinite(Number(one.price_usd))) found[symbol] = { price_usd: one.price_usd };
+      }));
+    return Object.keys(found).length ? { ...base, status: "ok", data: { prices: found } } : { ...base, status: "error", error: "read_failed" };
+  })();
+  const reads = Promise.all(assets.map(async (asset, index): Promise<Observation> => {
+    const base = { id: `e${index}`, capability: "max_borrow", args: { asset }, observedAt: Date.now() };
+    try {
+      const read = resolveRead("max_borrow", { asset }, input.scope);
+      const data = await interruptible(() => input.mcp.call(read.tool, read.args, input.scope.trader ?? undefined), budget);
+      return { ...base, status: payloadFailed(data) ? "error" : "ok", data };
+    } catch (error) {
+      console.warn("[copilot] capacity fast-path read failed", { asset, error: error instanceof Error ? error.name : "unknown" });
+      return { ...base, status: "error", error: "read_failed" };
+    }
+  }));
+  return [...(await reads), await prices];
+}
+
+const text = (value: string): ReplySegment => ({ text: value });
+const tokens = (value: string): string => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return value;
+  return n.toLocaleString("en-US", { maximumFractionDigits: n >= 1 ? 2 : 6 });
+};
+
+/** The reply: one sentence, a table of the figures (an amount per asset and what bounds it), and a plain caution. */
+export function capacityView(input: {
+  message: string;
+  scope: InvestigationScope;
+  observations: Observation[];
+  secret: string;
+  server: string;
+}): ResearchView {
+  // USD value of an amount at the price read alongside; "-" when that read did not come back, never a guess.
+  const priced = input.observations.find((o) => o.capability === "prices_batch" && o.status === "ok")?.data?.prices;
+  const valueOf = (amount: string, asset: string): string => {
+    const feed = resolveAssetDef(asset)?.oracleSymbol;
+    const entry: unknown = feed && isRecord(priced) ? priced[feed] : null;
+    const price = isRecord(entry) ? Number(entry.price_usd) : NaN;
+    const n = Number(amount) * price;
+    return Number.isFinite(n) ? `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-";
+  };
+  const rows = input.observations
+    .filter((o) => o.capability === "max_borrow" && o.status === "ok" && typeof o.data?.max_borrow_human === "string")
+    .map((o) => ({
+      asset: String(o.args.asset ?? o.data?.symbol ?? ""),
+      amount: tokens(String(o.data!.max_borrow_human)),
+      value: valueOf(String(o.data!.max_borrow_human), String(o.args.asset ?? o.data?.symbol ?? "")),
+    }))
+    .filter((row) => row.asset);
+  const lead = "Here is the most you can borrow of each asset right now.";
+  const caution = "These are the protocol's limits: borrowing the full amount would leave very little room before liquidation.";
+  const blocks: ReplyBlock[] = [
+    { type: "paragraph", segments: [text(lead)] },
+    {
+      type: "table",
+      columns: [[text("Asset")], [text("You can borrow")], [text("Value")]],
+      rows: rows.map((row) => [[text(row.asset)], [text(`${row.amount} ${row.asset}`)], [text(row.value)]]),
+    },
+    { type: "paragraph", segments: [text(caution)] },
+  ];
+  const plain = `${lead} ${rows.map((row) => `${row.asset} ${row.amount}`).join(", ")}. ${caution}`;
+  // The price read only valued the amounts above; it is not part of what the reply says it read.
+  return view({ ...input, observations: input.observations.filter((o) => o.capability === "max_borrow"), reply: { message: plain, blocks } });
 }

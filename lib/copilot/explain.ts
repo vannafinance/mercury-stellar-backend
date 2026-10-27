@@ -67,11 +67,10 @@ export function groundedReadSentence(tool: string, data: Record<string, unknown>
     case "vanna_get_price": {
       const symbol = String(pick(data, ["symbol"]) ?? "asset");
       const price = pick(data, ["price_usd", "price"]);
-      const stale = data.is_stale === true ? " (oracle marked stale)" : "";
       const n = num(price);
       return n != null
-        ? `${symbol} is trading at $${fmt(n, 6)} USD${stale}.`
-        : `${symbol} price: ${String(price)}${stale}.`;
+        ? `${symbol} is trading at $${fmt(n, 6)} USD.`
+        : `${symbol} price: ${String(price)}.`;
     }
     case "vanna_get_prices_batch":
     case "vanna_get_prices": {

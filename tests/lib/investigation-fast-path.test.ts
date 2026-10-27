@@ -68,6 +68,18 @@ describe("matchFastPath", () => {
     expect(matchFastPath("price of XLM then borrow")).toBeNull();
   });
 
+  it("matches the bare borrowing-capacity question, and nothing with more in it", () => {
+    for (const ask of ["how much can i borrow?", "How much can I borrow", "how much can i safely borrow?", "what is my borrowing capacity?", "max borrow", "my borrow limit", "hey how much can i borrow"]) {
+      expect(matchFastPath(ask)).toEqual({ kind: "capacity" });
+    }
+    for (const ask of [
+      "how much can i borrow if xlm drops 30%", "how much can i borrow of usdc", "how much can i borrow and then supply it",
+      "how much can i borrow keeping hf above 1.5", "borrow max", "can i borrow 50 xlm", "borrow 50 xlm",
+    ]) {
+      expect(matchFastPath(ask)).toBeNull();
+    }
+  });
+
   it("does not treat a withdraw eligibility question as a health fast-path", () => {
     expect(matchFastPath("can I withdraw 100 XLM without getting liquidated?")).toBeNull();
   });
@@ -300,6 +312,89 @@ describe("researchTurn fast path", () => {
     expect(result.executionAllowed).toBe(false);
     expect(result.status).toBe("incomplete");
     expect(result.message).toMatch(/could not read a live figure/i);
+  });
+
+  it("answers a bare borrowing-capacity question from the max_borrow reads as a table, with no model turn", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    const limits: Record<string, [string, string]> = {
+      XLM: ["34991.54", "pool_utilization_cap"], BLUSDC: ["571.53", "pool_utilization_cap"], AQUSDC: ["3482.85", "pool_utilization_cap"], SOUSDC: ["9478.0", "collateral_health"],
+    };
+    const mcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_get_prices_batch") return { prices: { XLM: { price_usd: "0.2" }, USDC: { price_usd: "1" } } };
+      const asset = String(args.symbol);
+      return { smart_account: SCOPE.smartAccount, symbol: asset, max_borrow_human: limits[asset]?.[0] ?? "0", limiting_factor: limits[asset]?.[1] ?? "collateral_health" };
+    }) };
+    const model = vi.fn(async () => { throw new Error("model should not run"); });
+    const result = await researchTurn({ message: "how much can i borrow?", wallet: SCOPE.trader, continuation: null }, deps({ mcp, model }));
+    expect(model).not.toHaveBeenCalled();
+    expect(result.status).toBe("researched");
+    expect(result.executionAllowed).toBe(false);
+    const table = result.replyBlocks?.find((block) => block.type === "table");
+    expect(table).toBeDefined();
+    const cells = JSON.stringify(table);
+    for (const expected of ["XLM", "34,991.54 XLM", "9,478 SOUSDC", "Value", "$6,998.31", "$9,478.00"]) expect(cells).toContain(expected);
+    expect(cells).not.toMatch(/Limited by|pool capacity|your collateral/);
+    expect(result.message).toMatch(/most you can borrow/i);
+    expect(JSON.stringify(result)).not.toMatch(/stale|oracle|keeper/i);
+  });
+
+  describe("the capacity question asked after something else in the same chat", () => {
+    const sealed = (lastQuestion: string | null) => researchCodec("a".repeat(32), "mcp-test").seal(SCOPE as never, ["what happens to my health factor if XLM drops 30%?"], lastQuestion);
+    const mcpOk = () => ({ call: vi.fn(async (_tool: string, args: Record<string, unknown>) =>
+      ({ smart_account: SCOPE.smartAccount, symbol: String(args.symbol), max_borrow_human: "10", limiting_factor: "collateral_health" })) });
+
+    it("still gets the table, with no model turn: a continuation alone does not make it a follow-up", async () => {
+      mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+      const model = vi.fn(async () => { throw new Error("model should not run"); });
+      const result = await researchTurn({ message: "how much can i borrow?", wallet: SCOPE.trader, continuation: sealed(null) }, deps({ mcp: mcpOk(), model }));
+      expect(model).not.toHaveBeenCalled();
+      expect(result.replyBlocks?.some((block) => block.type === "table")).toBe(true);
+    });
+
+    it("steps aside for the model when the chat has an open question", async () => {
+      mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+      const model = vi.fn(async () => { throw new Error("model ran"); });
+      await researchTurn({ message: "how much can i borrow?", wallet: SCOPE.trader, continuation: sealed("Which asset do you want to borrow?") }, deps({ mcp: mcpOk(), model })).catch(() => null);
+      expect(model).toHaveBeenCalled();
+    });
+  });
+
+  it("still shows the values when only the batch price read fails: each price is asked for on its own", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    const mcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_get_prices_batch") throw new Error("batch down");
+      if (tool === "vanna_get_price") return { symbol: String(args.symbol), price_usd: args.symbol === "XLM" ? "0.2" : "1" };
+      return { smart_account: SCOPE.smartAccount, symbol: String(args.symbol), max_borrow_human: "10", limiting_factor: "collateral_health" };
+    }) };
+    const result = await researchTurn({ message: "how much can i borrow?", wallet: SCOPE.trader, continuation: null }, deps({ mcp }));
+    const cells = JSON.stringify(result.replyBlocks?.find((block) => block.type === "table"));
+    expect(cells).toContain("$2.00"); // 10 XLM at 0.2
+    expect(cells).toContain("$10.00"); // 10 of a dollar token
+    expect(cells).not.toContain('"-"');
+  });
+
+  it("shows a dash for the value when the price read fails, and still lists the amounts", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    const mcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "vanna_get_prices_batch") throw new Error("price read down");
+      return { smart_account: SCOPE.smartAccount, symbol: String(args.symbol), max_borrow_human: "10", limiting_factor: "collateral_health" };
+    }) };
+    const result = await researchTurn({ message: "how much can i borrow?", wallet: SCOPE.trader, continuation: null }, deps({ mcp }));
+    const table = result.replyBlocks?.find((block) => block.type === "table");
+    expect(JSON.stringify(table)).toContain("10 XLM");
+    expect(JSON.stringify(table)).not.toContain("$");
+  });
+
+  it("leaves out an asset whose read failed instead of guessing it", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    const mcp = { call: vi.fn(async (_tool: string, args: Record<string, unknown>) => {
+      if (args.symbol === "SOUSDC") throw new Error("rpc down");
+      return { smart_account: SCOPE.smartAccount, symbol: String(args.symbol), max_borrow_human: "10", limiting_factor: "collateral_health" };
+    }) };
+    const result = await researchTurn({ message: "how much can i borrow?", wallet: SCOPE.trader, continuation: null }, deps({ mcp }));
+    const cells = JSON.stringify(result.replyBlocks);
+    expect(cells).toContain("XLM");
+    expect(cells).not.toContain("SOUSDC");
   });
 
   it("answers a named withdraw check from can_withdraw without the investigation loop", async () => {

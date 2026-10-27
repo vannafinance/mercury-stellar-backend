@@ -1,6 +1,7 @@
 import { isRecord } from "./decision";
 import { extractFactsByShape } from "./facts-by-shape";
 import { PAGE_BASIS_SOURCE } from "./health-basis";
+import { resolveAssetDef } from "@/lib/copilot/registry/assets";
 import type { Observation } from "./types";
 import type { ResearchFact } from "./view";
 
@@ -226,7 +227,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
           break;
         }
         const exposures = Array.isArray(data.exposures) ? data.exposures.filter(isRecord) : [];
-        exposures.forEach((exposure) => {
+        exposures.forEach((exposure, index) => {
           const symbol = typeof exposure.symbol === "string" ? exposure.symbol : null;
           if (!symbol) return;
           const at = `liquidation.${symbol}`;
@@ -242,8 +243,16 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
           }
           (Array.isArray(exposure.health_factor_if_falls) ? exposure.health_factor_if_falls.filter(isRecord) : []).forEach((step) => {
             const pct = decimal(step.fall_pct);
-            if (pct !== null) add(`${at}.health_factor_if_falls.${pct}`, `Health factor if ${symbol} fell ${pct}%`, step.health_factor, "HF", "margin");
+            if (pct === null) return;
+            add(`${at}.health_factor_if_falls.${pct}`, `Health factor if ${symbol} fell ${pct}%`, step.health_factor, "HF", "margin");
+            add(`${at}.collateral_if_falls.${pct}`, `Collateral counted for health if ${symbol} fell ${pct}%`, step.collateral_usd, "USD", "margin");
+            add(`${at}.debt_if_falls.${pct}`, `Debt if ${symbol} fell ${pct}%`, step.debt_usd, "USD", "margin");
           });
+          if (isRecord(exposure.now) && index === 0) {
+            add(`${at}.now_health_factor`, "Health factor now", exposure.now.health_factor, "HF", "margin");
+            add(`${at}.now_collateral`, "Collateral counted for health now", exposure.now.collateral_usd, "USD", "margin");
+            add(`${at}.now_debt`, "Debt now", exposure.now.debt_usd, "USD", "margin");
+          }
           if (rising) {
             add(`${at}.rising_liquidation_price`, `${symbol} price that liquidates the account on a rise`, rising.price_usd, "USD", "margin");
           }
@@ -373,6 +382,23 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       // A successful identity/list read need not contain display measurements.
       // Keep extraction diagnostics in logs; real read failures remain user warnings above.
       logDropped(observation, "no_fields");
+    }
+  }
+  /**
+   * A token variant has no price feed of its own: BLUSDC and AQUSDC are priced by the USDC feed, so a read for them comes
+   * back as one "USDC oracle price" and no fact carries their names (27 Oct, live: "price of blusdc and aqusdc" was
+   * answered "specific prices ... are currently unavailable"). Each asked variant gets a fact of its own, with the feed's
+   * value, so the reply can say they share the price. The value is the read's own; nothing is assumed.
+   */
+  for (const observation of observations) {
+    if (observation.status !== "ok" || (observation.capability !== "asset_price" && observation.capability !== "prices_batch")) continue;
+    const asked = observation.capability === "prices_batch" ? observation.args.assets : [observation.args.asset];
+    for (const id of Array.isArray(asked) ? asked : []) {
+      const def = typeof id === "string" ? resolveAssetDef(id) : null;
+      if (!def || def.oracleSymbol === def.id) continue;
+      const feed = facts.find((fact) => fact.evidenceId === observation.id && fact.venue === "oracle" && fact.label === `${def.oracleSymbol} oracle price`);
+      if (!feed) continue;
+      facts.push({ ...feed, id: `${feed.id}:${def.id}`, label: `${def.id} price (the same as ${def.oracleSymbol})`, requested: true });
     }
   }
   return { facts, warnings: [...warnings] };

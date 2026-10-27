@@ -13,6 +13,18 @@ const view = (over: Partial<ResearchView> = {}): ResearchView => ({ status: "res
   facts, checks: [], warnings: [], question: null, scope: { wallet: "sensitive-wallet", smartAccount: null, network: "testnet" },
   continuation: "sealed", executionAllowed: false, ...over });
 
+describe("a number the person typed", () => {
+  const reply = (words: string) => ({ blocks: [paragraph([text(words), fact()])] });
+  it("may be read back in text, as long as the request carried it", () => {
+    expect(bindReplyBlocks(reply("If XLM drops 30% your balance is "), facts, "factual", "what if XLM drops 30%?").ok).toBe(true);
+  });
+  it("does not let any other digit through", () => {
+    expect(bindReplyBlocks(reply("If XLM drops 30% and 5 more your balance is "), facts, "factual", "what if XLM drops 30%?").ok).toBe(false);
+    expect(bindReplyBlocks(reply("If XLM drops 3 your balance is "), facts, "factual", "what if XLM drops 30%?").ok).toBe(false);
+    expect(bindReplyBlocks(reply("If XLM drops 30% your balance is "), facts).ok).toBe(false);
+  });
+});
+
 describe("adaptive reply contract", () => {
   it("supports mixed structure and preserves fact identity without parsing placeholder text", () => {
     const bound = bindReplyBlocks({ blocks: [
