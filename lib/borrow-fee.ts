@@ -1,9 +1,10 @@
 /**
- * SmartAccount borrow credits are net of an on-chain origination fee.
+ * Margin-account borrow credits are net of an on-chain origination fee
+ * (Reserve.borrow sends `amount × origination_fee` to the treasury).
  *
- * The origination fee was set to 0% on all 4 lending pools live on 2026-08-09
- * (see deploy/testnet.env's ORIGINATION_FEE_U128 and the `update_origination_fee`
- * calls made that day) — the margin account is now credited the FULL requested
+ * The origination fee is 0% on all 4 credit-layer Reserves on testnet
+ * (`reserve.origination_fee()` reads 0; it was first zeroed on the old lending
+ * pools on 2026-08-09) — the margin account is credited the FULL requested
  * borrow amount, no haircut. `BORROW_ORIGINATION_FEE_BUFFER` is just a hair under
  * 1.0 to absorb WAD/7-dec rounding drift (mul/div truncation across a few hops),
  * not a fee anymore — it used to be 0.9965 to shave the real 0.3%/1% fee that

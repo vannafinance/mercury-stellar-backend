@@ -6,12 +6,12 @@
  *
  * Same transactions and checks as the pre-V3 Stellar panels (supply-liquidity-tab-new.tsx and
  * withdraw-liqudity.tsx):
- * - Supply: `useSupplyLiquidity` (`deposit` on the pool's lending contract). The amount is in the
+ * - Supply: `useSupplyLiquidity` (`supply` on the asset's credit-layer Reserve). The amount is in the
  *   underlying asset; native XLM keeps the wallet's REAL on-chain minimum reserve (base +
  *   subentries, via getXlmMinReserve / maxSpendableXlm) plus a fee buffer back, so a 100% supply
  *   can neither trap the account nor be blocked by a flat over-reserve. BLUSDC / AqUSDC / SoUSDC
  *   read their own wallet balance entry (their fees are paid in XLM, so a full supply is safe).
- * - Withdraw: `useWithdrawLiquidity` (`redeem_vtokens`). The amount is in vToken SHARES (the hook
+ * - Withdraw: `useWithdrawLiquidity` (`reserve.redeem`). The amount is in vToken SHARES (the hook
  *   checks it against the vToken balance); the 100% pill pins to the exact balance string so
  *   float-reformatting drift can't misfire "Insufficient Balance", and partial pills floor to 2dp.
  * Both drive the TransactionProgressModal (showTxStep / showTxSuccess / showTxError) and re-sync

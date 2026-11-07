@@ -1,27 +1,28 @@
 import { CONTRACT_ADDRESSES } from "./stellar-utils";
 import { fetchContractEvents } from "./mercury-client";
+import { fetchTxTimestamps } from "./mercury-timestamps";
 
-// Earn pool transaction history sourced from Mercury (full history — no ~30-day
+// Earn pool transaction history sourced from Mercury (full history — no ~7-day
 // RPC getEvents window). Drop-in for ContractService.getEarnPoolEvents, so
 // useEarnTransactions keeps the same shape.
 //
-// Each lending-pool contract uses the AccountManager-style topic layout — and,
-// unlike Soroswap, the event PAYLOAD carries its own timestamp, so this is a
-// pure Mercury read with NO Horizon/RPC enrichment:
-//   topic1 = Symbol("deposit_event" | "withdraw_event")   → e.eventName
+// Each credit-layer Reserve (one per asset; it is also the share token)
+// emits, for lenders:
+//   topic1 = Symbol("supplied" | "redeemed")              → e.eventName
 //   topic2 = lender account (G…)                          → server-side scoped
-//   data(deposit)  = { amount, asset_symbol, lender, timestamp }
-//   data(withdraw) = { asset_symbol, lender, timestamp, vtoken_amount, asset_amount }
-// amounts are i128 WAD (÷ 1e18); timestamp is unix seconds. The pool's asset is
-// taken from the contract we queried (asset_symbol can't tell USDC / AQUARIUS_USDC
-// / SOROSWAP_USDC apart — they all report "USDC"). Withdraw's `amount` below reads
-// `asset_amount` (the real underlying transferred), NOT `vtoken_amount` (vToken
-// shares burned) — the two only match 1:1 at a 1.0 exchange rate. Using shares
-// would silently understate every withdrawal once the pool's exchange rate has
-// grown past 1.0, overstating net-deposited (supply − withdraw) and understating
-// net earnings for any wallet that has ever withdrawn. `LendingWithdrawEvent`
-// carries both fields on-chain specifically so indexers don't need to replay
-// pool state to recover the underlying amount — see events.rs.
+//   data   = LenderEvent { lender, assets, shares }
+// `assets` / `shares` are U256 WAD (÷ 1e18). `assets` is the real underlying
+// moved (for `redeemed`, the payout actually transferred, which the reserve
+// caps at available cash), so it — not `shares` — is the amount recorded;
+// the two only match 1:1 at a 1.0 exchange rate, and using shares would
+// misstate net-deposited once interest has accrued. The reserve's asset is
+// taken from the contract we queried. The reserve's own token events
+// (mint / burn / transfer) are ignored.
+//
+// Unlike the retired lending pools, these events carry NO timestamp, so the
+// ledger close time is recovered per tx hash from Horizon
+// (lib/mercury-timestamps.ts); a miss leaves timestamp 0 and the caller
+// prefers the RPC fallback's ledgerClosedAt for the same tx.
 
 export interface EarnTxEntry {
   type: "supply" | "withdraw";
@@ -58,15 +59,14 @@ export async function getEarnTransactionsFromMercury(
     POOLS.map(async ({ contract, asset }) => {
       const events = await fetchContractEvents({ contract, account: walletAddress });
       return events
-        .filter((e) => e.eventName === "deposit_event" || e.eventName === "withdraw_event")
+        .filter((e) => e.eventName === "supplied" || e.eventName === "redeemed")
         .map((e): EarnTxEntry => {
           const d = (e.data ?? {}) as Record<string, unknown>;
-          const isSupply = e.eventName === "deposit_event";
           return {
-            type: isSupply ? "supply" : "withdraw",
+            type: e.eventName === "supplied" ? "supply" : "withdraw",
             asset,
-            amount: wadToHuman(isSupply ? d.amount : d.asset_amount).toFixed(7),
-            timestamp: Number(d.timestamp ?? 0) * 1000,
+            amount: wadToHuman(d.assets).toFixed(7),
+            timestamp: 0,
             hash: e.tx ?? "",
             status: "success",
           };
@@ -74,8 +74,15 @@ export async function getEarnTransactionsFromMercury(
     }),
   );
 
-  return settled
+  const entries = settled
     .filter((r): r is PromiseFulfilledResult<EarnTxEntry[]> => r.status === "fulfilled")
-    .flatMap((r) => r.value)
-    .sort((a, b) => b.timestamp - a.timestamp);
+    .flatMap((r) => r.value);
+
+  const times = await fetchTxTimestamps(entries.map((e) => e.hash));
+  for (const e of entries) {
+    const hit = times.get(e.hash);
+    if (hit) e.timestamp = hit.ts;
+  }
+
+  return entries.sort((a, b) => b.timestamp - a.timestamp);
 }

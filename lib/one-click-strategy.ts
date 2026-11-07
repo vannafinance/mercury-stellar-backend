@@ -415,6 +415,12 @@ export async function executeOneClickStrategy(
       if (atomicResult.success) {
         return { success: true, hash: atomicResult.hash };
       }
+      // On the credit layer this "atomic" call is deposit → borrow → Blend supply
+      // as separate txs. A `hash` means at least one leg landed; falling through
+      // to the split flow would deposit again, so report the partial result.
+      if (atomicResult.hash) {
+        return { success: false, error: atomicResult.error };
+      }
 
       // Soroban's per-tx CPU budget (~100M instructions) is sometimes too tight
       // for the full 3-call chain on populated pools. The split deposit/borrow

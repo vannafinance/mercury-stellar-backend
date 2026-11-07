@@ -308,15 +308,15 @@ export function LevSlider({ lev, max, onChange }: { lev: number; max: number; on
   );
 }
 
-/** Tooltip copy shared by the screen (the Soroban RiskEngine's real rules, not the design's sample ones). */
+/** Tooltip copy shared by the screen (the Soroban CreditLayer's real rules, not the design's sample ones). */
 export const TIPS = {
-  hf: "Health factor: everything in your margin account (collateral, idle borrowed funds and farm positions) divided by everything it owes, unweighted. At 1.10 or below the account can be liquidated, and the RiskEngine rejects any borrow or withdrawal that would take it there.",
+  hf: "Health factor: everything in your margin account (collateral, idle borrowed funds and farm positions) divided by everything it owes, unweighted. At 1.20 or below the account can be liquidated, and the CreditLayer rejects any borrow or withdrawal that would take it there.",
   lev: "Account leverage: everything the account holds (borrowed funds included) divided by your equity (holdings minus debt). 1.00x means no borrowing.",
   borrowed: "Borrowed: everything your margin account owes, at today's on-chain oracle prices, including interest accrued so far.",
   equity: "Equity: everything in your margin account minus what it owes.",
   value: "Account value: everything in your margin account (collateral, idle borrowed funds and farm positions) before subtracting debt.",
-  buffer: "How much value the account can lose before its health factor reaches 1.10 and it can be liquidated: holdings − 1.10 × debt.",
-  room: "Room before liquidation: the smallest single price move that takes the health factor to 1.10, every other price held. The second line moves all volatile prices together.",
+  buffer: "How much value the account can lose before its health factor reaches 1.20 and it can be liquidated: holdings − 1.20 × debt.",
+  room: "Room before liquidation: the smallest single price move that takes the health factor to 1.20, every other price held. The second line moves all volatile prices together.",
   interest: "Interest accrued on your loans: current on-chain debt minus net cash borrowed (borrows − repays from the indexed on-chain events). Unknown loans (opened before indexing) are left out rather than guessed.",
   rate: "The yearly borrow rate of your largest loan's lending pool (its on-chain rate curve).",
   avail: "Selected asset held in your margin account (borrowed tokens included).",

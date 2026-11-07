@@ -26,7 +26,7 @@ describe("deriveMarginHealth", () => {
     expect(h.avgHealthFactor).toBe(HEALTH_FACTOR_INFINITY_SENTINEL);
     expect(h.netAvailableCollateral).toBe(1000);
     expect(h.collateralLeftBeforeLiquidation).toBe(1000);
-    expect(h.debtLimit).toBeCloseTo(1000 / 1.1, 6); // 909.09…
+    expect(h.debtLimit).toBeCloseTo(1000 / 1.2, 6); // 833.33…
     expect(h.totalValue).toBe(1000);
   });
 
@@ -37,13 +37,13 @@ describe("deriveMarginHealth", () => {
   it("healthy position: HF = collateral / debt", () => {
     const h = derive(1000, 500);
     expect(h.avgHealthFactor).toBeCloseTo(2.0, 6);
-    expect(h.collateralLeftBeforeLiquidation).toBeCloseTo(1000 - 500 * 1.1, 6); // 450
+    expect(h.collateralLeftBeforeLiquidation).toBeCloseTo(1000 - 500 * 1.2, 6); // 400
     expect(h.netAvailableCollateral).toBeCloseTo(500, 6);
     expect(h.totalValue).toBeCloseTo(1000, 6); // netAvail 500 + borrowed 500
   });
 
-  it("at the liquidation boundary (HF = 1.1) collateral-left hits 0", () => {
-    const h = derive(550, 500);
+  it("at the liquidation boundary (HF = 1.2) collateral-left hits 0", () => {
+    const h = derive(600, 500);
     expect(h.avgHealthFactor).toBeCloseTo(LIQUIDATION_THRESHOLD, 6);
     expect(h.collateralLeftBeforeLiquidation).toBeCloseTo(0, 6);
   });
@@ -55,7 +55,7 @@ describe("deriveMarginHealth", () => {
     expect(h.netAvailableCollateral).toBe(0);
   });
 
-  it("INVARIANT: collateral-left > 0  ⟺  HF > 1.1 (liquidation threshold)", () => {
+  it("INVARIANT: collateral-left > 0  ⟺  HF > 1.2 (liquidation threshold)", () => {
     for (const [gross, debt] of [[1000, 500], [550, 500], [560, 500], [400, 500]] as const) {
       const h = derive(gross, debt);
       if (h.collateralLeftBeforeLiquidation > 0) {

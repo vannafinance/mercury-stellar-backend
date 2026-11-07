@@ -657,11 +657,14 @@ function protocolBorrowCeilingUsd(ctx: PlanContext, asset: string, price: bigint
   }; } catch { return null; }
 }
 
-/** Just above the contract's liquidation line: it requires a health factor strictly greater than 1.10 (measured 8 Sep, 1.100000 is refused and 1.100001 is not). */
+/** The liquidation line as the user reads it ("1.2"), from the same constant the sizer checks against. */
+const LIQUIDATION_LINE = formatWad(LIQUIDATION_THRESHOLD_WAD);
+
+/** Just above the contract's liquidation line: the app treats a health factor at or below `LIQUIDATION_THRESHOLD_WAD` (1.2) as unsafe, so this floor sits one micro-unit above it. */
 const CONTRACT_LINE_FLOOR = formatWad(LIQUIDATION_THRESHOLD_WAD + BigInt(1_000_000_000_000));
 
 const SIZER_REASONS: Record<string, string> = {
-  floor_below_liquidation_threshold: "a health-factor floor at or below 1.1 is the liquidation line, not a safety margin - state a floor above it",
+  floor_below_liquidation_threshold: `a health-factor floor at or below ${LIQUIDATION_LINE} is the liquidation line, not a safety margin - state a floor above it`,
   would_be_liquidatable: "this would leave the account liquidatable",
   floor_required_for_max: "sizing to the floor needs a stated health-factor floor",
   no_capacity_at_floor: "there is no headroom at your health-factor floor",
@@ -1184,14 +1187,14 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * most the floor allows", which is meaningless without one (`sizeLegs`' own
      * `floor_required_for_max`). A stated amount ("borrow 60 AQUSDC") or a stated multiple
      * needs no floor at all: `sizeLegs` below prices the resulting health factor either way,
-     * against the user's floor when they gave one or against the 1.1 liquidation line when
+     * against the user's floor when they gave one or against the 1.2 liquidation line when
      * they did not, and shows the plan with that figure rather than a number nobody asked
      * for. 15 Sep, live: "deposit 10 xlm and take 6x leverage" was refused outright here -
      * before the sizer, which would have shown the resulting HF and let the user decide -
      * for a floor the leg never needed, on a sizing word this check did not even name.
      */
     if (leg.op === "borrow" && leg.sizing.kind === "to_floor" && ctx.capacity && ctx.capacity.floor === null) {
-      throw new NeedsInput(name, "borrowing to the floor needs the health-factor floor you want kept, above the 1.1 liquidation line - tell me the number, or state the amount and I'll show you the health factor it leaves");
+      throw new NeedsInput(name, `borrowing to the floor needs the health-factor floor you want kept, above the ${LIQUIDATION_LINE} liquidation line - tell me the number, or state the amount and I'll show you the health factor it leaves`);
     }
     // Same gate as withdraw, same reason: only the missing-contract-basis case has nothing to size from.
     if (leg.op === "borrow" && ctx.capacity?.issue?.reason === "sizing_contract_unavailable") {
@@ -1349,7 +1352,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         const room = maxWithdrawForFloorWad(decimalWad(ctx.capacity.grossCollateralUsd), decimalWad(ctx.capacity.debtUsd), LIQUIDATION_THRESHOLD_WAD);
         const atLine = room < decimalWad(capUsd) ? room : decimalWad(capUsd);
         const tokens = tokensFromUsd(formatWad(atLine), price.price, decimals.get(leg.asset) ?? 7);
-        throw new Reject(name, `a withdraw sized to the floor needs the health-factor floor you want kept, above the 1.1 liquidation line - tell me the number; at the line itself up to ${tokens.ok ? tokens.tokens : "0"} ${leg.asset} of the ${precise(posted, leg.asset, name)} posted could come out`);
+        throw new Reject(name, `a withdraw sized to the floor needs the health-factor floor you want kept, above the ${LIQUIDATION_LINE} liquidation line - tell me the number; at the line itself up to ${tokens.ok ? tokens.tokens : "0"} ${leg.asset} of the ${precise(posted, leg.asset, name)} posted could come out`);
       }
       drafts.push({ leg, name, usd: "max", capUsd, tokens: null, produces: null, heldTokens: null });
       continue;

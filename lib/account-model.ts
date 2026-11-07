@@ -1,9 +1,9 @@
 /**
- * The Vanna margin account as the Soroban RiskEngine values it, for every V3 page's numbers (health
+ * The Vanna margin account as the Soroban CreditLayer values it (margin_value), for every V3 page's numbers (health
  * factor, account leverage, room before liquidation, liquidation prices). Mirrors the chain and
  * lib/margin-health.ts:
  *
- * - health factor = Σ collateral value / Σ debt value, unweighted; liquidatable at ≤ 1.10;
+ * - health factor = Σ collateral value / Σ debt value, unweighted; liquidatable at ≤ 1.20;
  * - Stellar has no perps venue, so `phoenixCollateral` / `perps` are always empty here; the perp
  *   helpers are kept so the model stays identical to the Solana app's.
  *
@@ -11,12 +11,12 @@
  * asset are handled exactly.
  */
 
-/** At or below this the account can be liquidated (BALANCE_TO_BORROW_THRESHOLD). */
-export const LIQ_HF = 1.1;
+/** At or below this the account can be liquidated (credit layer HEALTH_FACTOR_THRESHOLD_WAD, 1.2). */
+export const LIQ_HF = 1.2;
 /** Orders that would leave the account below this are blocked (the app's safety buffer). */
-export const SAFE_HF = 1.15;
+export const SAFE_HF = 1.25;
 /** Between SAFE_HF and this, orders are allowed with a warning. */
-export const WARN_HF = 1.25;
+export const WARN_HF = 1.35;
 
 const STABLES = new Set(["USDC", "USDT"]);
 

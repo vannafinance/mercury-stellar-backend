@@ -12,7 +12,7 @@ import { MarginAccountService } from '@/lib/margin-utils';
 import { useUserStore } from '@/store/user';
 import { numberAmountToWad } from '@/lib/utils/sanitize-amount';
 
-/** Margin history row decoded from AccountManager events. */
+/** Margin history row decoded from CreditLayer events. */
 export type MarginHistoryRow = {
   type: MarginTxEntry['type'];
   asset: string;
@@ -24,22 +24,17 @@ export type MarginHistoryRow = {
 // Margin transaction history - Mercury (full history, no ~7-day RPC cap) plus a
 // bounded RPC fallback for any recent activity Mercury is currently missing.
 //
-// The redeployed AccountManager (2026-06-13) now emits self-describing events:
-// Trader_Borrow{token_symbol, token_amount}, Trader_Deposit{token_symbol, amount},
-// Trader_Repay_Event{token_symbol, token_amount, timestamp}. So borrow amounts and
-// deposits come straight from Mercury - the earlier localStorage overlay (which
-// filled the old symbol-only Trader_Borrow gap) is no longer needed and was removed.
-// Timestamps: repay from its payload; borrow/deposit per-tx from Horizon (the
-// contract emits none, by design) - handled in getMarginHistoryFromMercury.
+// The credit layer (redeploy 2026-11-06) emits self-describing events on the
+// CreditLayer contract: collateral_deposited / collateral_withdrawn / borrowed /
+// repaid, each with data {margin, token (address), amount (WAD)}. Token addresses
+// are mapped back to UI symbols in lib/mercury-margin.ts. No event carries a
+// timestamp; ledger close time is filled per-tx from Horizon (Mercury path) or
+// from the RPC event itself (fallback path).
 //
-// Confirmed 2026-07-21: Mercury's index for the CURRENT AccountManager address
-// stalled on 2026-07-19 despite continuous real on-chain activity since (verified
-// directly via RPC) - a genuine indexing gap on Mercury's side, not something we
-// can fix from here. getMarginHistoryFromRpc fills that gap for whatever RPC's
-// own (short) retention window still covers; the two sources are merged and
-// deduped by tx hash so history shows real data again in the meantime, reverting
-// to Mercury alone automatically once its index catches back up (RPC entries
-// simply become redundant with Mercury's and get deduped out).
+// Mercury has stalled on a contract's index before (2026-07-19, verified via
+// RPC), so getMarginHistoryFromRpc fills any recent gap from RPC's own short
+// retention window; the two sources are merged and deduped by tx hash + type +
+// asset, so RPC entries simply become redundant once Mercury catches up.
 //
 // NO ledger-tick refetch: the query is heavy (full ledger range + per-tx timestamp
 // enrichment). Freshness comes from mount, account change, window focus, and the
@@ -75,9 +70,9 @@ export const useMarginHistory = () => {
       ]);
       const mercury = mercurySettled.status === 'fulfilled' ? mercurySettled.value : [];
       const rpcFallback = rpcSettled.status === 'fulfilled' ? rpcSettled.value : [];
-      // Keyed by hash+type+asset, NOT hash alone: a single atomic "Deposit &
-      // Borrow" transaction emits TWO distinct events (Trader_Deposit AND
-      // Trader_Borrow) sharing the SAME tx hash. Deduping by hash alone
+      // Keyed by hash+type+asset, NOT hash alone: one transaction can emit
+      // more than one margin event (e.g. a liquidation or an unwind repaying
+      // several debts) sharing the SAME tx hash. Deduping by hash alone
       // collapsed them into one entry, silently dropping whichever event lost
       // the Map.set race - confirmed live (a deposit+borrow tx showed only
       // the deposit in Position History). Mercury first, then RPC fills in
@@ -104,7 +99,7 @@ export const useMarginHistory = () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Margin-collateral transfer (wallet ⇄ margin account) - the same underlying
-// AccountManager calls as `components/margin/transfer-collateral.tsx`'s MB/WB
+// CreditLayer calls as `components/margin/transfer-collateral.tsx`'s MB/WB
 // modes, exposed as plain mutations so other surfaces (the Portfolio page's
 // top-level Deposit/Withdraw buttons) can drive the same real collateral
 // transfer instead of the plain lending-pool supply/redeem flow.
@@ -142,10 +137,10 @@ async function ensureMarginAccount(userAddress: string): Promise<string> {
 
 /**
  * Deposit collateral from the connected wallet into the user's margin account
- * (`AccountManagerContract::deposit_collateral_tokens`) - creates the margin
+ * (`CreditLayer::deposit_collateral`) - creates the margin
  * account first if the wallet doesn't have one yet. On success invalidates
  * `['margin']` and force-refreshes the store's collateral balances (the real
- * on-chain `Trader_Deposit` event is what makes this show up in
+ * on-chain `collateral_deposited` event is what makes this show up in
  * {@link useMarginHistory}, no local history write needed).
  */
 export const useDepositCollateral = () => {
@@ -180,11 +175,11 @@ export const useDepositCollateral = () => {
 
 /**
  * Withdraw collateral from the user's margin account back to their wallet
- * (`AccountManagerContract::withdraw_collateral_balance`) - the contract's own
- * `is_withdraw_allowed` health check is the actual safety gate; this hook does
+ * (`CreditLayer::withdraw_collateral`) - the contract's own
+ * `can_withdraw` health check (HF must stay above 1.2) is the actual safety gate; this hook does
  * not pre-compute a safe max (callers should, for UX, mirror
  * `transfer-collateral.tsx`'s health-factor-aware cap before calling this).
- * Successful withdrawals are emitted by AccountManager as Trader_Withdraw and
+ * Successful withdrawals are emitted by the CreditLayer as collateral_withdrawn and
  * appear through Mercury/RPC; no browser-side history is written.
  */
 export const useWithdrawCollateral = () => {

@@ -66,7 +66,7 @@ export function localExecutionAnswer(opts: {
     facts.push({
       label: "health factor",
       value: hf >= 999 ? "∞" : hf.toFixed(2),
-      tone: hf < 1.1 ? "bad" : Number.isFinite(floor) && hf < floor ? "warn" : "good",
+      tone: hf < 1.2 ? "bad" : Number.isFinite(floor) && hf < floor ? "warn" : "good",
     });
   }
 
@@ -113,7 +113,7 @@ export function singleWriteReceiptAnswer(opts: {
     facts.push({
       label: "health factor",
       value: hf >= 999 ? "∞" : hf.toFixed(2),
-      tone: hf < 1.1 ? "bad" : "good",
+      tone: hf < 1.2 ? "bad" : "good",
     });
   }
   return { headline: `${what.replace(/[.\s]+$/, "")} - settled on-chain.`, facts, venue: "none" };

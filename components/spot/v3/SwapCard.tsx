@@ -232,7 +232,7 @@ export const SwapCard = ({ baseSymbol, onPreview }: SwapCardProps) => {
   const [activePercent, setActivePercent] = useState<number | null>(null);
 
   // Swaps always run inside the margin account (health-checked on-chain by the
-  // AccountManager after the swap). WB/MB tabs stay hidden — the wallet-mode
+  // CreditLayer after the swap, margin_execute). WB/MB tabs stay hidden — the wallet-mode
   // path below is kept but not exposed in the UI.
   const swapMode = "margin" as SwapMode;
 
@@ -537,7 +537,7 @@ export const SwapCard = ({ baseSymbol, onPreview }: SwapCardProps) => {
   }, [onPreview, tokenIn, tokenOut, quoteUsd, isQuoteLoading, fromAmount]);
 
   // ---------------------------------------------------------------------------------------------
-  // Execution — margin: the DEX swap through the AccountManager (health-checked on-chain);
+  // Execution — margin: the DEX swap through CreditLayer.margin_execute (health-checked on-chain);
   // wallet (not exposed): the DEX router directly with slippage-protected min out.
   // ---------------------------------------------------------------------------------------------
   const qc = useQueryClient();

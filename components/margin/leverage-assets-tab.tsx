@@ -14,7 +14,6 @@ import {
   useMarginAccountInfoStore,
   type BorrowedBalance,
   borrowTokens,
-  setupContractConfiguration,
   refreshBorrowedBalances,
   createMarginAccount,
   checkUserMarginAccount,
@@ -42,7 +41,7 @@ const showStep = (message: string) => showTxStep(message);
 const showStepSuccess = (message: string, _txHash?: string) => showTxSuccess(message);
 const showStepError = (message: string) => showTxError(message);
 
-const LIQUIDATION_THRESHOLD = 1.1;
+const LIQUIDATION_THRESHOLD = 1.2; // credit layer HEALTH_FACTOR_THRESHOLD_WAD
 const HF_INF_SENTINEL = 999;
 const formatHF = (hf: number): string =>
   !Number.isFinite(hf) || hf >= HF_INF_SENTINEL ? "∞" : hf.toFixed(2);
@@ -74,7 +73,7 @@ const ensureCollateralId = (collateral: Collaterals): Collaterals => {
  *    to a split 2-tx flow for multi-collateral or when the atomic call overflows
  *    Soroban's per-tx budget.
  *
- * Borrow size is pre-validated against the on-chain RiskEngine formula before
+ * Borrow size is pre-validated against the on-chain CreditLayer formula before
  * signing, XLM deposits respect the wallet's min-reserve, and after a confirmed
  * tx the UI is unblocked immediately (toast + form reset + optimistic store
  * merge) while balances refresh in the background. Deposit/borrow preview is
@@ -560,9 +559,9 @@ export const LeverageAssetsTab = () => {
         // Pre-validate against risk engine before submitting
         const latestMarginState = useMarginAccountInfoStore.getState();
         const liveTotalBorrowedValue = latestMarginState.totalBorrowedValue;
-        // Match on-chain RiskEngine: gross assets = priced collateral + outstanding debt.
+        // Match on-chain CreditLayer: gross assets = priced collateral + outstanding debt.
         const liveGrossCollateralUsd = latestMarginState.grossCollateralValue;
-        const threshold = 1.1;
+        const threshold = 1.2; // credit layer HEALTH_FACTOR_THRESHOLD_WAD
         const maxAdditionalBorrowUsd = Math.max(
           0,
           (liveGrossCollateralUsd - threshold * liveTotalBorrowedValue) / (threshold - 1)
@@ -744,14 +743,14 @@ export const LeverageAssetsTab = () => {
           }
         }
 
-        // Pre-validate borrow against the Risk Engine's formula before submitting.
-        // On-chain: (grossAssets + borrow) / (debt + borrow) > 1.1, where grossAssets
+        // Pre-validate borrow against the CreditLayer's formula before submitting.
+        // On-chain: (grossAssets + borrow) / (debt + borrow) > 1.2, where grossAssets
         // = priced collateral + outstanding debt (borrowed funds still in the account).
         if (multiplier > 1) {
           const latestMarginState = useMarginAccountInfoStore.getState();
           const liveTotalBorrowedValue = latestMarginState.totalBorrowedValue;
           const liveGrossCollateralUsd = latestMarginState.grossCollateralValue;
-          const threshold = 1.1;
+          const threshold = 1.2; // credit layer HEALTH_FACTOR_THRESHOLD_WAD
           const projectedGrossUsd = liveGrossCollateralUsd + totalDepositAmountUsd;
           const requestedBorrowUsd = totalDepositAmountUsd * (multiplier - 1);
 
@@ -762,7 +761,7 @@ export const LeverageAssetsTab = () => {
 
           if (maxAdditionalBorrowUsd <= 0) {
             toast.error(
-              'Borrow is blocked by Risk Engine: your current debt is already too high for your collateral. Add more collateral or repay first.'
+              'Borrow is blocked by the health check: your current debt is already too high for your collateral. Add more collateral or repay first.'
             );
             setIsProcessing(false);
             return;
@@ -915,7 +914,9 @@ export const LeverageAssetsTab = () => {
             // is a hard network limit (not a fee), so retrying the same atomic tx
             // can't help — split it into two transactions instead. The atomic tx
             // failed wholesale, so nothing was deposited; the split flow is clean.
-            const isBudgetError = /budget|exceededlimit|resource/i.test(atomicResult.error ?? '');
+            // depositAndBorrow is two txs on the credit layer: a `hash` means the deposit
+            // already landed, so never fall back to the split flow (it would deposit again).
+            const isBudgetError = !atomicResult.hash && /budget|exceededlimit|resource/i.test(atomicResult.error ?? '');
             if (isBudgetError) {
               console.warn('[leverage] atomic deposit_and_borrow hit Soroban budget; falling back to split 2-tx flow');
               useSplitFlow = true;
@@ -966,17 +967,9 @@ export const LeverageAssetsTab = () => {
               let depositErrorMsg: string;
               if (depositResult.error?.includes('not allowed as collateral') || depositResult.error?.includes('Max asset cap')) {
                 depositErrorMsg = `Contract configuration error: ${depositResult.error}`;
+                // The credit layer's collateral allow-list is set at deploy time;
+                // there is no client-side setup to run any more.
                 showStepError(depositErrorMsg);
-                try {
-                  const configResult = await setupContractConfiguration();
-                  if (configResult.success) {
-                    toast.success('Contract configuration setup successful! You can now try the deposit again.');
-                  } else {
-                    toast.error('Contract setup failed: ' + configResult.error);
-                  }
-                } catch (setupError) {
-                  toast.error(normalizeContractError(setupError instanceof Error ? setupError.message : undefined, 'Setup error. Please try again.'));
-                }
               } else {
                 depositErrorMsg = normalizeDepositCollateralError(depositResult.error);
                 showStepError(depositErrorMsg);

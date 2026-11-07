@@ -1,20 +1,21 @@
 import { CONTRACT_ADDRESSES } from "./stellar-utils";
+import { CREDIT_EVENTS } from "./credit-layer";
+import { symbolForToken } from "./margin-credit-reads";
 import { fetchContractEvents } from "./mercury-client";
 import { fetchTxTimestamps } from "./mercury-timestamps";
 
 // Margin transaction history sourced from Mercury (full history — no ~7-day RPC
-// cap). Same output shape as the old RPC path, so it's a drop-in for
+// cap). Same output shape as the RPC path, so it's a drop-in for
 // useMarginHistory.
 //
-// Event data fidelity (decoded from AccountManager) — forward-compatible across the
-// 2026-06 contract upgrade (PR #4: Trader_Borrow gains token_amount, new Trader_Deposit,
-// timestamps dropped by design — ledgerClosedAt is recovered from Horizon):
-//   Trader_Repay_Event → { token_symbol, token_amount (WAD), timestamp }      → full
-//   Trader_Deposit     → { token_symbol, amount (WAD) }                       → new event
-//   Trader_Borrow      → OLD build: bare asset-symbol string (no amount) → "—", local
-//                        overlay fills it; NEW build: { token_symbol, token_amount } (WAD).
-// None of borrow/deposit carry a timestamp → enriched per-tx from Horizon (created_at),
-// full history, deduped — same helper as the Soroswap/Blend adapters.
+// Credit-layer events (testnet redeploy 2026-11-06), topic[0] = name,
+// topic[1] = margin address, data = { margin, token (address), amount (WAD) }:
+//   collateral_deposited → deposit
+//   collateral_withdrawn → withdraw
+//   borrowed             → borrow
+//   repaid               → repay (amount = what was actually paid, capped at the debt)
+// None carry a timestamp → enriched per-tx from Horizon (created_at), full
+// history, deduped — same helper as the Soroswap/Blend adapters.
 
 export interface MarginTxEntry {
   type: "borrow" | "repay" | "deposit" | "withdraw";
@@ -34,85 +35,56 @@ const wadToHuman = (raw: unknown): number => {
   }
 };
 
+/** Event name → history row type, for the four credit-layer margin events. */
+export const MARGIN_EVENT_TYPES: Record<string, MarginTxEntry["type"]> = {
+  [CREDIT_EVENTS.deposited]: "deposit",
+  [CREDIT_EVENTS.withdrawn]: "withdraw",
+  [CREDIT_EVENTS.borrowed]: "borrow",
+  [CREDIT_EVENTS.repaid]: "repay",
+};
+
+/**
+ * Decodes one credit-layer margin event payload into a history row, or null
+ * when it is not one of the four margin events (or belongs to another account).
+ */
+export function marginEventToEntry(
+  eventName: string | null | undefined,
+  data: unknown,
+  hash: string,
+  timestamp: number,
+  marginAccountAddress?: string,
+): MarginTxEntry | null {
+  const type = eventName ? MARGIN_EVENT_TYPES[eventName] : undefined;
+  if (!type) return null;
+  const d = (data ?? {}) as Record<string, unknown>;
+  if (marginAccountAddress && d.margin && String(d.margin) !== marginAccountAddress) return null;
+  return {
+    type,
+    asset: symbolForToken(String(d.token ?? "")),
+    amount: wadToHuman(d.amount).toFixed(7),
+    timestamp,
+    hash,
+  };
+}
+
 export async function getMarginHistoryFromMercury(
   marginAccountAddress: string,
 ): Promise<MarginTxEntry[]> {
   // Mercury filters to this account SERVER-SIDE (by-contract + topics) and
-  // returns full history via cursor pagination, newest-first — so the order is
-  // already chronological and there is no global-limit cap.
+  // returns full history via cursor pagination, newest-first.
   const events = await fetchContractEvents({
-    contract: CONTRACT_ADDRESSES.ACCOUNT_MANAGER,
+    contract: CONTRACT_ADDRESSES.CREDIT_LAYER,
     account: marginAccountAddress,
   });
 
-  // Account already filtered by Mercury; just keep the event types we render.
-  const mine = events.filter(
-    (e) =>
-      e.eventName === "Trader_Borrow" ||
-      e.eventName === "Trader_Repay_Event" ||
-      e.eventName === "Trader_Deposit" ||
-      e.eventName === "Trader_Withdraw",
-  );
+  const mapped: MarginTxEntry[] = [];
+  for (const e of events) {
+    const row = marginEventToEntry(e.eventName, e.data, e.tx ?? "", 0, marginAccountAddress);
+    if (row) mapped.push(row);
+  }
 
-  const mapped: MarginTxEntry[] = mine.map((e) => {
-    if (e.eventName === "Trader_Repay_Event") {
-      const d = (e.data ?? {}) as Record<string, unknown>;
-      return {
-        type: "repay",
-        asset: String(d.token_symbol ?? ""),
-        amount: wadToHuman(d.token_amount).toFixed(7),
-        timestamp: Number(d.timestamp ?? 0) * 1000,
-        hash: e.tx ?? "",
-      };
-    }
-    if (e.eventName === "Trader_Deposit") {
-      // New contract: { smart_account, token_symbol, amount } (WAD, no timestamp).
-      const d = (e.data ?? {}) as Record<string, unknown>;
-      return {
-        type: "deposit",
-        asset: String(d.token_symbol ?? ""),
-        amount: wadToHuman(d.amount).toFixed(7),
-        timestamp: 0,
-        hash: e.tx ?? "",
-      };
-    }
-    if (e.eventName === "Trader_Withdraw") {
-      const d = (e.data ?? {}) as Record<string, unknown>;
-      return {
-        type: "withdraw",
-        asset: String(d.token_symbol ?? ""),
-        amount: wadToHuman(d.amount).toFixed(7),
-        timestamp: 0,
-        hash: e.tx ?? "",
-      };
-    }
-    // Trader_Borrow — forward-compatible across the contract upgrade:
-    //   OLD (live now): data is the bare asset symbol string → amount unknown ("—",
-    //     filled by the useMarginHistory local overlay).
-    //   NEW (post-deploy): data is { smart_account, token_symbol, token_amount } (WAD).
-    // Neither carries a timestamp → Horizon enrich below.
-    if (e.data && typeof e.data === "object") {
-      const d = e.data as Record<string, unknown>;
-      return {
-        type: "borrow",
-        asset: String(d.token_symbol ?? ""),
-        amount: wadToHuman(d.token_amount).toFixed(7),
-        timestamp: 0,
-        hash: e.tx ?? "",
-      };
-    }
-    return {
-      type: "borrow",
-      asset: typeof e.data === "string" ? e.data : "",
-      amount: "—",
-      timestamp: 0,
-      hash: e.tx ?? "",
-    };
-  });
-
-  // Borrows + deposits carry no timestamp in the event — resolve the real ledger
-  // close time per-tx from Horizon (full history, deduped). Repays already have a
-  // payload timestamp, so only entries left at 0 need it.
+  // No credit-layer event carries a timestamp — resolve the real ledger close
+  // time per-tx from Horizon (full history, deduped).
   const pendingHashes = mapped.filter((e) => e.timestamp <= 0 && e.hash).map((e) => e.hash);
   if (pendingHashes.length > 0) {
     const byHash = await fetchTxTimestamps(pendingHashes);

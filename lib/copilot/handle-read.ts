@@ -28,6 +28,7 @@ import { VANNA_AQUARIUS_FARM_PAIRS, filterAquariusFarmPools } from "./farm-pools
 import { mcpErrorResponse } from "./mcp-error-response";
 import { logCopilotEvent } from "./log";
 import { isTrackingSymbol } from "@/lib/account-snapshot";
+import { LIQUIDATION_THRESHOLD as LIQUIDATION_HF } from "@/lib/margin-health";
 import { readFarmAmmLpShares } from "./farm-lp";
 import { vertexExplain, vertexExplainStructured } from "./vertex";
 import { buildToolArgs } from "./tool-args";
@@ -599,7 +600,7 @@ async function projectHealthFactor(
       "down from",
       nextHf >= pos.hf ? "up from" : "down from",
     ) +
-    (nextHf < 1.3 ? ` That is close to the ${nextHf < 1.1 ? "liquidation" : "caution"} band.` : "")
+    (nextHf < 1.3 ? ` That is close to the ${nextHf <= LIQUIDATION_HF ? "liquidation" : "caution"} band.` : "")
   );
 }
 
@@ -688,7 +689,7 @@ async function snapshotPositionAnswer(
      * page it shares a data source with), so the fix has to stay deterministic too: a
      * keyword check picks the lead clause, not a model call.
      *
-     * 1.1 here is `LIQUIDATION_THRESHOLD` from `lib/margin-health.ts` (not imported
+     * 1.2 here is `LIQUIDATION_THRESHOLD` from `lib/margin-health.ts` (not imported
      * statically - this file already reaches that module by dynamic import a few lines
      * down for the Soroban-budget fallback, so this follows the same pattern). 1.3 is the
      * same default safety floor `parseMinHealthFactor(...) ?? 1.3` already uses elsewhere
@@ -894,7 +895,7 @@ export function allPositionsStructured(
     const hfTone: AnswerFact["tone"] =
       !(pos.totalBorrowedValue > 0.01)
         ? "neutral"
-        : pos.hf < 1.1
+        : pos.hf <= LIQUIDATION_HF
           ? "bad"
           : pos.hf < 1.4
             ? "warn"
@@ -2769,10 +2770,10 @@ export async function runRead(
               : // Health factor IS gross collateral / debt - see lib/margin-health.ts,
                 // which is checked against the protocol math reference. There is no
                 // liquidation-threshold haircut on the collateral side; the threshold
-                // (1.1) is the level HF is compared against, not a multiplier. This
+                // (1.2) is the level HF is compared against, not a multiplier. This
                 // figure can still differ from the margin page when MCP's collateral
                 // view is incomplete, which is why the snapshot path above is preferred.
-                `health factor ~${hf.toFixed(2)} (collateral ÷ debt; liquidation at 1.1)`,
+                `health factor ~${hf.toFixed(2)} (collateral ÷ debt; liquidation at ${LIQUIDATION_HF})`,
           );
         }
         return {

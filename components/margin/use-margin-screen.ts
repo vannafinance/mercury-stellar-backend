@@ -3,12 +3,12 @@
 /**
  * Everything the V3 Margin screen reads, in one place:
  *
- * - `acct` / `model` / `now`: the RiskEngine-exact account model (`useV3Account`,
+ * - `acct` / `model` / `now`: the CreditLayer-exact account model (`useV3Account`,
  *   lib/account-model.ts) — health factor, account leverage, liquidation buffer and every
  *   "after this action" preview;
  * - the margin store (`useMarginAccountInfoStore`), fed by the per-account `/api/account/[addr]`
  *   snapshot (see margin-page-content.tsx) and by the post-transaction `refreshBorrowedBalances`
- *   reads — per-token collateral / debt, the RiskEngine-aligned gross collateral and debt totals
+ *   reads — per-token collateral / debt, the CreditLayer-aligned gross collateral and debt totals
  *   that the pre-sign borrow / withdraw checks use, and the borrow rate;
  * - wallet balances (user store) and on-chain oracle prices (`useTokenPrices`).
  *
@@ -80,7 +80,7 @@ export interface MarginScreen {
   debt: (symbol: string) => number;
   collateralBalances: Record<string, BorrowedBalance>;
   borrowedBalances: Record<string, BorrowedBalance>;
-  /** RiskEngine-aligned gross collateral USD (store; snapshot fallback). */
+  /** CreditLayer-aligned gross collateral USD (store; snapshot fallback). */
   gross: number;
   /** Total debt USD (store; snapshot fallback). */
   borrowedUsd: number;

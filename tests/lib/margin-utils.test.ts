@@ -112,9 +112,14 @@ describe('MarginAccountService.formatUserFacingContractError', () => {
     expect(msg).toMatch(/insufficient balance/i);
   });
 
-  it('formats withdraw is_withdraw_allowed=false with Risk Engine hint', () => {
+  it('formats withdraw is_withdraw_allowed=false with a health-check hint', () => {
     const msg = fmt('is_withdraw_allowed returned false', 'withdraw');
-    expect(msg).toMatch(/Risk Engine/i);
+    expect(msg).toMatch(/health check/i);
+  });
+
+  it('formats the credit layer unhealthy-withdraw panic with a health-check hint', () => {
+    const msg = fmt('CreditLayer: withdrawal would leave the margin account unhealthy', 'withdraw');
+    expect(msg).toMatch(/health check/i);
   });
 
   it('formats withdraw insufficient balance', () => {

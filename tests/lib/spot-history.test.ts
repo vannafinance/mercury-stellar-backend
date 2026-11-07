@@ -4,41 +4,61 @@ vi.mock("@/lib/mercury-client", () => ({ fetchContractEvents: vi.fn() }));
 vi.mock("@/lib/mercury-timestamps", () => ({ fetchTxTimestamps: vi.fn() }));
 
 import {
+  applyMarginExecs,
+  decodeMarginExecuted,
   decodeSpotTransfer,
-  decodeTraderExec,
   transfersToSpotHistory,
 } from "@/lib/spot-history";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 
-describe("Trader_Exec spot history decoding", () => {
-  it("decodes Soroban's unit-enum vector and measured WAD deltas", () => {
-    const row = decodeTraderExec(
+describe("margin_executed spot history decoding", () => {
+  it("decodes a swap (one token in, one token out) and names the venue", () => {
+    const exec = decodeMarginExecuted(
       {
-        action: ["Swap"],
-        target: CONTRACT_ADDRESSES.AQUARIUS_ROUTER,
-        deltas: {
-          tokens: [CONTRACT_ADDRESSES.BLEND_XLM, CONTRACT_ADDRESSES.AQUARIUS_USDC],
-          deltas: [BigInt("-1250000000000000000"), BigInt("250000000000000000")],
-        },
+        margin: "CACCT",
+        target: CONTRACT_ADDRESSES.SOROSWAP_ROUTER,
+        tokens_in: [CONTRACT_ADDRESSES.SOROSWAP_USDC],
+        tokens_out: [CONTRACT_ADDRESSES.BLEND_XLM],
       },
-      "CACCT",
       "tx1",
-      123,
     );
-
-    expect(row).toMatchObject({
-      protocol: "aquarius",
-      tokenIn: "XLM",
-      tokenOut: "AqUSDC",
-      amountIn: "1.2500000",
-      amountOut: "0.2500000",
+    expect(exec).toEqual({
       txHash: "tx1",
-      timestamp: 123,
+      target: CONTRACT_ADDRESSES.SOROSWAP_ROUTER,
+      tokenIn: CONTRACT_ADDRESSES.SOROSWAP_USDC,
+      tokenOut: CONTRACT_ADDRESSES.BLEND_XLM,
     });
   });
 
-  it("ignores non-swap exec events", () => {
-    expect(decodeTraderExec({ action: ["AddLiquidity"] }, "CACCT", "tx2", 0)).toBeNull();
+  it("ignores LP and Blend executions", () => {
+    // AddLiquidity: two tokens out, the LP token in.
+    expect(decodeMarginExecuted({
+      target: CONTRACT_ADDRESSES.SOROSWAP_ROUTER,
+      tokens_in: [CONTRACT_ADDRESSES.SOROSWAP_XLM_USDC_POOL],
+      tokens_out: [CONTRACT_ADDRESSES.BLEND_XLM, CONTRACT_ADDRESSES.SOROSWAP_USDC],
+    }, "tx2")).toBeNull();
+    // Blend supply: one token out, nothing in.
+    expect(decodeMarginExecuted({
+      target: CONTRACT_ADDRESSES.BLEND_POOL,
+      tokens_in: [],
+      tokens_out: [CONTRACT_ADDRESSES.BLEND_XLM],
+    }, "tx3")).toBeNull();
+  });
+
+  it("sets the protocol from the event target on the transfer-built row", () => {
+    const legs = [
+      decodeSpotTransfer(CONTRACT_ADDRESSES.BLEND_XLM, ["transfer", "CACCT", "CPAIR", "native"], BigInt("10000000"), "CACCT", "tx4", 1),
+      decodeSpotTransfer(CONTRACT_ADDRESSES.SOROSWAP_USDC, ["transfer", "CPAIR", "CACCT"], BigInt("2000000"), "CACCT", "tx4", 1),
+    ].map((l) => l!);
+    const rows = transfersToSpotHistory(legs, "CACCT");
+    const exec = decodeMarginExecuted({
+      target: CONTRACT_ADDRESSES.SOROSWAP_ROUTER,
+      tokens_in: [CONTRACT_ADDRESSES.SOROSWAP_USDC],
+      tokens_out: [CONTRACT_ADDRESSES.BLEND_XLM],
+    }, "tx4")!;
+    expect(applyMarginExecs(rows, [exec])).toEqual([
+      expect.objectContaining({ protocol: "soroswap", tokenIn: "XLM", tokenOut: "SoUSDC", amountIn: "1.0000000", amountOut: "0.2000000" }),
+    ]);
   });
 });
 

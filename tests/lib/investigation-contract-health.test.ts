@@ -14,7 +14,7 @@ import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
  * are not a health factor, and neither is a balance with a missing debt.
  */
 
-const ENGINE = "CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY";
+const ENGINE = CONTRACT_ADDRESSES.CREDIT_LAYER;
 const ACCOUNT = "CAHLZMJMMKNC2OUX2334UP3AXWEQFXHOJNQFE26M5MOIDOQNRSHQGLLJ";
 const WASM = "3e9d1180d2fb4efa4629000000000000000000000000000000000000000000aa";
 
@@ -36,11 +36,10 @@ function contractInstance(wasmHex: string) {
 }
 
 /**
- * Answer each contract method in order of the module's call sequence:
- * registry resolve → totals (parallel) → is_account_healthy.
+ * Answer each contract method: margin_value (collateral, debt) and is_healthy, each on
+ * its own ledger sequence so a test can make them straddle a ledger close.
  */
 function rpcStub(options: {
-  engine?: string;
   balance?: string;
   debt?: string;
   healthy?: boolean;
@@ -48,33 +47,28 @@ function rpcStub(options: {
   debtLedger?: number | number[];
   wasm?: string;
 }) {
-  const balanceLedgers = [options.balanceLedger ?? 100].flat();
-  const debtLedgers = [options.debtLedger ?? 100].flat();
-  let balanceCall = 0;
-  let debtCall = 0;
+  const valueLedgers = [options.balanceLedger ?? 100].flat();
+  const verdictLedgers = [options.debtLedger ?? 100].flat();
+  let valueCall = 0;
+  let verdictCall = 0;
   const at = (list: number[], index: number) => list[Math.min(index, list.length - 1)];
   const simulateTransaction = vi.fn(async (tx: StellarSdk.Transaction) => {
     // The invoked function name is the only thing this stub needs to dispatch on.
     const op = tx.operations[0] as { func?: { invokeContract?: () => { functionName: () => { toString: () => string } } } };
     const name = op.func?.invokeContract?.().functionName().toString() ?? "";
-    if (name === "get_risk_engine_address") {
-      return success(StellarSdk.nativeToScVal(options.engine ?? ENGINE, { type: "address" }), 100);
-    }
-    if (name === "get_current_total_balance") {
-      return success(StellarSdk.nativeToScVal(BigInt(options.balance ?? "3201700390866888623283"), { type: "u256" }),
-        at(balanceLedgers, balanceCall++));
-    }
-    if (name === "get_current_total_borrows") {
-      return success(StellarSdk.nativeToScVal(BigInt(options.debt ?? "1752018314227471074759"), { type: "u256" }),
-        at(debtLedgers, debtCall++));
-    }
-    if (name === "is_account_healthy") {
-      return success(StellarSdk.nativeToScVal(options.healthy ?? true, { type: "bool" }), 100);
-    }
-    if (name === "liquidation_snapshot") {
+    if (name === "margin_value") {
       const collateral = BigInt(options.balance ?? "3201700390866888623283");
       const debt = BigInt(options.debt ?? "1752018314227471074759");
-      return success(StellarSdk.nativeToScVal([collateral, debt, false]), 100);
+      return success(
+        StellarSdk.xdr.ScVal.scvVec([
+          StellarSdk.nativeToScVal(collateral, { type: "u256" }),
+          StellarSdk.nativeToScVal(debt, { type: "u256" }),
+        ]),
+        at(valueLedgers, valueCall++),
+      );
+    }
+    if (name === "is_healthy") {
+      return success(StellarSdk.nativeToScVal(options.healthy ?? true, { type: "bool" }), at(verdictLedgers, verdictCall++));
     }
     throw new Error(`unexpected method ${name}`);
   });
@@ -102,7 +96,7 @@ describe("contract health simulator", () => {
     });
   });
 
-  it("reads the risk engine's code hash while the balance and debt are being read, not before", async () => {
+  it("reads the credit layer's code hash while the balance and debt are being read, not before", async () => {
     const rpc = rpcStub({});
     let release!: () => void;
     const hold = new Promise<void>((resolve) => { release = resolve; });
@@ -116,7 +110,7 @@ describe("contract health simulator", () => {
     // The code-hash read stays pending until the balance read has been sent.
     const getContractData = vi.fn(async () => { await hold; return contractInstance(WASM) as never; });
     const pending = readContractHealthState(ACCOUNT, { rpc: { simulateTransaction: spy as never, getContractData }, now: () => 1 });
-    await vi.waitFor(() => expect(names).toContain("get_current_total_balance"));
+    await vi.waitFor(() => expect(names).toContain("margin_value"));
     expect(getContractData).toHaveBeenCalledTimes(1);
     release();
     expect((await pending).wasmHash).toBe(WASM);
@@ -154,9 +148,9 @@ describe("contract health simulator", () => {
   });
 
   it("passes the contract's unhealthy verdict through instead of re-deriving it", async () => {
-    // The boundary is exclusive on chain (exactly 1.100000 is unhealthy), so the verdict
+    // The boundary is exclusive on chain (exactly 1.200000 is unhealthy), so the verdict
     // is the contract's to give - a local ratio would disagree at the boundary.
-    const rpc = rpcStub({ balance: "110", debt: "100", healthy: false });
+    const rpc = rpcStub({ balance: "120", debt: "100", healthy: false });
     const state = await readContractHealthState(ACCOUNT, { rpc });
     expect(state.contractHealthy).toBe(false);
     expect(validateHealthPath([state], {
@@ -164,13 +158,11 @@ describe("contract health simulator", () => {
     })).toMatchObject({ valid: false, reason: "contract_rejected" });
   });
 
-  it("flags a registry that no longer resolves to the compiled-in address", async () => {
-    const other = "CAZLR6EHZXQNZJIFNP6F7SIJQC3P64MKHHQNZSSG5BNAEFCYTTGTDZXB";
-    const rpc = rpcStub({ engine: other });
+  it("never reports a diverged registry (the credit layer has no registry)", async () => {
+    const rpc = rpcStub({});
     const state = await readContractHealthState(ACCOUNT, { rpc });
-    expect(state.contract).toBe(other);
-    expect(state.registryDiverged).toBe(true);
-    expect(other).not.toBe(CONTRACT_ADDRESSES.RISK_ENGINE);
+    expect(state.contract).toBe(CONTRACT_ADDRESSES.CREDIT_LAYER);
+    expect(state.registryDiverged).toBe(false);
   });
 
   it("rejects a wallet address, and anything that is not a smart account", async () => {
@@ -194,7 +186,7 @@ describe("contract health simulator", () => {
     expect(rpc.simulateTransaction).not.toHaveBeenCalled();
   });
 
-  it("decodes liquidation_snapshot without synthesizing a health factor", async () => {
+  it("decodes margin_value as the liquidation snapshot without synthesizing a health factor", async () => {
     const rpc = rpcStub({
       balance: "3051150757526167668754",
       debt: "1650090736719844418769",

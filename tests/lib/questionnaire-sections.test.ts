@@ -445,7 +445,7 @@ describe("one questionnaire, one section per action", () => {
         smartAccount: "CCKITLMKA2VKSWGOTFABSUFA3RMOZHRP5YNP6HLG73JSWMMUUNCTHDMC",
       },
       observations: rows, now: NOW, messages: ["test"],
-      capacity: { grossCollateralUsd: "1000", debtUsd: "0", floor: "1.1" },
+      capacity: { grossCollateralUsd: "1000", debtUsd: "0", floor: "1.2" },
       borrowing: "unspecified" as const, comparisons: [],
     };
 
@@ -478,7 +478,7 @@ describe("one questionnaire, one section per action", () => {
     // 3. Earlier leg is previous_leg
     const prevCtx = {
       ...ctx,
-      capacity: { ...ctx.capacity, floor: "1.2" },
+      capacity: { ...ctx.capacity, floor: "1.3" },
       borrowing: "allowed" as const,
       comparisons: [{
         asset: "XLM" as const,

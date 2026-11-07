@@ -11,7 +11,8 @@ import { allowedInvocation } from "./allowlist";
 import { assetForVenueSpelling } from "../registry/assets";
 import { OP_FLOW, POCKET_HOLDER, SIZED_OPS, stepFundingPreview, type SizedOp, type WorkflowProposal } from "./types";
 
-const VERIFIED_RISK_WASM = "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960";
+// CreditLayer wasm (testnet credit-layer deploy 2026-11-06, deploy/testnet.json). Update after `deploy.sh testnet upgrade`.
+const VERIFIED_RISK_WASM = "e29b2bf64b541c56059676a51fc749bdd4bbab909a5c9b212ecc0287af1e0f11";
 const READ_MS = 15_000;
 
 /** RPC/timeout copy must not consume the proposal - the user can Approve again. */

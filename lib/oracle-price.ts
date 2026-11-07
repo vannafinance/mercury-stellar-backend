@@ -1,25 +1,35 @@
 // USD price oracle reads with a short, ledger-aligned cache. Resolves token
-// aliases (BLUSDC→USDC, BLEND_XLM→XLM, …) to a base symbol, then reads
-// `get_price_latest` off the on-chain oracle via simulation. A per-symbol cache
-// (PRICE_TTL_MS ≈ one ledger) and an in-flight map de-dupe the many concurrent
-// reads a single page issues; static fallbacks cover the unreachable-oracle case.
+// aliases (BLUSDC→USDC, BLEND_XLM→XLM, …) to a base symbol, maps it to a token
+// address (toCreditAsset / LP token), then reads the credit-layer oracle
+// `get_price(asset, account, Liquidation)` → USD WAD via simulation. A
+// per-symbol cache (PRICE_TTL_MS ≈ one ledger) and an in-flight map de-dupe the
+// many concurrent reads a single page issues; static fallbacks cover the
+// unreachable-oracle case.
+//
+// Old contract: ORACLE.get_price_latest(symbol) -> (price, decimals). Gone.
 
-import * as StellarSdk from '@stellar/stellar-sdk';
-import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from './stellar-utils';
+import { CREDIT_ASSETS, oraclePriceWad, toCreditAsset, wadToNumber } from './credit-layer';
+import { CONTRACT_ADDRESSES } from './stellar-utils';
 
-// Tokens without their own oracle entry are priced off a base symbol that
-// represents the same underlying USD value (Blend / Aquarius / Soroswap USDC
-// all peg to USDC, and any future Blend XLM tracking token tracks XLM).
+// UI aliases that name the same asset. Each USDC variant (BLUSDC / AQUSDC /
+// SOUSDC) is its own token with its own oracle feed, so they are NOT collapsed
+// onto one another; plain "USDC" means Blend USDC, as everywhere else.
 const PRICE_ALIASES: Record<string, string> = {
   BLUSDC: 'USDC',
   BLEND_USDC: 'USDC',
-  AQUSDC: 'USDC',
-  AQUARIUS_USDC: 'USDC',
-  SOUSDC: 'USDC',
-  SOROSWAP_USDC: 'USDC',
+  AQUARIUS_USDC: 'AQUSDC',
+  SOROSWAP_USDC: 'SOUSDC',
   BLXLM: 'XLM',
   BLEND_XLM: 'XLM',
 };
+
+/** Token address the oracle prices for a resolved symbol (credit asset or LP token). */
+function assetAddressForSymbol(symbol: string): string | null {
+  if (symbol === 'SS_XLM_USDC') return CONTRACT_ADDRESSES.SOROSWAP_XLM_USDC_POOL;
+  if (symbol === 'AQ_XLM_USDC') return CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_SHARE;
+  const a = toCreditAsset(symbol);
+  return a ? CREDIT_ASSETS[a].token : null;
+}
 
 // Static fallbacks used only when the oracle is unreachable on first probe
 // (network hiccup before any cache entry exists). Once we have a real price
@@ -27,6 +37,8 @@ const PRICE_ALIASES: Record<string, string> = {
 const FALLBACK_PRICES: Record<string, number> = {
   XLM: 0.16,
   USDC: 1.0,
+  AQUSDC: 1.0,
+  SOUSDC: 1.0,
   /** Rough LP-token USD when oracle has no feed — matches analytics canon. */
   AQ_XLM_USDC: 0.4,
   SS_XLM_USDC: 0.4,
@@ -62,50 +74,12 @@ const notify = () => {
   }
 };
 
-// Fee/sequence source for oracle sims only. Does not need to be funded —
-// simulateTransaction accepts Account(addr, "0") when Horizon has no entry.
-const FALLBACK_SOURCE = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
-
-async function buildSimulationTx(
-  server: StellarSdk.rpc.Server,
-  symbol: string
-): Promise<StellarSdk.Transaction> {
-  let sourceAddr = FALLBACK_SOURCE;
-  try {
-    const { getAddress } = await import('@/lib/wallet-adapter');
-    const got = await getAddress();
-    if (!got.error && got.address) sourceAddr = got.address;
-  } catch {
-    // Freighter unavailable in SSR / non-browser — use the fallback source.
-  }
-  let src: StellarSdk.Account;
-  try {
-    src = await server.getAccount(sourceAddr);
-  } catch {
-    src = new StellarSdk.Account(sourceAddr, "0");
-  }
-  const c = new StellarSdk.Contract(CONTRACT_ADDRESSES.ORACLE);
-  return new StellarSdk.TransactionBuilder(src, {
-    fee: '100',
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(c.call('get_price_latest', StellarSdk.nativeToScVal(symbol, { type: 'symbol' })))
-    .setTimeout(30)
-    .build();
-}
-
 async function fetchOnce(symbol: string): Promise<number> {
   const fallback = FALLBACK_PRICES[symbol] ?? 1;
   try {
-    const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-    const tx = await buildSimulationTx(server, symbol);
-    const r = await server.simulateTransaction(tx);
-    if (!('result' in r) || !r.result?.retval) throw new Error('oracle simulation returned no result');
-    const native = StellarSdk.scValToNative(r.result.retval) as [bigint | string | number, number];
-    const rawPrice = native[0];
-    const decimals = Number(native[1] ?? 14);
-    const priceStr = typeof rawPrice === 'bigint' ? rawPrice.toString() : String(rawPrice);
-    const price = Number(priceStr) / Math.pow(10, decimals);
+    const asset = assetAddressForSymbol(symbol);
+    if (!asset) throw new Error(`no oracle asset for ${symbol}`);
+    const price = wadToNumber(await oraclePriceWad(asset));
     if (!Number.isFinite(price) || price <= 0) throw new Error('oracle returned non-positive price');
     cache.set(symbol, { price, expiresAt: Date.now() + PRICE_TTL_MS, fetchedAt: Date.now() });
     notify();

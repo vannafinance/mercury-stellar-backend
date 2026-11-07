@@ -20,13 +20,13 @@ describe("sizeLegs without a user floor", () => {
   });
 
   it("stops a sequence that would leave the account liquidatable", () => {
-    // Withdrawing 1,200 USD of collateral: (6605.84 − 1200) / 5102.54 = 1.0594 ≤ 1.1.
+    // Withdrawing 1,200 USD of collateral: (6605.84 − 1200) / 5102.54 = 1.0594 ≤ 1.2.
     const result = sizeLegs(base, [{ op: "withdraw_collateral", label: "withdraw", amountUsd: "1200" }], null);
     expect(result).toMatchObject({ ok: false, reason: "would_be_liquidatable", failingLeg: "withdraw" });
   });
 
   it("still enforces a stated floor exactly as before", () => {
-    expect(sizeLegs(base, [{ op: "deposit_collateral", label: "d", amountUsd: "1" }], "1.1")).toMatchObject({ ok: false, reason: "floor_below_liquidation_threshold" });
-    expect(sizeLegs(base, [{ op: "borrow", label: "b", amountUsd: "max" }], "1.2").ok).toBe(true);
+    expect(sizeLegs(base, [{ op: "deposit_collateral", label: "d", amountUsd: "1" }], "1.2")).toMatchObject({ ok: false, reason: "floor_below_liquidation_threshold" });
+    expect(sizeLegs(base, [{ op: "borrow", label: "b", amountUsd: "max" }], "1.25").ok).toBe(true);
   });
 });

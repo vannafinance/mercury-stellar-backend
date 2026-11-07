@@ -161,36 +161,28 @@ describe('BlendService._parseReserveData', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// buildExternalProtocolCallBytes — structural checks
+// buildExecuteArgs — CreditLayer.margin_execute arguments
 // ─────────────────────────────────────────────────────────────────────────────
-describe('BlendService.buildExternalProtocolCallBytes', () => {
-  const poolAddr = CONTRACT_ADDRESSES.BLEND_POOL;
-  const marginAddr = CONTRACT_ADDRESSES.ACCOUNT_MANAGER; // real address with valid checksum
-  const amount = BigInt('100000000000000000000'); // 100 tokens in WAD
-
-  it('returns a non-empty Buffer for Deposit action', () => {
-    const buf = BlendService.buildExternalProtocolCallBytes(
-      poolAddr, 'Deposit', 'XLM', amount, marginAddr
-    );
-    expect(buf).toBeInstanceOf(Buffer);
-    expect(buf.byteLength).toBeGreaterThan(0);
+describe('BlendService.buildExecuteArgs', () => {
+  it('Deposit maps to Supply on the Blend pool with the XLM token and a WAD amount', () => {
+    const a = BlendService.buildExecuteArgs('Deposit', 'XLM', 100);
+    expect(a.target).toBe(CONTRACT_ADDRESSES.BLEND_POOL);
+    expect(a.action).toBe('Supply');
+    expect(a.tokens).toEqual([CONTRACT_ADDRESSES.BLEND_XLM]);
+    expect(a.amounts).toEqual([BigInt('100000000000000000000')]);
+    expect(a.minOut).toBe(BigInt(0));
   });
 
-  it('returns a non-empty Buffer for Withdraw action', () => {
-    const buf = BlendService.buildExternalProtocolCallBytes(
-      poolAddr, 'Withdraw', 'USDC', amount, marginAddr
-    );
-    expect(buf).toBeInstanceOf(Buffer);
-    expect(buf.byteLength).toBeGreaterThan(0);
+  it('Withdraw maps to Withdraw and USDC resolves to Blend USDC', () => {
+    const a = BlendService.buildExecuteArgs('Withdraw', 'USDC', 1.2345678);
+    expect(a.action).toBe('Withdraw');
+    expect(a.tokens).toEqual([CONTRACT_ADDRESSES.BLEND_USDC]);
+    // floored to 7 decimals, then scaled to WAD
+    expect(a.amounts).toEqual([BigInt(12345678) * BigInt(10 ** 11)]);
   });
 
-  it('Deposit and Withdraw produce different XDR bytes (action is encoded)', () => {
-    const deposit = BlendService.buildExternalProtocolCallBytes(
-      poolAddr, 'Deposit', 'XLM', amount, marginAddr
-    );
-    const withdraw = BlendService.buildExternalProtocolCallBytes(
-      poolAddr, 'Withdraw', 'XLM', amount, marginAddr
-    );
-    expect(deposit.equals(withdraw)).toBe(false);
+  it('rejects unsupported tokens and zero amounts', () => {
+    expect(() => BlendService.buildExecuteArgs('Deposit', 'BTC', 1)).toThrow();
+    expect(() => BlendService.buildExecuteArgs('Deposit', 'XLM', 0)).toThrow();
   });
 });

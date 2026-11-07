@@ -27,14 +27,14 @@ import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 import { USD_DUST_EPSILON } from "@/lib/account-snapshot";
 
 const XLM_TRANSFER_EPSILON = 1e-7;
-const LIQUIDATION_THRESHOLD = 1.1;
+const LIQUIDATION_THRESHOLD = 1.2; // credit layer HEALTH_FACTOR_THRESHOLD_WAD
 
 /**
  * Transfer tab for moving a token between the user's wallet and their margin
  * account in either direction (MB = wallet → margin deposit, WB = margin →
  * wallet withdraw). Computes several distinct caps: the source balance, the
  * risk-safe withdraw limit derived from the store's health factor (so a
- * withdrawal can't reach or cross the 1.1 liquidation threshold). Contract-held
+ * withdrawal can't reach or cross the 1.2 liquidation threshold). Contract-held
  * tokens have no wallet reserve deduction. Failed transactions preserve the
  * entered amount and report the error. Balances refresh after confirmation.
  */
@@ -77,7 +77,7 @@ export const TransferCollateral = () => {
   // debt, HF = ∞). Comparing `totalBorrowedValue > 0` here instead let a
   // leftover sub-cent debt (e.g. $0.00004 of dust after a repay) desync from
   // that ∞ HF: `hasMeaningfulDebt` came back true while `avgHealthFactor` was
-  // still the infinity sentinel (999), and the (healthFactor - 1.1) * debtUsd
+  // still the infinity sentinel (999), and the (healthFactor - 1.2) * debtUsd
   // formula below then computed a near-zero withdrawal cap instead of the
   // full balance — 100%/Max filled in a wildly wrong tiny amount.
   const hasMeaningfulDebt = totalBorrowedValue > USD_DUST_EPSILON;
@@ -145,7 +145,7 @@ export const TransferCollateral = () => {
 
 
   // Projected HF after a WB (withdraw) — used to block the Transfer button
-  // and show a warning when the withdrawal would push HF below 1.1.
+  // and show a warning when the withdrawal would push HF below 1.2.
   const projectedHfAfterWb = (() => {
     if (selectedTransferType !== "WB" || !hasMeaningfulDebt) return Infinity;
     if (avgHealthFactor <= 0) return Infinity;
@@ -618,7 +618,7 @@ export const TransferCollateral = () => {
       >
         {isWbBelowLiqThreshold && (
           <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-4 py-2.5 text-xs font-semibold text-red-700">
-            ⚠ This withdrawal would drop your Health Factor to {projectedHfAfterWb.toFixed(2)} (below 1.10). Reduce the amount or repay some debt first.
+            ⚠ This withdrawal would drop your Health Factor to {projectedHfAfterWb.toFixed(2)} (below 1.20). Reduce the amount or repay some debt first.
           </div>
         )}
         <Button

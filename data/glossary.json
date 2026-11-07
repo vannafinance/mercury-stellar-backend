@@ -3,8 +3,8 @@
     "term": "Net Health Factor",
     "aliases": ["health factor", "hf", "net hf", "net health factor", "health"],
     "short": "How much buffer you have before liquidation.",
-    "detailed": "Your gross collateral value divided by your effective debt. Vanna liquidates when health factor reaches 1.1 or below. It moves as prices move.",
-    "why_it_matters": "At or below 1.1 your position can be liquidated. Higher is safer.",
+    "detailed": "Your gross collateral value divided by your effective debt. Vanna liquidates when health factor reaches 1.2 or below. It moves as prices move.",
+    "why_it_matters": "At or below 1.2 your position can be liquidated. Higher is safer.",
     "common_mistake": "It is a ratio, not a percentage. A very large number usually means tiny debt versus collateral — healthy, not a bug.",
     "related": ["liquidation", "liquidation_threshold", "collateral_left"],
     "pages": ["margin", "portfolio"]
@@ -13,7 +13,7 @@
     "term": "Liquidation Threshold",
     "aliases": ["liquidation threshold", "liq threshold", "lt"],
     "short": "The health factor at which liquidation is allowed.",
-    "detailed": "On Vanna this is 1.1. When HF is at or below 1.1, collateral can be sold to repay debt. Debt limit is roughly gross collateral divided by 1.1.",
+    "detailed": "On Vanna this is 1.2. When HF is at or below 1.2, collateral can be sold to repay debt. Debt limit is roughly gross collateral divided by 1.2.",
     "why_it_matters": "Everything on Margin is about staying above this line.",
     "common_mistake": "Some protocols show this as a percent LTV. Vanna shows it as a health-factor trigger.",
     "related": ["health_factor", "liquidation"],
@@ -23,7 +23,7 @@
     "term": "Liquidation",
     "aliases": ["liquidated", "get liquidated", "liquidation event"],
     "short": "When protocol sells your collateral to repay debt because HF is too low.",
-    "detailed": "If health factor falls to 1.1 or below, anyone can liquidate your margin account. You lose some collateral; debt is reduced.",
+    "detailed": "If health factor falls to 1.2 or below, anyone can liquidate your margin account. You lose some collateral; debt is reduced.",
     "why_it_matters": "Avoid by adding collateral, repaying debt, or reducing leverage when HF falls.",
     "related": ["health_factor", "liquidation_threshold"],
     "pages": ["margin", "portfolio"]
@@ -32,7 +32,7 @@
     "term": "Collateral Left Before Liquidation",
     "aliases": ["collateral left", "buffer before liquidation", "liq distance"],
     "short": "How much collateral value you can lose before hitting the liquidation line.",
-    "detailed": "Roughly the USD cushion between current position and HF = 1.1. Shrinks when collateral prices fall or debt rises.",
+    "detailed": "Roughly the USD cushion between current position and HF = 1.2. Shrinks when collateral prices fall or debt rises.",
     "why_it_matters": "A small buffer means a small price move can make you liquidatable.",
     "related": ["health_factor", "liquidation"],
     "pages": ["margin"]

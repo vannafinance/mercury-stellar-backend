@@ -4,11 +4,16 @@
 // client store (refreshBorrowedBalances), keeping the HF math in one place.
 //
 // Parallelization (D25, audit item 1): the borrow-rate pool-stats fetch is
-// INDEPENDENT of collateral, so it runs concurrently with the farm→SAC chain
-// instead of after it. farm-merge and SAC-reconcile stay ordered because they
-// both mutate the shared collateralBalances object.
+// INDEPENDENT of collateral, so it runs concurrently with the venue/SAC reads.
+//
+// Credit layer (2026-11-06): the health figures come from CreditLayer
+// `margin_value(margin)` — the exact (collateral USD, debt USD) the contract
+// checks against the 1.2 threshold. The per-token rows are still read and
+// priced individually for display; their sum is only the fallback when the
+// margin_value read fails.
 
 import { MarginAccountService } from "@/lib/margin-utils";
+import { marginValue, wadToNumber } from "@/lib/credit-layer";
 import { fetchTokenPrices, getCachedTokenPrice } from "@/lib/oracle-price";
 import { ContractService, ASSET_TYPES, type AssetType } from "@/lib/stellar-utils";
 import { computeBorrowApr } from "@/lib/utils/borrow-rate";
@@ -289,7 +294,7 @@ async function computeMarginSnapshotUncached(
   //  • farm enrichment (writes BLEND_/AQ_/SS_ tracking keys)
   //  • SAC reconcile   (writes XLM/BLUSDC raw balances)
   // farm and SAC touch disjoint keys, so concurrent writes don't collide.
-  const [borrowRate, enriched, rawAssetValue] = await Promise.all([
+  const [borrowRate, enriched, rawAssetValue, chainValue] = await Promise.all([
     fetchBorrowRate(borrowedBalances, effectiveDebtValue),
     mergeFarmTrackingCollateralIntoBalances(marginAccountAddress, collateralBalances, tokenPrice).catch(
       (e): Record<string, { amount: string; usdValue: string }> => {
@@ -304,6 +309,10 @@ async function computeMarginSnapshotUncached(
     ).catch((e) => {
       console.warn("[account-snapshot] raw SAC reconcile failed:", e);
       return 0;
+    }),
+    marginValue(marginAccountAddress).catch((e) => {
+      console.warn("[account-snapshot] margin_value read failed:", e);
+      return null;
     }),
   ]);
 
@@ -336,13 +345,22 @@ async function computeMarginSnapshotUncached(
     grossCollateralValue = totalCollateralValue;
   }
 
+  // Contract valuation is the source of truth for health (same prices and the
+  // same asset list the contract uses for borrow / withdraw / liquidation).
+  let healthDebtValue = effectiveDebtValue;
+  if (chainValue) {
+    grossCollateralValue = wadToNumber(chainValue.collateralWad);
+    const chainDebt = wadToNumber(chainValue.debtWad);
+    healthDebtValue = chainDebt > USD_DUST_EPSILON ? chainDebt : 0;
+  }
+
   const {
     avgHealthFactor,
     collateralLeftBeforeLiquidation,
     netAvailableCollateral,
     totalValue,
     debtLimit,
-  } = deriveMarginHealth({ grossCollateralValue, effectiveDebtValue, totalBorrowedValue });
+  } = deriveMarginHealth({ grossCollateralValue, effectiveDebtValue: healthDebtValue, totalBorrowedValue });
 
   return {
     borrowedBalances,

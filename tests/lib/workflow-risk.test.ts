@@ -28,7 +28,7 @@ beforeEach(() => {
   mcp.call.mockReset().mockImplementation(defaultCall);
   mocks.app.mockResolvedValue({ grossCollateralUsd: "200", debtUsd: "100", healthFactor: "2" });
   mocks.chain.mockResolvedValue({ balanceWad: decimalWad("200").toString(), debtWad: decimalWad("100").toString(),
-    registryDiverged: false, wasmHash: "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960" });
+    registryDiverged: false, wasmHash: "e29b2bf64b541c56059676a51fc749bdd4bbab909a5c9b212ecc0287af1e0f11" });
 });
 describe("approve-time reads run together", () => {
   it("starts the contract health read before the price and balance reads have answered", async () => {
@@ -78,7 +78,7 @@ describe("deterministic execution risk", () => {
     expect(await validate(p)).toBeNull();
     expect(mocks.chain).toHaveBeenCalledOnce();
     mocks.chain.mockResolvedValueOnce({ balanceWad: decimalWad("140").toString(), debtWad: decimalWad("100").toString(),
-      registryDiverged: false, wasmHash: "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960" });
+      registryDiverged: false, wasmHash: "e29b2bf64b541c56059676a51fc749bdd4bbab909a5c9b212ecc0287af1e0f11" });
     expect(await validate(p)).toMatch(/already below/);
     p.steps[0].amount = "1001";
     p.steps[0].args.amount = "1001";
@@ -95,7 +95,7 @@ describe("deterministic execution risk", () => {
   it("requires the chain valuation, even when an app snapshot would clear", async () => {
     mocks.app.mockResolvedValueOnce({ grossCollateralUsd: "200", debtUsd: "100", healthFactor: "2" });
     mocks.chain.mockResolvedValueOnce({ balanceWad: decimalWad("120").toString(), debtWad: decimalWad("100").toString(),
-      registryDiverged: false, wasmHash: "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960" });
+      registryDiverged: false, wasmHash: "e29b2bf64b541c56059676a51fc749bdd4bbab909a5c9b212ecc0287af1e0f11" });
     expect(await validate(proposal("50"))).toMatch(/already below/);
     expect(mocks.app).not.toHaveBeenCalled();
   });

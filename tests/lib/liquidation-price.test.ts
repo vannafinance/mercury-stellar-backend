@@ -57,14 +57,14 @@ describe("liquidationObservation", () => {
   });
 
   it("an account a falling price does liquidate gets that price and the drop", () => {
-    // 10,000 XLM at 0.10 ($1,000) against $800 of USDC debt: health 1.25, liquidated at 1.10 -> XLM x 0.88.
+    // 10,000 XLM at 0.10 ($1,000) against $800 of USDC debt: health 1.25, liquidated at 1.20 -> XLM x 0.96.
     const out = data(liquidationObservation(snapshot(
       { XLM: row(10000, 1000) }, { BLUSDC: row(800, 800) },
     ), 1000));
     const xlm = out.exposures[0];
     expect(xlm.falling).not.toBeNull();
-    expect(Number(xlm.falling!.price_usd)).toBeCloseTo(0.088, 3);
-    expect(Math.abs(Number(xlm.falling!.change_pct))).toBeCloseTo(12, 0);
+    expect(Number(xlm.falling!.price_usd)).toBeCloseTo(0.096, 3);
+    expect(Math.abs(Number(xlm.falling!.change_pct))).toBeCloseTo(4, 0);
     expect(xlm.health_factor_if_near_zero).toBeNull();
   });
 
@@ -144,10 +144,10 @@ describe("the facts the reply is built from", () => {
     ), 1000)]);
     const price = facts.find((fact) => fact.label === "XLM liquidation price");
     expect(price?.unit).toBe("USD");
-    expect(formatFactValue(price!)).toBe("$0.088");
+    expect(formatFactValue(price!)).toBe("$0.096");
     const drop = facts.find((fact) => fact.label === "XLM drop to liquidation");
     expect(drop?.unit).toBe("%");
-    expect(formatFactValue(drop!)).toBe("12.00%");
+    expect(formatFactValue(drop!)).toBe("4.00%");
   });
 
   it("states the no-debt case in words and offers no price", () => {

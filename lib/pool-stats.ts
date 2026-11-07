@@ -1,35 +1,41 @@
-// Shared, server-safe lending-pool stats for all earn pools (XLM, USDC
+// Shared, server-safe lending-reserve stats for all earn pools (XLM, USDC
 // variants). Powers both the cached /api/pools route and
 // the client `usePoolData` hook, so the APY/exchange-rate math lives in one
-// place. `getPoolStats` uses a throwaway keypair as its sim source, so this
-// runs server-side with no wallet.
+// place. `getPoolStats` simulates from a public read-source account on the server,
+// so this runs server-side with no wallet.
 
-import { ContractService, ASSET_TYPES } from "@/lib/stellar-utils";
+import { ContractService, ASSET_TYPES, type AssetType } from "@/lib/stellar-utils";
 import { computeBorrowApr } from "@/lib/utils/borrow-rate";
 
-// Matches RateModelContract's own SECS_PER_YEAR_U128 constant exactly, so the
-// annualization here lines up with what the contract itself divides by when
-// computing get_borrow_rate_per_sec.
+// Matches the Reserve interest curve's own SECS_PER_YEAR constant
+// (reserve/src/interest.rs SECS_PER_YEAR_WAD = 31_556_952 · WAD), so the
+// annualization here lines up with what the contract divides by when
+// computing borrow_rate_per_sec.
 const SECS_PER_YEAR = 31_556_952;
 
-const toWad = (amount: number): bigint => BigInt(Math.floor(amount * 1e18));
+const toWad = (amount: number): bigint => BigInt(Math.floor(amount * 1e7)) * BigInt(10 ** 11);
 
 /**
- * Borrow APY (%), read LIVE from the deployed RateModelContract's
- * `get_borrow_rate_per_sec(liquidity_wad, borrows_wad)` — the exact same
- * curve `lending-pool`'s own `get_rate_factor()` calls on-chain to accrue
- * interest. Falls back to the old synthetic kinked-utilization curve
- * (`computeBorrowApr`) if the on-chain read fails (RPC hiccup), so the page
- * degrades gracefully instead of showing "N/A".
+ * Borrow APY (%), read LIVE from the credit-layer Reserve. With `assetType`
+ * it is the reserve's own `borrow_rate_per_sec()` (the rate it accrues with
+ * right now); without it, the reserve's interest curve evaluated at the given
+ * liquidity/borrows split (see ContractService.getBorrowRatePerSecWad). The
+ * old RateModelContract no longer exists. Falls back to the old synthetic
+ * kinked-utilization curve (`computeBorrowApr`) if the on-chain read fails
+ * (RPC hiccup), so the page degrades gracefully instead of showing "N/A".
  */
 export const calculateBorrowAPY = async (
   liquidity: string,
   borrows: string,
   utilizationRate: string,
+  assetType?: AssetType,
 ): Promise<string> => {
-  const liquidityWad = toWad(parseFloat(liquidity) || 0);
-  const borrowsWad = toWad(parseFloat(borrows) || 0);
-  const ratePerSecWad = await ContractService.getBorrowRatePerSecWad(liquidityWad, borrowsWad);
+  const ratePerSecWad = assetType
+    ? await ContractService.getBorrowRatePerSecWad(assetType)
+    : await ContractService.getBorrowRatePerSecWad(
+        toWad(parseFloat(liquidity) || 0),
+        toWad(parseFloat(borrows) || 0),
+      );
   if (ratePerSecWad == null) {
     return computeBorrowApr(parseFloat(utilizationRate) || 0).toFixed(2);
   }
@@ -42,9 +48,11 @@ export const calculateBorrowAPY = async (
 
 /**
  * Supply APY (%) — always a utilization-scaled fraction of the real borrow
- * APY. Vanna's lending pools take no ongoing reserve-factor cut on interest
- * (protocol revenue is the one-time origination fee at borrow time, not an
- * interest-rate spread — see lending-pool's `get_origination_fee`), so 100%
+ * APY. Vanna's credit-layer Reserves take no ongoing reserve-factor cut on
+ * interest (verified in reserve/src/reserve.rs: accrued interest is added to
+ * total debt, which is part of total_assets, so it all accrues to share
+ * holders; protocol revenue is only the one-time origination fee at borrow
+ * time, `reserve.origination_fee()`), so 100%
  * of borrower interest flows to suppliers: `supply = borrow × utilization`.
  * This makes supply <= borrow by construction, fixing the previous
  * independent/uncoupled formulas that let supply show HIGHER than borrow.
@@ -55,7 +63,7 @@ export const calculateSupplyAPY = (borrowApyPct: number, utilizationRate: string
 };
 
 /**
- * vToken→underlying exchange rate = `totalAssets / vTokenSupply`, formatted to
+ * Share (vToken)→underlying exchange rate = `totalAssets / vTokenSupply`, formatted to
  * 7 decimals. Accrued interest pushes it above 1 over time. Returns "1" when
  * either input is non-positive (fresh/empty pool).
  */
@@ -87,8 +95,8 @@ export type AllPoolStats = {
   SOROSWAP_USDC: PoolStats;
 };
 
-const enrich = async (s: RawPoolStats): Promise<PoolStats> => {
-  const borrowAPY = await calculateBorrowAPY(s.availableLiquidity, s.totalBorrowed, s.utilizationRate);
+const enrich = async (s: RawPoolStats, assetType: AssetType): Promise<PoolStats> => {
+  const borrowAPY = await calculateBorrowAPY(s.availableLiquidity, s.totalBorrowed, s.utilizationRate, assetType);
   return {
     ...s,
     supplyAPY: calculateSupplyAPY(parseFloat(borrowAPY), s.utilizationRate),
@@ -106,10 +114,10 @@ export async function computeAllPoolStats(): Promise<AllPoolStats> {
     ContractService.getPoolStats(ASSET_TYPES.SOROSWAP_USDC),
   ]);
   const [xlmE, usdcE, aquariusE, soroswapE] = await Promise.all([
-    enrich(xlm),
-    enrich(usdc),
-    enrich(aquarius),
-    enrich(soroswap),
+    enrich(xlm, ASSET_TYPES.XLM),
+    enrich(usdc, ASSET_TYPES.USDC),
+    enrich(aquarius, ASSET_TYPES.AQUARIUS_USDC),
+    enrich(soroswap, ASSET_TYPES.SOROSWAP_USDC),
   ]);
   return {
     XLM: xlmE,

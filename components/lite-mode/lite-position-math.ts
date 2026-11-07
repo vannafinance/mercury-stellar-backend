@@ -56,11 +56,11 @@ export interface LeveragePreview {
   projectedEarnings1y: number;
 }
 
-/** Matches `BALANCE_TO_BORROW_THRESHOLD` / WAD in `risk_engine.rs` (strictly &gt; 1.1 healthy). */
-export const RISK_ENGINE_LIQUIDATION_HF = 1.1 as const;
+/** Matches `HEALTH_FACTOR_THRESHOLD_WAD` / WAD in the credit layer's shared math (strictly &gt; 1.2 healthy). */
+export const RISK_ENGINE_LIQUIDATION_HF = 1.2 as const;
 
 /**
- * Distance from current HF down to liquidation threshold (1.1), as a fraction of current HF.
+ * Distance from current HF down to liquidation threshold (1.2), as a fraction of current HF.
  * Same form as analytics `((hf - 1.1) / hf) * 100`.
  */
 export const distanceToLiquidationPct = (

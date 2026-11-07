@@ -3,12 +3,13 @@
 // protocol math reference (https://vannafinance.mintlify.app/developers).
 //
 //   health factor      = gross_collateral_usd / debt_usd        (∞ when no debt)
-//   liquidatable when  = HF <= 1.1   (collateralLeftBeforeLiquidation reaches 0)
-//   debt limit         = gross_collateral_usd / 1.1
+//   liquidatable when  = HF <= 1.2   (collateralLeftBeforeLiquidation reaches 0)
+//   debt limit         = gross_collateral_usd / 1.2
 //   net available      = gross_collateral_usd − debt_usd
 
-// Liquidation threshold (the Risk Engine liquidates at HF <= 1.1).
-export const LIQUIDATION_THRESHOLD = 1.1;
+// Liquidation / borrow / withdraw threshold. The credit layer (shared math::is_healthy,
+// HEALTH_FACTOR_THRESHOLD_WAD) is healthy only while HF > 1.2; liquidatable at HF <= 1.2.
+export const LIQUIDATION_THRESHOLD = 1.2;
 
 // Displayed in place of ∞ when an account has collateral but no debt.
 export const HEALTH_FACTOR_INFINITY_SENTINEL = 999;

@@ -24,6 +24,7 @@ vi.mock("@/lib/stellar-utils", async (importOriginal) => {
         SOROSWAP_USDC: "0",
       }),
       getDepositedBalance: vi.fn().mockResolvedValue("0"),
+      getShareBalance: vi.fn().mockResolvedValue("0"),
     },
   };
 });

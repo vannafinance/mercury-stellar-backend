@@ -1,5 +1,5 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { SOROBAN_RPC_URL } from './stellar-utils';
+import { CONTRACT_ADDRESSES, SOROBAN_RPC_URL } from './stellar-utils';
 import type { SoroswapLpEvent } from './soroswap-utils';
 
 // Bounded RPC fallback for Soroswap LP history when Mercury is down/erroring
@@ -11,6 +11,10 @@ import type { SoroswapLpEvent } from './soroswap-utils';
 // enrichment needed.
 
 const STROOP = 1e7;
+// A Soroswap pair sorts its tokens by address: token_0 is the smaller one.
+// On the XLM/SOUSDC pair token_0 is SOUSDC (CB3T… < CDLZ…, verified live
+// 2026-11-08), so amount_0 is the USDC side, not XLM.
+const XLM_IS_TOKEN_0 = CONTRACT_ADDRESSES.SOROSWAP_XLM < CONTRACT_ADDRESSES.SOROSWAP_USDC;
 const toHuman = (raw: unknown): string => {
   try {
     return (Number(BigInt(String(raw))) / STROOP).toFixed(7);
@@ -52,8 +56,8 @@ export async function getSoroswapLpEventsFromRpc(
       entries.push({
         type: kind as 'deposit' | 'withdraw',
         shareAmount: toHuman(d.liquidity),
-        amountXLM: toHuman(d.amount_0),
-        amountUSDC: toHuman(d.amount_1),
+        amountXLM: toHuman(XLM_IS_TOKEN_0 ? d.amount_0 : d.amount_1),
+        amountUSDC: toHuman(XLM_IS_TOKEN_0 ? d.amount_1 : d.amount_0),
         timestamp: new Date(e.ledgerClosedAt).getTime(),
         txHash: e.txHash,
         ledger: e.ledger,

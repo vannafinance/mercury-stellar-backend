@@ -76,7 +76,7 @@ export function statusTextColor(status: RiskStatus): string {
 
 export function hfColor(hf: number): string {
   if (hf < 1.0) return "#FC5457";
-  if (hf < 1.1) return "#FF007A";
+  if (hf < 1.2) return "#FF007A";
   if (hf < 1.3) return "#F59E0B";
   if (hf < 1.5) return "#9F7BEE";
   if (hf < 2.0) return "#703AE6";

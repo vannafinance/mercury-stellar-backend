@@ -5,8 +5,8 @@
  * browser's cache must not change what's shown; Mercury (and on-chain state) is the only source
  * of truth.
  *
- * Stellar's deposit_event carries only the underlying amount (no vToken shares), so the pool's
- * past exchange rate can't be pinned at each event the way the Solana design does. The value
+ * The history entries keep only the underlying amount (the Reserve's `supplied` / `redeemed` events
+ * also carry shares, but EarnTxEntry drops them), so the pool's past exchange rate isn't pinned at each event the way the Solana design does. The value
  * line therefore replays the real supply / withdraw amounts (net supplied principal) for every
  * past point — the same simplification the pre-V3 Earn page used — and the last point is the
  * exact live position (interest included), so every chart ends on the headline figure. USD uses

@@ -8,15 +8,14 @@
  *
  * Same rules and calls as the previous Stellar Repay tab (repay-loan-tab.tsx):
  *
- * - Repay pulls ONLY from the margin account's own balance of the asset (AccountManager `repay`,
- *   no wallet top-up) — so there is no WB / MB source switch here. When the account holds less than
- *   the amount, the tab says so and offers the Transfer tab to move more of the asset in first.
- * - Every chip (10/25/50/100%) is a fraction of the TRUE debt, capped to the margin balance;
- *   sub-cent dust is zeroed.
- * - Submission re-reads debt and balance fresh, caps to both, and for 100% sends the live debt plus
- *   a 1% (min 0.01 token) buffer — capped to the balance — so interest accrued between read and
- *   confirmation doesn't leave a sliver of debt; the contract clamps to the real debt. The progress
- *   step shows the debt, never the padded figure.
+ * - CreditLayer `repay` pays from the margin account's own balance of the asset. When the account
+ *   holds less than the amount, MarginAccountService.repayLoan first moves the shortfall in from the
+ *   wallet (`deposit_collateral`, one extra signature) and then repays; the tab says so up front.
+ * - Every chip (10/25/50/100%) is a fraction of the TRUE debt; sub-cent dust is zeroed.
+ * - Submission re-reads debt fresh, caps to it, and for 100% sends the live debt plus a 1% (min
+ *   0.01 token) buffer so interest accrued between read and confirmation doesn't leave a sliver of
+ *   debt; the contract clamps to the real debt. The progress step shows the debt, never the padded
+ *   figure.
  * - After success the store is re-read up to 3 times until it reflects the lower debt.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -158,11 +157,11 @@ export function RepayTab({ m, prefill, onTransfer }: { m: MarginScreen; prefill?
       ? `Net borrowed amount: ${formatDetailedTokenAmount(Math.max(0, stats.debt - accrued))} ${sym}. Interest accrued till date: ${formatDetailedTokenAmount(accrued)} ${sym} (≈ ${formatUsdValue(accrued * price)}). Total outstanding loan: ${formatDetailedTokenAmount(stats.debt)} ${sym}.`
       : `Total outstanding loan: ${formatDetailedTokenAmount(stats.debt)} ${sym}. Principal and interest breakdown is unavailable until the original on-chain borrow is indexed.`;
 
-  // Every chip is a fraction of the TRUE debt, capped to the margin account's own balance (it only
-  // ever repays from that balance). Below-a-cent dust is zeroed.
+  // Every chip is a fraction of the TRUE debt (a shortfall in the margin account is topped up from
+  // the wallet at submit). Below-a-cent dust is zeroed.
   const pick = (p: number) => {
     setPct(p);
-    const target = Math.min((stats.debt * p) / 100, stats.available);
+    const target = (stats.debt * p) / 100;
     const usdEquiv = price > 0 ? target * price : target;
     setInput(amountToInputString(usdEquiv < 0.01 ? 0 : clampRepayDust(target)));
   };
@@ -198,14 +197,9 @@ export function RepayTab({ m, prefill, onTransfer }: { m: MarginScreen; prefill?
                 return proportional > REPAY_BUFFER_FLOOR_WAD ? proportional : REPAY_BUFFER_FLOOR_WAD;
               })()
             : debtWad;
-        const finalRepayWad =
-          pct === 100 && debtWad > BigInt(0) && marginBalWad > BigInt(0)
-            ? bufferedDebtWad > marginBalWad
-              ? marginBalWad
-              : bufferedDebtWad
-            : cappedToDebt > marginBalWad
-              ? marginBalWad
-              : cappedToDebt;
+        // Not capped to the margin balance: repayLoan tops up any shortfall from the wallet first.
+        void marginBalWad;
+        const finalRepayWad = pct === 100 && debtWad > BigInt(0) ? bufferedDebtWad : cappedToDebt;
         if (finalRepayWad <= BigInt(0)) throw new Error("Nothing to repay for this token");
 
         // The progress step reads as "repaying the debt", never the padded on-chain amount.
@@ -263,13 +257,14 @@ export function RepayTab({ m, prefill, onTransfer }: { m: MarginScreen; prefill?
     error: (e) => normalizeRepayError(e.message, sym),
   });
 
-  // Repay is margin-balance-based only — an amount above what's in the margin account can never
-  // succeed on-chain, so surface that up front. Small epsilon avoids flagging a 100% preset.
-  const exceeds = amt > 0 && amt > stats.available + 1e-7;
+  // An amount above what's in the margin account needs a wallet top-up first (extra signature).
+  // Not a blocker any more; `exceeds` stays false so the button and preview behave as before.
+  const topUp = amt > 0 && amt > stats.available + 1e-7;
+  const exceeds = false;
 
   // Preview (repaid from the margin account) — never for a repay that cannot happen.
   const b = m.now;
-  const full = pct === 100 && stats.available + 1e-9 >= stats.debt && stats.debt > 0;
+  const full = pct === 100 && stats.debt > 0;
   const x = full ? stats.debt : Math.min(amt, stats.debt);
   const a = accountNumbers(withRepay(m.model, { symbol: ckey(sym), usd: x * price }, "margin"));
   const showPrev = m.connected && amt > 0 && b.debt > 0 && stats.debt > 0 && !exceeds;
@@ -339,15 +334,15 @@ export function RepayTab({ m, prefill, onTransfer }: { m: MarginScreen; prefill?
           <div className="mg-r start">
             <span className="mg-sub mg-inl">
               Repay From: <b>Margin Account</b>
-              <Info text="Repays from your margin account's own balance of this asset (no wallet top-up). To repay from your wallet, first move the asset in with Transfer → MB." />
+              <Info text="Repays from your margin account's own balance of this asset. If it holds less than the amount, the shortfall is first moved in from your wallet (one extra signature)." />
             </span>
           </div>
         </article>
 
-        {exceeds && (
+        {topUp && (
           <div className="mg-am" role="status">
             <span>
-              Your margin account holds {formatTokenAmount(stats.available)} {sym}, less than this repay. Move more {sym} into the margin account first.
+              Your margin account holds {formatTokenAmount(stats.available)} {sym}, less than this repay. The shortfall will be moved in from your wallet first (one extra signature).
             </span>
             <span className="mg-am-a">
               <button type="button" onClick={onTransfer}>

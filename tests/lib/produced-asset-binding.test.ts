@@ -52,7 +52,8 @@ const ctx = () => ({
   observations: OBSERVATIONS,
   now: NOW,
   messages: ["swap 100 XLM to AQUSDC and add it as liquidity"],
-  capacity: { grossCollateralUsd: "6605.84", debtUsd: "5102.54", floor: "1.2" },
+  // Floor above the 1.2 liquidation line, with the position clear of it.
+  capacity: { grossCollateralUsd: "7200", debtUsd: "5102.54", floor: "1.3" },
   borrowing: "allowed" as const,
   comparisons: compareObservedRates(OBSERVATIONS, NOW),
 });

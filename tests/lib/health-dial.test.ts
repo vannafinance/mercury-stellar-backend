@@ -2,12 +2,13 @@ import { describe, it, expect } from "vitest";
 import { zoneOf, healthDialHfSub } from "@/components/copilot/health-dial";
 
 describe("health zones match the protocol, not a guess", () => {
-  it("puts the liquidation boundary at 1.10", () => {
-    // lib/margin-health.ts: liquidation at 1.10, no threshold haircut. A gauge that drew
+  it("puts the liquidation boundary at 1.20", () => {
+    // lib/margin-health.ts: liquidation at 1.20, no threshold haircut. A gauge that drew
     // the line anywhere else would understate or overstate danger.
-    expect(zoneOf(1.09)).toBe("danger");
     expect(zoneOf(1.1)).toBe("danger");
-    expect(zoneOf(1.11)).toBe("warn");
+    expect(zoneOf(1.19)).toBe("danger");
+    expect(zoneOf(1.2)).toBe("danger");
+    expect(zoneOf(1.21)).toBe("warn");
   });
 
   it("bands above the line", () => {
@@ -25,9 +26,9 @@ describe("health zones match the protocol, not a guess", () => {
     expect(zoneOf(Number.NaN)).toBe("unknown");
   });
 
-  it("does not pair the page figure with the posted 1.10 line as if they were the same number", () => {
+  it("does not pair the page figure with the posted 1.20 line as if they were the same number", () => {
     expect(healthDialHfSub({ unknown: false, noDebt: false, basis: "page" })).toMatch(/unposted/);
     expect(healthDialHfSub({ unknown: false, noDebt: false, basis: "posted" })).toMatch(/posted collateral/);
-    expect(healthDialHfSub({ unknown: false, noDebt: false, basis: "page" })).toMatch(/1\.10/);
+    expect(healthDialHfSub({ unknown: false, noDebt: false, basis: "page" })).toMatch(/1\.20/);
   });
 });

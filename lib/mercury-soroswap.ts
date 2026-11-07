@@ -1,4 +1,5 @@
 import { fetchContractEvents } from "./mercury-client";
+import { CONTRACT_ADDRESSES } from "./stellar-utils";
 import { enrichTimestampsByTx } from "./mercury-timestamps";
 import type { SoroswapLpEvent } from "./soroswap-utils";
 
@@ -18,7 +19,7 @@ import type { SoroswapLpEvent } from "./soroswap-utils";
 // and don't reliably identify the user — mint→user in topic3, but burn→pair.)
 //
 // Fidelity vs the RPC getEvents path:
-//   shares / amount_0 / amount_1 → full (i128 ÷ 1e7 STROOP; amount_0=XLM token_0)
+//   shares / amount_0 / amount_1 → full (i128 ÷ 1e7 STROOP; amount_0 = token_0 = SOUSDC)
 //   timestamp / ledger           → NOT obtainable from Mercury. The REST event row
 //     has no ledger/close-time column, and every Mercury GraphQL path that could
 //     join one (allContractEvents, txInfoByTxHash, ledgerBySequence, allLedgers)
@@ -31,6 +32,10 @@ import type { SoroswapLpEvent } from "./soroswap-utils";
 //     closeTime is the eventual zero-external-call fix (mainnet path).
 
 const STROOP = 1e7;
+// A Soroswap pair sorts its tokens by address: token_0 is the smaller one.
+// On the XLM/SOUSDC pair token_0 is SOUSDC (CB3T… < CDLZ…, verified live
+// 2026-11-08), so amount_0 is the USDC side, not XLM.
+const XLM_IS_TOKEN_0 = CONTRACT_ADDRESSES.SOROSWAP_XLM < CONTRACT_ADDRESSES.SOROSWAP_USDC;
 const toHuman = (raw: unknown): string => {
   try {
     return (Number(BigInt(String(raw))) / STROOP).toFixed(7);
@@ -63,8 +68,8 @@ export async function getSoroswapLpEventsFromMercury(
       return {
         type: kind as "deposit" | "withdraw",
         shareAmount: toHuman(d.liquidity),
-        amountXLM: toHuman(d.amount_0), // token_0 = XLM on the XLM/USDC pair
-        amountUSDC: toHuman(d.amount_1),
+        amountXLM: toHuman(XLM_IS_TOKEN_0 ? d.amount_0 : d.amount_1),
+        amountUSDC: toHuman(XLM_IS_TOKEN_0 ? d.amount_1 : d.amount_0),
         timestamp: 0,
         txHash: e.tx ?? "",
         ledger: 0,

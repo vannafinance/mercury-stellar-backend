@@ -21,6 +21,7 @@ vi.mock("@/lib/stellar-utils", async (importOriginal) => {
       ...actual.ContractService,
       getAllTokenBalances: vi.fn().mockResolvedValue({ XLM: "1", USDC: "0", BLEND_USDC: "0", AQUARIUS_USDC: "0", SOROSWAP_USDC: "0" }),
       getDepositedBalance: vi.fn().mockResolvedValue("0"),
+      getShareBalance: vi.fn().mockResolvedValue("0"),
     },
   };
 });

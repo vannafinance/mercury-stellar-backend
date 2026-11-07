@@ -1,38 +1,35 @@
 // Blend Capital integration: deposit/withdraw into the single shared Blend pool
-// via the Vanna smart account, plus reserve-stats and position reads. APY math
-// mirrors blend-sdk-js so figures match testnet.blend.capital exactly.
+// from the Vanna margin account (CreditLayer.margin_execute), plus reserve-stats
+// and position reads. APY math mirrors blend-sdk-js so figures match
+// testnet.blend.capital exactly.
 
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { signTransaction } from '@/lib/wallet-adapter';
 import {
   CONTRACT_ADDRESSES,
   NETWORK_PASSPHRASE,
   SOROBAN_RPC_URL,
   ContractService,
-  resubmitOnTryAgainLater,
-  withFootprintRaceRetry,
-  describeSendError,
   describeFailedTx,
 } from './stellar-utils';
-import { markTxSubmitted } from './tx-progress';
+import { CreditLayer, readOr, sc, type ExternalAction } from './credit-layer';
 import { blendSupplyApyFromApr } from './rate-display';
 
-/** Blend action enum variant — must match `SmartAccExternalAction` on-chain. */
+/** Blend action as the UI names it. Maps to ExternalAction Supply / Withdraw. */
 export type BlendAction = 'Deposit' | 'Withdraw';
 
-/** Asset display info (icons/UI only — pool address is fetched from Registry at runtime). */
+/** Asset display info (icons/UI only — the pool address is CONTRACT_ADDRESSES.BLEND_POOL). */
 export interface BlendPoolAsset {
   symbol: string;
-  trackingSymbol: string; // symbol used in tracking token contract
+  /** Position key the app has always used for this Blend asset (BLEND_XLM / BLEND_USDC). */
+  trackingSymbol: string;
   iconPath: string;
   decimals: number;
 }
 
 /**
  * Asset display configuration for Blend pools.
- * NOTE: There is ONE Blend Capital pool contract that handles all assets.
- * The pool address is NOT per-token — it is fetched dynamically from the Registry
- * via `get_blend_pool_address()`.
+ * NOTE: There is ONE Blend Capital pool contract that handles all assets
+ * (CONTRACT_ADDRESSES.BLEND_POOL). "USDC" here is Blend's own USDC (BLUSDC).
  */
 export const BLEND_POOL_ASSETS: BlendPoolAsset[] = [
   {
@@ -106,281 +103,97 @@ export interface BlendEvent {
   ledger: number;
 }
 
+/** Token contract the Blend pool lists for a UI symbol. */
+const BLEND_TOKEN_ADDRESS: Record<string, string> = {
+  XLM: CONTRACT_ADDRESSES.BLEND_XLM,
+  USDC: CONTRACT_ADDRESSES.BLEND_USDC,
+};
+
+/** One row of BlendValuer.positions(pool, account): native (7dp) underlying owned / owed. */
+interface BlendValuerPosition {
+  token: string;
+  owned: bigint;
+  owed: bigint;
+}
+
+/** Arguments for CreditLayer.margin_execute (see lib/credit-layer.ts). */
+export interface VenueExecuteArgs {
+  target: string;
+  action: ExternalAction;
+  tokens: string[];
+  amounts: bigint[];
+  minOut: bigint;
+}
+
+/** Converts a human token amount to WAD through a 7-decimal integer step. */
+function humanToWad(amount: number): bigint {
+  // Split through a 7-decimal (stroop-precision) integer step rather than
+  // `amount * 1e18` directly — that raw float multiplication loses precision
+  // once the product needs more significant digits than a JS double can hold,
+  // confirmed live to overshoot the real balance by a tiny excess on a 100%
+  // withdraw elsewhere (see ContractService.withdraw in stellar-utils.ts).
+  return BigInt(Math.floor(amount * 1e7)) * BigInt(10 ** 11);
+}
+
 /**
- * Stateless façade over the single shared Blend Capital pool, reached through
- * the Vanna smart account (AccountManager.execute) for writes and via Soroban
- * simulation for reads. Amounts crossing the contract boundary are WAD (1e18);
- * b-token / tracking balances are 7-decimal; reserve APYs mirror blend-sdk-js.
- * All methods are static — no instance state.
+ * Stateless façade over the single shared Blend Capital pool. Writes go
+ * through CreditLayer.margin_execute(margin, BLEND_POOL, Supply|Withdraw,
+ * [token], [amount_wad], 0); the Blend validator turns them into a pool
+ * `submit`. Positions are read from the BlendValuer (underlying owned, 7dp).
+ * Reserve APYs mirror blend-sdk-js. All methods are static — no instance state.
  */
 export class BlendService {
   /**
-   * Fetch the Blend Capital pool address from the Registry contract.
-   * Returns null if no Blend pool is configured.
-   *
-   * Registry method: `get_blend_pool_address()` → Address (panics, so simulation
-   * fails, if nothing has been registered yet — there is no separate `has_*`
-   * probe function on the deployed contract).
+   * The Blend Capital pool address. Kept for callers that used to look it up
+   * in the (retired) Registry; it is now the fixed CONTRACT_ADDRESSES.BLEND_POOL.
    */
   static async getBlendPoolAddressFromRegistry(): Promise<string | null> {
-    try {
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const tempKeypair = StellarSdk.Keypair.random();
-      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const getTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call('get_blend_pool_address'))
-        .setTimeout(30)
-        .build();
-
-      const getSim = await server.simulateTransaction(getTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(getSim) || !getSim.result?.retval) {
-        console.warn('[BlendService] get_blend_pool_address simulation failed — Blend pool not configured in Registry');
-        return null;
-      }
-
-      const address = StellarSdk.scValToNative(getSim.result.retval);
-      return address as string;
-    } catch (error: any) {
-      console.error('[BlendService] getBlendPoolAddressFromRegistry error:', error);
-      return null;
-    }
+    return CONTRACT_ADDRESSES.BLEND_POOL;
   }
 
   /**
-   * Build the ExternalProtocolCall XDR bytes for a Blend deposit or withdraw.
-   *
-   * The struct is serialized as ScVal::Map with alphabetically sorted keys:
-   *   amount_in, amount_out, fee_fraction, is_token_pair, margin_account,
-   *   min_liquidity_out, protocol_address, token_pair_ratio, tokens_in,
-   *   tokens_out, type_action
-   *
-   * @param blendPoolAddress - The Blend Capital pool address from Registry
-   * @param action - 'Deposit' or 'Withdraw'
-  * @param tokenSymbol - 'XLM' or 'USDC'
-   * @param amountWad - Amount in WAD (18 decimals)
-   * @param marginAccountAddress - User's smart account address
+   * margin_execute arguments for a Blend supply or withdraw of `amount`
+   * (human units) of `tokenSymbol` ('XLM' | 'USDC' = BLUSDC).
+   * Blend: tokens=[token], amounts=[amount WAD], min_out unused (0).
    */
-  static buildExternalProtocolCallBytes(
-    blendPoolAddress: string,
-    action: BlendAction,
-    tokenSymbol: string,
-    amountWad: bigint,
-    marginAccountAddress: string
-  ): Buffer {
-    const makeKey = (name: string) => StellarSdk.xdr.ScVal.scvSymbol(name);
-
-    // amount_in: Vec<U256> = [] (empty for Blend)
-    const amountIn = StellarSdk.xdr.ScVal.scvVec([]);
-
-    // amount_out: Vec<U256> = [amountWad]
-    const amountOut = StellarSdk.xdr.ScVal.scvVec([
-      StellarSdk.nativeToScVal(amountWad, { type: 'u256' }),
-    ]);
-
-    // fee_fraction: u32 = 0
-    const feeFraction = StellarSdk.xdr.ScVal.scvU32(0);
-
-    // is_token_pair: bool = false
-    const isTokenPair = StellarSdk.xdr.ScVal.scvBool(false);
-
-    // margin_account: Address (the smart account)
-    const marginAccount = StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' });
-
-    // min_liquidity_out: U256 = 0
-    const minLiquidityOut = StellarSdk.nativeToScVal(BigInt(0), { type: 'u256' });
-
-    // protocol_address: Address = Blend Capital pool address (from Registry)
-    const protocolAddress = StellarSdk.nativeToScVal(blendPoolAddress, { type: 'address' });
-
-    // token_pair_ratio: u64 = 0
-    const tokenPairRatio = StellarSdk.xdr.ScVal.scvU64(
-      StellarSdk.xdr.Uint64.fromString('0')
-    );
-
-    // tokens_in: Vec<Symbol> = [] (empty for Blend)
-    const tokensIn = StellarSdk.xdr.ScVal.scvVec([]);
-
-    // tokens_out: Vec<Symbol> = [tokenSymbol] — tells contract which asset to deposit
-    const tokensOut = StellarSdk.xdr.ScVal.scvVec([
-      StellarSdk.xdr.ScVal.scvSymbol(tokenSymbol),
-    ]);
-
-    // type_action: SmartAccExternalAction = 'Deposit' or 'Withdraw'
-    // Soroban #[contracttype] enum unit variants are encoded as Vec([Symbol("VariantName")]),
-    // NOT as a bare Symbol. Using bare scvSymbol causes from_xdr to fail with UnreachableCodeReached.
-    const typeAction = StellarSdk.xdr.ScVal.scvVec([StellarSdk.xdr.ScVal.scvSymbol(action)]);
-
-    // Build alphabetically sorted ScVal::Map
-    const mapEntries = [
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('amount_in'), val: amountIn }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('amount_out'), val: amountOut }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('fee_fraction'), val: feeFraction }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('is_token_pair'), val: isTokenPair }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('margin_account'), val: marginAccount }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('min_liquidity_out'), val: minLiquidityOut }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('protocol_address'), val: protocolAddress }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('token_pair_ratio'), val: tokenPairRatio }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('tokens_in'), val: tokensIn }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('tokens_out'), val: tokensOut }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('type_action'), val: typeAction }),
-    ];
-
-    const scvMap = StellarSdk.xdr.ScVal.scvMap(mapEntries);
-    return Buffer.from(scvMap.toXDR());
+  static buildExecuteArgs(action: BlendAction, tokenSymbol: string, amount: number): VenueExecuteArgs {
+    const token = BLEND_TOKEN_ADDRESS[tokenSymbol];
+    if (!token) throw new Error(`Unsupported token: ${tokenSymbol}`);
+    const amountWad = humanToWad(amount);
+    if (amountWad <= BigInt(0)) throw new Error('Amount must be greater than zero');
+    return {
+      target: CONTRACT_ADDRESSES.BLEND_POOL,
+      action: action === 'Deposit' ? 'Supply' : 'Withdraw',
+      tokens: [token],
+      amounts: [amountWad],
+      minOut: BigInt(0),
+    };
   }
 
   /**
-   * Deposit tokens into the Blend Capital pool via AccountManager.execute().
+   * Deposit tokens into the Blend Capital pool from the margin account via
+   * CreditLayer.margin_execute(…, Supply, …).
    *
-   * Flow:
-   * 1. Fetch Blend pool address from Registry
-   * 2. Build XDR-encoded ExternalProtocolCall with Deposit action
-   * 3. Call AccountManager.execute(smart_account, xdr_bytes)
+   * `walletAddress` / `knownSequence` are kept for signature compatibility
+   * (one-click strategy, Copilot): the connected wallet signs, and the shared
+   * invokeWrite already retries a stale-sequence / footprint race.
    */
   static async depositToBlendPool(
     walletAddress: string,
     marginAccountAddress: string,
     tokenSymbol: string,
     amount: number,
-    // Pass the `nextSequence` from a just-confirmed prior same-account tx
-    // (e.g. one-click's deposit_and_borrow leg right before this deploy) to
-    // skip an RPC `getAccount()` read that isn't reliably fresh yet. See
-    // stellar-utils.ts's isFootprintRaceError for the full explanation —
-    // confirmed live: this call following right after a borrow/deposit leg
-    // was hitting a generic "Transaction rejected by network" with zero
-    // retry, because this function never had ANY of the resilience
-    // MarginAccountService.borrowTokens already has.
     knownSequence?: string
   ): Promise<BlendTransactionResult> {
-    let firstAttempt = true;
-    return withFootprintRaceRetry(() => {
-      const seq = firstAttempt ? knownSequence : undefined;
-      firstAttempt = false;
-      return BlendService.depositToBlendPoolAttempt(walletAddress, marginAccountAddress, tokenSymbol, amount, seq);
-    }, 'Blend deposit');
-  }
-
-  private static async depositToBlendPoolAttempt(
-    walletAddress: string,
-    marginAccountAddress: string,
-    tokenSymbol: string,
-    amount: number,
-    knownSequence?: string
-  ): Promise<BlendTransactionResult> {
-    try {
-      // Validate token
-      const assetInfo = BLEND_POOL_ASSETS.find((a) => a.symbol === tokenSymbol);
-      if (!assetInfo) {
-        throw new Error(`Unsupported token: ${tokenSymbol}`);
-      }
-
-      // Get the Blend pool address from Registry.
-      const registryAddr = await BlendService.getBlendPoolAddressFromRegistry();
-      if (!registryAddr) {
-        return {
-          success: false,
-          error:
-            'Blend pool is not configured in the Registry. Ask the admin to run set_blend_pool_address before depositing XLM.',
-        };
-      }
-      const blendPoolAddress = registryAddr;
-
-      // Convert amount to WAD (18 decimals). Split through a 7-decimal
-      // (stroop-precision) integer step rather than `amount * 1e18` directly
-      // — that raw float multiplication loses precision once the product
-      // needs more significant digits than a JS double can hold, confirmed
-      // live to overshoot the real balance by a tiny excess on a 100%
-      // withdraw elsewhere (see ContractService.withdraw in stellar-utils.ts).
-      const amountWad = BigInt(Math.floor(amount * 1e7)) * BigInt(10 ** 11);
-
-      const callBytes = BlendService.buildExternalProtocolCallBytes(
-        blendPoolAddress,
-        'Deposit',
-        tokenSymbol,
-        amountWad,
-        marginAccountAddress
-      );
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = knownSequence
-        ? new StellarSdk.Account(walletAddress, knownSequence)
-        : await server.getAccount(walletAddress);
-      console.log(
-        `[BlendService.depositToBlendPoolAttempt] walletAddress=${walletAddress} knownSequence=${knownSequence ?? '(none — fetched fresh)'} baseSequence=${sourceAccount.sequenceNumber()} txSequenceWillBe=${(BigInt(sourceAccount.sequenceNumber()) + BigInt(1)).toString()}`
-      );
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
-
-      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
-        fee: (parseInt(StellarSdk.BASE_FEE) * 20).toString(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          contract.call(
-            'execute',
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-            StellarSdk.xdr.ScVal.scvBytes(callBytes)
-          )
-        )
-        .setTimeout(30)
-        .build();
-
-      // sourceAccount is mutated in place by .build() — capture the sequence
-      // this tx just consumed for a caller chaining into another same-account
-      // tx right after this one.
-      const nextSequence = sourceAccount.sequenceNumber();
-
-      const preparedTx = await server.prepareTransaction(transaction);
-
-      const signResult = await signTransaction(preparedTx.toXDR(), {
-        networkPassphrase: NETWORK_PASSPHRASE,
-      });
-
-      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
-        signResult.signedTxXdr,
-        NETWORK_PASSPHRASE
-      );
-
-      // Wallet just returned a signed tx — switch the progress modal from
-      // "waiting on you" to an animated "confirming on-chain" fill.
-      markTxSubmitted();
-
-      let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-      result = await resubmitOnTryAgainLater(server, signedTx as StellarSdk.Transaction, result, 'Blend deposit');
-
-      if (result.status === 'PENDING') {
-        await BlendService.pollTransactionStatus(server, result.hash);
-        return { success: true, hash: result.hash, nextSequence };
-      } else if (result.status === 'ERROR') {
-        const resultCode = describeSendError(result);
-        console.error(`❌ Blend deposit failed immediately with ERROR status (${resultCode})`);
-        console.error('Error details:', { resultCode, diagnosticEvents: result.diagnosticEvents });
-        return {
-          success: false,
-          error: resultCode !== 'unknown'
-            ? `Transaction failed with result: ${resultCode}`
-            : `Deposit transaction failed with status: ${result.status}`,
-        };
-      } else {
-        return { success: false, error: `Deposit transaction failed with status: ${result.status}` };
-      }
-    } catch (error: any) {
-      console.error('[BlendService] Deposit error:', error);
-      return { success: false, error: error?.message || 'Deposit failed' };
-    }
+    void walletAddress;
+    void knownSequence;
+    return BlendService.execute('Deposit', marginAccountAddress, tokenSymbol, amount);
   }
 
   /**
-   * Withdraw tokens from the Blend Capital pool via AccountManager.execute().
-   *
-   * Flow:
-   * 1. Fetch Blend pool address from Registry
-   * 2. Build XDR-encoded ExternalProtocolCall with Withdraw action
-   * 3. Call AccountManager.execute(smart_account, xdr_bytes)
+   * Withdraw tokens from the Blend Capital pool back into the margin account via
+   * CreditLayer.margin_execute(…, Withdraw, …). Blend caps a withdraw at the
+   * position, so asking for more than is owned withdraws everything.
    */
   static async withdrawFromBlendPool(
     walletAddress: string,
@@ -389,182 +202,73 @@ export class BlendService {
     amount: number,
     knownSequence?: string
   ): Promise<BlendTransactionResult> {
-    let firstAttempt = true;
-    return withFootprintRaceRetry(() => {
-      const seq = firstAttempt ? knownSequence : undefined;
-      firstAttempt = false;
-      return BlendService.withdrawFromBlendPoolAttempt(walletAddress, marginAccountAddress, tokenSymbol, amount, seq);
-    }, 'Blend withdraw');
+    void walletAddress;
+    void knownSequence;
+    return BlendService.execute('Withdraw', marginAccountAddress, tokenSymbol, amount);
   }
 
-  private static async withdrawFromBlendPoolAttempt(
-    walletAddress: string,
+  private static async execute(
+    action: BlendAction,
     marginAccountAddress: string,
     tokenSymbol: string,
     amount: number,
-    knownSequence?: string
   ): Promise<BlendTransactionResult> {
     try {
-      const assetInfo = BLEND_POOL_ASSETS.find((a) => a.symbol === tokenSymbol);
-      if (!assetInfo) {
-        throw new Error(`Unsupported token: ${tokenSymbol}`);
-      }
-
-      // Get the Blend pool address from Registry.
-      const registryAddr = await BlendService.getBlendPoolAddressFromRegistry();
-      if (!registryAddr) {
-        return {
-          success: false,
-          error:
-            'Blend pool is not configured in the Registry. Ask the admin to run set_blend_pool_address before withdrawing XLM.',
-        };
-      }
-      const blendPoolAddress = registryAddr;
-
-      // Convert amount to WAD (18 decimals) — see depositToBlendPoolAttempt's
-      // matching comment on why this goes through a 7-decimal integer step
-      // instead of a single `amount * 1e18` float multiplication.
-      const amountWad = BigInt(Math.floor(amount * 1e7)) * BigInt(10 ** 11);
-
-      const callBytes = BlendService.buildExternalProtocolCallBytes(
-        blendPoolAddress,
-        'Withdraw',
-        tokenSymbol,
-        amountWad,
-        marginAccountAddress
-      );
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = knownSequence
-        ? new StellarSdk.Account(walletAddress, knownSequence)
-        : await server.getAccount(walletAddress);
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
-
-      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
-        fee: (parseInt(StellarSdk.BASE_FEE) * 20).toString(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          contract.call(
-            'execute',
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-            StellarSdk.xdr.ScVal.scvBytes(callBytes)
-          )
-        )
-        .setTimeout(30)
-        .build();
-
-      const nextSequence = sourceAccount.sequenceNumber();
-
-      const preparedTx = await server.prepareTransaction(transaction);
-
-      const signResult = await signTransaction(preparedTx.toXDR(), {
-        networkPassphrase: NETWORK_PASSPHRASE,
-      });
-
-      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
-        signResult.signedTxXdr,
-        NETWORK_PASSPHRASE
-      );
-
-      // Wallet just returned a signed tx — switch the progress modal from
-      // "waiting on you" to an animated "confirming on-chain" fill.
-      markTxSubmitted();
-
-      let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-      result = await resubmitOnTryAgainLater(server, signedTx as StellarSdk.Transaction, result, 'Blend withdraw');
-
-      if (result.status === 'PENDING') {
-        await BlendService.pollTransactionStatus(server, result.hash);
-        return { success: true, hash: result.hash, nextSequence };
-      } else if (result.status === 'ERROR') {
-        const resultCode = describeSendError(result);
-        console.error(`❌ Blend withdraw failed immediately with ERROR status (${resultCode})`);
-        console.error('Error details:', { resultCode, diagnosticEvents: result.diagnosticEvents });
-        return {
-          success: false,
-          error: resultCode !== 'unknown'
-            ? `Transaction failed with result: ${resultCode}`
-            : `Withdraw transaction failed with status: ${result.status}`,
-        };
-      } else {
-        return { success: false, error: `Withdraw transaction failed with status: ${result.status}` };
-      }
+      if (!marginAccountAddress) return { success: false, error: 'Margin account required' };
+      const a = BlendService.buildExecuteArgs(action, tokenSymbol, amount);
+      const res = await CreditLayer.execute(marginAccountAddress, a.target, a.action, a.tokens, a.amounts, a.minOut);
+      return { success: res.success, hash: res.hash, error: res.error };
     } catch (error: any) {
-      console.error('[BlendService] Withdraw error:', error);
-      return { success: false, error: error?.message || 'Withdraw failed' };
+      console.error(`[BlendService] ${action} error:`, error);
+      return { success: false, error: error?.message || `${action} failed` };
     }
   }
 
   /**
-   * Get user's Blend supply balance for a given token.
+   * The margin account's Blend positions from BlendValuer.positions(pool, account):
+   * one row per reserve with `owned` underlying (native 7dp) and `owed`.
+   */
+  private static async getValuerPositions(marginAccountAddress: string): Promise<BlendValuerPosition[]> {
+    const raw = await readOr<any[]>(
+      CONTRACT_ADDRESSES.BLEND_VALUER,
+      'positions',
+      [sc.address(CONTRACT_ADDRESSES.BLEND_POOL), sc.address(marginAccountAddress)],
+      [],
+    );
+    return (raw || []).map((r: any) => ({
+      token: String(r?.token ?? ''),
+      owned: BigInt(r?.owned ?? 0),
+      owed: BigInt(r?.owed ?? 0),
+    }));
+  }
+
+  /** Builds a BlendBalanceInfo from an underlying native amount and the reserve b-rate. */
+  private static toBalance(ownedNative: bigint, bRate: number): BlendBalanceInfo {
+    const underlying = Number(ownedNative) / 1e7;
+    const bTokens = bRate > 0 ? underlying / bRate : underlying;
+    return { bTokenBalance: bTokens.toFixed(7), underlyingBalance: underlying.toFixed(7) };
+  }
+
+  /**
+   * Get the margin account's Blend supply balance for a given token.
    *
-   * Reads the tracking token balance from the TrackingToken contract.
-  * The tracking symbols are: BLEND_XLM, BLEND_USDC
-   * (set by AccountManager after a successful Blend deposit).
+   * Reads BlendValuer.positions (underlying owned, 7 decimals); the b-token
+   * figure is derived from the reserve's current b-rate.
    */
   static async getUserBlendBalance(
     marginAccountAddress: string,
     tokenSymbol: 'XLM' | 'USDC'
   ): Promise<BlendBalanceInfo> {
     try {
-      const assetInfo = BLEND_POOL_ASSETS.find((a) => a.symbol === tokenSymbol);
-      if (!assetInfo) {
-        throw new Error(`Unsupported token: ${tokenSymbol}`);
-      }
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const tempKeypair = StellarSdk.Keypair.random();
-      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
-
-      // Get tracking token contract from Registry
-      const registryContract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-      const trackingAddrTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(registryContract.call('get_tracking_token_contract_addr'))
-        .setTimeout(30)
-        .build();
-
-      const trackingAddrSim = await server.simulateTransaction(trackingAddrTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(trackingAddrSim) || !trackingAddrSim.result?.retval) {
-        return { bTokenBalance: '0', underlyingBalance: '0' };
-      }
-      const trackingTokenAddress = StellarSdk.scValToNative(trackingAddrSim.result.retval) as string;
-
-      // Call balance(margin_account, tracking_symbol)
-      const trackingContract = new StellarSdk.Contract(trackingTokenAddress);
-      const balanceTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          trackingContract.call(
-            'balance',
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-            StellarSdk.xdr.ScVal.scvSymbol(assetInfo.trackingSymbol)
-          )
-        )
-        .setTimeout(30)
-        .build();
-
-      const balanceSim = await server.simulateTransaction(balanceTx);
-      if (StellarSdk.rpc.Api.isSimulationSuccess(balanceSim) && balanceSim.result?.retval) {
-        const raw = StellarSdk.scValToNative(balanceSim.result.retval);
-        // Tracking token balance is in b-tokens (Blend's internal representation, 7 decimals)
-        const balanceNum = Number(raw) / 1e7;
-        const reserve = await BlendService.getBlendReserveData(tokenSymbol);
-        const bRate = reserve ? parseFloat(reserve.bRate) : 1;
-        const underlying = balanceNum * bRate;
-
-        return {
-          bTokenBalance: balanceNum.toFixed(7),
-          underlyingBalance: underlying.toFixed(7),
-        };
-      }
-
-      return { bTokenBalance: '0', underlyingBalance: '0' };
+      const token = BLEND_TOKEN_ADDRESS[tokenSymbol];
+      if (!token) throw new Error(`Unsupported token: ${tokenSymbol}`);
+      const [positions, reserve] = await Promise.all([
+        BlendService.getValuerPositions(marginAccountAddress),
+        BlendService.getBlendReserveData(tokenSymbol),
+      ]);
+      const row = positions.find((p) => p.token === token);
+      if (!row || row.owned <= BigInt(0)) return { bTokenBalance: '0', underlyingBalance: '0' };
+      return BlendService.toBalance(row.owned, reserve ? parseFloat(reserve.bRate) : 1);
     } catch (error: any) {
       console.error('[BlendService] getUserBlendBalance error:', error);
       return { bTokenBalance: '0', underlyingBalance: '0' };
@@ -573,150 +277,29 @@ export class BlendService {
 
   /**
    * Get the actual token balance held by a margin account, reading
-   * `token.balance(marginAccountAddress)` directly on the asset's own SAC —
-   * the live raw balance, not the (possibly stale) on-chain collateral
-   * ledger. Despite the Blend-specific name, this reads any of the four
-   * margin-supported assets; used for XLM/USDC by the Blend raw-SAC
-   * reconcile and for AQUSDC/SOUSDC by the same reconcile in
-   * farmTrackingCollateral.ts, since none of their collateral-ledger
-   * entries update when the balance moves into an Aquarius/Soroswap LP.
+   * `token.balance(marginAccountAddress)` directly on the asset's own SAC.
+   * Despite the Blend-specific name, this reads any of the four
+   * margin-supported assets (XLM, USDC = BLUSDC, AQUSDC, SOUSDC).
    */
   static async getMarginAccountTokenBalance(
     marginAccountAddress: string,
     token: 'XLM' | 'USDC' | 'AQUSDC' | 'SOUSDC'
   ): Promise<string> {
-    try {
-      const tokenContractId =
-        token === 'XLM' ? CONTRACT_ADDRESSES.BLEND_XLM
-        : token === 'USDC' ? CONTRACT_ADDRESSES.BLEND_USDC
-        : token === 'AQUSDC' ? CONTRACT_ADDRESSES.AQUARIUS_USDC
-        : CONTRACT_ADDRESSES.SOROSWAP_USDC;
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const tempKeypair = StellarSdk.Keypair.random();
-      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
-      const tokenContract = new StellarSdk.Contract(tokenContractId);
-
-      const tx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          tokenContract.call(
-            'balance',
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-          )
-        )
-        .setTimeout(30)
-        .build();
-
-      const sim = await server.simulateTransaction(tx);
-      if ('error' in sim || !('result' in sim) || !sim.result) return '0';
-
-      const raw = StellarSdk.scValToNative(sim.result.retval) as bigint;
-      return (Number(raw) / 1e7).toFixed(7);
-    } catch {
-      return '0';
-    }
+    const tokenContractId =
+      token === 'XLM' ? CONTRACT_ADDRESSES.BLEND_XLM
+      : token === 'USDC' ? CONTRACT_ADDRESSES.BLEND_USDC
+      : token === 'AQUSDC' ? CONTRACT_ADDRESSES.AQUARIUS_USDC
+      : CONTRACT_ADDRESSES.SOROSWAP_USDC;
+    const raw = await readOr<bigint>(tokenContractId, 'balance', [sc.address(marginAccountAddress)], BigInt(0));
+    return (Number(raw) / 1e7).toFixed(7);
   }
 
   /**
-   * Fetch the tracking token contract address from the Registry.
-   * This is the contract that stores b-token balances for margin accounts.
-   * Users can add this token contract to their wallet to monitor their Blend positions.
-   */
-  static async getTrackingTokenContractAddress(): Promise<string | null> {
-    try {
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const tempKeypair = StellarSdk.Keypair.random();
-      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
-      const registryContract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const tx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(registryContract.call('get_tracking_token_contract_addr'))
-        .setTimeout(30)
-        .build();
-
-      const sim = await server.simulateTransaction(tx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
-        return null;
-      }
-      return StellarSdk.scValToNative(sim.result.retval) as string;
-    } catch (error: any) {
-      console.error('[BlendService] getTrackingTokenContractAddress error:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Check if the Blend pool is configured.
-   * Blend actions require Registry.BlendPoolContract to be present so the
-   * smart account can route the call to the correct protocol branch.
+   * Blend actions need only the (fixed) Blend pool address, so this is always
+   * true now. Kept so existing UI gates keep compiling.
    */
   static async isBlendPoolConfigured(): Promise<boolean> {
-    return (await BlendService.getBlendPoolAddressFromRegistry()) !== null;
-  }
-
-  /**
-   * Admin function: Call Registry.set_blend_pool_address() to configure the Blend pool.
-   *
-   * ⚠️  CRITICAL: This MUST be called by the admin wallet BEFORE any Blend deposit/withdraw
-   * can succeed. Without it, SmartAccount.execute() panics:
-   *   "No external protocol mapped for the given protocol address"
-   *   → HostError: Error(WasmVm, InvalidAction) / UnreachableCodeReached
-   *
-   * @param adminAddress - Must be the protocol admin wallet address
-   */
-  static async adminSetBlendPoolAddress(
-    adminAddress: string
-  ): Promise<BlendTransactionResult> {
-    try {
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const adminAccount = await server.getAccount(adminAddress);
-      const registryContract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const transaction = new StellarSdk.TransactionBuilder(adminAccount, {
-        fee: (parseInt(StellarSdk.BASE_FEE) * 10).toString(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          registryContract.call(
-            'set_blend_pool_address',
-            StellarSdk.nativeToScVal(CONTRACT_ADDRESSES.BLEND_POOL, { type: 'address' })
-          )
-        )
-        .setTimeout(30)
-        .build();
-
-      const preparedTx = await server.prepareTransaction(transaction);
-
-      const signResult = await signTransaction(preparedTx.toXDR(), {
-        networkPassphrase: NETWORK_PASSPHRASE,
-      });
-
-      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
-        signResult.signedTxXdr,
-        NETWORK_PASSPHRASE
-      );
-
-      // Wallet just returned a signed tx — switch the progress modal from
-      // "waiting on you" to an animated "confirming on-chain" fill.
-      markTxSubmitted();
-
-      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-      if (result.status === 'PENDING') {
-        await BlendService.pollTransactionStatus(server, result.hash);
-        return { success: true, hash: result.hash };
-      } else {
-        throw new Error('Transaction rejected by network');
-      }
-    } catch (error: any) {
-      console.error('[BlendService] adminSetBlendPoolAddress error:', error);
-      return { success: false, error: error?.message || 'Failed to set Blend pool address' };
-    }
+    return true;
   }
 
   /**
@@ -906,38 +489,21 @@ export class BlendService {
   }
 
   /**
-   * Get user's Blend supply positions for all tokens via tracking token contract.
-   * Returns b-token balance and estimated underlying value per token.
+   * Get the margin account's Blend supply positions for all tokens from
+   * BlendValuer.positions (one read). Returns b-token balance (derived from the
+   * b-rate) and underlying value per token.
    */
   static async getAllUserBlendPositions(
     marginAccountAddress: string
   ): Promise<Record<string, BlendUserPosition>> {
-    const assets = BLEND_POOL_ASSETS;
     const empty = (): BlendUserPosition => ({ bTokenBalance: '0', underlyingValue: '0', tokenSymbol: '' });
     const result: Record<string, BlendUserPosition> = {
       XLM: empty(), USDC: empty(),
     };
 
     try {
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const tempKeypair = StellarSdk.Keypair.random();
-      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
-
-      // Fetch tracking token contract address from Registry
-      const regContract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-      const trackAddrTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE, networkPassphrase: NETWORK_PASSPHRASE,
-      }).addOperation(regContract.call('get_tracking_token_contract_addr')).setTimeout(30).build();
-
-      const trackAddrSim = await server.simulateTransaction(trackAddrTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(trackAddrSim) || !trackAddrSim.result?.retval) {
-        return result;
-      }
-      const trackingAddress = StellarSdk.scValToNative(trackAddrSim.result.retval) as string;
-      const trackContract = new StellarSdk.Contract(trackingAddress);
-
-      // Fetch b-rates for value calculation
-      const [xlmReserve, usdcReserve] = await Promise.all([
+      const [positions, xlmReserve, usdcReserve] = await Promise.all([
+        BlendService.getValuerPositions(marginAccountAddress),
         BlendService.getBlendReserveData('XLM'),
         BlendService.getBlendReserveData('USDC'),
       ]);
@@ -945,36 +511,11 @@ export class BlendService {
         XLM: xlmReserve ? parseFloat(xlmReserve.bRate) : 1,
         USDC: usdcReserve ? parseFloat(usdcReserve.bRate) : 1,
       };
-
-      // Fetch balances for each tracking symbol in parallel
-      const balancePromises = assets.map(async (asset) => {
-        const balTx = new StellarSdk.TransactionBuilder(tempAccount, {
-          fee: StellarSdk.BASE_FEE, networkPassphrase: NETWORK_PASSPHRASE,
-        }).addOperation(
-          trackContract.call(
-            'balance',
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-            StellarSdk.xdr.ScVal.scvSymbol(asset.trackingSymbol)
-          )
-        ).setTimeout(30).build();
-
-        const balSim = await server.simulateTransaction(balTx);
-        if (StellarSdk.rpc.Api.isSimulationSuccess(balSim) && balSim.result?.retval) {
-          const raw = Number(StellarSdk.scValToNative(balSim.result.retval));
-          const bTokens = raw / 1e7; // tracking token uses 7 decimals
-          const underlying = bTokens * bRates[asset.symbol];
-          return {
-            symbol: asset.symbol,
-            bTokenBalance: bTokens.toFixed(7),
-            underlyingValue: underlying.toFixed(7),
-          };
-        }
-        return { symbol: asset.symbol, bTokenBalance: '0', underlyingValue: '0' };
-      });
-
-      const balances = await Promise.all(balancePromises);
-      for (const b of balances) {
-        result[b.symbol] = { bTokenBalance: b.bTokenBalance, underlyingValue: b.underlyingValue, tokenSymbol: b.symbol };
+      for (const asset of BLEND_POOL_ASSETS) {
+        const row = positions.find((p) => p.token === BLEND_TOKEN_ADDRESS[asset.symbol]);
+        if (!row || row.owned <= BigInt(0)) continue;
+        const bal = BlendService.toBalance(row.owned, bRates[asset.symbol]);
+        result[asset.symbol] = { bTokenBalance: bal.bTokenBalance, underlyingValue: bal.underlyingBalance, tokenSymbol: asset.symbol };
       }
     } catch (err: any) {
       console.error('[BlendService] getAllUserBlendPositions error:', err);
@@ -990,8 +531,7 @@ export class BlendService {
     marginAccountAddress: string,
     blendPoolAddress?: string
   ): Promise<BlendEvent[]> {
-    const registryPoolAddress = await BlendService.getBlendPoolAddressFromRegistry();
-    const poolAddress = blendPoolAddress ?? registryPoolAddress ?? CONTRACT_ADDRESSES.BLEND_POOL;
+    const poolAddress = blendPoolAddress ?? CONTRACT_ADDRESSES.BLEND_POOL;
     const assetMap: Record<string, string> = {
       [CONTRACT_ADDRESSES.BLEND_XLM]: 'XLM',
       [CONTRACT_ADDRESSES.BLEND_USDC]: 'USDC',
