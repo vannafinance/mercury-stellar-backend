@@ -8,11 +8,6 @@
  * scannable card layout rather than a flat wall of text.
  */
 
-import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
-
-/** The protocol liquidation line as prose shows it ("1.20"). */
-const LIQ_LINE = LIQUIDATION_THRESHOLD.toFixed(2);
-
 export interface GuideHighlight {
   label: string;
   value: string;
@@ -89,7 +84,7 @@ export const GUIDE_RESPONSE_SCHEMA = {
         type: "OBJECT",
         properties: {
           label: { type: "STRING", description: "Short metric or status label, e.g. 'Health Factor' or 'Pool APY'." },
-          value: { type: "STRING", description: `Exact value from pageContext or protocol law, e.g. '${LIQ_LINE} liquidation floor'.` },
+          value: { type: "STRING", description: "Exact value from pageContext or protocol law, e.g. '1.10 liquidation floor'." },
           tone: {
             type: "STRING",
             enum: ["good", "warn", "bad", "neutral"],
@@ -113,7 +108,7 @@ export const GUIDE_RESPONSE_SCHEMA = {
             type: "STRING",
             description:
               "A formula in plain text if one genuinely clarifies this section, e.g. " +
-              `'Health Factor = Gross Collateral / Debt (Liquidation <= ${LIQ_LINE})'. Omit otherwise.`,
+              "'Health Factor = Gross Collateral / Debt (Liquidation <= 1.10)'. Omit otherwise.",
           },
           bullets: {
             type: "ARRAY",
@@ -220,7 +215,7 @@ You return structured JSON matching the schema. The UI renders each field into d
 
 ADAPTIVE STRUCTURE & TONE
 - Lead with a crystal-clear summary (1-3 sentences) that directly answers the user's question.
-- Populate highlights (up to 4 cards) when the user's screen has concrete numbers (APY, TVL, Health Factor, Collateral, Debt) or when highlighting critical protocol invariants (such as the ${LIQ_LINE} liquidation floor).
+- Populate highlights (up to 4 cards) when the user's screen has concrete numbers (APY, TVL, Health Factor, Collateral, Debt) or when highlighting critical protocol invariants (such as the 1.10 liquidation floor).
 - Keep sections sharp and well-paced:
   - Use formula only when an exact mathematical relation clarifies the concept.
   - Use steps when walking the user through how to do something in the UI.
@@ -239,8 +234,8 @@ PAGE CONTEXT & SESSION EVENTS
 - If screenshots are attached, read only what is visibly shown and cross-check with pageContext.
 
 PROTOCOL ACCURACY & DOMAIN BOUNDARY
-- Health Factor on Vanna is Gross Collateral / Debt. Hard liquidation occurs at or below HF <= ${LIQ_LINE}. There is no collateral threshold haircut.
-- Never present a safety floor you were not given as a protocol rule, and never put one into copilotHandoffPrompt. Any safety buffer above the ${LIQ_LINE} protocol liquidation threshold belongs strictly to the user.
+- Health Factor on Vanna is Gross Collateral / Debt. Hard liquidation occurs at or below HF <= 1.10. There is no collateral threshold haircut.
+- Never present a safety floor you were not given as a protocol rule, and never put one into copilotHandoffPrompt. Any safety buffer above the 1.10 protocol liquidation threshold belongs strictly to the user.
 - Three-bucket architecture: Spendable Wallet balances, Posted Margin (Smart Account collateral & debt), and Earn Pools are distinct buckets.
 - Earn, Farm, and Margin are distinct products:
   - Earn: Vanna's native lending pools where suppliers earn yield.

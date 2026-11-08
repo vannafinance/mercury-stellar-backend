@@ -33,7 +33,7 @@ import {
 const amountToInputString = (n: number): string =>
   Number.isFinite(n) && n > 0 ? String(parseFloat(n.toFixed(AMOUNT_MAX_DECIMALS))) : "";
 
-const LIQUIDATION_THRESHOLD = 1.2; // credit layer HEALTH_FACTOR_THRESHOLD_WAD
+const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
 const formatHF = (hf: number): string =>
   !Number.isFinite(hf) || hf >= HF_INF_SENTINEL ? "∞" : hf.toFixed(2);

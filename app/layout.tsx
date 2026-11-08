@@ -46,7 +46,7 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://stellar.vanna.fina
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "Vanna - Leveraged Yield & Margin on Stellar",
+    default: "Vanna — Leveraged Yield & Margin on Stellar",
     template: "%s · Vanna",
   },
   description:
@@ -73,13 +73,13 @@ export const metadata: Metadata = {
     type: "website",
     siteName: "Vanna Protocol",
     url: SITE_URL,
-    title: "Vanna - Leveraged Yield & Margin on Stellar",
+    title: "Vanna — Leveraged Yield & Margin on Stellar",
     description:
       "Earn yield, borrow against collateral, and deploy one-click leveraged strategies on Stellar/Soroban.",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Vanna - Leveraged Yield & Margin on Stellar",
+    title: "Vanna — Leveraged Yield & Margin on Stellar",
     description:
       "Earn yield, borrow against collateral, and deploy one-click leveraged strategies on Stellar/Soroban.",
   },

@@ -35,7 +35,7 @@ describe("contract health path gate", () => {
   });
   it("requires evidence and a valid explicit floor", () => {
     expect(validateHealthPath([], policy).valid).toBe(false);
-    for (const value of ["", "1.1", "1.2", "1.0", "NaN", "1e3", "1.3000000000000000001"]) expect(healthFloorWad(value)).toBeNull();
+    for (const value of ["", "1.1", "1.0", "NaN", "1e3", "1.3000000000000000001"]) expect(healthFloorWad(value)).toBeNull();
     expect(healthFloorWad("1.30")).toBe(BigInt(13) * WAD / BigInt(10));
   });
 });

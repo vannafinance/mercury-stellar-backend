@@ -14,8 +14,6 @@ export interface ContractHealthState {
   wasmHash: string;
 }
 
-import { LIQUIDATION_THRESHOLD_WAD } from "./sizing";
-
 const WAD = BigInt(10) ** BigInt(18);
 const U256_MAX = (BigInt(1) << BigInt(256)) - BigInt(1);
 function uint(value: string): bigint | null {
@@ -29,7 +27,7 @@ export function healthFloorWad(value: string): bigint | null {
   if (!/^[1-9]\d{0,3}(?:\.\d{1,18})?$/.test(value)) return null;
   const [whole, fraction = ""] = value.split(".");
   const result = BigInt(whole) * WAD + BigInt(fraction.padEnd(18, "0"));
-  return result > LIQUIDATION_THRESHOLD_WAD ? result : null;
+  return result > BigInt(11) * WAD / BigInt(10) ? result : null;
 }
 
 export function validateHealthPath(states: readonly ContractHealthState[], input: {

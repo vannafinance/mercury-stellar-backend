@@ -4,7 +4,7 @@
  * The pool page's tabs (V3 design `#earn-<SYM>`): Positions, Details, Activity, Collateral and
  * Limits, Analytics. Every figure is on-chain or indexed: live pool stats (GET /api/pools), the
  * wallet's vToken position, its supply / withdraw events (Mercury + RPC fallback, wallet-scoped),
- * Reflector oracle prices, and the credit-layer Reserve's own borrow-rate curve.
+ * Reflector oracle prices, and the deployed RateModelContract's own borrow-rate curve.
  */
 import { useMemo, useState, type ReactNode } from "react";
 import toast from "react-hot-toast";
@@ -13,7 +13,7 @@ import { Info, Modal } from "@/components/v3/ui";
 import { usd } from "@/components/v3/format";
 import { VannaLoader } from "@/components/v3/vanna-loader";
 import { LIQ_HF } from "@/lib/account-model";
-import { ContractService, type AssetType } from "@/lib/stellar-utils";
+import { ContractService } from "@/lib/stellar-utils";
 import { calculateSupplyAPY } from "@/lib/pool-stats";
 import type { EarnTxEntry } from "@/lib/mercury-earn";
 import { ChartCard, EarnChart } from "./earn-chart";
@@ -413,23 +413,23 @@ export function TabCollateral({ d }: { d: D }) {
 // Analytics
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/** Matches the Reserve interest curve's SECS_PER_YEAR (same constant lib/pool-stats.ts uses). */
+/** Matches RateModelContract's own SECS_PER_YEAR_U128 (same constant lib/pool-stats.ts uses). */
 const SECS_PER_YEAR = 31_556_952;
 /** Utilization samples for the curve (every 5%). */
 const CURVE_STEPS = Array.from({ length: 21 }, (_, i) => i * 5);
 
 /**
- * Borrow APY (%) at each sampled utilization, from this pool's credit-layer Reserve interest curve
- * (`reserve.interest_curve()`, evaluated with the contract's exact math by
- * ContractService.getBorrowRatePerSecWad) — the curve the reserve accrues with. Sampled at the pool's order of magnitude (so the
+ * Borrow APY (%) at each sampled utilization, read from the deployed RateModelContract's
+ * `get_borrow_rate_per_sec(liquidity_wad, borrows_wad)` — the exact curve the lending pools accrue
+ * with (all pools share the one rate model). Sampled at the pool's order of magnitude (so the
  * 21 reads aren't repeated every time the pool's size moves a little); a failed read leaves that
  * point out instead of guessing it.
  */
-function useRateCurve(total: number, assetType: AssetType) {
+function useRateCurve(total: number) {
   const size = total > 0 ? 10 ** Math.ceil(Math.log10(total)) : 1000;
   return useQuery({
     // Not under ["earn"]: the post-tx earn re-sync shouldn't re-read the (unchanged) rate model.
-    queryKey: ["rateModel", "curve", assetType, size],
+    queryKey: ["rateModel", "curve", size],
     staleTime: 10 * 60_000,
     gcTime: 30 * 60_000,
     queryFn: async () => {
@@ -437,7 +437,7 @@ function useRateCurve(total: number, assetType: AssetType) {
       const out = await Promise.all(
         CURVE_STEPS.map(async (u) => {
           const borrows = (size * u) / 100;
-          const rate = await ContractService.getBorrowRatePerSecWad(toWad(size - borrows), toWad(borrows), assetType);
+          const rate = await ContractService.getBorrowRatePerSecWad(toWad(size - borrows), toWad(borrows));
           return rate === null ? null : { u, borrow: Number(rate * BigInt(SECS_PER_YEAR)) / 1e16 };
         }),
       );
@@ -456,7 +456,7 @@ export function TabAnalytics({ def, d }: { def: EarnPoolDef; d: D }) {
   const [expanded, setExpanded] = useState(false);
   const pop = usePop();
   const p = d.pools[def.key];
-  const curve = useRateCurve(p.totalSupplied, def.assetType);
+  const curve = useRateCurve(p.totalSupplied);
   const cur = kind === "Borrow APY" ? p.borrowApy : p.supplyApy;
   const pts = useMemo(
     () =>

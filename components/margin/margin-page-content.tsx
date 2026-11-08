@@ -34,8 +34,8 @@ const TABS: [Tab, string, string][] = [
  * positions section.
  *
  * Health factor, leverage, liquidation buffer and every before → after preview come from the
- * CreditLayer-exact account model (`useV3Account`, lib/account-model.ts: HF = Σ collateral / Σ debt,
- * unweighted, liquidatable at ≤ 1.20). Per-token balances, debts and the borrow rate come from the
+ * RiskEngine-exact account model (`useV3Account`, lib/account-model.ts: HF = Σ collateral / Σ debt,
+ * unweighted, liquidatable at ≤ 1.10). Per-token balances, debts and the borrow rate come from the
  * per-account `/api/account/[addr]` snapshot (`useAccountSnapshot`), fed into the margin store here so
  * every consumer reads the same numbers; mutations refresh the store directly
  * (`refreshBorrowedBalances`). Nothing is persisted.
@@ -154,8 +154,8 @@ export const MarginPageContent = ({ basePath }: MarginPageContentProps) => {
           <div className="mg-dg" role="alert">
             {MI.alert}
             <div>
-              <b>Liquidation Risk — Health Factor {hfFmt(n.hf)} (at or below 1.20)</b>
-              <p>Your account is undercollateralised and can be liquidated by anyone. Repay debt or add collateral immediately to restore your Health Factor above 1.2.</p>
+              <b>Liquidation Risk — Health Factor {hfFmt(n.hf)} (at or below 1.10)</b>
+              <p>Your account is undercollateralised and can be liquidated by anyone. Repay debt or add collateral immediately to restore your Health Factor above 1.1.</p>
             </div>
           </div>
         )}

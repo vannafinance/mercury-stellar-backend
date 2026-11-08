@@ -3,10 +3,8 @@
  *
  * `health-path.ts` validates `ContractHealthState`s and explicitly refuses to accept them
  * from model JSON - but nothing produced them, so the floor check had no source. This is
- * that source: it reads the account's contract-side collateral and debt from the CreditLayer
- * (`margin_value`, Liquidation prices) and asks the contract itself for the verdict
- * (`is_healthy`, healthy iff collateral / debt > 1.2). The RiskEngine and its registry are
- * gone (credit-layer redeploy 2026-11-06).
+ * that source: it resolves the RiskEngine from the on-chain registry, reads the account's
+ * contract-side balance and debt, and asks the contract itself for the verdict.
  *
  * Why the contract and not the app's own figure: four collateral numbers are in
  * circulation (UI store, MCP `account_health`, MCP `account_collateral`, and the contract)
@@ -33,7 +31,7 @@ export class ContractHealthError extends Error {
 }
 
 export interface ContractHealthReading extends ContractHealthState {
-  /** Always false now: the CreditLayer address is compiled in and there is no registry to diverge from. Kept for callers. */
+  /** True when the registry no longer resolves to the address compiled into the app. */
   registryDiverged: boolean;
 }
 
@@ -78,31 +76,13 @@ function u256(value: unknown, method: string): string {
   return text;
 }
 
-/** The CreditLayer's code hash, so a validated state names the exact code that produced it. */
-async function creditLayerCodeHash(rpc: ReadOnlyRpc, contract: string): Promise<string> {
-  const instance = await rpc.getContractData(contract, StellarSdk.xdr.ScVal.scvLedgerKeyContractInstance());
-  const hash = instance.val.contractData().val().instance().executable().wasmHash().toString("hex");
-  if (!/^[a-f0-9]{64}$/.test(hash)) {
-    throw new ContractHealthError("wasm_hash_unavailable", "The CreditLayer's code hash could not be read.");
-  }
-  return hash;
-}
-
-/** Decodes the `margin_value` (collateral, debt) tuple. */
-function marginValueTuple(value: unknown): { collateralWad: string; debtWad: string } {
-  if (!Array.isArray(value) || value.length < 2) {
-    throw new ContractHealthError("invalid_margin_value", "margin_value did not return a (collateral, debt) pair.");
-  }
-  return { collateralWad: u256(value[0], "margin_value"), debtWad: u256(value[1], "margin_value") };
-}
-
 /**
  * Read one account's contract-side health state.
  *
  * `leg` names the step this state belongs to, so a caller projecting a sequence can label
- * which leg breached. `margin_value` returns collateral and debt from ONE call (so they
- * always share a ledger); the `is_healthy` verdict is a second call and must land on the
- * same ledger - `validateHealthPath` rejects mixed ledgers. One retry covers a ledger
+ * which leg breached. `get_current_total_balance` and `get_current_total_borrows` must land
+ * on the SAME ledger - `validateHealthPath` rejects mixed ledgers because a numerator and
+ * denominator from different ledgers are not a health factor. One retry covers a ledger
  * closing between the two reads.
  */
 export async function readContractHealthState(
@@ -116,57 +96,75 @@ export async function readContractHealthState(
   } = {},
 ): Promise<ContractHealthReading> {
   if (!StellarSdk.StrKey.isValidContract(smartAccount)) {
-    throw new ContractHealthError("invalid_smart_account", "Expected a margin-account contract address.");
+    throw new ContractHealthError("invalid_smart_account", "Expected a smart-account contract address.");
   }
-  signalCheck(options.signal);
   const now = options.now ?? Date.now;
   const rpc = options.rpc ?? server();
-  const contract = CONTRACT_ADDRESSES.CREDIT_LAYER;
 
-  const wasmTask = creditLayerCodeHash(rpc, contract);
-  wasmTask.catch(() => { /* awaited below */ });
+  // The registry is the authority. The compiled-in address is only a divergence check:
+  // an upgraded deployment must not be read through a stale constant.
+  const resolved = await simulate(rpc, CONTRACT_ADDRESSES.REGISTRY, "get_risk_engine_address", [], options.signal);
+  const engine = typeof resolved.value === "string" ? resolved.value : "";
+  if (!StellarSdk.StrKey.isValidContract(engine)) {
+    throw new ContractHealthError("risk_engine_unresolved", "The registry did not return a RiskEngine address.");
+  }
+
+  // The code hash and the balance/debt reads both need only the engine address, so they run together: one round trip fewer.
+  const codeHash = async () => {
+    const instance = await rpc.getContractData(engine, StellarSdk.xdr.ScVal.scvLedgerKeyContractInstance());
+    const hash = instance.val.contractData().val().instance().executable().wasmHash().toString("hex");
+    if (!/^[a-f0-9]{64}$/.test(hash)) {
+      throw new ContractHealthError("wasm_hash_unavailable", "The RiskEngine's code hash could not be read.");
+    }
+    return hash;
+  };
 
   const account = StellarSdk.nativeToScVal(smartAccount, { type: "address" });
-  const reads = async () => {
-    const [value, verdict] = await Promise.all([
-      simulate(rpc, contract, "margin_value", [account], options.signal),
-      simulate(rpc, contract, "is_healthy", [account], options.signal),
+  const totals = async () => {
+    const [balance, borrows] = await Promise.all([
+      simulate(rpc, engine, "get_current_total_balance", [account], options.signal),
+      simulate(rpc, engine, "get_current_total_borrows", [account], options.signal),
     ]);
-    return { value, verdict };
+    return { balance, borrows };
   };
-  let r = await reads();
-  if (r.value.ledger !== r.verdict.ledger) r = await reads();
+  const wasmTask = codeHash();
+  wasmTask.catch(() => { /* awaited below */ });
+  let reads = await totals();
+  if (reads.balance.ledger !== reads.borrows.ledger) reads = await totals();
   const wasmHash = await wasmTask;
-  if (r.value.ledger !== r.verdict.ledger) {
+  if (reads.balance.ledger !== reads.borrows.ledger) {
     throw new ContractHealthError(
       "inconsistent_ledger",
-      "Collateral/debt and the health verdict could not be read from one ledger; they are not comparable.",
+      "Balance and debt could not be read from one ledger; a health factor across two ledgers is not comparable.",
     );
   }
 
-  const { collateralWad, debtWad } = marginValueTuple(r.value.value);
-  // Ask the contract for the verdict rather than re-deriving it: the boundary is exclusive
-  // (shared math::is_healthy is collateral/debt > 1.2), so a locally recomputed comparison
-  // could disagree with the chain at the boundary.
-  if (typeof r.verdict.value !== "boolean") {
-    throw new ContractHealthError("invalid_health_verdict", "is_healthy did not return a boolean.");
+  const balanceWad = u256(reads.balance.value, "get_current_total_balance");
+  const debtWad = u256(reads.borrows.value, "get_current_total_borrows");
+  const observedAt = now();
+
+  // Ask the contract for the verdict rather than re-deriving it. The boundary is exclusive
+  // - measured against testnet, exactly 1.100000 is unhealthy and 1.100001 is healthy - so
+  // a locally recomputed comparison would disagree with the chain at the boundary.
+  const verdict = await simulate(rpc, engine, "is_account_healthy", [
+    StellarSdk.nativeToScVal(BigInt(balanceWad), { type: "u256" }),
+    StellarSdk.nativeToScVal(BigInt(debtWad), { type: "u256" }),
+  ], options.signal);
+  if (typeof verdict.value !== "boolean") {
+    throw new ContractHealthError("invalid_health_verdict", "is_account_healthy did not return a boolean.");
   }
 
   return {
     leg: options.leg ?? "current",
-    balanceWad: collateralWad,
+    balanceWad,
     debtWad,
-    contractHealthy: r.verdict.value,
-    ledger: r.value.ledger,
-    observedAt: now(),
-    contract,
+    contractHealthy: verdict.value,
+    ledger: reads.balance.ledger,
+    observedAt,
+    contract: engine,
     wasmHash,
-    registryDiverged: false,
+    registryDiverged: engine !== CONTRACT_ADDRESSES.RISK_ENGINE,
   };
-}
-
-function signalCheck(signal?: AbortSignal) {
-  signal?.throwIfAborted();
 }
 
 function wadUsd(wad: string, method: string): number {
@@ -178,13 +176,10 @@ function wadUsd(wad: string, method: string): number {
 }
 
 /**
- * CreditLayer.margin_value - the (collateral USD, debt USD) pair that decides liquidation
- * (Liquidation prices; liquidatable when collateral / debt <= 1.2).
+ * RiskEngine.liquidation_snapshot - the function that decides liquidation.
  *
  * Used as a sizing fallback when the live MCP dispatcher does not yet expose
  * the audited read. Same simulate path as `readContractHealthState`; never a write.
- * `unpriceablePlain` is always false: the credit layer's oracle prices every allowed asset
- * (an unpriceable asset makes margin_value fail instead).
  */
 export async function readLiquidationSnapshot(
   smartAccount: string,
@@ -194,16 +189,28 @@ export async function readLiquidationSnapshot(
   } = {},
 ): Promise<{ collateralUsd: number; debtUsd: number; unpriceablePlain: boolean; ledger: number }> {
   if (!StellarSdk.StrKey.isValidContract(smartAccount)) {
-    throw new ContractHealthError("invalid_smart_account", "Expected a margin-account contract address.");
+    throw new ContractHealthError("invalid_smart_account", "Expected a smart-account contract address.");
   }
   const rpc = options.rpc ?? server();
+  const resolved = await simulate(rpc, CONTRACT_ADDRESSES.REGISTRY, "get_risk_engine_address", [], options.signal);
+  const engine = typeof resolved.value === "string" ? resolved.value : "";
+  if (!StellarSdk.StrKey.isValidContract(engine)) {
+    throw new ContractHealthError("risk_engine_unresolved", "The registry did not return a RiskEngine address.");
+  }
   const account = StellarSdk.nativeToScVal(smartAccount, { type: "address" });
-  const snap = await simulate(rpc, CONTRACT_ADDRESSES.CREDIT_LAYER, "margin_value", [account], options.signal);
-  const { collateralWad, debtWad } = marginValueTuple(snap.value);
+  const snap = await simulate(rpc, engine, "liquidation_snapshot", [account], options.signal);
+  if (!Array.isArray(snap.value) || snap.value.length < 2) {
+    throw new ContractHealthError("invalid_liquidation_snapshot", "liquidation_snapshot did not return a 3-tuple.");
+  }
+  const collateralWad = u256(snap.value[0], "liquidation_snapshot");
+  const debtWad = u256(snap.value[1], "liquidation_snapshot");
+  if (snap.value.length > 2 && typeof snap.value[2] !== "boolean") {
+    throw new ContractHealthError("invalid_liquidation_snapshot", "liquidation_snapshot flag was not a boolean.");
+  }
   return {
-    collateralUsd: wadUsd(collateralWad, "margin_value"),
-    debtUsd: wadUsd(debtWad, "margin_value"),
-    unpriceablePlain: false,
+    collateralUsd: wadUsd(collateralWad, "liquidation_snapshot"),
+    debtUsd: wadUsd(debtWad, "liquidation_snapshot"),
+    unpriceablePlain: snap.value[2] === true,
     ledger: snap.ledger,
   };
 }

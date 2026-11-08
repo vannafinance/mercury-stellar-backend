@@ -1,5 +1,4 @@
 import { floorAmountToInput } from "./sanitize-amount";
-import { LIQUIDATION_THRESHOLD } from "../margin-health";
 
 /**
  * UI estimate only; the contract checks live debt and collateral at
@@ -10,7 +9,7 @@ import { LIQUIDATION_THRESHOLD } from "../margin-health";
  * dust-floored debt (e.g. the store's `avgHealthFactor`, which reads as the
  * infinity sentinel whenever debt is sub-cent) desyncs the two: a genuinely
  * dust-level debt (say $0.00004) then paired with HF=999 collapses
- * `(healthFactor - 1.2) * debtUsd` to a near-zero cap instead of the full
+ * `(healthFactor - 1.1) * debtUsd` to a near-zero cap instead of the full
  * balance a truly negligible debt should allow. See transfer-collateral.tsx's
  * call site for where that floor is applied before calling this.
  */
@@ -19,9 +18,8 @@ export function maxMarginWithdrawal(balance: number, debtUsd: number, healthFact
   // Contract-held XLM has no classic-account base reserve.
   if (debtUsd === 0) return balance;
   if (!Number.isFinite(debtUsd) || debtUsd < 0 || !Number.isFinite(healthFactor) || price <= 0 || !Number.isFinite(price)) return 0;
-  // The credit layer requires HF strictly greater than 1.2 after the withdrawal
-  // (health.rs can_withdraw). Never round a risk cap up.
-  return Math.max(0, Math.min(balance, (healthFactor - LIQUIDATION_THRESHOLD) * debtUsd / price) - 1e-7);
+  // RiskEngine requires HF strictly greater than 1.1. Never round a risk cap up.
+  return Math.max(0, Math.min(balance, (healthFactor - 1.1) * debtUsd / price) - 1e-7);
 }
 
 /** Preserve all seven token decimals on Max; integer math floors partial presets. */

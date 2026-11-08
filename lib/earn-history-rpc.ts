@@ -2,7 +2,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { CONTRACT_ADDRESSES, SOROBAN_RPC_URL } from './stellar-utils';
 import type { EarnTxEntry } from './mercury-earn';
 
-// Bounded RPC fallback for Earn history when Mercury is down/erroring/lagging for this
+// Bounded RPC fallback for Earn history when Mercury is down/erroring for this
 // wallet (confirmed live: Mercury returning a genuine 502 for every lending-pool
 // contract query on a real account, not a "no data" response) — same pattern as
 // getMarginHistoryFromRpc for margin history. RPC's retention window is short
@@ -10,13 +10,11 @@ import type { EarnTxEntry } from './mercury-earn';
 // so this only ever fills in a RECENT gap; it reverts to Mercury alone once
 // Mercury's own read succeeds again.
 //
-// Same event shape as getEarnTransactionsFromMercury: one query per
-// credit-layer Reserve, decoding `supplied` / `redeemed` (topic[1] = lender,
-// data LenderEvent { lender, assets WAD, shares WAD }; amount = `assets`, the
-// real underlying moved), so callers can merge the two result sets directly
-// (dedupe by hash+type+asset — a single supply tx only ever emits one
-// `supplied`, but keep the same composite-key discipline the margin history
-// merge already established). Timestamps come from the event's ledgerClosedAt.
+// Same event shape as getEarnTransactionsFromMercury: one query per lending
+// pool contract, decoding deposit_event/withdraw_event, so callers can merge
+// the two result sets directly (dedupe by hash+type+asset — a single supply
+// tx only ever emits one deposit_event, but keep the same composite-key
+// discipline the margin history merge already established).
 
 const WAD = BigInt('1000000000000000000');
 const wadToHuman = (raw: unknown): number => {
@@ -57,13 +55,14 @@ async function readPoolEventsFromRpc(
   const entries: EarnTxEntry[] = [];
   for (const e of response.events) {
     const eventName = StellarSdk.scValToNative(e.topic[0]) as string;
-    if (eventName !== 'supplied' && eventName !== 'redeemed') continue;
+    if (eventName !== 'deposit_event' && eventName !== 'withdraw_event') continue;
 
     const d = (StellarSdk.scValToNative(e.value) ?? {}) as Record<string, unknown>;
+    const isSupply = eventName === 'deposit_event';
     entries.push({
-      type: eventName === 'supplied' ? 'supply' : 'withdraw',
+      type: isSupply ? 'supply' : 'withdraw',
       asset,
-      amount: wadToHuman(d.assets).toFixed(7),
+      amount: wadToHuman(isSupply ? d.amount : d.asset_amount).toFixed(7),
       timestamp: new Date(e.ledgerClosedAt).getTime(),
       hash: e.txHash,
       status: 'success',

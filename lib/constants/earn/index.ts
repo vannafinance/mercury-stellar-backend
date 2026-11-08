@@ -194,9 +194,7 @@ export const tableBody = {
   ],
 };
 
-// Pool configuration with contract addresses (Stellar Testnet). Credit layer:
-// `lendingProtocol` and `vToken` are the same address - the asset's Reserve,
-// which is both the lending contract and its share token.
+// Pool configuration with contract addresses (Stellar Testnet)
 export const STELLAR_POOLS = {
   XLM: {
     id: 'XLM',

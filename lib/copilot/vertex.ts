@@ -1745,7 +1745,7 @@ function receiptFacts(execution: Record<string, unknown>): AnswerFact[] {
     facts.push({
       label: "health factor",
       value: hf >= 999 ? "∞" : hf.toFixed(2),
-      tone: hf < 1.2 ? "bad" : Number.isFinite(floor) && hf < floor ? "warn" : "good",
+      tone: hf < 1.1 ? "bad" : Number.isFinite(floor) && hf < floor ? "warn" : "good",
     });
   }
 

@@ -13,15 +13,14 @@ import { ContractService, ASSET_TYPES, AssetType } from '@/lib/stellar-utils';
 // ─────────────────────────────────────────────────────────────────────────────
 describe('ContractService.getPoolStats', () => {
   beforeEach(() => {
-    // Reserve: total_assets (cash + debt) = 150, total_debt = 50 → cash 100.
-    vi.spyOn(ContractService, 'getTotalAssets').mockResolvedValue('150.0000000');
+    vi.spyOn(ContractService, 'getPoolLiquidity').mockResolvedValue('100.0000000');
     vi.spyOn(ContractService, 'getPoolBorrows').mockResolvedValue('50.0000000');
     vi.spyOn(ContractService, 'getVTokenTotalSupply').mockResolvedValue('90.0000000');
   });
 
   afterEach(() => vi.restoreAllMocks());
 
-  it('totalSupply = reserve total_assets (liquidity + borrows)', async () => {
+  it('totalSupply = liquidity + borrows', async () => {
     const stats = await ContractService.getPoolStats(ASSET_TYPES.XLM);
     expect(parseFloat(stats.totalSupply)).toBeCloseTo(150, 4);
   });
@@ -46,7 +45,7 @@ describe('ContractService.getPoolStats', () => {
   });
 
   it('returns zero-filled stats on partial failure', async () => {
-    vi.spyOn(ContractService, 'getTotalAssets').mockRejectedValue(new Error('RPC down'));
+    vi.spyOn(ContractService, 'getPoolLiquidity').mockRejectedValue(new Error('RPC down'));
     const stats = await ContractService.getPoolStats(ASSET_TYPES.XLM);
     expect(stats.totalSupply).toBe('0');
     expect(stats.utilizationRate).toBe('0');
@@ -60,7 +59,7 @@ describe('ContractService.getPoolStats — asset routing', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('calls sub-methods with the correct asset type for each pool', async () => {
-    const liquiditySpy = vi.spyOn(ContractService, 'getTotalAssets').mockResolvedValue('0');
+    const liquiditySpy = vi.spyOn(ContractService, 'getPoolLiquidity').mockResolvedValue('0');
     vi.spyOn(ContractService, 'getPoolBorrows').mockResolvedValue('0');
     vi.spyOn(ContractService, 'getVTokenTotalSupply').mockResolvedValue('0');
 

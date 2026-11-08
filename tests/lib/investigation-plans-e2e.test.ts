@@ -60,8 +60,7 @@ const SCOPE = {
   network: "testnet",
 };
 const SECRET = "a".repeat(32);
-/** The 13 Sep account with a user floor of 1.25, above the credit layer's 1.2 liquidation line: (6605.84 − 1.25·5102.54)/0.25 = 910.66 of headroom. */
-const CAPACITY = { floor: "1.25", grossCollateralUsd: "6605.84", debtUsd: "5102.54", healthFactor: "1.29", maxBorrowUsd: "910.66" };
+const CAPACITY = { floor: "1.2", grossCollateralUsd: "6605.84", debtUsd: "5102.54", healthFactor: "1.29", maxBorrowUsd: "2413.96" };
 /** App and contract agree: the contract's figures are the basis. */
 const BASIS = {
   grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, source: "contract" as const, issue: null,
@@ -92,18 +91,18 @@ const mcp = {
   }),
 };
 
-const PROMPT = "deploy my XLM and USDC in farm, keep HF above 1.25, you can borrow";
+const PROMPT = "deploy my XLM and USDC in farm, keep HF above 1.2, you can borrow";
 
 /** What a competent model returns for that prompt: two shapes, sizing by word, no numbers. */
 const modelComplete = {
   kind: "research_complete",
-  goal: { intent: "strategy", relation: "new", objective: "Deploy idle XLM into Blend farm keeping HF above 1.25", constraints: ["Health factor above 1.25"], borrowing: "allowed" },
+  goal: { intent: "strategy", relation: "new", objective: "Deploy idle XLM into Blend farm keeping HF above 1.2", constraints: ["Health factor above 1.2"], borrowing: "allowed" },
   findings: [{ summary: "Wallet holds 10,206 idle XLM; Blend XLM supply APR 168.6% at 90% utilisation; no idle USDC-family tokens.", evidenceIds: ["e1"] }],
   openQuestions: [],
   plans: [
     {
       title: "Move idle XLM into Blend, then lever to the floor",
-      rationale: "The wallet's idle XLM (e1) earns nothing; Blend pays 168.6% APR (e2). Deposit it, supply it, then borrow XLM to the 1.25 floor and supply that too.",
+      rationale: "The wallet's idle XLM (e1) earns nothing; Blend pays 168.6% APR (e2). Deposit it, supply it, then borrow XLM to the 1.2 floor and supply that too.",
       evidenceIds: ["e1", "e2"],
       legs: [
         { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_wallet" } },
@@ -350,10 +349,10 @@ describe("model proposes, code disposes - end to end", () => {
     expect(levered!.steps!.map((s) => s.op)).toEqual(["deposit_collateral", "supply_blend", "borrow", "supply_blend"]);
     expect(levered!.steps![0].amount).toBe("10206.3356118");
     // After the deposit lifts collateral to 8,442.98, the floor allows (8442.98 − F·5102.54)/(F − 1) USD, sized one basis
-    // point inside the floor (F = 1.25 × 1.0001, FLOOR_MARGIN_BPS in sizing.ts) so the plan is never born on the line.
-    expect(Number(levered!.steps![2].amount)).toBeCloseTo(45847.46, 1);
+    // point inside the floor (F = 1.2 × 1.0001, FLOOR_MARGIN_BPS in sizing.ts) so the plan is never born on the line.
+    expect(Number(levered!.steps![2].amount)).toBeCloseTo(64386.93, 1);
     expect(levered!.steps![2].amount).toBe(levered!.steps![3].amount);
-    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.250125, 5);
+    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.20012, 5);
     expect(levered!.rationale).toMatch(/Deposit it, supply it/);
     // The fixed generator's identical shape was folded into the composed one.
     expect(feasible.map((c) => c.id)).not.toContain("supply_idle:XLM");
@@ -410,7 +409,7 @@ describe("model proposes, code disposes - end to end", () => {
      * (`FLOOR_MARGIN_BPS` in sizing.ts), so this is slightly under the old exact-floor
      * figure.
      */
-    expect(Number(proposal.steps[2].amount)).toBeCloseTo(45847.46, 1);
+    expect(Number(proposal.steps[2].amount)).toBeCloseTo(64386.93, 1);
     expect(mcp.call).not.toHaveBeenCalled();
     expect(turn).toBe(2);
   });
@@ -509,8 +508,8 @@ describe("model proposes, code disposes - end to end", () => {
   });
 
   it("re-sizes a composed plan from a stale bundle against the sealed floor and a live position (the 409)", async () => {
-    // "HF stays above 1.24": the regex parser sees no floor; only the sealed, model-anchored one knows it.
-    const prompt = "Create a strategy so my HF stays above 1.24, use USDC and XLM as collateral and deploy them in farm, you can borrow";
+    // "HF stays above 1.14": the regex parser sees no floor; only the sealed, model-anchored one knows it.
+    const prompt = "Create a strategy so my HF stays above 1.14, use USDC and XLM as collateral and deploy them in farm, you can borrow";
     harness.computeBorrowCapacity.mockImplementation(async (_a: unknown, _m: unknown, _s: unknown, _snap: unknown, options?: { floor?: string | null }) =>
       options?.floor ? { ...CAPACITY, floor: options.floor } : null);
     let turn = 0;
@@ -520,7 +519,7 @@ describe("model proposes, code disposes - end to end", () => {
         subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
         model: async () => turn++ === 0
           ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "blend_markets", args: {} }] }
-          : { ...modelComplete, goal: { ...modelComplete.goal, healthFactorFloor: { value: "1.24", sourceQuote: "HF stays above 1.24" } } },
+          : { ...modelComplete, goal: { ...modelComplete.goal, healthFactorFloor: { value: "1.14", sourceQuote: "HF stays above 1.14" } } },
       },
     );
     const target = "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM";
@@ -535,11 +534,11 @@ describe("model proposes, code disposes - end to end", () => {
     expect(harness.computeSizingBasis).toHaveBeenCalledTimes(1);
     expect(proposal.steps.map((s) => s.op)).toEqual(["deposit_collateral", "supply_blend", "borrow", "supply_blend"]);
     /**
-     * Sized to the sealed 1.24 floor after the deposit: (8442.98 − 1.24·5102.54)/0.24 ≈
-     * 8,816 USD → /0.18 XLM. A derived max is now sized one basis point inside the
+     * Sized to the sealed 1.14 floor after the deposit: (8442.98 − 1.14·5102.54)/0.14 ≈
+     * 18,747 USD → /0.18 XLM. A derived max is now sized one basis point inside the
      * floor (`FLOOR_MARGIN_BPS` in sizing.ts), so this is slightly under that figure.
      */
-    expect(Number(proposal.steps[2].amount)).toBeCloseTo(48937.62, 0);
+    expect(Number(proposal.steps[2].amount)).toBeCloseTo(104101.86, 0);
   });
 
   it("uses the rate a plan read fetched after the clock was taken (14 Sep: 'lend 25% of xlm' refused for no Earn rate)", async () => {
@@ -622,18 +621,18 @@ describe("model proposes, code disposes - end to end", () => {
      * The disagreement no longer refuses the borrow: the app counts what the account holds and the contract counts
      * what is posted, so they disagree permanently on any account with an unposted token. A floor the user stated
      * is a number on the Margin page they read, so the borrow is sized there (7 Oct: "borrow until HF 1.5" ended
-     * at 1.81 when sized on the contract's figures): the levered option is projected to the stated 1.25 floor on the
+     * at 1.81 when sized on the contract's figures): the levered option is projected to the stated 1.2 floor on the
      * page's figures. The contract also enforces the user floor before signing: after the
-     * borrow its health factor must stay strictly above the same 1.25 floor.
+     * borrow its health factor must stay strictly above the same 1.2 floor.
      */
     const levered = view.candidates?.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM");
     expect(levered).toBeTruthy();
     const last = levered!.legs.at(-1)!;
-    expect(Number(last.healthFactorAfter)).toBeGreaterThan(1.25);
-    expect(Number(levered!.finalHealthFactor)).toBeGreaterThan(1.25);
+    expect(Number(last.healthFactorAfter)).toBeGreaterThan(1.2);
+    expect(Number(levered!.finalHealthFactor)).toBeGreaterThan(1.2);
     const contractAfter = (6457.32 + Number(last.grossAfterUsd) - 6605.84) / (5110.67 + Number(last.debtAfterUsd) - 5102.54);
-    expect(contractAfter).toBeGreaterThan(1.25);
-    expect(contractAfter).toBeLessThan(1.2505);
+    expect(contractAfter).toBeGreaterThan(1.2);
+    expect(contractAfter).toBeLessThan(1.2005);
     // The gap is stated as what it is - $6,605.84 − $6,457.32 of unposted collateral.
     // Logged server-side as `unposted_collateral`, not a note on the card: the plans above are already sized
     // from the contract, which is the part the user needs.

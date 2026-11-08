@@ -1,8 +1,8 @@
 /**
  * Live AMM LP share count - the same read Farm's LP page uses.
  *
- * Farm Aquarius shows `AquariusService.getUserLpBalance` (the pool's share token,
- * held directly by the margin account; Soroswap: the pair token's balance). MCP `vanna_farm_lp` looks up
+ * Farm Aquarius shows `AquariusService.getUserLpBalance` (pool `get_user_shares`
+ * when the Registry tracking token is empty). MCP `vanna_farm_lp` looks up
  * `AQ_XLM_USDC` and reports no position / no-ops a remove even when Farm shows
  * 12.64 LP. Copilot must size and execute against this number, not MCP's tracker.
  */

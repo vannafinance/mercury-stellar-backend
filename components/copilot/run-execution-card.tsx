@@ -30,7 +30,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LEDGER_CONFIRM_HINT } from "./resume-policy";
 import { pairedFromSelected, readAmmOtherPerXlm } from "@/lib/copilot/lp-pair";
-import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
 
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
 
@@ -248,7 +247,7 @@ function hfBand(v: number | null, floor: number, liquidation: number) {
 /**
  * Meter scale. The design pinned the liquidation and floor ticks at 5% and 20% while
  * scaling the fill by hf/3 - on that scale those marks sit at 0.15 and 0.6, so the
- * liquidation tick was drawn nowhere near its health-factor value. Both the fill and the ticks now come
+ * liquidation line was drawn nowhere near 1.10. Both the fill and the ticks now come
  * from this one function, so the marks mean what they say.
  */
 const HF_TOP = 3;
@@ -379,7 +378,7 @@ export function RunExecutionCard({
   legs,
   hf,
   floor = 1.3,
-  liquidation = LIQUIDATION_THRESHOLD,
+  liquidation = 1.1,
   signerText,
   signerLive = false,
   busy = false,

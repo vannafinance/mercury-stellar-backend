@@ -31,11 +31,9 @@ export interface AttributionHistoryEntry {
  * Derive which borrows belong to which deposit-collateral row by matching a
  * deposit and a borrow that share the same tx hash (an atomic cross-asset open).
  *
- * Pure: pass the same Mercury history the Position History tab uses (CreditLayer
- * collateral_deposited / borrowed / repaid events). On the credit layer
- * (2026-11-06) deposit and borrow are always separate transactions, so new
- * positions have no shared hash and fall through to the portfolio-wide row;
- * the join still works for any history that does share a hash.
+ * Pure: pass the same Mercury history the Position History tab uses (Mercury
+ * indexes Trader_Deposit alongside Trader_Borrow/Trader_Repay_Event, so this
+ * works whenever deposit+borrow were submitted as one atomic transaction).
  * Debt opened via separate transactions — or before Mercury had a record of
  * this account — has no shared hash to join on, so it comes back empty for
  * that borrow; the caller's fallback then shows it as portfolio-wide

@@ -1,43 +1,123 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { CONTRACT_ADDRESSES } from './stellar-utils';
-import { addressTopic, eventName, getEventsWindowed } from './credit-events-rpc';
-import { marginEventToEntry, type MarginTxEntry } from './mercury-margin';
+import { CONTRACT_ADDRESSES, SOROBAN_RPC_URL } from './stellar-utils';
+import type { MarginTxEntry } from './mercury-margin';
 
-// Bounded fallback for margin history when Mercury has an indexing gap for the
-// CreditLayer contract (Mercury has stalled on a contract before — see project
-// memory 2026-07-21). RPC's own event retention is short (~7 days on testnet),
-// so this fills in ONLY the recent window; Mercury stays the primary source.
+// Bounded fallback for margin history when Mercury has a real indexing gap for
+// this account's AccountManager contract (confirmed 2026-07-21: Mercury's index
+// for the CURRENT AccountManager address stalled at 2026-07-19 despite continuous
+// on-chain activity since — see project memory). RPC's own event retention is
+// short (a bounded ledger window, not "full history" the way Mercury is meant to
+// give), so this fills in ONLY the recent gap Mercury is currently missing —
+// it does not replace Mercury as the primary source once Mercury's index catches
+// back up.
 //
-// Same four credit-layer event names / same decoding as
-// getMarginHistoryFromMercury (shared `marginEventToEntry`), so callers can
-// merge the two result sets directly by tx hash.
+// Same three event names / same decoding shape as getMarginHistoryFromMercury,
+// so callers can merge the two result sets directly.
 
-// Roughly three days of ledgers. Read as 5k-ledger windows (credit-events-rpc.ts):
-// one large request only returns its oldest ~10k ledgers on the public RPC.
-const RPC_LOOKBACK_LEDGERS = 50_000;
+const WAD = BigInt('1000000000000000000');
+const wadToHuman = (raw: unknown): number => {
+  try {
+    const bi = BigInt(String(raw));
+    return Number(bi / WAD) + Number(bi % WAD) / 1e18;
+  } catch {
+    return 0;
+  }
+};
+
+const accountTopicXdr = (address: string): string => {
+  const scVal = StellarSdk.xdr.ScVal.scvAddress(new StellarSdk.Address(address).toScAddress());
+  return scVal.toXDR('base64');
+};
 
 export async function getMarginHistoryFromRpc(
   marginAccountAddress: string,
 ): Promise<MarginTxEntry[]> {
   try {
-    const events = await getEventsWindowed(
-      [
+    const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+    const health = await server.getHealth();
+    // Read up to ~3 days while respecting the node's actual retention floor.
+    // The previous 9,000-ledger range was only about 12 hours, which could make
+    // a still-open loan lose its borrow event and therefore its interest basis
+    // before Mercury caught up. 50k stays below the public RPC processing cap.
+    const startLedger = Math.max(health.oldestLedger, health.latestLedger - 50_000);
+
+    const topicFilter = ['*', accountTopicXdr(marginAccountAddress)];
+    const response = await server.getEvents({
+      filters: [
         {
           type: 'contract',
-          contractIds: [CONTRACT_ADDRESSES.CREDIT_LAYER],
-          topics: [['*', addressTopic(marginAccountAddress)]],
+          contractIds: [CONTRACT_ADDRESSES.ACCOUNT_MANAGER],
+          topics: [topicFilter],
         },
       ],
-      RPC_LOOKBACK_LEDGERS,
-    );
+      startLedger,
+      limit: 100,
+    });
 
     const entries: MarginTxEntry[] = [];
-    for (const e of events) {
-      const name = eventName(e);
-      if (!name) continue;
+    for (const e of response.events) {
+      const eventName = StellarSdk.scValToNative(e.topic[0]) as string;
+      if (
+        eventName !== 'Trader_Borrow' &&
+        eventName !== 'Trader_Deposit' &&
+        eventName !== 'Trader_Withdraw' &&
+        eventName !== 'Trader_Repay_Event'
+      ) {
+        continue;
+      }
+
       const raw = StellarSdk.scValToNative(e.value);
-      const row = marginEventToEntry(name, raw, e.txHash, new Date(e.ledgerClosedAt).getTime(), marginAccountAddress);
-      if (row) entries.push(row);
+      const timestamp = new Date(e.ledgerClosedAt).getTime();
+
+      if (eventName === 'Trader_Repay_Event') {
+        const d = (raw ?? {}) as Record<string, unknown>;
+        entries.push({
+          type: 'repay',
+          asset: String(d.token_symbol ?? ''),
+          amount: wadToHuman(d.token_amount).toFixed(7),
+          timestamp,
+          hash: e.txHash,
+        });
+      } else if (eventName === 'Trader_Deposit') {
+        const d = (raw ?? {}) as Record<string, unknown>;
+        entries.push({
+          type: 'deposit',
+          asset: String(d.token_symbol ?? ''),
+          amount: wadToHuman(d.amount).toFixed(7),
+          timestamp,
+          hash: e.txHash,
+        });
+      } else if (eventName === 'Trader_Withdraw') {
+        const d = (raw ?? {}) as Record<string, unknown>;
+        entries.push({
+          type: 'withdraw',
+          asset: String(d.token_symbol ?? ''),
+          amount: wadToHuman(d.amount).toFixed(7),
+          timestamp,
+          hash: e.txHash,
+        });
+      } else {
+        // Trader_Borrow — forward-compatible with the older bare-symbol build,
+        // same as getMarginHistoryFromMercury.
+        if (raw && typeof raw === 'object') {
+          const d = raw as Record<string, unknown>;
+          entries.push({
+            type: 'borrow',
+            asset: String(d.token_symbol ?? ''),
+            amount: wadToHuman(d.token_amount).toFixed(7),
+            timestamp,
+            hash: e.txHash,
+          });
+        } else {
+          entries.push({
+            type: 'borrow',
+            asset: typeof raw === 'string' ? raw : '',
+            amount: '—',
+            timestamp,
+            hash: e.txHash,
+          });
+        }
+      }
     }
 
     return entries.sort((a, b) => b.timestamp - a.timestamp);

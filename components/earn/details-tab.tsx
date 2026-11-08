@@ -66,14 +66,13 @@ const getAddresses = (selectedAssetKey: string, selectedAssetLabel: string) => {
   const lendingAddr = (CONTRACT_ADDRESSES[lendingKey] as string) || pool?.lendingProtocol || "";
   const vTokenAddr = (CONTRACT_ADDRESSES[vTokenKey] as string) || pool?.vToken || "";
 
-  // Credit layer: the Reserve is both the lending contract and the v-share
-  // token (same address), and carries its own interest curve; the
-  // CreditLayer replaced the old Registry / Risk Engine.
   return [
-    { heading: `v${selectedAssetLabel} Share Token`, addr: vTokenAddr, tooltip: `Reserve share token for ${selectedAssetLabel} deposits (same contract as the reserve)` },
-    { heading: `${selectedAssetLabel} Reserve`, addr: lendingAddr, tooltip: `Lending reserve for ${selectedAssetLabel}, including its interest-rate curve` },
-    { heading: "Credit Layer", addr: CONTRACT_ADDRESSES.CREDIT_LAYER, tooltip: "Margin accounts, borrowing, health checks and liquidation" },
+    { heading: `v${selectedAssetLabel} Token`, addr: vTokenAddr, tooltip: `Receipt token for ${selectedAssetLabel} deposits` },
+    { heading: `${selectedAssetLabel} Lending Protocol`, addr: lendingAddr, tooltip: `Main lending contract for ${selectedAssetLabel}` },
+    { heading: "Risk Engine", addr: CONTRACT_ADDRESSES.RISK_ENGINE, tooltip: "Risk management and liquidation parameters" },
     { heading: "Oracle Contract", addr: CONTRACT_ADDRESSES.ORACLE, tooltip: "Price oracle for asset valuations" },
+    { heading: "Interest Rate Model", addr: CONTRACT_ADDRESSES.RATE_MODEL, tooltip: "Defines borrowing and lending interest rates" },
+    { heading: "Registry Contract", addr: CONTRACT_ADDRESSES.REGISTRY, tooltip: "Protocol registry for all contracts" },
   ];
 };
 

@@ -8,11 +8,10 @@
  *
  * Authority (owner decision, 2026-09-08 - see FLASH_AGENT_UPGRADE_PLAN.md):
  *   health factor = grossCollateralUsd / debtUsd
- *   liquidatable  = HF < 1.2
- * matching `lib/margin-health.ts`. The old RiskEngine (1.1 line) was confirmed exclusive:
- * `is_account_healthy` returned false at exactly 1.100000 and true at 1.100001. The credit
- * layer's line is 1.2 for borrow, withdraw and liquidation; the app keeps treating HF at
- * exactly the line as unsafe, the conservative side of either boundary.
+ *   liquidatable  = HF <= 1.1
+ * matching `lib/margin-health.ts`, which is byte-identical to `origin/dev`. Independently
+ * confirmed against the deployed RiskEngine: `is_account_healthy` returns false at exactly
+ * 1.100000 and true at 1.100001, so the threshold really is exclusive.
  *
  * Borrowing raises BOTH sides. The smart account contract credits borrowed proceeds into
  * its own collateral ledger (`record_borrow_and_credit`), so a borrow of x adds x to gross
@@ -22,8 +21,8 @@
 
 import { checked, decimalWad, formatWad, WAD, ZERO } from "./fixed";
 
-/** The credit layer's health threshold, 1.2 WAD (borrow, withdraw and liquidation). HF <= this is treated as unsafe. */
-export const LIQUIDATION_THRESHOLD_WAD = BigInt(12) * WAD / BigInt(10);
+/** The contract's own liquidation threshold, 1.1 WAD. Exclusive: HF <= this is unsafe. */
+export const LIQUIDATION_THRESHOLD_WAD = BigInt(11) * WAD / BigInt(10);
 
 /**
  * A derived max is sized one basis point INSIDE the floor, never exactly on it.

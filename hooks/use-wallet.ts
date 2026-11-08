@@ -47,10 +47,10 @@ export const refreshWalletBalancesOnChain = (targetAddress: string): Promise<voi
     if (!depositedRefreshes.has(targetAddress)) {
       const depositedRun = withTimeout(
         Promise.all([
-          ContractService.getShareBalance(targetAddress, ASSET_TYPES.XLM),
-          ContractService.getShareBalance(targetAddress, ASSET_TYPES.USDC),
-          ContractService.getShareBalance(targetAddress, ASSET_TYPES.AQUARIUS_USDC),
-          ContractService.getShareBalance(targetAddress, ASSET_TYPES.SOROSWAP_USDC),
+          ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.XLM),
+          ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.USDC),
+          ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.AQUARIUS_USDC),
+          ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.SOROSWAP_USDC),
         ]),
         12_000,
         'Deposited balance refresh',

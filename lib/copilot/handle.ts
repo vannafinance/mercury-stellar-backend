@@ -50,7 +50,6 @@ import {
   REPAY_FRACTION_OPTIONS,
 } from "./amount-intent";
 import { evaluateWriteRisk } from "./risk";
-import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
 import { isAssistantChat } from "./concept";
 import { isDiagnosisMessage } from "@/lib/assistant/packet";
 import { lookupAssistantTx } from "./assistant-horizon";
@@ -271,9 +270,9 @@ function impactExplanation(sim: Simulation | null): string | null {
   const before = fmt(sim.hf_before);
   const after = fmt(sim.hf_after);
   if (before && after) {
-    lines.push(`Health factor moves from ${before} to ${after} (liquidation happens at ${LIQUIDATION_THRESHOLD.toFixed(2)}).`);
+    lines.push(`Health factor moves from ${before} to ${after} (liquidation happens at 1.10).`);
   } else if (after) {
-    lines.push(`Projected health factor after this: ${after} (liquidation happens at ${LIQUIDATION_THRESHOLD.toFixed(2)}).`);
+    lines.push(`Projected health factor after this: ${after} (liquidation happens at 1.10).`);
   }
 
   if (Number.isFinite(sim.debt_after)) {
@@ -282,7 +281,7 @@ function impactExplanation(sim: Simulation | null): string | null {
 
   // Cushion is the honest version of "how close to liquidation am I".
   if (Number.isFinite(sim.collateral_after) && Number.isFinite(sim.debt_after)) {
-    const cushion = sim.collateral_after - sim.debt_after * 1.2;
+    const cushion = sim.collateral_after - sim.debt_after * 1.1;
     if (Number.isFinite(cushion)) {
       lines.push(
         cushion > 0

@@ -3,11 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 /**
  * Regression guard for the phantom-AQUSDC-collateral bug.
  *
- * (Historical: the old SmartAccount collateral ledger (CollateralBalanceWAD) never
- * updated when a deposited AQUSDC/SOUSDC balance got deployed into an LP.) The credit
- * layer has no such ledger; collateral IS the live token balance, which this pins.
- *
- * Original description: a deposited AQUSDC/SOUSDC balance gets deployed into an Aquarius/Soroswap LP
+ * The on-chain collateral ledger (CollateralBalanceWAD) never updates when a
+ * deposited AQUSDC/SOUSDC balance gets deployed into an Aquarius/Soroswap LP
  * (e.g. via the Lite one-click flow) — it keeps reporting the original
  * deposit as still-free collateral. positions-table.tsx nets that stale
  * figure against same-token debt to hide it, which only works while debt
@@ -22,28 +19,24 @@ const mocks = vi.hoisted(() => ({
   getMarginAccountTokenBalance: vi.fn(),
 }));
 
-// The credit layer reads SAC balances straight from the token contract
-// (tokenBalance(token, margin), native 7-dp units). The mock keeps the old
-// per-symbol shape: map the token address back to its symbol, and the human
-// amount to native units.
-vi.mock("@/lib/credit-layer", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/credit-layer")>();
-  return {
-    ...actual,
-    tokenBalance: async (token: string, holder: string) => {
-      const asset = actual.creditAssetForToken(token);
-      const sac = asset === "BLUSDC" ? "USDC" : asset ?? token;
-      const human = await mocks.getMarginAccountTokenBalance(holder, sac);
-      return BigInt(Math.round(parseFloat(human) * 1e7));
-    },
-  };
-});
-vi.mock("@/lib/margin-credit-reads", () => ({
-  AQUARIUS_LP_KEY: "AQ_XLM_USDC",
-  SOROSWAP_LP_KEY: "SS_XLM_USDC",
-  BLEND_KEYS: { XLM: "BLEND_XLM", USDC: "BLEND_USDC" },
-  blendPositions: vi.fn().mockResolvedValue([]),
-  priceUsd: vi.fn().mockResolvedValue(1),
+vi.mock("@/lib/blend-utils", () => ({
+  BlendService: {
+    getMarginAccountTokenBalance: mocks.getMarginAccountTokenBalance,
+  },
+}));
+vi.mock("@/lib/aquarius-utils", () => ({
+  AquariusService: {
+    getLpBalance: vi.fn().mockResolvedValue("0"),
+    getAquariusPoolStats: vi.fn().mockResolvedValue(null),
+  },
+  AQUARIUS_POOLS: [],
+  aquariusLpUnderlyingAmounts: vi.fn(),
+}));
+vi.mock("@/lib/soroswap-utils", () => ({
+  SoroswapService: {
+    getLpBalance: vi.fn().mockResolvedValue("0"),
+    getPoolStats: vi.fn().mockResolvedValue(null),
+  },
 }));
 vi.mock("@/lib/oracle-price", () => ({
   fetchTokenPrice: vi.fn().mockResolvedValue(1),

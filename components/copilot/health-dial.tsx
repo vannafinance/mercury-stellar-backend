@@ -24,19 +24,14 @@
  * `t = (hf - 1) / 2` clamped, swept from π (left) to 0 (right) about the centre (90, 92).
  */
 
-import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
-
-/** The liquidation line as the dial prints it ("1.20"). */
-const LIQ_TEXT = LIQUIDATION_THRESHOLD.toFixed(2);
-
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
 
 export type HealthZone = "danger" | "warn" | "caution" | "healthy" | "unknown";
 
-/** Boundaries match `lib/margin-health.ts`; liquidation is `LIQUIDATION_THRESHOLD` (1.20) with no threshold haircut. */
+/** Boundaries match `lib/margin-health.ts`; liquidation is 1.10 with no threshold haircut. */
 export function zoneOf(hf: number | null | undefined): HealthZone {
   if (hf == null || Number.isNaN(hf)) return "unknown";
-  if (hf <= LIQUIDATION_THRESHOLD) return "danger";
+  if (hf <= 1.1) return "danger";
   if (hf < 1.3) return "warn";
   if (hf < 1.8) return "caution";
   return "healthy";
@@ -71,7 +66,7 @@ const ZONE_LABEL: Record<HealthZone, string> = {
   unknown: "unavailable",
 };
 
-/** Caption under the figure. The 1.20 line is posted-collateral; the page number is not. */
+/** Caption under the figure. The 1.10 line is posted-collateral; the page number is not. */
 export function healthDialHfSub(opts: {
   unknown: boolean;
   noDebt: boolean;
@@ -79,8 +74,8 @@ export function healthDialHfSub(opts: {
 }): string {
   if (opts.unknown) return "position read unavailable";
   if (opts.noDebt) return "no debt - nothing to liquidate";
-  if (opts.basis === "posted") return `posted collateral · unsafe at ${LIQ_TEXT} or below`;
-  return `includes unposted · risk engine uses posted (unsafe at ${LIQ_TEXT})`;
+  if (opts.basis === "posted") return "posted collateral · unsafe at 1.10 or below";
+  return "includes unposted · risk engine uses posted (unsafe at 1.10)";
 }
 
 const CX = 90;
@@ -102,8 +97,8 @@ function dialArc(v0: number, v1: number, r: number): string {
 }
 
 const SEGMENTS: Array<{ z: Exclude<HealthZone, "unknown">; a: number; b: number }> = [
-  { z: "danger", a: 1.0, b: LIQUIDATION_THRESHOLD },
-  { z: "warn", a: LIQUIDATION_THRESHOLD, b: 1.3 },
+  { z: "danger", a: 1.0, b: 1.1 },
+  { z: "warn", a: 1.1, b: 1.3 },
   { z: "caution", a: 1.3, b: 1.8 },
   { z: "healthy", a: 1.8, b: 3.0 },
 ];
@@ -112,7 +107,7 @@ export interface HealthDialProps {
   /** Live health factor. null when the position read failed - drawn as unavailable. */
   hf: number | null;
   /**
-   * What `hf` measures. The 1.20 danger arc is the RiskEngine posted-collateral line.
+   * What `hf` measures. The 1.10 danger arc is the RiskEngine posted-collateral line.
    * The Margin-page / workspace figure includes unposted balance, so feeding it without
    * saying so pairs a solvency number with a liquidation threshold it does not use.
    */
@@ -161,12 +156,12 @@ export function HealthDial({
 
   const hfText = unknown ? "-" : noDebt ? "∞" : (hf as number).toFixed(2);
   /**
-   * "liquidates at 1.10" read as though 1.10 itself were survivable. It was not: the old
-   * RiskEngine's `is_account_healthy` returned false at exactly 1.100000 and true only from
-   * 1.100001 (binary-searched against testnet to 1e-6). The credit layer's line is 1.20; the
-   * label keeps saying the account is already unsafe *at* the line, the conservative reading.
+   * "liquidates at 1.10" read as though 1.10 itself were survivable. It is not: the
+   * deployed RiskEngine's `is_account_healthy` returns false at exactly 1.100000 and true
+   * only from 1.100001 (binary-searched against testnet to 1e-6). The boundary is
+   * exclusive, so the label has to say the account is already unsafe *at* 1.10.
    *
-   * That line is posted collateral. The workspace feeds the Margin-page figure
+   * That 1.10 line is posted collateral. The workspace feeds the Margin-page figure
    * (includes unposted), so the caption has to say which number this is.
    */
   const hfSub = healthDialHfSub({ unknown, noDebt, basis });
@@ -217,8 +212,8 @@ export function HealthDial({
             unknown
               ? "Health factor unavailable"
               : basis === "posted"
-                ? `Posted-collateral health factor ${hfText}, ${ZONE_LABEL[zone]}, risk engine unsafe at ${LIQ_TEXT}`
-                : `Health factor ${hfText} including unposted, ${ZONE_LABEL[zone]}, risk engine liquidates on posted at ${LIQ_TEXT}`
+                ? `Posted-collateral health factor ${hfText}, ${ZONE_LABEL[zone]}, risk engine unsafe at 1.10`
+                : `Health factor ${hfText} including unposted, ${ZONE_LABEL[zone]}, risk engine liquidates on posted at 1.10`
           }
           viewBox="0 0 180 108"
           style={{ width: 150, height: "auto", flexShrink: 0 }}
@@ -280,7 +275,7 @@ export function HealthDial({
           ) : null}
 
           <text x={18} y={106} fontFamily={MONO} fontSize={9} fill="var(--z-danger)">
-            {LIQ_TEXT}
+            1.10
           </text>
           <text x={146} y={106} fontFamily={MONO} fontSize={9} fill="var(--g400)">
             3.0+

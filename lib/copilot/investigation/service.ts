@@ -1248,7 +1248,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   /**
    * The position the plans are sized against comes from the account read, and the floor
    * from the user's words - even when borrowing headroom could not be computed (a floor
-   * at 1.2, or none stated). A deposit needs no floor; a borrow with none is rejected
+   * at 1.1, or none stated). A deposit needs no floor; a borrow with none is rejected
    * with a sentence saying so, instead of every account leg claiming the position was
    * never read (13 Sep card).
    */

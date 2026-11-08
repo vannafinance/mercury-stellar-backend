@@ -160,8 +160,7 @@ export const useUserPositions = () => {
       // single concurrent batch, and reuse the cached /api/pools route for
       // exchange rates instead of re-reading getPoolStats per pool.
       const [vBalances, poolsRes, borrows] = await Promise.all([
-        // Reserve share (vToken) balances — the unit withdraw takes.
-        Promise.all(EARN_ASSETS.map((a) => ContractService.getShareBalance(address, a))),
+        Promise.all(EARN_ASSETS.map((a) => ContractService.getDepositedBalance(address, a))),
         fetch('/api/pools?fresh=1', { cache: 'no-store' })
           .then((r) => (r.ok ? (r.json() as Promise<AllPoolStats>) : null))
           .catch(() => null),
@@ -171,22 +170,14 @@ export const useUserPositions = () => {
       const positions = { ...EMPTY_POSITIONS } as typeof EMPTY_POSITIONS;
       const depositedBalances = { ...EMPTY_DEPOSITED };
 
-      // Underlying = shares × reserve exchange rate (total_assets / total_supply).
-      // If the cached /api/pools read failed, read the underlying directly from
-      // the reserve rather than silently assuming a 1.0 rate.
-      const underlying = poolsRes
-        ? null
-        : await Promise.all(EARN_ASSETS.map((a) => ContractService.getDepositedBalance(address, a)));
-
       EARN_ASSETS.forEach((asset, i) => {
         const vBal = vBalances[i];
         const borrow = borrows[i];
         const key = asset as keyof AllPoolStats;
-        const rate = poolsRes ? parseFloat(poolsRes[key]?.exchangeRate) || 1 : 1;
+        const rate = poolsRes ? parseFloat(poolsRes[key].exchangeRate) || 1 : 1;
         const vNum = parseFloat(vBal) || 0;
-        const direct = underlying ? parseFloat(underlying[i]) : NaN;
         positions[asset] = {
-          deposited: (Number.isFinite(direct) ? direct : vNum * rate).toFixed(7),
+          deposited: (vNum * rate).toFixed(7),
           vTokenBalance: vBal,
           borrowed: borrow,
           borrowShares: '0',
@@ -413,14 +404,7 @@ export const useEarnTransactions = () => {
       const byKey = new Map<string, EarnTxEntry>();
       const keyOf = (e: EarnTxEntry) => `${e.hash}:${e.type}:${e.asset}`;
       for (const entry of mercury) if (entry.hash) byKey.set(keyOf(entry), entry);
-      for (const entry of rpcFallback) {
-        if (!entry.hash) continue;
-        const existing = byKey.get(keyOf(entry));
-        // Reserve events carry no timestamp; Mercury's comes from a Horizon
-        // lookup that can miss — take the RPC ledger close time then.
-        if (!existing) byKey.set(keyOf(entry), entry);
-        else if (!existing.timestamp && entry.timestamp) existing.timestamp = entry.timestamp;
-      }
+      for (const entry of rpcFallback) if (entry.hash && !byKey.has(keyOf(entry))) byKey.set(keyOf(entry), entry);
       return Array.from(byKey.values()).sort((a, b) => b.timestamp - a.timestamp);
     },
     staleTime: 4_000,

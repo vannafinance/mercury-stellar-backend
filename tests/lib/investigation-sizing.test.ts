@@ -147,12 +147,12 @@ describe("sizeLegs", () => {
   });
 
   it("treats a floor at or under the liquidation threshold as no margin at all", () => {
-    // 1.2 is the threshold itself, and the app treats the account as unhealthy AT 1.2.
-    for (const floor of ["1.2", "1.15", "1.1"]) {
+    // 1.1 is the threshold itself, and the contract is already unhealthy AT 1.1.
+    for (const floor of ["1.1", "1.05"]) {
       expect(sizeLegs(BASE, [leg("borrow", "100")], floor))
         .toMatchObject({ ok: false, reason: "floor_below_liquidation_threshold" });
     }
-    expect(formatWad(LIQUIDATION_THRESHOLD_WAD)).toBe("1.2");
+    expect(formatWad(LIQUIDATION_THRESHOLD_WAD)).toBe("1.1");
   });
 
   it("does not apply the floor to a state with no debt left", () => {

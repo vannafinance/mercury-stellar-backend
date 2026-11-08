@@ -2,12 +2,12 @@
 
 /**
  * Right column of the V3 Margin screen: Margin Account Info, the Liquidation card (health factor +
- * meter + dollar buffer to the 1.20 line) and the "Oracles and LTs" collapsible (the on-chain
- * oracle, liquidation threshold and CreditLayer contracts, plus each asset's oracle price).
+ * meter + dollar buffer to the 1.10 line) and the "Oracles and LTs" collapsible (the on-chain
+ * oracle, liquidation threshold and RiskEngine contracts, plus each asset's oracle price).
  *
- * Account numbers come from the CreditLayer-exact model (`useV3Account`, margin_value); the borrow
- * rate from the account snapshot; prices from the credit-layer oracle (`useTokenPrices`; each USDC
- * variant BLUSDC / AQUSDC / SOUSDC has its own feed).
+ * Account numbers come from the RiskEngine-exact model (`useV3Account`); the borrow rate from the
+ * account snapshot; prices from the on-chain oracle (`useTokenPrices`; the venue USDC wrappers
+ * BLUSDC / AQUSDC / SOUSDC are priced off USDC).
  */
 import { useState } from "react";
 import toast from "react-hot-toast";
@@ -44,9 +44,10 @@ function Addr({ value }: { value: string }) {
 /** Assets with an oracle row: [display symbol, note]. */
 const ORACLE_ROWS: [string, string][] = [
   ["XLM", "Oracle"],
-  ["BLUSDC", "Oracle"],
-  ["AQUSDC", "Oracle"],
-  ["SOUSDC", "Oracle"],
+  ["USDC", "Oracle"],
+  ["BLUSDC", "via USDC"],
+  ["AQUSDC", "via USDC"],
+  ["SOUSDC", "via USDC"],
 ];
 
 export function RightColumn({ m }: { m: MarginScreen }) {
@@ -110,15 +111,15 @@ export function RightColumn({ m }: { m: MarginScreen }) {
               <span>
                 <LblTip
                   k="Liquidation Threshold"
-                  tip="The account can be liquidated when its health factor is at or below 1.20 (borrows and withdrawals must keep it above 1.20). The health factor is unweighted: every asset counts at its full oracle value (no per-asset collateral weights)."
+                  tip="The account can be liquidated when its health factor is at or below 1.10. The health factor is unweighted: every asset counts at its full oracle value (no per-asset collateral weights)."
                 />
               </span>
               <span className="num">{nf(LIQ_HF, 2)}x</span>
             </div>
             <div className="mg-ir">
-              <span>Credit Layer</span>
+              <span>Risk Engine</span>
               <span>
-                <Addr value={CONTRACT_ADDRESSES.CREDIT_LAYER} />
+                <Addr value={CONTRACT_ADDRESSES.RISK_ENGINE} />
               </span>
             </div>
             {ORACLE_ROWS.map(([s, note]) => {
@@ -142,7 +143,7 @@ export function RightColumn({ m }: { m: MarginScreen }) {
 }
 
 /**
- * HF + meter, with the 1.20 tick and the dollar buffer showing the distance to liquidation.
+ * HF + meter, with the 1.10 tick and the dollar buffer showing the distance to liquidation.
  */
 function LiquidationCard({ m }: { m: MarginScreen }) {
   const n = m.now;

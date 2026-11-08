@@ -115,7 +115,7 @@ const initialState: MarginAccountInfoStateType = {
 
 // Export Store
 //
-// NOT persisted. Identity and balances always come from the CreditLayer/Soroban.
+// NOT persisted. Identity and balances always come from AccountManager/Soroban.
 export const useMarginAccountInfoStore = createNewStore(initialState, {
   name: "margin-account-info-store",
   devTools: true,
@@ -264,9 +264,7 @@ export const depositAndBorrow = async (
     );
 
     // Refresh borrowed balances after successful deposit (even if borrow fails, deposit might still succeed)
-    // depositAndBorrow is two txs now (deposit, then borrow): a failed borrow
-    // after a successful deposit still changed the account.
-    if (result.success || result.hash || result.error?.includes('succeeded')) {
+    if (result.success || result.error?.includes('Deposit was successful')) {
       await refreshBorrowedBalances(account.address, true);
     }
 
@@ -295,8 +293,10 @@ export const borrowTokens = async (
   userAddress: string,
   tokenSymbol: string,
   borrowAmount: number,
-  // Forwarded to MarginAccountService.borrowTokens, which ignores it now:
-  // credit-layer writes read a fresh sequence and retry on txBadSeq.
+  // Forwarded to MarginAccountService.borrowTokens — pass the `nextSequence`
+  // from a just-confirmed prior same-account tx (e.g. a dual-borrow's atomic
+  // deposit_and_borrow leg) to skip a same-account RPC re-read that isn't
+  // reliably caught up yet. See borrowTokensAttempt's doc comment.
   knownSequence?: string
 ): Promise<{ success: boolean; hash?: string; error?: string; nextSequence?: string }> => {
   try {
@@ -363,7 +363,7 @@ export const borrowTokens = async (
 };
 
 // Add contract setup action (for admin/testing purposes)
-/** Admin/testing helper. A no-op on the credit layer (configured at deploy time); kept for callers. Returns `{ success, error? }`. */
+/** Admin/testing helper: runs the one-time on-chain contract configuration. Returns `{ success, error? }`. */
 export const setupContractConfiguration = async (): Promise<{ success: boolean; error?: string }> => {
   try {
     const result = await MarginAccountService.setupContractConfiguration();
@@ -414,9 +414,9 @@ export const checkUserMarginAccount = async (
         applyResolvedMarginAccount(cachedAddress);
       }
 
-      // On-chain discovery (CreditLayer margin_of) is authoritative. Adopt it
-      // even when a cached account exists, so the cache can't keep showing an
-      // older one.
+      // On-chain discovery is authoritative — it resolves the NEWEST
+      // active account (see getMarginAccountFromRegistry). Adopt it even when a
+      // cached account exists, so the cache can't keep showing an older one.
       try {
         const blockchainAccount = await MarginAccountService.discoverExistingAccount(userAddress);
 
@@ -541,10 +541,12 @@ export const refreshBorrowedBalances = async (
         // reconcile window. Preserving prior keys keeps the grid populated; the
         // full snapshot below sets the authoritative set.
         //
-        // And NEVER let the fast partial overwrite SAC keys
+        // And NEVER let the fast ledger partial overwrite SAC keys
         // (XLM/BLUSDC/AQUSDC/SOUSDC). Those are owned by
-        // reconcileMarginRawSacCollateral in the full snapshot; skipping them
-        // here avoids a brief flicker between two reads of the same balance.
+        // reconcileMarginRawSacCollateral; CollateralBalanceWAD for them is often
+        // stale (e.g. post-swap) and briefly flashing the lower ledger amount is
+        // what caused XLM to flicker 87.69 ↔ 45.65 for ~1s. Filtering them out of
+        // the partial keeps the previous (correct) value on screen instead.
         const sacKeys = new Set(MARGIN_SAC_BALANCE_KEYS);
         const partialNonSac = Object.fromEntries(
           Object.entries(p.collateralBalances).filter(([k]) => !sacKeys.has(k)),

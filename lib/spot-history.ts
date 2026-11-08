@@ -3,13 +3,6 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 import { fetchContractEvents } from "@/lib/mercury-client";
 import { fetchTxTimestamps } from "@/lib/mercury-timestamps";
 import { CONTRACT_ADDRESSES, SOROBAN_RPC_URL } from "@/lib/stellar-utils";
-import { CREDIT_EVENTS } from "@/lib/credit-layer";
-
-// Spot (margin-account) swaps. The CreditLayer emits
-//   margin_executed  topics=[name, margin]  data={margin, target, tokens_in, tokens_out}
-// for every venue call, with NO amounts. Amounts come from the SEP-41 transfer
-// legs of the same transaction (margin -> pool, pool -> margin), merged by tx
-// hash; the margin_executed event confirms the swap and names the venue.
 
 export type SpotProtocol = "aquarius" | "soroswap";
 
@@ -26,6 +19,8 @@ export interface SpotHistoryEntry {
 }
 
 const ZERO = BigInt(0);
+const WAD = BigInt("1000000000000000000");
+const SEVEN_DECIMAL_DIVISOR = BigInt("100000000000");
 const NATIVE_TOKEN_SCALE = BigInt(10_000_000);
 
 const TOKEN_SYMBOLS: Record<string, string> = {
@@ -44,6 +39,28 @@ export interface SpotTransferLeg {
   amount: bigint;
   timestamp: number;
 }
+
+const actionName = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  // #[contracttype] unit enums decode from ScVec as ["Variant"].
+  if (Array.isArray(value)) return typeof value[0] === "string" ? value[0] : "";
+  if (value && typeof value === "object") {
+    const row = value as Record<string, unknown>;
+    const explicit = row.tag ?? row.name ?? row.type;
+    if (explicit != null) return String(explicit);
+    // Keep compatibility with decoders that expose a tagged enum as
+    // { Swap: undefined } rather than an ScVec.
+    return Object.keys(row)[0] ?? "";
+  }
+  return "";
+};
+
+const wadToFixed7 = (value: bigint): string => {
+  const abs = value < ZERO ? -value : value;
+  const whole = abs / WAD;
+  const fraction = ((abs % WAD) / SEVEN_DECIMAL_DIVISOR).toString().padStart(7, "0");
+  return `${whole}.${fraction}`;
+};
 
 const nativeToFixed7 = (value: bigint): string => {
   const abs = value < ZERO ? -value : value;
@@ -168,66 +185,65 @@ export function transfersToSpotHistory(
   return rows;
 }
 
-/** A CreditLayer `margin_executed` event that is a single-token-in / single-token-out swap. */
-export interface MarginSwapExec {
-  txHash: string;
-  target: string;
-  /** Token the margin account received. */
-  tokenIn: string;
-  /** Token the margin account sent. */
-  tokenOut: string;
+export function decodeTraderExec(
+  raw: unknown,
+  marginAccountAddress: string,
+  txHash: string,
+  timestamp: number,
+): SpotHistoryEntry | null {
+  if (!raw || typeof raw !== "object") return null;
+  const event = raw as Record<string, unknown>;
+  if (actionName(event.action).toLowerCase() !== "swap") return null;
+
+  const deltas = (event.deltas ?? {}) as Record<string, unknown>;
+  const tokens = Array.isArray(deltas.tokens) ? deltas.tokens.map(String) : [];
+  const amounts = Array.isArray(deltas.deltas) ? deltas.deltas : [];
+  if (tokens.length !== amounts.length) return null;
+
+  let input: { token: string; amount: bigint } | null = null;
+  let output: { token: string; amount: bigint } | null = null;
+  for (let index = 0; index < tokens.length; index += 1) {
+    let delta: bigint;
+    try {
+      delta = BigInt(String(amounts[index]));
+    } catch {
+      continue;
+    }
+    if (delta < ZERO && (!input || -delta > input.amount)) input = { token: tokens[index], amount: -delta };
+    if (delta > ZERO && (!output || delta > output.amount)) output = { token: tokens[index], amount: delta };
+  }
+  if (!input || !output) return null;
+
+  const target = String(event.target ?? "");
+  const protocol: SpotProtocol =
+    target === CONTRACT_ADDRESSES.AQUARIUS_ROUTER ||
+    target === CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL ||
+    input.token === CONTRACT_ADDRESSES.AQUARIUS_USDC ||
+    output.token === CONTRACT_ADDRESSES.AQUARIUS_USDC
+      ? "aquarius"
+      : "soroswap";
+
+  return {
+    id: `spot:${txHash}`,
+    protocol,
+    marginAccountAddress,
+    tokenIn: TOKEN_SYMBOLS[input.token] ?? input.token,
+    tokenOut: TOKEN_SYMBOLS[output.token] ?? output.token,
+    amountIn: wadToFixed7(input.amount),
+    amountOut: wadToFixed7(output.amount),
+    txHash,
+    timestamp,
+  };
 }
 
-const addressList = (value: unknown): string[] =>
-  Array.isArray(value) ? value.map((v) => asAddress(v)).filter((v): v is string => Boolean(v)) : [];
-
-/**
- * Decode a `margin_executed` event body. Returns it only when it is a swap:
- * exactly one token in and one token out, both spot tokens (an LP add/remove
- * moves two tokens one way and an LP/share token the other; Blend moves one).
- */
-export function decodeMarginExecuted(raw: unknown, txHash: string): MarginSwapExec | null {
-  const body = asRecord(raw);
-  if (!body || !txHash) return null;
-  const tokensIn = addressList(body.tokens_in);
-  const tokensOut = addressList(body.tokens_out);
-  if (tokensIn.length !== 1 || tokensOut.length !== 1) return null;
-  if (!TOKEN_SYMBOLS[tokensIn[0]] || !TOKEN_SYMBOLS[tokensOut[0]]) return null;
-  return { txHash, target: String(body.target ?? ""), tokenIn: tokensIn[0], tokenOut: tokensOut[0] };
-}
-
-const protocolForTarget = (target: string): SpotProtocol | null =>
-  target === CONTRACT_ADDRESSES.AQUARIUS_ROUTER || target === CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL
-    ? "aquarius"
-    : target === CONTRACT_ADDRESSES.SOROSWAP_ROUTER
-      ? "soroswap"
-      : null;
-
-/**
- * Merge transfer-reconstructed rows with margin_executed swap events by tx
- * hash: an event names the venue (protocol), the transfers carry the amounts.
- */
-export function applyMarginExecs(rows: SpotHistoryEntry[], execs: MarginSwapExec[]): SpotHistoryEntry[] {
-  const byHash = new Map(execs.map((e) => [e.txHash, e]));
-  return rows.map((row) => {
-    const exec = byHash.get(row.txHash);
-    const protocol = exec ? protocolForTarget(exec.target) : null;
-    return protocol ? { ...row, protocol } : row;
-  });
-}
-
-interface SourceResult {
-  rows: SpotHistoryEntry[];
-  execs: MarginSwapExec[];
-}
-
-async function fromMercury(marginAccountAddress: string): Promise<SourceResult> {
+async function fromMercury(marginAccountAddress: string): Promise<SpotHistoryEntry[]> {
   const results = await Promise.allSettled([
-    // Cap CreditLayer pagination — walking the default 50 pages blocked the
-    // whole Spot History query for 15–30s+ on cold load. Recent swaps live in
-    // the first pages; RPC fills anything this window misses.
+    // Cap AccountManager pagination — walking the default 50 pages blocked the
+    // whole Spot History query for 15–30s+ on cold load (UI showed empty until
+    // a later swap forced a refetch). Recent swaps live in the first pages;
+    // RPC fills anything this window misses.
     fetchContractEvents({
-      contract: CONTRACT_ADDRESSES.CREDIT_LAYER,
+      contract: CONTRACT_ADDRESSES.ACCOUNT_MANAGER,
       account: marginAccountAddress,
       maxPages: 5,
     }),
@@ -238,11 +254,11 @@ async function fromMercury(marginAccountAddress: string): Promise<SourceResult> 
     })),
   ]);
 
-  const creditLayerEvents = results[0].status === "fulfilled" ? results[0].value : [];
-  const execs = creditLayerEvents
-    .filter((event) => event.eventName === CREDIT_EVENTS.executed)
-    .map((event) => decodeMarginExecuted(event.data, event.tx ?? ""))
-    .filter((row): row is MarginSwapExec => Boolean(row));
+  const accountManagerEvents = results[0].status === "fulfilled" ? results[0].value : [];
+  const execRows = accountManagerEvents
+    .filter((event) => event.eventName === "Trader_Exec")
+    .map((event) => decodeTraderExec(event.data, marginAccountAddress, event.tx ?? "", 0))
+    .filter((row): row is SpotHistoryEntry => Boolean(row));
 
   const transferLegs = results.slice(1).flatMap((result, index) => {
     if (result.status !== "fulfilled") return [];
@@ -259,12 +275,21 @@ async function fromMercury(marginAccountAddress: string): Promise<SourceResult> 
       .filter((leg): leg is SpotTransferLeg => Boolean(leg));
   });
 
-  const rows = transfersToSpotHistory(transferLegs, marginAccountAddress);
+  // Prefer the richer AccountManager event when a newly deployed contract
+  // emits it; otherwise the token-transfer reconstruction covers the current
+  // testnet deployment without relying on browser storage.
+  const byHash = new Map<string, SpotHistoryEntry>();
+  execRows.forEach((row) => byHash.set(row.txHash, row));
+  transfersToSpotHistory(transferLegs, marginAccountAddress).forEach((row) => {
+    if (!byHash.has(row.txHash)) byHash.set(row.txHash, row);
+  });
+  const rows = Array.from(byHash.values());
+
   const timestamps = await fetchTxTimestamps(rows.map((row) => row.txHash).filter(Boolean));
   rows.forEach((row) => {
     row.timestamp = timestamps.get(row.txHash)?.ts ?? 0;
   });
-  return { rows, execs };
+  return rows;
 }
 
 // Ledgers per getEvents request. The public testnet RPC scans at most ~10k
@@ -281,7 +306,7 @@ const RPC_WINDOW_CONCURRENCY = 4;
 
 type RpcEvent = StellarSdk.rpc.Api.EventResponse;
 
-async function fromRpc(marginAccountAddress: string): Promise<SourceResult> {
+async function fromRpc(marginAccountAddress: string): Promise<SpotHistoryEntry[]> {
   const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
   const health = await server.getHealth();
   const accountTopic = StellarSdk.xdr.ScVal
@@ -291,8 +316,8 @@ async function fromRpc(marginAccountAddress: string): Promise<SourceResult> {
   const filters: StellarSdk.rpc.Api.EventFilter[] = [
     {
       type: "contract",
-      contractIds: [CONTRACT_ADDRESSES.CREDIT_LAYER],
-      topics: [[StellarSdk.xdr.ScVal.scvSymbol(CREDIT_EVENTS.executed).toXDR("base64"), accountTopic]],
+      contractIds: [CONTRACT_ADDRESSES.ACCOUNT_MANAGER],
+      topics: [["*", accountTopic]],
     },
     // Trailing "**" matches any number of further topics. The native XLM SAC
     // emits transfer with a 4th topic ("native"), so the old exact 3-segment
@@ -341,11 +366,16 @@ async function fromRpc(marginAccountAddress: string): Promise<SourceResult> {
   }
   const response = { events };
 
-  const execs = response.events
-    .filter((event) => event.contractId?.contractId() === CONTRACT_ADDRESSES.CREDIT_LAYER)
-    .filter((event) => StellarSdk.scValToNative(event.topic[0]) === CREDIT_EVENTS.executed)
-    .map((event) => decodeMarginExecuted(StellarSdk.scValToNative(event.value), event.txHash))
-    .filter((row): row is MarginSwapExec => Boolean(row));
+  const execRows = response.events
+    .filter((event) => event.contractId?.contractId() === CONTRACT_ADDRESSES.ACCOUNT_MANAGER)
+    .filter((event) => StellarSdk.scValToNative(event.topic[0]) === "Trader_Exec")
+    .map((event) => decodeTraderExec(
+      StellarSdk.scValToNative(event.value),
+      marginAccountAddress,
+      event.txHash,
+      new Date(event.ledgerClosedAt).getTime(),
+    ))
+    .filter((row): row is SpotHistoryEntry => Boolean(row));
 
   const transferLegs = response.events
     .map((event) => {
@@ -362,7 +392,12 @@ async function fromRpc(marginAccountAddress: string): Promise<SourceResult> {
     })
     .filter((leg): leg is SpotTransferLeg => Boolean(leg));
 
-  return { rows: transfersToSpotHistory(transferLegs, marginAccountAddress), execs };
+  const byHash = new Map<string, SpotHistoryEntry>();
+  execRows.forEach((row) => byHash.set(row.txHash, row));
+  transfersToSpotHistory(transferLegs, marginAccountAddress).forEach((row) => {
+    if (!byHash.has(row.txHash)) byHash.set(row.txHash, row);
+  });
+  return Array.from(byHash.values());
 }
 
 /** Race a promise against a timeout so one slow indexer can't blank the UI. */
@@ -393,17 +428,10 @@ export async function getSpotHistory(
     withTimeout(fromRpc(marginAccountAddress), 20_000),
   ]);
   const byHash = new Map<string, SpotHistoryEntry>();
-  const execs: MarginSwapExec[] = [];
   // Prefer RPC first (recent, usually faster), then Mercury for longer history.
-  if (rpc.status === "fulfilled") {
-    rpc.value.rows.forEach((row) => byHash.set(row.txHash, row));
-    execs.push(...rpc.value.execs);
-  }
-  if (mercury.status === "fulfilled") {
-    mercury.value.rows.forEach((row) => {
-      if (!byHash.has(row.txHash)) byHash.set(row.txHash, row);
-    });
-    execs.push(...mercury.value.execs);
-  }
-  return applyMarginExecs(Array.from(byHash.values()), execs).sort((a, b) => b.timestamp - a.timestamp);
+  if (rpc.status === "fulfilled") rpc.value.forEach((row) => byHash.set(row.txHash, row));
+  if (mercury.status === "fulfilled") mercury.value.forEach((row) => {
+    if (!byHash.has(row.txHash)) byHash.set(row.txHash, row);
+  });
+  return Array.from(byHash.values()).sort((a, b) => b.timestamp - a.timestamp);
 }

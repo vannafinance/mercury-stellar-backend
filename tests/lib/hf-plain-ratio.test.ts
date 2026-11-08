@@ -70,8 +70,8 @@ describe("health factor from the live account-health payload is the product's pl
     expect(below.risk.decision).toBe("block");
     expect(below.risk.reasons[0]).toMatch(/liquidation line/);
 
-    // Exactly on the line is liquidatable too (the CreditLayer requires strictly above 1.2).
-    const onLine = await evaluateWriteRisk(mcp(260, 200), { action: withdraw(100), smartAccount: "CTEST", amount: 100 });
+    // Exactly on the line is liquidatable too (the RiskEngine requires strictly above).
+    const onLine = await evaluateWriteRisk(mcp(240, 200), { action: withdraw(100), smartAccount: "CTEST", amount: 100 });
     expect(onLine.risk.projected_health_factor).toBeCloseTo(LIQUIDATION_THRESHOLD, 6);
     expect(onLine.risk.decision).toBe("block");
   });

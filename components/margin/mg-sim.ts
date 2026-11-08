@@ -4,11 +4,11 @@
  * Every function here edits a copy of the program-exact {@link ModelState} (lib/account-model.ts,
  * built by `useV3Account`) and lets `accountNumbers` / `healthFactor` value the result, so the
  * before → after rows use the same valuation as the health factor shown everywhere else
- * (HF = Σ collateral / Σ debt, unweighted; liquidatable at ≤ 1.20).
+ * (HF = Σ collateral / Σ debt, unweighted; liquidatable at ≤ 1.10).
  *
  * The borrow / withdraw LIMITS on Stellar are not taken from this model: they stay the pre-sign
  * checks the app already had ({@link riskEngineMaxBorrowUsd} here, `maxMarginWithdrawal` in
- * lib/utils/margin-withdraw.ts), computed from the margin store's CreditLayer-aligned totals.
+ * lib/utils/margin-withdraw.ts), computed from the margin store's RiskEngine-aligned totals.
  *
  * Token moves are applied in USD at today's on-chain prices. Borrowed tokens land in the margin
  * vault and count as collateral, so a borrow raises both sides of the ratio.
@@ -52,14 +52,14 @@ export const withRepay = (s: ModelState, m: Move, from: "margin" | "wallet"): Mo
 export const withWithdraw = (s: ModelState, m: Move): ModelState => ({ ...s, collateral: bump(s.collateral, m.symbol, -m.usd) });
 
 /**
- * The Stellar pre-sign borrow check (unchanged from the previous Leverage tab): the CreditLayer
- * accepts a borrow while (gross + borrow) / (debt + borrow) > 1.20, so the largest additional
- * borrow is (gross − 1.20 × debt) / 0.20. `gross` is the store's grossCollateralValue (plus any
+ * The Stellar pre-sign borrow check (unchanged from the previous Leverage tab): the RiskEngine
+ * accepts a borrow while (gross + borrow) / (debt + borrow) > 1.10, so the largest additional
+ * borrow is (gross − 1.10 × debt) / 0.10. `gross` is the store's grossCollateralValue (plus any
  * deposit going in with the borrow), `debt` the store's totalBorrowedValue.
  */
 export const riskEngineMaxBorrowUsd = (gross: number, debt: number) => Math.max(0, (gross - LIQ_HF * debt) / (LIQ_HF - 1));
 
-/** Collateral above the 1.20 liquidation line: holdings − 1.20 × debt (never below 0). */
+/** Collateral above the 1.10 liquidation line: holdings − 1.10 × debt (never below 0). */
 export const liqBuffer = (n: AccountNumbers) => Math.max(0, n.holdings - LIQ_HF * n.debt);
 
 /** True when the account owes nothing worth showing. */

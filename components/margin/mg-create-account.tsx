@@ -3,7 +3,7 @@
 /**
  * "Create your Margin Account" — the two dialogues the Margin page has always shown (restored from
  * the pre-V3 leverage tab): 1) what a margin account is, 2) the borrow agreement with its checkbox
- * and Sign. Signing runs CreditLayer `create_margin` (store `createMarginAccount`, which drives the
+ * and Sign. Signing runs AccountManager `create_account` (store `createMarginAccount`, which drives the
  * transaction-progress modal and its toasts). After creation the account is rediscovered and the
  * per-wallet snapshot refetched, so the page leaves the pre-creation state.
  */

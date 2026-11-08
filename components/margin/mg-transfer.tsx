@@ -3,15 +3,15 @@
 /**
  * "Transfer Collateral" tab (V3 design): move a token between the wallet and the margin account.
  * MB = wallet → margin (`deposit_collateral_tokens`), WB = margin → wallet
- * (CreditLayer `withdraw_collateral`, health-checked on-chain by the CreditLayer).
+ * (`withdraw_collateral_balance`, health-checked on-chain by the RiskEngine).
  *
  * Same caps and checks as the previous Stellar Transfer tab (transfer-collateral.tsx):
  * - the source balance — the wallet's native XLM keeps its real on-chain minimum reserve
  *   ((2 + subentries) × 0.5 XLM + fee buffer), contract-held tokens have no reserve;
- * - for a withdrawal, the CreditLayer-safe limit `maxMarginWithdrawal` from the store's health
- *   factor and dust-floored debt (so a withdrawal can't reach the 1.20 liquidation line), with
+ * - for a withdrawal, the RiskEngine-safe limit `maxMarginWithdrawal` from the store's health
+ *   factor and dust-floored debt (so a withdrawal can't reach the 1.10 liquidation line), with
  *   Max / % presets that keep all seven token decimals (`marginWithdrawalPreset`);
- * - a withdrawal whose projected health factor is at or below 1.20 is blocked.
+ * - a withdrawal whose projected health factor is at or below 1.10 is blocked.
  * A failed transaction keeps the entered amount; balances refresh after confirmation.
  */
 import { useEffect, useState } from "react";
@@ -60,7 +60,7 @@ export function TransferTab({ m }: { m: MarginScreen }) {
   const [pct, setPct] = useState(0);
   const [xlmMinReserve, setXlmMinReserve] = useState(1.5);
 
-  // The store's CreditLayer-aligned health factor and debt — the pair `maxMarginWithdrawal` needs.
+  // The store's RiskEngine-aligned health factor and debt — the pair `maxMarginWithdrawal` needs.
   const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
   const avgHealthFactor = useMarginAccountInfoStore((s) => s.avgHealthFactor);
   // Same dust floor `avgHealthFactor` is computed against (USD_DUST_EPSILON): a sub-cent residual
@@ -131,7 +131,7 @@ export function TransferTab({ m }: { m: MarginScreen }) {
   const amt = Number(input || 0);
   const isOverSourceBalance = amt > sourceBalance;
 
-  // Projected HF after a WB (withdraw) — blocks Transfer when it would reach 1.20.
+  // Projected HF after a WB (withdraw) — blocks Transfer when it would reach 1.10.
   const projectedHfAfterWb = (() => {
     if (dir !== "WB" || !hasMeaningfulDebt) return Infinity;
     if (avgHealthFactor <= 0) return Infinity;
@@ -308,7 +308,7 @@ export function TransferTab({ m }: { m: MarginScreen }) {
         {belowLiq ? (
           <div className="mg-rd" role="alert">
             {IC.warn}
-            <span>This withdrawal would drop your Health Factor to {hfFmt(projectedHfAfterWb)} (at or below 1.20). Reduce the amount or repay some debt first.</span>
+            <span>This withdrawal would drop your Health Factor to {hfFmt(projectedHfAfterWb)} (at or below 1.10). Reduce the amount or repay some debt first.</span>
           </div>
         ) : (
           warn && (

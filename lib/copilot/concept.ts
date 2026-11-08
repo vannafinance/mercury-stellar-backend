@@ -244,7 +244,7 @@ CONTENT RULES:
 3. Placeholders / all-zero demo stats → flag uncertainty.
 4. Never claim you executed a trade or signature.
 5. No financial advice ("you should 5x"). Describe options neutrally.
-6. Health factor liquidation threshold on Vanna is 1.2 when needed; prefer page text.
+6. Health factor liquidation context on Vanna is ~1.1 when needed; prefer page text.
 7. BLUSDC, AQUSDC, SOUSDC are different tokens - do not conflate.
 8. When asked "what can I do with …", list 3–5 realistic in-app paths tied to what is on the page (Swap, Earn, Farm, Margin, Portfolio) - not generic crypto tips.
 

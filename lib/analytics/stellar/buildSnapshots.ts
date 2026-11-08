@@ -105,7 +105,7 @@ function buildSelfSnapshot(userAddress: string): AccountSnapshot | null {
     totalDebtUsd,
     healthFactor,
     leverage,
-    isHealthy: healthFactor > 1.2, // credit layer: healthy iff HF > 1.2
+    isHealthy: healthFactor >= 1.1,
   };
 }
 

@@ -2,45 +2,69 @@ import { requestAccess, getAddress, signTransaction } from '@/lib/wallet-adapter
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { RETRY, withRetry } from '@/lib/copilot/retry-policy';
 import { markTxSubmitted } from './tx-progress';
-import { CREDIT_LAYER_ADDRESSES, ReserveCalls, marginOf, sc, simulateRead, stroopsToWad, toCreditAsset } from './credit-layer';
 
 export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
 export const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
 export const HORIZON_URL = 'https://horizon-testnet.stellar.org';
 
-// Credit-layer redeploy 2026-11-06 (Protocol_V1_Soroban_testnet branch
-// `testnet-credit-layer`, deploy/testnet.json). The old AccountManager,
-// Registry, RiskEngine, RateModel, lending pools + vTokens, SmartAccount,
-// Controllers and TrackingToken are retired. Their replacements:
-//   CreditLayer  - margin accounts, collateral, borrow/repay, venue calls
-//   Reserve x4   - one lending reserve per asset; it is also the share token
-//                  (so the LENDING_PROTOCOL_* and V*_TOKEN keys both point at it)
-//   Oracle       - Reflector-backed USD prices (WAD), LP + Blend valuation
-//   ValidatorFacade + per-venue validators - build the venue calls
-// See lib/credit-layer.ts for the client.
+// Redeployed 2026-07-19 (third redeploy same day) — testnet genuinely has
+// THREE separate USDC test tokens (one per DEX's own pre-existing pool,
+// none interchangeable), reversing the prior "single canonical USDC"
+// collapse. Registry.get_protocol_config() now returns aquarius_usdc/
+// soroswap_usdc as their own real addresses alongside the Blend-side `usdc`.
+// Each USDC variant has its own genuine lending pool (3 pools total, plus
+// XLM = 4). See CONTRACT_COMMAND.md for the full command sequence.
+//
+// Live-verified this deploy (real testnet transactions): add liquidity to
+// all 4 lending pools -> create margin account -> deposit XLM + borrow
+// BLUSDC -> deposit XLM + borrow AqUSDC -> deposit XLM + borrow SoUSDC ->
+// Blend Supply (exec) -> Soroswap AddLiquidity + RemoveLiquidity (exec),
+// all succeeding with real fund movement and TrackingToken mint/burn.
+//
+// Aquarius AddLiquidity is registered and reachable but currently BLOCKED by
+// a real external-protocol limitation: the live Aquarius router's `deposit`
+// performs gauge/reward checkpoint accounting that reads a classic-asset
+// trustline balance for `user` — a G-account without that trustline gets a
+// graceful "trustline missing" error, but a smart-contract `user` has no
+// trustline concept at all, so the same check panics unhandled instead.
+// This is a protocol-side constraint on this specific gauge-enabled pool,
+// not a bug in our Controller — confirmed by testing every plausible
+// auth-entry shape (flat siblings, nested-under-router, nested-under-pool)
+// and by reproducing the identical trustline-missing failure with a second
+// real G-account. Aquarius RemoveLiquidity was never reached because of this.
 export const CONTRACT_ADDRESSES = {
-  CREDIT_LAYER: CREDIT_LAYER_ADDRESSES.CREDIT_LAYER,
-  ORACLE: CREDIT_LAYER_ADDRESSES.ORACLE,
-  VALIDATOR_FACADE: CREDIT_LAYER_ADDRESSES.VALIDATOR_FACADE,
-  BLEND_VALUER: CREDIT_LAYER_ADDRESSES.BLEND_VALUER,
-  REFLECTOR: CREDIT_LAYER_ADDRESSES.REFLECTOR,
+  REGISTRY: 'CBBQQULN3XZDWDZG7D6VYD4UQKBGYH22DOFQEISKENCMZTYUPQ5LDXUO',
+  ORACLE: 'CAYHPE4U54GDKULPRHYJZNDMBAJDQ3UNQ446KFYMJ5HABBPORERZCRWB',
+  RATE_MODEL: 'CBMJ7DD4EUVZWFRPKRPGYK2NADCIGY5OFTPN7PJ7SAOIJI7IQTVHOJT6',
+  RISK_ENGINE: 'CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY',
+  ACCOUNT_MANAGER: 'CAZLR6EHZXQNZJIFNP6F7SIJQC3P64MKHHQNZSSG5BNAEFCYTTGTDZXB',
+  TRACKING_TOKEN: 'CC4P2DC4J3DTKNL7CQB42S3JSZNIVVHFJEMHZWTSDR233CT6O2KK7ZK2',
+  CONTROLLER_FACADE: 'CB2SEZGDRPS4O56UYQAERQGHM7V6ZDMZZE5AYOGERRGWT5CUGRPVDWEH',
+  POOL_DEPLOYER: 'CCURFEEXKVGDAKXAGNG4NHEK2RRSOBOVUZDNHI32DFBAF2HWO57JKLIP',
 
-  // Reserve share tokens (the old vToken role), one per reserve
-  VXLM_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_XLM,
-  VBLEND_USDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC,
-  VAQUARIUS_USDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_AQUSDC,
-  VSOROSWAP_USDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_SOUSDC,
+  // Per-protocol Controllers — resolved by Registry.get_controller_for(target)
+  // Redeployed 2026-07-20/21: all three Controllers now have an admin-gated
+  // `upgrade()` fn, so future fixes won't need a fresh redeploy + re-register.
+  BLEND_CONTROLLER: 'CCZVHCPWY47GRWCE2TB7QPX7Y54BMQUYQTTAQ5LJGNJ3GLGO77VVQUS3',
+  SOROSWAP_CONTROLLER: 'CBSUSG7PK2QKYBEA2GPNNTV7QVGKV7DSDUFDB44FFRZYR4L4GB7BKD2M',
+  AQUARIUS_CONTROLLER: 'CBVRH2DWBMASALAMPZ5JUCKZHWO6SA2MD4MBXMO644XNCERWBMKHL2WT',
+
+  // vToken receipt contracts, one per lending pool
+  VXLM_TOKEN: 'CDGYZSMWOOKM55WEKEQ2HEMM7RS2KRA7MYI2DDYXWV5YHGUVUGQZSOCB',
+  VBLEND_USDC_TOKEN: 'CAZWBJQ6V2XASUILI36UVQJ5K2EQXIDVXJZNGZBEONPUVVURKDOP4RX5',
+  VAQUARIUS_USDC_TOKEN: 'CAU5GVAGCWLOIAGFHQFEVBJLDHVS2KH4YPRQ34CIDG2T7RDAWWWODKRV',
+  VSOROSWAP_USDC_TOKEN: 'CAIMEE4EZ3FUMOBTVV7DKGI2TDACWXUWU6Z2RJ3NMP642TDKQHHOEIWG',
   // Back-compat alias used by earn constants
-  VUSDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC,
+  VUSDC_TOKEN: 'CAZWBJQ6V2XASUILI36UVQJ5K2EQXIDVXJZNGZBEONPUVVURKDOP4RX5',
 
-  // Lending reserves — XLM + per-USDC-variant
-  LENDING_PROTOCOL_XLM: CREDIT_LAYER_ADDRESSES.RESERVE_XLM,
-  LENDING_PROTOCOL_BLEND_USDC: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC,
-  LENDING_PROTOCOL_AQUARIUS_USDC: CREDIT_LAYER_ADDRESSES.RESERVE_AQUSDC,
-  LENDING_PROTOCOL_SOROSWAP_USDC: CREDIT_LAYER_ADDRESSES.RESERVE_SOUSDC,
+  // Lending Pools — XLM + per-USDC-variant
+  LENDING_PROTOCOL_XLM: 'CB3LCPDMPRTRXJHO7ZB3OORQDL2AV5FTJPPZOPHTZFOMUPMJY55RHYR3',
+  LENDING_PROTOCOL_BLEND_USDC: 'CCHSDWJPFMEFNDRSZ55A5MLSTASYHZERLPJIJGTAD7MT24KHVLOU3BTI',
+  LENDING_PROTOCOL_AQUARIUS_USDC: 'CDKMMD63RUZNROFZZD64QZNEQ2FR5X62R4FE6E3USJ5VN5KY7QM6F2FD',
+  LENDING_PROTOCOL_SOROSWAP_USDC: 'CCZQUQQVZVNZMTG2P6MVAGA7V2DRTCII6IGVEQ5YUCYP7MXA7SMLHETP',
   // Back-compat alias for call sites still keyed on a single "USDC" pool —
-  // resolves to the Blend USDC reserve specifically, not a shared canonical one.
-  LENDING_PROTOCOL_USDC: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC,
+  // resolves to Blend's own pool specifically, not a shared canonical one.
+  LENDING_PROTOCOL_USDC: 'CCHSDWJPFMEFNDRSZ55A5MLSTASYHZERLPJIJGTAD7MT24KHVLOU3BTI',
 
   // Three genuinely distinct USDC test tokens — one per DEX's own real pool.
   BLEND_USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
@@ -54,14 +78,13 @@ export const CONTRACT_ADDRESSES = {
   BLEND_XLM: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
   BLEND_USDC: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
 
-  // Aquarius AMM (testnet, external). The credit layer's Aquarius validator
-  // accepts only this constant_product XLM/AQUSDC pool (index below).
+  // Aquarius AMM (testnet, external). Registered and reachable — see the
+  // gauge/trustline limitation noted above for why AddLiquidity still fails.
+  // Only constant_product pools are supported (no concentrated).
   AQUARIUS_ROUTER: 'CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD',
   AQUARIUS_XLM_USDC_POOL: 'CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX',
   AQUARIUS_USDC: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
   AQUARIUS_POOL_INDEX_HEX: '9ac7a9cde23ac2ada11105eeaa42e43c2ea8332ca0aa8f41f58d7160274d718e',
-  /** Share (LP) token of AQUARIUS_XLM_USDC_POOL; the margin account holds it directly. */
-  AQUARIUS_XLM_USDC_SHARE: CREDIT_LAYER_ADDRESSES.AQUARIUS_SHARE,
   AQUARIUS_XLM_USDT_POOL: 'CA6DAGOMK5D7GKBNWVCIEAYSTPJXLQUFWFKSZOMNEM6BVOTUBDCTIT5I',
 
   // Soroswap DEX (testnet, external). XLM/SoUSDC pair auto-created live by
@@ -376,32 +399,64 @@ export class ContractService {
     }
   }
 
-  /**
-   * Supply `amount` of the underlying into the asset's credit-layer Reserve
-   * (`reserve.supply(lender, amount_wad)`, was `pool.deposit(lender, wad)`).
-   * The reserve mints share tokens (the old vToken role) to the lender.
-   * Signed by the connected wallet (Freighter / Privy) via `invokeWrite`, which
-   * also waits for SUCCESS and retries a stale-sequence / footprint race.
-   *
-   * @param walletAddress - Lender G-address (must be the connected wallet).
-   * @param amount - Human amount of the underlying asset.
-   * @param assetType - Target reserve (default XLM).
-   * @returns `{ success, hash?, error? }`.
-   */
   static async deposit(
-    walletAddress: string,
-    amount: number,
+    walletAddress: string, 
+    amount: number, 
     assetType: AssetType = ASSET_TYPES.XLM
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
     try {
-      // Raw `amount * 1e18` float multiplication loses precision once the
-      // product needs more significant digits than a JS double can hold, most
-      // likely to bite on a 100%-of-balance supply with many decimal digits.
-      // Splitting through a 7-decimal (stroop-precision) integer step keeps it exact.
-      const amountWAD = humanToWad(amount);
-      if (amountWAD <= BigInt(0)) return { success: false, error: 'Please enter a valid amount' };
-      const r = await ReserveCalls.supply(walletAddress, creditSymbol(assetType), amountWAD);
-      return { success: r.success, hash: r.hash, error: r.success ? undefined : r.error || 'Deposit failed' };
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      const sourceAccount = await server.getAccount(walletAddress);
+      
+      const contractAddress = lendingPoolAddress(assetType);
+      const methodName = 'deposit';
+
+      const contract = new StellarSdk.Contract(contractAddress);
+
+      // See ContractService.withdraw's matching comment: raw `amount * 1e18`
+      // float multiplication loses precision once the product needs more
+      // significant digits than a JS double can hold, most likely to bite on
+      // a 100%-of-balance supply with many decimal digits. Splitting through
+      // a 7-decimal (stroop-precision) integer step keeps it exact.
+      const amountWAD = (BigInt(Math.floor(amount * 1e7)) * BigInt(10 ** 11)).toString();
+
+      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            methodName,
+            StellarSdk.nativeToScVal(walletAddress, { type: 'address' }),
+            StellarSdk.nativeToScVal(amountWAD, { type: 'u256' })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const preparedTx = await server.prepareTransaction(transaction);
+
+      const signResult = await signTransaction(preparedTx.toXDR(), {
+        networkPassphrase: NETWORK_PASSPHRASE,
+      });
+
+      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
+        signResult.signedTxXdr,
+        NETWORK_PASSPHRASE
+      );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
+
+      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+
+      if (result.status === 'PENDING') {
+        await ContractService.pollTransactionStatus(server, result.hash);
+        return { success: true, hash: result.hash };
+      } else {
+        throw new Error(`Transaction rejected by network: ${describeSendError(result)}`);
+      }
     } catch (error: any) {
       console.error('Deposit error:', error);
       return { success: false, error: error?.message || 'Deposit failed' };
@@ -409,38 +464,80 @@ export class ContractService {
   }
 
   /**
-   * Withdraw from a Reserve by redeeming share tokens
-   * (`reserve.redeem(lender, shares_wad)`, was `pool.redeem_vtokens`).
+   * Withdraw from a lending pool by redeeming vTokens (`redeem_vxlm` /
+   * `redeem_vusdc`). Prepares → signs via Freighter → submits → polls.
    *
-   * `amount` is in SHARE (vToken) units — the same unit the Earn UI shows as
-   * "vXLM" balance and caps the input with, unchanged from the old vToken
-   * flow. It is capped at the lender's live share balance, and an amount at
-   * (or within one stroop of) the full balance redeems the whole balance, so a
-   * 100% withdrawal never leaves dust or overshoots. The reserve pays out the
-   * underlying at its current exchange rate (capped by available cash).
-   *
-   * @param walletAddress - Redeemer's G-address (must be the connected wallet).
-   * @param amount - Share amount (human, 7 decimals).
-   * @param assetType - Target reserve (default XLM).
+   * @param walletAddress - Redeemer's G-address and tx source.
+   * @param amount - Human amount; converted to WAD as `floor(amount × 1e18)`.
+   * @param assetType - Target pool (default XLM); undeployed pools return an
+   *                    error rather than throwing.
    * @returns `{ success, hash?, error? }`.
    */
   static async withdraw(
-    walletAddress: string,
-    amount: number,
+    walletAddress: string, 
+    amount: number, 
     assetType: AssetType = ASSET_TYPES.XLM
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
     try {
-      const symbol = creditSymbol(assetType);
-      const balance = BigInt(await simulateRead<bigint>(lendingPoolAddress(assetType), 'balance', [sc.address(walletAddress)]));
-      if (balance <= BigInt(0)) return { success: false, error: 'No supplied balance to withdraw' };
-      // Same stroop-precision integer step as deposit (see the comment there):
-      // a float `amount * 1e18` once produced 14336 units MORE than the real
-      // 100% balance, which the old pool trapped on.
-      let shares = BigInt(Math.floor(amount * 1e7 + 1e-6));
-      if (shares <= BigInt(0)) return { success: false, error: 'Please enter a valid amount' };
-      if (shares >= balance - BigInt(1)) shares = balance; // max / rounding → redeem everything
-      const r = await ReserveCalls.redeem(walletAddress, symbol, stroopsToWad(shares));
-      return { success: r.success, hash: r.hash, error: r.success ? undefined : r.error || 'Withdraw failed' };
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      const sourceAccount = await server.getAccount(walletAddress);
+      
+      const contractAddress = lendingPoolAddress(assetType);
+      const methodName = 'redeem_vtokens';
+      
+      const contract = new StellarSdk.Contract(contractAddress);
+
+      // `amount * 1e18` in raw floating point loses precision once the
+      // product needs more significant digits than a JS double can hold
+      // (~15-17) — confirmed live: withdrawing the exact 100% vToken balance
+      // (999.5544013) computed as 999554401300000014336 instead of the true
+      // 999554401300000000000, a 14336-unit excess over the real balance.
+      // redeem_vtokens has no tolerance for that — it trapped with
+      // `HostError(WasmVm, InvalidAction) / UnreachableCodeReached`
+      // instead of a clean "insufficient balance" the caller could act on.
+      // Splitting the conversion through a 7-decimal (stroop-precision —
+      // Stellar amounts never carry more real precision than this) integer
+      // step keeps the multiplication that actually needs 18 digits of
+      // headroom in exact BigInt arithmetic instead of a float.
+      const amountWAD = (BigInt(Math.floor(amount * 1e7)) * BigInt(10 ** 11)).toString();
+
+      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            methodName,
+            StellarSdk.nativeToScVal(walletAddress, { type: 'address' }),
+            StellarSdk.nativeToScVal(amountWAD, { type: 'u256' })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const preparedTx = await server.prepareTransaction(transaction);
+
+      const signResult = await signTransaction(preparedTx.toXDR(), {
+        networkPassphrase: NETWORK_PASSPHRASE,
+      });
+
+      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
+        signResult.signedTxXdr,
+        NETWORK_PASSPHRASE
+      );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
+
+      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+
+      if (result.status === 'PENDING') {
+        await ContractService.pollTransactionStatus(server, result.hash);
+        return { success: true, hash: result.hash };
+      } else {
+        throw new Error(`Transaction rejected by network: ${describeSendError(result)}`);
+      }
     } catch (error: any) {
       console.error('Withdraw error:', error);
       return { success: false, error: error?.message || 'Withdraw failed' };
@@ -448,53 +545,58 @@ export class ContractService {
   }
 
   /**
-   * The holder's supplied position in a Reserve, in UNDERLYING units:
-   * `shares × total_assets / total_supply` (the reserve's exchange rate,
-   * interest included). Use {@link getShareBalance} for the raw share
-   * (vToken) count.
+   * Read a holder's vToken (deposit-receipt) balance for a pool via simulation,
+   * scaled by the vToken's own decimals.
    *
-   * @param address - Lender G-address.
-   * @param assetType - Which reserve (default XLM).
-   * @returns Underlying amount fixed to 7 decimals, `'0'` when empty, or
-   *          `'Error'` when the read failed.
+   * @param address - Holder G-address; also the simulation source.
+   * @param assetType - Which pool's vToken to read (default XLM).
+   * @returns Balance fixed to 7 decimals, `'0'` when empty/undeployed/sim-fail,
+   *          or `'Error'` on exception.
    */
   static async getDepositedBalance(
     address: string,
     assetType: AssetType = ASSET_TYPES.XLM
   ): Promise<string> {
     try {
-      const reserve = lendingPoolAddress(assetType);
-      const [shares, totalAssets, totalSupply] = await Promise.all([
-        simulateRead<bigint>(reserve, 'balance', [sc.address(address)]),
-        simulateRead<bigint>(reserve, 'total_assets'),
-        simulateRead<bigint>(reserve, 'total_supply'),
-      ]);
-      const s = BigInt(shares ?? 0);
-      const supply = BigInt(totalSupply ?? 0);
-      if (s === BigInt(0) || supply === BigInt(0)) return '0.0000000';
-      return wadToFixed7((s * BigInt(totalAssets ?? 0)) / supply);
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      // Read-only simulation does not need a live sequence-number lookup.
+      const sourceAccount = new StellarSdk.Account(address, '0');
+      
+      const contractAddress = vTokenAddress(assetType);
+
+      const contract = new StellarSdk.Contract(contractAddress);
+
+      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            'balance',
+            StellarSdk.nativeToScVal(address, { type: 'address' })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulationResponse = await server.simulateTransaction(transaction);
+      
+      if (StellarSdk.rpc.Api.isSimulationSuccess(simulationResponse)) {
+        const result = simulationResponse.result;
+        if (result && result.retval) {
+          const balance = StellarSdk.scValToNative(result.retval);
+          const decimals = await this.getTokenDecimals(contractAddress);
+          const balanceDecimal = Number(balance) / 10 ** decimals;
+          return balanceDecimal.toFixed(7);
+        } else {
+          return '0';
+        }
+      } else {
+        console.error(`[getDepositedBalance] Simulation failed for ${assetType}`);
+        return '0';
+      }
     } catch (error: any) {
       console.error(`[getDepositedBalance] Error fetching deposited balance for ${assetType}:`, error);
-      return 'Error';
-    }
-  }
-
-  /**
-   * The holder's Reserve share (vToken) balance — the unit `withdraw` takes.
-   *
-   * @returns Shares fixed to 7 decimals, `'0'` when empty, `'Error'` on failure.
-   */
-  static async getShareBalance(
-    address: string,
-    assetType: AssetType = ASSET_TYPES.XLM
-  ): Promise<string> {
-    try {
-      const shares = BigInt(
-        (await simulateRead<bigint>(lendingPoolAddress(assetType), 'balance', [sc.address(address)])) ?? 0,
-      );
-      return (Number(shares) / 1e7).toFixed(7);
-    } catch (error: any) {
-      console.error(`[getShareBalance] Error fetching share balance for ${assetType}:`, error);
       return 'Error';
     }
   }
@@ -543,70 +645,96 @@ export class ContractService {
     throw new Error('Transaction timeout');
   }
 
-
-  /** Per-reserve interest curve cache (`reserve.interest_curve()`), 10 min. */
-  private static curveCache: Record<string, { c1: bigint; c2: bigint; c3: bigint; ts: number }> = {};
-
   /**
-   * Per-second borrow rate, WAD-scaled (1e18 == 100%), from the credit-layer
-   * Reserve (the old RateModelContract is gone; each Reserve carries its own
-   * interest curve).
+   * Read the REAL per-second borrow interest rate straight from the deployed
+   * `RateModelContract.get_borrow_rate_per_sec(liquidity_wad, borrows_wad)` —
+   * the exact same curve `lending-pool`'s own `get_rate_factor` calls to
+   * accrue interest on-chain. This replaced a frontend-only synthetic curve
+   * (`lib/utils/borrow-rate.ts`'s `computeBorrowApr`) that had no relationship
+   * to the real contract math and could show Supply APY above Borrow APY —
+   * mathematically impossible under the real curve, since supply is always a
+   * fraction (utilization-scaled) of borrow.
    *
-   * - `getBorrowRatePerSecWad(assetType)` — the reserve's LIVE rate via
-   *   `reserve.borrow_rate_per_sec()` (what the reserve accrues with now).
-   * - `getBorrowRatePerSecWad(liquidityWad, borrowsWad, assetType?)` — the
-   *   rate the reserve's curve gives at a hypothetical cash/debt split (used
-   *   to draw rate curves). Reads `reserve.interest_curve()` once and applies
-   *   the contract's exact integer math (reserve/src/interest.rs) locally.
-   *
-   * @returns The per-second rate as a bigint; `null` on error.
+   * @param liquidityWad - Pool's available liquidity, WAD-scaled (1e18).
+   * @param borrowsWad - Pool's outstanding borrows, WAD-scaled (1e18).
+   * @returns The per-second rate, WAD-scaled, as a bigint; `null` on error.
    */
-  static getBorrowRatePerSecWad(assetType: AssetType): Promise<bigint | null>;
-  static getBorrowRatePerSecWad(liquidityWad: bigint, borrowsWad: bigint, assetType?: AssetType): Promise<bigint | null>;
-  static async getBorrowRatePerSecWad(
-    assetOrLiquidity: AssetType | bigint,
-    borrowsWad?: bigint,
-    curveAsset: AssetType = ASSET_TYPES.XLM,
-  ): Promise<bigint | null> {
+  static async getBorrowRatePerSecWad(liquidityWad: bigint, borrowsWad: bigint): Promise<bigint | null> {
     try {
-      if (typeof assetOrLiquidity !== 'bigint') {
-        const r = await simulateRead<bigint>(lendingPoolAddress(assetOrLiquidity), 'borrow_rate_per_sec');
-        return BigInt(r ?? 0);
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      const tempKeypair = StellarSdk.Keypair.random();
+      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
+      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.RATE_MODEL);
+
+      const transaction = new StellarSdk.TransactionBuilder(tempAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            'get_borrow_rate_per_sec',
+            StellarSdk.nativeToScVal(liquidityWad, { type: 'u256' }),
+            StellarSdk.nativeToScVal(borrowsWad, { type: 'u256' }),
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulationResponse = await server.simulateTransaction(transaction);
+
+      if (StellarSdk.rpc.Api.isSimulationSuccess(simulationResponse)) {
+        const result = simulationResponse.result;
+        if (result && result.retval) {
+          const ratePerSecWad = StellarSdk.scValToNative(result.retval);
+          return BigInt(ratePerSecWad);
+        }
       }
-      const curve = await this.getInterestCurve(curveAsset);
-      return borrowRateFromCurve(curve, assetOrLiquidity, borrowsWad ?? BigInt(0));
+      return null;
     } catch (error: any) {
       console.error('Error fetching borrow rate per sec:', error);
       return null;
     }
   }
 
-  private static async getInterestCurve(assetType: AssetType): Promise<{ c1: bigint; c2: bigint; c3: bigint }> {
-    const reserve = lendingPoolAddress(assetType);
-    const hit = this.curveCache[reserve];
-    if (hit && Date.now() - hit.ts < 10 * 60_000) return hit;
-    const raw = await simulateRead<{ c1: bigint; c2: bigint; c3: bigint }>(reserve, 'interest_curve');
-    const curve = { c1: BigInt(raw.c1), c2: BigInt(raw.c2), c3: BigInt(raw.c3), ts: Date.now() };
-    this.curveCache[reserve] = curve;
-    return curve;
-  }
-
   /**
-   * A reserve's available cash (un-borrowed liquidity): `total_assets −
-   * total_debt` (both WAD), as a decimal string.
+   * Read a pool's available (un-borrowed) liquidity via
+   * `get_total_liquidity_in_pool`, converting the returned WAD to a decimal.
+   * Simulated from a throwaway random source account (no signer needed).
    *
-   * @param assetType - Reserve to query (default XLM).
-   * @returns Liquidity fixed to 7 decimals; `'0'` on error.
+   * @param assetType - Pool to query (default XLM).
+   * @returns Liquidity fixed to 7 decimals; `'0'` when undeployed or on error.
    */
   static async getPoolLiquidity(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
-      const reserve = lendingPoolAddress(assetType);
-      const [ta, td] = await Promise.all([
-        simulateRead<bigint>(reserve, 'total_assets'),
-        simulateRead<bigint>(reserve, 'total_debt'),
-      ]);
-      const cash = BigInt(ta ?? 0) - BigInt(td ?? 0);
-      return wadToFixed7(cash > BigInt(0) ? cash : BigInt(0));
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      
+      const contractAddress = lendingPoolAddress(assetType);
+
+      const tempKeypair = StellarSdk.Keypair.random();
+      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
+      
+      const contract = new StellarSdk.Contract(contractAddress);
+      
+      const transaction = new StellarSdk.TransactionBuilder(tempAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call('get_total_liquidity_in_pool'))
+        .setTimeout(30)
+        .build();
+
+      const simulationResponse = await server.simulateTransaction(transaction);
+      
+      if (StellarSdk.rpc.Api.isSimulationSuccess(simulationResponse)) {
+        const result = simulationResponse.result;
+        if (result && result.retval) {
+          const liquidityWad = StellarSdk.scValToNative(result.retval);
+          // Convert from WAD (18 decimals) to regular decimal
+          const liquidity = Number(liquidityWad) / 1e18;
+          return liquidity.toFixed(7);
+        }
+      }
+      return '0';
     } catch (error: any) {
       console.error('Error fetching pool liquidity:', error);
       return '0';
@@ -614,15 +742,42 @@ export class ContractService {
   }
 
   /**
-   * A reserve's total outstanding debt, interest accrued to now
-   * (`reserve.total_debt()`, WAD → decimal).
+   * Read a pool's total outstanding borrows via `get_borrows` (WAD → decimal).
+   * Simulated from a throwaway random source account.
    *
-   * @param assetType - Reserve to query (default XLM).
-   * @returns Borrows fixed to 7 decimals; `'0'` on error.
+   * @param assetType - Pool to query (default XLM).
+   * @returns Borrows fixed to 7 decimals; `'0'` when undeployed or on error.
    */
   static async getPoolBorrows(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
-      return wadToFixed7(BigInt((await simulateRead<bigint>(lendingPoolAddress(assetType), 'total_debt')) ?? 0));
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      
+      const contractAddress = lendingPoolAddress(assetType);
+
+      const tempKeypair = StellarSdk.Keypair.random();
+      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
+
+      const contract = new StellarSdk.Contract(contractAddress);
+
+      const transaction = new StellarSdk.TransactionBuilder(tempAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call('get_borrows'))
+        .setTimeout(30)
+        .build();
+
+      const simulationResponse = await server.simulateTransaction(transaction);
+      
+      if (StellarSdk.rpc.Api.isSimulationSuccess(simulationResponse)) {
+        const result = simulationResponse.result;
+        if (result && result.retval) {
+          const borrowsWad = StellarSdk.scValToNative(result.retval);
+          const borrows = Number(borrowsWad) / 1e18;
+          return borrows.toFixed(7);
+        }
+      }
+      return '0';
     } catch (error: any) {
       console.error('Error fetching pool borrows:', error);
       return '0';
@@ -630,15 +785,42 @@ export class ContractService {
   }
 
   /**
-   * A reserve's total managed assets (cash + debt) via `total_assets`
-   * (WAD → decimal).
+   * Read a pool's total managed assets (liquidity + borrows) via `total_assets`
+   * (WAD → decimal). Simulated from a throwaway random source account.
    *
-   * @param assetType - Reserve to query (default XLM).
-   * @returns Total assets fixed to 7 decimals; `'0'` on error.
+   * @param assetType - Pool to query (default XLM).
+   * @returns Total assets fixed to 7 decimals; `'0'` when undeployed or on error.
    */
   static async getTotalAssets(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
-      return wadToFixed7(BigInt((await simulateRead<bigint>(lendingPoolAddress(assetType), 'total_assets')) ?? 0));
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      
+      const contractAddress = lendingPoolAddress(assetType);
+
+      const tempKeypair = StellarSdk.Keypair.random();
+      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
+
+      const contract = new StellarSdk.Contract(contractAddress);
+
+      const transaction = new StellarSdk.TransactionBuilder(tempAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call('total_assets'))
+        .setTimeout(30)
+        .build();
+
+      const simulationResponse = await server.simulateTransaction(transaction);
+      
+      if (StellarSdk.rpc.Api.isSimulationSuccess(simulationResponse)) {
+        const result = simulationResponse.result;
+        if (result && result.retval) {
+          const totalWad = StellarSdk.scValToNative(result.retval);
+          const total = Number(totalWad) / 1e18;
+          return total.toFixed(7);
+        }
+      }
+      return '0';
     } catch (error: any) {
       console.error('Error fetching total assets:', error);
       return '0';
@@ -646,15 +828,43 @@ export class ContractService {
   }
 
   /**
-   * A reserve's share-token `total_supply` (7 decimals, the old vToken supply).
+   * Read a pool vToken's `total_supply`, scaled by the vToken's decimals.
+   * Simulated from a throwaway random source account.
    *
-   * @param assetType - Reserve to query (default XLM).
-   * @returns Supply fixed to 7 decimals; `'0'` on error.
+   * @param assetType - Pool whose vToken to query (default XLM).
+   * @returns Supply fixed to 7 decimals; `'0'` when undeployed or on error.
    */
   static async getVTokenTotalSupply(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
-      const supply = BigInt((await simulateRead<bigint>(lendingPoolAddress(assetType), 'total_supply')) ?? 0);
-      return (Number(supply) / 1e7).toFixed(7);
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      
+      const contractAddress = vTokenAddress(assetType);
+
+      const tempKeypair = StellarSdk.Keypair.random();
+      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
+
+      const contract = new StellarSdk.Contract(contractAddress);
+
+      const transaction = new StellarSdk.TransactionBuilder(tempAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call('total_supply'))
+        .setTimeout(30)
+        .build();
+
+      const simulationResponse = await server.simulateTransaction(transaction);
+      
+      if (StellarSdk.rpc.Api.isSimulationSuccess(simulationResponse)) {
+        const result = simulationResponse.result;
+        if (result && result.retval) {
+          const supply = StellarSdk.scValToNative(result.retval);
+          const decimals = await this.getTokenDecimals(contractAddress);
+          const supplyDecimal = Number(supply) / 10 ** decimals;
+          return supplyDecimal.toFixed(7);
+        }
+      }
+      return '0';
     } catch (error: any) {
       console.error('Error fetching vToken supply:', error);
       return '0';
@@ -662,13 +872,11 @@ export class ContractService {
   }
 
   /**
-   * Aggregate a reserve's headline stats in one call, reading total assets,
-   * total debt and share supply in parallel. `totalSupply` is total assets
-   * (cash + debt); `availableLiquidity` = totalSupply − borrows;
-   * `utilizationRate` is borrows / totalSupply as a percentage string (the
-   * same utilization the reserve's interest curve uses).
+   * Aggregate a pool's headline stats in one call, fetching liquidity, borrows
+   * and vToken supply in parallel. `totalSupply` is liquidity + borrows;
+   * `utilizationRate` is borrows / totalSupply as a percentage string.
    *
-   * @param assetType - Reserve to summarize (default XLM).
+   * @param assetType - Pool to summarize (default XLM).
    * @returns `{ totalSupply, totalBorrowed, availableLiquidity, utilizationRate,
    *          vTokenSupply }` — all stringified; an all-zero object on error.
    */
@@ -680,25 +888,25 @@ export class ContractService {
     vTokenSupply: string;
   }> {
     try {
-      const [totalAssets, borrows, vTokenSupply] = await Promise.all([
-        this.getTotalAssets(assetType),
+      const [liquidity, borrows, vTokenSupply] = await Promise.all([
+        this.getPoolLiquidity(assetType),
         this.getPoolBorrows(assetType),
         this.getVTokenTotalSupply(assetType),
       ]);
-
-      const totalNum = parseFloat(totalAssets) || 0;
+      
+      const liquidityNum = parseFloat(liquidity) || 0;
       const borrowsNum = parseFloat(borrows) || 0;
-      const liquidityNum = Math.max(0, totalNum - borrowsNum);
-
+      const totalSupply = liquidityNum + borrowsNum;
+      
       // Calculate utilization rate
-      const utilizationRate = totalNum > 0
-        ? ((borrowsNum / totalNum) * 100).toFixed(2)
+      const utilizationRate = totalSupply > 0 
+        ? ((borrowsNum / totalSupply) * 100).toFixed(2)
         : '0';
-
+      
       return {
-        totalSupply: totalNum.toFixed(7),
+        totalSupply: totalSupply.toFixed(7),
         totalBorrowed: borrows,
-        availableLiquidity: liquidityNum.toFixed(7),
+        availableLiquidity: liquidity,
         utilizationRate,
         vTokenSupply,
       };
@@ -714,45 +922,57 @@ export class ContractService {
     }
   }
 
-  /** trader → margin account (only non-null results; a margin never changes once created). */
-  private static marginCache = new Map<string, Promise<string | null>>();
-
-  private static cachedMarginOf(trader: string): Promise<string | null> {
-    const hit = this.marginCache.get(trader);
-    if (hit) return hit;
-    const p = marginOf(trader).then((m) => {
-      if (!m) this.marginCache.delete(trader);
-      return m;
-    });
-    this.marginCache.set(trader, p);
-    return p;
-  }
-
   /**
-   * A trader's outstanding debt in one reserve. Debt belongs to the trader's
-   * margin account, so this resolves `credit_layer.margin_of(trader)` and then
-   * reads `reserve.debt_of(margin)` (WAD, interest accrued to now).
+   * Read a user's outstanding borrow balance for a pool via
+   * `get_borrow_balance` (WAD ÷ 1e18). Simulated from the user's own account.
    *
-   * @param address - Trader G-address (or a margin account C-address).
-   * @param assetType - Reserve to query (default XLM).
-   * @returns Debt fixed to 7 decimals; `'0'` when no margin account / no debt / on error.
+   * @param address - Borrower G-address; also the simulation source.
+   * @param assetType - Pool to query (default XLM).
+   * @returns Borrow balance fixed to 7 decimals; `'0'` when undeployed or on error.
    */
   static async getUserBorrowBalance(
     address: string,
     assetType: AssetType = ASSET_TYPES.XLM
   ): Promise<string> {
     try {
-      const margin = address.startsWith('C') ? address : await this.cachedMarginOf(address);
-      if (!margin) return '0';
-      const debt = BigInt(
-        (await simulateRead<bigint>(lendingPoolAddress(assetType), 'debt_of', [sc.address(margin)])) ?? 0,
-      );
-      return wadToFixed7(debt);
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      // Read-only simulation does not need a live sequence-number lookup.
+      const sourceAccount = new StellarSdk.Account(address, '0');
+      
+      const contractAddress = lendingPoolAddress(assetType);
+
+      const contract = new StellarSdk.Contract(contractAddress);
+
+      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            'get_borrow_balance',
+            StellarSdk.nativeToScVal(address, { type: 'address' })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulationResponse = await server.simulateTransaction(transaction);
+      
+      if (StellarSdk.rpc.Api.isSimulationSuccess(simulationResponse)) {
+        const result = simulationResponse.result;
+        if (result && result.retval) {
+          const balance = StellarSdk.scValToNative(result.retval);
+          const balanceDecimal = Number(balance) / 1e18;
+          return balanceDecimal.toFixed(7);
+        }
+      }
+      return '0';
     } catch (error: any) {
       console.error('Error fetching borrow balance:', error);
       return '0';
     }
   }
+
   /**
    * Read a wallet's spendable balances for every supported asset.
    *
@@ -835,49 +1055,4 @@ export class ContractService {
       SOROSWAP_USDC: soroswapUsdc,
     };
   }
-}
-
-/* ─── Credit-layer Reserve helpers (used by ContractService above) ─────────── */
-
-/** Earn asset type → credit-layer asset symbol ('XLM' | 'BLUSDC' | 'AQUSDC' | 'SOUSDC'). */
-function creditSymbol(assetType: AssetType): string {
-  const a = toCreditAsset(assetType);
-  if (!a) throw new Error(`Unsupported asset type: ${assetType}`);
-  return a;
-}
-
-/** Human amount → WAD through an exact 7-decimal (stroop) integer step. */
-function humanToWad(amount: number): bigint {
-  return stroopsToWad(BigInt(Math.floor(amount * 1e7 + 1e-6)));
-}
-
-/** WAD bigint → decimal string with 7 decimals (exact, truncated to stroops). */
-function wadToFixed7(wad: bigint): string {
-  return (Number(wad / BigInt('100000000000')) / 1e7).toFixed(7);
-}
-
-/**
- * Port of reserve/src/interest.rs `borrow_rate_per_sec` (same integer math):
- * rate = c3 · (u·c1 + u^32·c1 + u^64·c2) / (SECS_PER_YEAR · WAD), u = debt / (cash + debt).
- */
-function borrowRateFromCurve(curve: { c1: bigint; c2: bigint; c3: bigint }, cashWad: bigint, debtWad: bigint): bigint {
-  const WAD_ = BigInt('1000000000000000000');
-  const SECS_PER_YEAR_WAD = BigInt(31_556_952) * WAD_;
-  const mulWad = (a: bigint, b: bigint) => (a * b) / WAD_;
-  const total = cashWad + debtWad;
-  let util = total === BigInt(0) ? BigInt(0) : (debtWad * WAD_) / total;
-  if (util > WAD_) util = WAD_;
-  // rpow_wad(util, 32)
-  let base = util;
-  let result = WAD_;
-  let n = 32;
-  while (n > 0) {
-    if (n & 1) result = mulWad(result, base);
-    if (n > 1) base = mulWad(base, base);
-    n >>= 1;
-  }
-  const linear = mulWad(util, curve.c1);
-  const steep = mulWad(result, curve.c1);
-  const steeper = mulWad(mulWad(result, result), curve.c2);
-  return (curve.c3 * (linear + steep + steeper)) / SECS_PER_YEAR_WAD;
 }

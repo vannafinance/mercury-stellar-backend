@@ -1,5 +1,5 @@
 /**
- * The Stellar lending pools (credit-layer Reserves) the Earn V3 screens show, in one place: the internal pool key
+ * The Stellar lending pools the Earn V3 screens show, in one place: the internal pool key
  * (`AssetType`, as used by hooks/use-earn.ts, the earn store and ContractService), the display
  * symbol (same names the rest of the app uses — see STELLAR_POOLS in lib/constants/earn), the
  * oracle symbol it is priced with, and its on-chain contracts.
@@ -60,15 +60,14 @@ export const explorerTx = (hash: string) => `${EXPLORER}/tx/${hash}`;
 export const explorerContract = (id: string) => `${EXPLORER}/contract/${id}`;
 export const explorerAccount = (id: string) => `${EXPLORER}/account/${id}`;
 
-/**
- * On-chain contracts listed on the Details tab. Credit layer: the Reserve is both the lending
- * contract and the v-share token (so it is listed once), its interest curve lives inside it, and
- * the CreditLayer (margin accounts, borrow, health checks) replaced the old Registry / Risk Engine.
- */
+/** On-chain contracts listed on the Details tab (same set the pre-V3 tab showed). */
 export function poolAddresses(p: EarnPoolDef): [string, string, string][] {
   return [
-    [`${p.sym} Reserve (v${p.sym} share token)`, p.lendingProtocol, `Lending reserve for ${p.sym}; also the v${p.sym} share token and its interest-rate curve`],
-    ["Credit Layer", CONTRACT_ADDRESSES.CREDIT_LAYER, "Margin accounts, borrowing, health checks and liquidation"],
+    [`v${p.sym} Token`, p.vToken, `Receipt token for ${p.sym} deposits`],
+    [`${p.sym} Lending Protocol`, p.lendingProtocol, `Main lending contract for ${p.sym}`],
+    ["Risk Engine", CONTRACT_ADDRESSES.RISK_ENGINE, "Risk management and liquidation parameters"],
     ["Oracle Contract", CONTRACT_ADDRESSES.ORACLE, "Price oracle for asset valuations"],
+    ["Interest Rate Model", CONTRACT_ADDRESSES.RATE_MODEL, "Defines borrowing and lending interest rates"],
+    ["Registry Contract", CONTRACT_ADDRESSES.REGISTRY, "Protocol registry for all contracts"],
   ];
 }

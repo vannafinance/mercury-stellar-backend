@@ -15,12 +15,12 @@
  *    to the split 2-tx flow for multi-collateral or when the atomic call overflows Soroban's per-tx
  *    budget.
  *
- * Borrow size is pre-validated against the on-chain CreditLayer formula before signing
- * ((gross + borrow) / (debt + borrow) > 1.20), XLM deposits respect the wallet's real minimum
+ * Borrow size is pre-validated against the on-chain RiskEngine formula before signing
+ * ((gross + borrow) / (debt + borrow) > 1.10), XLM deposits respect the wallet's real minimum
  * reserve, and after a confirmed tx the UI is unblocked immediately (progress modal success + form
  * reset + optimistic store merge) while balances refresh in the background.
  *
- * Limits: the selectable leverage is capped at 1 + (CreditLayer borrow limit) / deposit (floored to
+ * Limits: the selectable leverage is capped at 1 + (RiskEngine borrow limit) / deposit (floored to
  * 2 dp, at most MAX_LEVERAGE = 10x); the displayed slider scale always stays 1x–10x.
  * Max = deposit × (leverage − 1). Borrowed tokens land in the margin account and count as collateral.
  */
@@ -45,6 +45,7 @@ import { useWallet } from "@/hooks/use-wallet";
 import {
   useMarginAccountInfoStore,
   borrowTokens,
+  setupContractConfiguration,
   refreshBorrowedBalances,
 } from "@/store/margin-account-info-store";
 import { accountNumbers, liqBuffer, riskEngineMaxBorrowUsd, withBorrows, withDeposits, type Move } from "./mg-sim";
@@ -175,7 +176,7 @@ export function LeverageTab({ m }: { m: MarginScreen }) {
     const deps: Move[] = mb ? [] : rows.filter((r) => num(r.amt) > 0).map((r) => ({ symbol: ckey(r.sym), usd: num(r.amt) * pxS(r.sym) }));
     const n = dual ? 2 : 1;
     const syms = bTok.slice(0, n);
-    // The CreditLayer borrow limit the submit pre-check enforces (gross includes a WB deposit).
+    // The RiskEngine borrow limit the submit pre-check enforces (gross includes a WB deposit).
     const accMax = riskEngineMaxBorrowUsd(m.gross + (mb ? 0 : depUsd), m.borrowedUsd);
     const max = depUsd > 0 ? Math.max(1, Math.min(MAX_LEVERAGE, floor2(1 + accMax / depUsd) || 1)) : MAX_LEVERAGE;
     const levE = Math.max(1, Math.min(lev, max));
@@ -207,7 +208,7 @@ export function LeverageTab({ m }: { m: MarginScreen }) {
     return { depUsd, deps, n, syms, accMax, max, levE, maxUsd, shown, items, totalUsd, dup, error, exceeds, borrowItems, afterN: accountNumbers(after) };
   }, [rows, mb, dual, bTok, bManual, lev, model, pxS, pxB, m.gross, m.borrowedUsd]);
 
-  // Keep the chosen leverage inside the (input-dependent) CreditLayer max.
+  // Keep the chosen leverage inside the (input-dependent) RiskEngine max.
   useEffect(() => {
     if (lev > st.max) setLev(st.max);
   }, [lev, st.max]);
@@ -450,8 +451,8 @@ export function LeverageTab({ m }: { m: MarginScreen }) {
         }
       }
 
-      // Pre-validate borrow against the CreditLayer's formula before submitting.
-      // On-chain: (grossAssets + borrow) / (debt + borrow) > 1.2, where grossAssets
+      // Pre-validate borrow against the Risk Engine's formula before submitting.
+      // On-chain: (grossAssets + borrow) / (debt + borrow) > 1.1, where grossAssets
       // = priced collateral + outstanding debt (borrowed funds still in the account).
       if (multiplier > 1) {
         const latestMarginState = useMarginAccountInfoStore.getState();
@@ -459,7 +460,7 @@ export function LeverageTab({ m }: { m: MarginScreen }) {
         const requestedBorrowUsd = explicitSingle !== undefined ? explicitSingle * pxS(borrowToken) : totalDepositAmountUsd * (multiplier - 1);
         const maxAdditionalBorrowUsd = riskEngineMaxBorrowUsd(projectedGrossUsd, latestMarginState.totalBorrowedValue);
         if (maxAdditionalBorrowUsd <= 0) {
-          toast.error("Borrow is blocked by the health check: your current debt is already too high for your collateral. Add more collateral or repay first.");
+          toast.error("Borrow is blocked by Risk Engine: your current debt is already too high for your collateral. Add more collateral or repay first.");
           return;
         }
         if (requestedBorrowUsd > maxAdditionalBorrowUsd) {
@@ -553,9 +554,7 @@ export function LeverageTab({ m }: { m: MarginScreen }) {
           // Error(Budget, ExceededLimit): the chained deposit→borrow overflowed Soroban's per-tx
           // CPU/resource cap — a hard network limit, so split it into two transactions instead.
           // The atomic tx failed wholesale, so nothing was deposited; the split flow is clean.
-          // depositAndBorrow is two txs on the credit layer: a `hash` means the deposit
-          // already landed, so never fall back to the split flow (it would deposit again).
-          const isBudgetError = !atomicResult.hash && /budget|exceededlimit|resource/i.test(atomicResult.error ?? "");
+          const isBudgetError = /budget|exceededlimit|resource/i.test(atomicResult.error ?? "");
           if (isBudgetError) {
             console.warn("[leverage] atomic deposit_and_borrow hit Soroban budget; falling back to split 2-tx flow");
             useSplitFlow = true;
@@ -590,9 +589,14 @@ export function LeverageTab({ m }: { m: MarginScreen }) {
           const depositResult = await MarginAccountService.depositCollateralTokens(marginAccountAddress, item.asset, amountWad);
           if (!depositResult.success) {
             if (depositResult.error?.includes("not allowed as collateral") || depositResult.error?.includes("Max asset cap")) {
-              // The credit layer's collateral allow-list is set at deploy time;
-              // there is no client-side setup to run any more.
               showStepError(`Contract configuration error: ${depositResult.error}`);
+              try {
+                const configResult = await setupContractConfiguration();
+                if (configResult.success) toast.success("Contract configuration setup successful! You can now try the deposit again.");
+                else toast.error("Contract setup failed: " + configResult.error);
+              } catch (setupError) {
+                toast.error(normalizeContractError(setupError instanceof Error ? setupError.message : undefined, "Setup error. Please try again."));
+              }
             } else {
               showStepError(normalizeDepositCollateralError(depositResult.error));
             }
