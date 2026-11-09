@@ -27,11 +27,41 @@ function isRateLimited(err: any): boolean {
   return status === 429 || /\b429\b|too many requests/i.test(String(err?.message ?? ''));
 }
 
+/**
+ * Extra read-only RPCs for SERVER-SIDE reads (API routes: analytics scan,
+ * account snapshot). Each public RPC rate-limits on its own, so spreading
+ * `simulateTransaction` / ledger-entry reads round-robin over the primary
+ * plus these roughly multiplies read throughput — the full analytics scan
+ * (~9k reads) has to fit in Cloud Run's 300s request timeout. Browser code
+ * (which simulates, signs and sends the user's own transactions) always stays
+ * on the primary, so a tx is never simulated on one node and sent to another.
+ * Comma-separated override: SOROBAN_EXTRA_READ_RPC_URLS ("" disables).
+ */
+const EXTRA_READ_RPC_URLS: string[] = (
+  process.env.SOROBAN_EXTRA_READ_RPC_URLS ?? 'https://rpc.ankr.com/stellar_testnet_soroban'
+)
+  .split(',')
+  .map((u) => u.trim())
+  .filter(Boolean);
+const READ_SPREAD_METHODS = new Set(['simulateTransaction', '_getLedgerEntries']);
+
 const RPC_RETRY_PATCHED = Symbol.for('vanna.rpc429RetryPatched');
 // Optional chaining: unit tests mock @stellar/stellar-sdk without rpc.Server.
 const rpcProto = (StellarSdk as any)?.rpc?.Server?.prototype;
 if (rpcProto && !rpcProto[RPC_RETRY_PATCHED]) {
   rpcProto[RPC_RETRY_PATCHED] = true;
+  const serverSide = typeof window === 'undefined';
+  let extraServers: unknown[] | null = null;
+  let rotation = 0;
+  /** Server to run a read on: the caller's own, or (server-side, primary URL only) the next in rotation. */
+  const pickReadTarget = (self: any): unknown => {
+    if (!serverSide || EXTRA_READ_RPC_URLS.length === 0) return self;
+    if (String(self?.serverURL ?? '').replace(/\/$/, '') !== SOROBAN_RPC_URL.replace(/\/$/, '')) return self;
+    extraServers ??= EXTRA_READ_RPC_URLS.map((url) => new StellarSdk.rpc.Server(url));
+    const pool = [self, ...extraServers];
+    rotation = (rotation + 1) % pool.length;
+    return pool[rotation];
+  };
   for (const method of [
     'simulateTransaction',
     // Internal transport behind getLedgerEntries / getLedgerEntry /
@@ -48,9 +78,12 @@ if (rpcProto && !rpcProto[RPC_RETRY_PATCHED]) {
     if (typeof original !== 'function') continue;
     rpcProto[method] = async function patched(this: unknown, ...args: unknown[]) {
       for (let attempt = 0; ; attempt++) {
+        const target = READ_SPREAD_METHODS.has(method) ? pickReadTarget(this) : this;
         try {
-          return await original.apply(this, args);
+          return await original.apply(target, args);
         } catch (err) {
+          // An extra read RPC that errors for any other reason: answer from the primary.
+          if (target !== this && !isRateLimited(err)) return original.apply(this, args);
           if (!isRateLimited(err) || attempt >= 5) throw err;
           const delay = 250 * 2 ** attempt + Math.floor(Math.random() * 250);
           await new Promise((resolve) => setTimeout(resolve, delay));

@@ -7,6 +7,7 @@
 // pool config's token order before display.
 
 import * as StellarSdk from '@stellar/stellar-sdk';
+import { memoizeStatics } from './utils/memoize-statics';
 import { signTransaction } from '@/lib/wallet-adapter';
 import {
   CONTRACT_ADDRESSES,
@@ -1683,3 +1684,11 @@ export class AquariusService {
     }
   }
 }
+
+// Registry/router lookups are the same for every caller; cache them briefly
+// (lib/utils/memoize-statics.ts) so per-account LP reads stay cheap.
+memoizeStatics(
+  AquariusService,
+  ['getRegistryUsdcAddress', 'getAquariusRouterAddressFromRegistry', 'hasAquariusPoolIndex', 'getTrackingTokenAddressFromRegistry', 'getEffectiveRouterAddress'],
+  5 * 60_000,
+);

@@ -5,6 +5,7 @@
 // on-chain reserves/LP balances are 7-decimal (STROOP).
 
 import * as StellarSdk from '@stellar/stellar-sdk';
+import { memoizeStatics } from './utils/memoize-statics';
 import { signTransaction } from '@/lib/wallet-adapter';
 import {
   CONTRACT_ADDRESSES,
@@ -742,3 +743,11 @@ export class SoroswapService {
     }
   }
 }
+
+// Registry/router/pair lookups are the same for every caller; cache them
+// briefly (lib/utils/memoize-statics.ts) so per-account LP reads stay cheap.
+memoizeStatics(
+  SoroswapService,
+  ['getRegistrySoroswapRouterAddress', 'getRegistrySoroswapUsdcAddress', 'getEffectiveRouterAddress', 'getTrackingTokenAddress', 'getPairAddress'],
+  5 * 60_000,
+);

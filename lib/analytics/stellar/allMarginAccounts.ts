@@ -140,7 +140,18 @@ const MAX_DEEP_SCAN_ACCOUNTS = 200;
 // account (and every token within it) through one unbounded `Promise.all`,
 // firing hundreds of concurrent `simulateTransaction` calls. Pooling keeps
 // RPC pressure flat regardless of roster size.
-const SCAN_CONCURRENCY = 8;
+// 16 matches test.vanna.finance. Higher made public-RPC 429 storms worse
+// (measured: 40 never finished). Server-side reads are spread over two RPCs
+// and 429s are retried (rpc.Server patch in lib/stellar-utils.ts).
+// Override with ANALYTICS_SCAN_CONCURRENCY.
+const SCAN_CONCURRENCY = Number(process.env.ANALYTICS_SCAN_CONCURRENCY) || 16;
+
+/**
+ * Cap for the Mercury path, where only accounts that ever had a deposit or a
+ * loan are scanned (~575 of ~1,500 today). High enough to read all of them,
+ * so totals match test.vanna.finance; override with ANALYTICS_MAX_ACCOUNTS.
+ */
+const MAX_ACTIVE_SCAN_ACCOUNTS = Number(process.env.ANALYTICS_MAX_ACCOUNTS) || 1_000;
 
 /** Run `fn` over `items` with at most `limit` promises in flight at once. */
 async function mapWithConcurrency<T, R>(
@@ -474,8 +485,14 @@ export async function fetchAllMarginAccountSnapshots(opts?: {
     const mercuryRoster = await readMarginRosterFromMercury();
 
     let openPairs: { account: string; owner: string }[];
+    let scanCap = MAX_DEEP_SCAN_ACCOUNTS;
     if (mercuryRoster && mercuryRoster.length > 0) {
-      openPairs = mercuryRoster.map(({ account, owner }) => ({ account, owner }));
+      // Only accounts that ever had a deposit or a loan; the rest were only
+      // signed up and are empty. Scan all of them (not just 200).
+      openPairs = mercuryRoster
+        .filter((entry) => entry.active)
+        .map(({ account, owner }) => ({ account, owner }));
+      scanCap = MAX_ACTIVE_SCAN_ACCOUNTS;
     } else {
       // Fallback: the Registry's SmartAccountsList (frozen since 2026-11-04).
       const allSmartAccounts = await readAllSmartAccounts(server);
@@ -498,12 +515,12 @@ export async function fetchAllMarginAccountSnapshots(opts?: {
     // ordered oldest -> newest (Mercury: by last activity; Registry fallback:
     // by registration), so the tail is the set worth scanning.
     let scanPairs = openPairs;
-    if (openPairs.length > MAX_DEEP_SCAN_ACCOUNTS) {
-      const omitted = openPairs.length - MAX_DEEP_SCAN_ACCOUNTS;
-      scanPairs = openPairs.slice(-MAX_DEEP_SCAN_ACCOUNTS);
+    if (openPairs.length > scanCap) {
+      const omitted = openPairs.length - scanCap;
+      scanPairs = openPairs.slice(-scanCap);
       console.warn(
         `[allMarginAccounts] ${openPairs.length} open accounts exceed the ` +
-          `${MAX_DEEP_SCAN_ACCOUNTS} deep-scan cap — snapshotting the ${MAX_DEEP_SCAN_ACCOUNTS} ` +
+          `${scanCap} deep-scan cap — snapshotting the ${scanCap} ` +
           `most recent, omitting ${omitted}. (Move to a Mercury per-account table to lift this.)`,
       );
     }
@@ -522,8 +539,13 @@ export async function fetchAllMarginAccountSnapshots(opts?: {
     const snapshots: AccountSnapshot[] = [];
     for (const state of stateResults) {
       if (!state || !state.isActive) continue;
+      const snapshot = buildSnapshotFromState(state);
+      // Count only accounts that hold a deposit or a loan right now, like
+      // test.vanna.finance ("N margin accounts have deposits or loans"):
+      // repaid-and-withdrawn or liquidated accounts are empty.
+      if (snapshot.debt.length === 0 && !(snapshot.totalCollateralUsd > 0.01)) continue;
       ownerByAccount.set(state.account, state.owner);
-      snapshots.push(buildSnapshotFromState(state));
+      snapshots.push(snapshot);
     }
 
     return { accounts: snapshots, ownerByAccount };

@@ -33,6 +33,12 @@ export interface RosterEntry {
   lastActivityId: number;
   /** Borrowed after its last liquidation (or never liquidated): may hold debt. */
   mayHaveDebt: boolean;
+  /**
+   * Ever received collateral or took a loan (a `Trader_Deposit` or
+   * `Trader_Borrow` event). A sign-up alone leaves an empty account. Same
+   * rule as test.vanna.finance's analytics (accountRoster.ts there).
+   */
+  active: boolean;
 }
 
 const PAGE_LIMIT = 200;
@@ -69,6 +75,7 @@ export async function readMarginRosterFromMercury(): Promise<RosterEntry[] | nul
   const lastActivity = new Map<string, number>();
   const lastBorrow = new Map<string, number>();
   const lastLiquidation = new Map<string, number>();
+  const funded = new Set<string>();
 
   try {
     let cursor: string | null = null;
@@ -99,6 +106,7 @@ export async function readMarginRosterFromMercury(): Promise<RosterEntry[] | nul
           const account = decode(ev.topic2);
           if (typeof account === "string" && account.startsWith("C")) {
             lastActivity.set(account, Math.max(lastActivity.get(account) ?? 0, ev.id));
+            if (name === "Trader_Deposit" || name === "Trader_Borrow") funded.add(account);
             if (name === "Trader_Borrow") {
               lastBorrow.set(account, Math.max(lastBorrow.get(account) ?? 0, ev.id));
             } else if (name === "Trader_Liquidate_Event") {
@@ -123,6 +131,7 @@ export async function readMarginRosterFromMercury(): Promise<RosterEntry[] | nul
       owner,
       lastActivityId: lastActivity.get(account) ?? 0,
       mayHaveDebt: (lastBorrow.get(account) ?? 0) > (lastLiquidation.get(account) ?? 0),
+      active: funded.has(account),
     }))
     // Possible debtors last (so a tail cap reaches them first), each group by activity.
     .sort((a, b) => Number(a.mayHaveDebt) - Number(b.mayHaveDebt) || a.lastActivityId - b.lastActivityId);

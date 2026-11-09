@@ -3,6 +3,7 @@
 // mirrors blend-sdk-js so figures match testnet.blend.capital exactly.
 
 import * as StellarSdk from '@stellar/stellar-sdk';
+import { memoizeStatics } from './utils/memoize-statics';
 import { signTransaction } from '@/lib/wallet-adapter';
 import {
   CONTRACT_ADDRESSES,
@@ -923,17 +924,12 @@ export class BlendService {
       const tempKeypair = StellarSdk.Keypair.random();
       const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
 
-      // Fetch tracking token contract address from Registry
-      const regContract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-      const trackAddrTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE, networkPassphrase: NETWORK_PASSPHRASE,
-      }).addOperation(regContract.call('get_tracking_token_contract_addr')).setTimeout(30).build();
-
-      const trackAddrSim = await server.simulateTransaction(trackAddrTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(trackAddrSim) || !trackAddrSim.result?.retval) {
+      // Tracking token contract address from Registry (same for every
+      // account; cached — see memoizeStatics at the bottom of this file).
+      const trackingAddress = await BlendService.getTrackingTokenContractAddress();
+      if (!trackingAddress) {
         return result;
       }
-      const trackingAddress = StellarSdk.scValToNative(trackAddrSim.result.retval) as string;
       const trackContract = new StellarSdk.Contract(trackingAddress);
 
       // Fetch b-rates for value calculation
@@ -1128,3 +1124,9 @@ export class BlendService {
     throw new Error('Transaction timed out waiting for confirmation');
   }
 }
+
+// Registry lookups and reserve b-rates are the same for every caller; cache
+// them briefly so per-account readers (Farm page, analytics scan) don't
+// re-read them for each margin account. See lib/utils/memoize-statics.ts.
+memoizeStatics(BlendService, ['getBlendPoolAddressFromRegistry', 'getTrackingTokenContractAddress'], 5 * 60_000);
+memoizeStatics(BlendService, ['getBlendReserveData'], 60_000);

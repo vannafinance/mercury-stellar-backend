@@ -93,7 +93,7 @@ function StatusBar() {
   const warming = n === null;
   const text = warming
     ? (d.isLoading ? "Reading margin accounts from Soroban…" : "Couldn't load the account snapshot. Try Refresh.")
-    : `${n} open margin account${n === 1 ? "" : "s"} read from the Registry · ${d.pools.length} lending pools · Reflector prices${d.missingPrices.length ? ` (no live price: ${d.missingPrices.join(", ")})` : ""}`;
+    : `${n.toLocaleString("en-US")} margin account${n === 1 ? "" : "s"} with deposits or loans · ${d.pools.length} lending pools · Reflector prices${d.missingPrices.length ? ` (no live price: ${d.missingPrices.join(", ")})` : ""}`;
   const dot = d.error ? "an-bad" : warming || d.missingPrices.length ? "an-warn an-pulse" : "";
   return (
     <div className="an-statusbar" role="status" aria-live="polite">
