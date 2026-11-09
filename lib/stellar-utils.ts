@@ -4,7 +4,61 @@ import { RETRY, withRetry } from '@/lib/copilot/retry-policy';
 import { markTxSubmitted } from './tx-progress';
 
 export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
-export const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
+// Gateway.fm public testnet RPC. SDF's soroban-testnet.stellar.org started
+// spiking to 5-10s per simulateTransaction (2026-11-08/09, measured), which
+// made every margin snapshot hit its 12s deadline (UI showed $0 / "No debt").
+// Gateway.fm answered the same calls in ~0.2s with the same 7-day event
+// retention. Override with NEXT_PUBLIC_SOROBAN_RPC_URL if this one degrades.
+export const SOROBAN_RPC_URL =
+  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-rpc.testnet.stellar.gateway.fm';
+
+/**
+ * Gateway.fm (like most fast public RPCs) answers bursts of ~40 parallel
+ * requests with HTTP 429. The analytics scan and the margin snapshot fan out
+ * that wide, and every caller treats a failed read as "no data" ($0 / no
+ * debt). Rather than touch every `new rpc.Server(...)` call site, retry 429s
+ * once here on the shared prototype, with jittered exponential backoff.
+ * Every app file that builds an rpc.Server imports SOROBAN_RPC_URL from this
+ * module, so the patch is always installed first. Resubmitting the same
+ * signed envelope on a 429 is safe: the network dedupes it (DUPLICATE).
+ */
+function isRateLimited(err: any): boolean {
+  const status = err?.response?.status ?? err?.status;
+  return status === 429 || /\b429\b|too many requests/i.test(String(err?.message ?? ''));
+}
+
+const RPC_RETRY_PATCHED = Symbol.for('vanna.rpc429RetryPatched');
+// Optional chaining: unit tests mock @stellar/stellar-sdk without rpc.Server.
+const rpcProto = (StellarSdk as any)?.rpc?.Server?.prototype;
+if (rpcProto && !rpcProto[RPC_RETRY_PATCHED]) {
+  rpcProto[RPC_RETRY_PATCHED] = true;
+  for (const method of [
+    'simulateTransaction',
+    // Internal transport behind getLedgerEntries / getLedgerEntry /
+    // getAccount / getContractData — patching it covers all of them.
+    '_getLedgerEntries',
+    'getEvents',
+    'getTransaction',
+    'getLatestLedger',
+    'getNetwork',
+    'getHealth',
+    'sendTransaction',
+  ]) {
+    const original = rpcProto[method];
+    if (typeof original !== 'function') continue;
+    rpcProto[method] = async function patched(this: unknown, ...args: unknown[]) {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await original.apply(this, args);
+        } catch (err) {
+          if (!isRateLimited(err) || attempt >= 5) throw err;
+          const delay = 250 * 2 ** attempt + Math.floor(Math.random() * 250);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    };
+  }
+}
 export const HORIZON_URL = 'https://horizon-testnet.stellar.org';
 
 // Redeployed 2026-07-19 (third redeploy same day) — testnet genuinely has

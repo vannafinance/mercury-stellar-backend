@@ -21,6 +21,7 @@
 
 import * as StellarSdk from "@stellar/stellar-sdk";
 
+import { readMarginRosterFromMercury } from "@/lib/analytics/stellar/mercuryRoster";
 import {
   CONTRACT_ADDRESSES,
   NETWORK_PASSPHRASE,
@@ -234,7 +235,10 @@ async function simulateView<T = unknown>(
   ...args: StellarSdk.xdr.ScVal[]
 ): Promise<T | null> {
   try {
-    const sourceAccount = await server.getAccount(READ_SOURCE_ADDRESS);
+    // A simulation only needs a source for fee/sequence context, never a
+    // real sequence number — skip the extra getAccount round-trip per read
+    // (it doubled request volume and rate-limit pressure on the scan).
+    const sourceAccount = new StellarSdk.Account(READ_SOURCE_ADDRESS, "0");
     const contract = new StellarSdk.Contract(contractAddr);
     const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
       fee: StellarSdk.BASE_FEE,
@@ -463,23 +467,36 @@ export async function fetchAllMarginAccountSnapshots(opts?: {
     // the first call.
     await fetchTokenPrices([...PRICEABLE_TOKENS]).catch(() => undefined);
 
-    const allSmartAccounts = await readAllSmartAccounts(server);
-    if (allSmartAccounts.length === 0) {
-      return { accounts: [] as AccountSnapshot[], ownerByAccount: new Map<string, string>() };
+    // Preferred roster: Mercury's AccountManager events (complete, includes
+    // accounts created after the Registry list froze on 2026-11-04, ordered
+    // by most recent activity, owners included — no per-account owner read).
+    // Closed accounts are still dropped below by `is_account_active`.
+    const mercuryRoster = await readMarginRosterFromMercury();
+
+    let openPairs: { account: string; owner: string }[];
+    if (mercuryRoster && mercuryRoster.length > 0) {
+      openPairs = mercuryRoster.map(({ account, owner }) => ({ account, owner }));
+    } else {
+      // Fallback: the Registry's SmartAccountsList (frozen since 2026-11-04).
+      const allSmartAccounts = await readAllSmartAccounts(server);
+      if (allSmartAccounts.length === 0) {
+        return { accounts: [] as AccountSnapshot[], ownerByAccount: new Map<string, string>() };
+      }
+
+      // Resolve owners + filter closed accounts, pooled to keep RPC pressure flat.
+      const ownerResults = await mapWithConcurrency(
+        allSmartAccounts,
+        SCAN_CONCURRENCY,
+        async (account) => ({ account, owner: await readSmartAccountOwner(server, account) }),
+      );
+      openPairs = ownerResults.filter(
+        (p): p is { account: string; owner: string } => Boolean(p.owner),
+      );
     }
 
-    // Resolve owners + filter closed accounts, pooled to keep RPC pressure flat.
-    const ownerResults = await mapWithConcurrency(
-      allSmartAccounts,
-      SCAN_CONCURRENCY,
-      async (account) => ({ account, owner: await readSmartAccountOwner(server, account) }),
-    );
-    const openPairs = ownerResults.filter(
-      (p): p is { account: string; owner: string } => Boolean(p.owner),
-    );
-
-    // Cap the expensive deep-scan. Keep the most recently registered accounts
-    // (tail of the append-only SmartAccountsList) and log the omission.
+    // Cap the expensive deep-scan and log the omission. Both rosters are
+    // ordered oldest -> newest (Mercury: by last activity; Registry fallback:
+    // by registration), so the tail is the set worth scanning.
     let scanPairs = openPairs;
     if (openPairs.length > MAX_DEEP_SCAN_ACCOUNTS) {
       const omitted = openPairs.length - MAX_DEEP_SCAN_ACCOUNTS;
