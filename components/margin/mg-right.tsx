@@ -7,7 +7,7 @@
  *
  * Account numbers come from the CreditLayer-exact model (`useV3Account`, margin_value); the borrow
  * rate from the account snapshot; prices from the credit-layer oracle (`useTokenPrices`; each USDC
- * variant BLUSDC / AQUSDC / SOUSDC has its own feed).
+ * variant BLUSDC / SOUSDC has its own feed).
  */
 import { useState } from "react";
 import toast from "react-hot-toast";
@@ -45,7 +45,6 @@ function Addr({ value }: { value: string }) {
 const ORACLE_ROWS: [string, string][] = [
   ["XLM", "Oracle"],
   ["BLUSDC", "Oracle"],
-  ["AQUSDC", "Oracle"],
   ["SOUSDC", "Oracle"],
 ];
 

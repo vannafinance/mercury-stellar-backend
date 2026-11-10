@@ -48,13 +48,13 @@ const shortenAddress = (addr: string | undefined): string => {
 const STELLAR_EXPLORER = "https://stellar.expert/explorer/testnet/contract";
 
 const toInternalAsset = (value: string) => {
-  if (value === "AqUSDC" || value === "AquiresUSDC" || value === "AQUARIUS_USDC") return "AQUARIUS_USDC";
+  if (value === "AqUSDC" || value === "AquiresUSDC" || value === "AQUARIUS_USDC") return "USDC"; // Aquarius uses Blend USDC now
   if (value === "SoUSDC" || value === "SoroswapUSDC" || value === "SOROSWAP_USDC") return "SOROSWAP_USDC";
   return value;
 };
 
 const toDisplayAsset = (value: string) => {
-  if (value === "AQUARIUS_USDC" || value === "AquiresUSDC") return "AqUSDC";
+  if (value === "AQUARIUS_USDC" || value === "AquiresUSDC") return "BLUSDC";
   if (value === "SOROSWAP_USDC" || value === "SoroswapUSDC") return "SoUSDC";
   return value;
 };

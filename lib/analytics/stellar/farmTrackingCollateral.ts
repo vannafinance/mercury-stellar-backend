@@ -5,7 +5,7 @@
  * more. The margin account holds its LP tokens directly and its Blend supply
  * is a "Venue" asset:
  *   - Soroswap XLM/SOUSDC pair token  → pair.balance(margin)       → SS_XLM_USDC
- *   - Aquarius XLM/AQUSDC share token → share.balance(margin)      → AQ_XLM_USDC
+ *   - Aquarius XLM/BLUSDC share token → share.balance(margin)      → AQ_XLM_USDC
  *   - Blend supply                    → BLEND_VALUER.positions(...) → BLEND_XLM / BLEND_USDC
  * LP rows are priced by the credit-layer oracle (the same price CreditLayer
  * margin_value uses); Blend rows at the underlying token's oracle price.
@@ -32,7 +32,6 @@ const DUST = 1e-8;
 const MARGIN_SAC_TOKENS = [
   { sac: "XLM" as const, balanceKey: "XLM" },
   { sac: "BLUSDC" as const, balanceKey: "BLUSDC" },
-  { sac: "AQUSDC" as const, balanceKey: "AQUSDC" },
   { sac: "SOUSDC" as const, balanceKey: "SOUSDC" },
 ];
 

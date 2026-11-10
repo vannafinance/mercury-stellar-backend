@@ -37,7 +37,7 @@ const ITEMS_PER_PAGE = 5;
 const BORROW_DUST_USD = 0.01;
 const BORROW_DUST_EPSILON = 1e-6;
 
-const PRICEABLE_TOKENS = ['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC'];
+const PRICEABLE_TOKENS = ['XLM', 'USDC', 'BLUSDC', 'SOUSDC'];
 
 const canonicalToken = (token: string): string => {
   const normalized = token.toUpperCase();
@@ -46,7 +46,7 @@ const canonicalToken = (token: string): string => {
   // this it fell through unmapped and rendered as the raw "BLEND_XLM".
   if (normalized === 'BLEND_XLM') return 'XLM';
   if (normalized === 'BLEND_USDC' || normalized === 'USDC') return 'BLUSDC';
-  if (normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') return 'AQUSDC';
+  if (normalized === 'AQUSDC' || normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') return 'BLUSDC'; // old Aquarius USDC names: Aquarius uses Blend USDC now
   if (normalized === 'SOROSWAPUSDC' || normalized === 'SOROSWAP_USDC') return 'SOUSDC';
   return normalized;
 };
@@ -236,7 +236,7 @@ export const Positionstable = ({
       // Farm/LP receipts (BLEND_XLM, SS_XLM_USDC, AQ_*) live in collateralBalances
       // for the header HF/value calc but are NOT margin positions — skip them so
       // they don't render as collateral rows. Real collateral uses canonical keys
-      // (XLM, USDC, BLUSDC, AQUSDC, SOUSDC), for which isTrackingSymbol is false.
+      // (XLM, USDC, BLUSDC, SOUSDC), for which isTrackingSymbol is false.
       if (isTrackingSymbol(token)) continue;
 
       const grossAmount = parseFloat(bal.amount || '0');
@@ -715,7 +715,7 @@ export const Positionstable = ({
       </motion.div>
 
       {/* Action column — one Repay button PER borrowed asset (not just the
-          first), so a row with e.g. BLUSDC + AQUSDC + SOUSDC debt gets three
+          first), so a row with e.g. XLM + BLUSDC + SOUSDC debt gets three
           buttons, each opening the Repay tab prefilled for that specific
           asset. Stacked with the same gap as the Borrowed Assets column so
           each button lines up with its row. */}

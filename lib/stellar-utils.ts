@@ -5,7 +5,94 @@ import { markTxSubmitted } from './tx-progress';
 import { CREDIT_LAYER_ADDRESSES, ReserveCalls, marginOf, sc, simulateRead, stroopsToWad, toCreditAsset } from './credit-layer';
 
 export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
-export const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
+// Gateway.fm public testnet RPC. SDF's soroban-testnet.stellar.org started
+// spiking to 5-10s per simulateTransaction (2026-11-08/09, measured), which
+// made every margin snapshot hit its 12s deadline (UI showed $0 / "No debt").
+// Gateway.fm answered the same calls in ~0.2s with the same 7-day event
+// retention. Override with NEXT_PUBLIC_SOROBAN_RPC_URL if this one degrades.
+export const SOROBAN_RPC_URL =
+  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-rpc.testnet.stellar.gateway.fm';
+
+/**
+ * Gateway.fm (like most fast public RPCs) answers bursts of ~40 parallel
+ * requests with HTTP 429. The analytics scan and the margin snapshot fan out
+ * that wide, and every caller treats a failed read as "no data" ($0 / no
+ * debt). Rather than touch every `new rpc.Server(...)` call site, retry 429s
+ * once here on the shared prototype, with jittered exponential backoff.
+ * Every app file that builds an rpc.Server imports SOROBAN_RPC_URL from this
+ * module, so the patch is always installed first. Resubmitting the same
+ * signed envelope on a 429 is safe: the network dedupes it (DUPLICATE).
+ */
+function isRateLimited(err: any): boolean {
+  const status = err?.response?.status ?? err?.status;
+  return status === 429 || /\b429\b|too many requests/i.test(String(err?.message ?? ''));
+}
+
+/**
+ * Extra read-only RPCs for SERVER-SIDE reads (API routes: analytics scan,
+ * account snapshot). Each public RPC rate-limits on its own, so spreading
+ * `simulateTransaction` / ledger-entry reads round-robin over the primary
+ * plus these roughly multiplies read throughput — the full analytics scan
+ * (~9k reads) has to fit in Cloud Run's 300s request timeout. Browser code
+ * (which simulates, signs and sends the user's own transactions) always stays
+ * on the primary, so a tx is never simulated on one node and sent to another.
+ * Comma-separated override: SOROBAN_EXTRA_READ_RPC_URLS ("" disables).
+ */
+const EXTRA_READ_RPC_URLS: string[] = (
+  process.env.SOROBAN_EXTRA_READ_RPC_URLS ?? 'https://rpc.ankr.com/stellar_testnet_soroban'
+)
+  .split(',')
+  .map((u) => u.trim())
+  .filter(Boolean);
+const READ_SPREAD_METHODS = new Set(['simulateTransaction', '_getLedgerEntries']);
+
+const RPC_RETRY_PATCHED = Symbol.for('vanna.rpc429RetryPatched');
+// Optional chaining: unit tests mock @stellar/stellar-sdk without rpc.Server.
+const rpcProto = (StellarSdk as any)?.rpc?.Server?.prototype;
+if (rpcProto && !rpcProto[RPC_RETRY_PATCHED]) {
+  rpcProto[RPC_RETRY_PATCHED] = true;
+  const serverSide = typeof window === 'undefined';
+  let extraServers: unknown[] | null = null;
+  let rotation = 0;
+  /** Server to run a read on: the caller's own, or (server-side, primary URL only) the next in rotation. */
+  const pickReadTarget = (self: any): unknown => {
+    if (!serverSide || EXTRA_READ_RPC_URLS.length === 0) return self;
+    if (String(self?.serverURL ?? '').replace(/\/$/, '') !== SOROBAN_RPC_URL.replace(/\/$/, '')) return self;
+    extraServers ??= EXTRA_READ_RPC_URLS.map((url) => new StellarSdk.rpc.Server(url));
+    const pool = [self, ...extraServers];
+    rotation = (rotation + 1) % pool.length;
+    return pool[rotation];
+  };
+  for (const method of [
+    'simulateTransaction',
+    // Internal transport behind getLedgerEntries / getLedgerEntry /
+    // getAccount / getContractData — patching it covers all of them.
+    '_getLedgerEntries',
+    'getEvents',
+    'getTransaction',
+    'getLatestLedger',
+    'getNetwork',
+    'getHealth',
+    'sendTransaction',
+  ]) {
+    const original = rpcProto[method];
+    if (typeof original !== 'function') continue;
+    rpcProto[method] = async function patched(this: unknown, ...args: unknown[]) {
+      for (let attempt = 0; ; attempt++) {
+        const target = READ_SPREAD_METHODS.has(method) ? pickReadTarget(this) : this;
+        try {
+          return await original.apply(target, args);
+        } catch (err) {
+          // An extra read RPC that errors for any other reason: answer from the primary.
+          if (target !== this && !isRateLimited(err)) return original.apply(this, args);
+          if (!isRateLimited(err) || attempt >= 5) throw err;
+          const delay = 250 * 2 ** attempt + Math.floor(Math.random() * 250);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    };
+  }
+}
 export const HORIZON_URL = 'https://horizon-testnet.stellar.org';
 
 // Credit-layer redeploy 2026-11-06 (Protocol_V1_Soroban_testnet branch
@@ -28,7 +115,6 @@ export const CONTRACT_ADDRESSES = {
   // Reserve share tokens (the old vToken role), one per reserve
   VXLM_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_XLM,
   VBLEND_USDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC,
-  VAQUARIUS_USDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_AQUSDC,
   VSOROSWAP_USDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_SOUSDC,
   // Back-compat alias used by earn constants
   VUSDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC,
@@ -36,7 +122,6 @@ export const CONTRACT_ADDRESSES = {
   // Lending reserves — XLM + per-USDC-variant
   LENDING_PROTOCOL_XLM: CREDIT_LAYER_ADDRESSES.RESERVE_XLM,
   LENDING_PROTOCOL_BLEND_USDC: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC,
-  LENDING_PROTOCOL_AQUARIUS_USDC: CREDIT_LAYER_ADDRESSES.RESERVE_AQUSDC,
   LENDING_PROTOCOL_SOROSWAP_USDC: CREDIT_LAYER_ADDRESSES.RESERVE_SOUSDC,
   // Back-compat alias for call sites still keyed on a single "USDC" pool —
   // resolves to the Blend USDC reserve specifically, not a shared canonical one.
@@ -44,7 +129,9 @@ export const CONTRACT_ADDRESSES = {
 
   // Three genuinely distinct USDC test tokens — one per DEX's own real pool.
   BLEND_USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
-  AQUARIUS_USDC_TOKEN: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
+  // Aquarius moved to BLUSDC (mainnet-credit-layer, 2026-11-07): the old Aquarius
+  // test USDC (CAZRY5GS…) lost its issuer account and can't take new holders.
+  AQUARIUS_USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
   SOROSWAP_USDC_TOKEN: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F',
   // Back-compat alias for old single-USDC call sites — resolves to Blend's own token.
   USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
@@ -55,10 +142,10 @@ export const CONTRACT_ADDRESSES = {
   BLEND_USDC: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
 
   // Aquarius AMM (testnet, external). The credit layer's Aquarius validator
-  // accepts only this constant_product XLM/AQUSDC pool (index below).
+  // accepts only this constant_product XLM/BLUSDC pool (0.3%, index below).
   AQUARIUS_ROUTER: 'CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD',
-  AQUARIUS_XLM_USDC_POOL: 'CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX',
-  AQUARIUS_USDC: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
+  AQUARIUS_XLM_USDC_POOL: 'CBXVVJ5BOTUVRPXUY54LXFILWC4ZTJWRP2GIVHBMOEAOPHSLGHBG3NNP',
+  AQUARIUS_USDC: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
   AQUARIUS_POOL_INDEX_HEX: '9ac7a9cde23ac2ada11105eeaa42e43c2ea8332ca0aa8f41f58d7160274d718e',
   /** Share (LP) token of AQUARIUS_XLM_USDC_POOL; the margin account holds it directly. */
   AQUARIUS_XLM_USDC_SHARE: CREDIT_LAYER_ADDRESSES.AQUARIUS_SHARE,
@@ -81,9 +168,13 @@ export const ASSET_TYPES = {
   SOROSWAP_USDC: 'SOROSWAP_USDC',
 } as const;
 
-// Aquarius USDC classic-side issuer (for trustline/Horizon balance checks)
+// Classic-side issuers (for trustline / Horizon balance checks).
+// Blend USDC (BLUSDC, SAC CAQCFVLO…) is the classic asset USDC:GATALTGT….
+// Aquarius trades BLUSDC since mainnet-credit-layer, so USDC_AQUARIUS is the
+// same issuer; the old Aquarius test USDC issuer (GAHPYWLK…) no longer exists.
 export const ASSET_ISSUERS = {
-  USDC_AQUARIUS: 'GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER',
+  USDC_BLEND: 'GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56',
+  USDC_AQUARIUS: 'GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56',
 } as const;
 
 export type AssetType = typeof ASSET_TYPES[keyof typeof ASSET_TYPES];
@@ -94,7 +185,8 @@ export function lendingPoolAddress(assetType: AssetType): string {
     case ASSET_TYPES.XLM: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
     case ASSET_TYPES.USDC:
     case ASSET_TYPES.BLEND_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
-    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC;
+    // No AQUSDC reserve since mainnet-credit-layer; Aquarius's USDC is BLUSDC.
+    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
     case ASSET_TYPES.SOROSWAP_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC;
     default: throw new Error(`Unsupported asset type: ${assetType}`);
   }
@@ -106,7 +198,7 @@ export function vTokenAddress(assetType: AssetType): string {
     case ASSET_TYPES.XLM: return CONTRACT_ADDRESSES.VXLM_TOKEN;
     case ASSET_TYPES.USDC:
     case ASSET_TYPES.BLEND_USDC: return CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
-    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.VAQUARIUS_USDC_TOKEN;
+    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
     case ASSET_TYPES.SOROSWAP_USDC: return CONTRACT_ADDRESSES.VSOROSWAP_USDC_TOKEN;
     default: throw new Error(`Unsupported asset type: ${assetType}`);
   }
@@ -771,7 +863,6 @@ export class ContractService {
     XLM: string;
     USDC: string;
     BLEND_USDC: string;
-    AQUARIUS_USDC: string;
     SOROSWAP_USDC: string;
   }> {
     const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
@@ -797,8 +888,8 @@ export class ContractService {
       ? rpcAccountResult.value.sequenceNumber()
       : undefined;
     const tokenContracts = [
+      // Aquarius's USDC is the Blend USDC token now, so it is not read twice.
       CONTRACT_ADDRESSES.BLEND_USDC,
-      CONTRACT_ADDRESSES.AQUARIUS_USDC,
       CONTRACT_ADDRESSES.SOROSWAP_USDC,
     ] as const;
     const tokenResults = sourceSequence === undefined
@@ -820,8 +911,7 @@ export class ContractService {
         : '0';
     };
     const blendUsdc = valueAt(0);
-    const aquariusUsdc = valueAt(1);
-    const soroswapUsdc = valueAt(2);
+    const soroswapUsdc = valueAt(1);
 
     if (horizonResult.status === 'rejected' && tokenResults.every((r) => r.status === 'rejected')) {
       throw new Error('Unable to read wallet balances from Horizon or Soroban RPC');
@@ -831,7 +921,6 @@ export class ContractService {
       XLM: xlmBalance,
       USDC: blendUsdc,
       BLEND_USDC: blendUsdc,
-      AQUARIUS_USDC: aquariusUsdc,
       SOROSWAP_USDC: soroswapUsdc,
     };
   }
@@ -839,7 +928,7 @@ export class ContractService {
 
 /* ─── Credit-layer Reserve helpers (used by ContractService above) ─────────── */
 
-/** Earn asset type → credit-layer asset symbol ('XLM' | 'BLUSDC' | 'AQUSDC' | 'SOUSDC'). */
+/** Earn asset type → credit-layer asset symbol ('XLM' | 'BLUSDC' | 'SOUSDC'). */
 function creditSymbol(assetType: AssetType): string {
   const a = toCreditAsset(assetType);
   if (!a) throw new Error(`Unsupported asset type: ${assetType}`);

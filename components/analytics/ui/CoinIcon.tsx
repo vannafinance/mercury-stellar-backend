@@ -1,7 +1,7 @@
 import Image from "next/image";
 
 // Analytics-only icon map. Restricted to the asset universe Vanna actually
-// supports on Soroban (XLM + BLUSDC/AQUSDC/SOUSDC) plus the symbols the
+// supports on Soroban (XLM + BLUSDC/SOUSDC; AQUSDC kept so old event rows still get an icon) plus the symbols the
 // risk-explorer simulators reference (USDC canonical, USDT). Anything
 // outside this list falls through to the generic coin placeholder in
 // `default.svg`.

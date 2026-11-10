@@ -21,7 +21,7 @@ export const WARN_HF = 1.35;
 const STABLES = new Set(["USDC", "USDT"]);
 
 /**
- * Which price a holding follows: the venue USDC wrappers (BLUSDC / AQUSDC / SOUSDC) follow USDC;
+ * Which price a holding follows: the venue USDC wrappers (BLUSDC / SOUSDC, old name AQUSDC) follow USDC;
  * everything else by symbol.
  */
 export const priceKey = (symbol: string) => {

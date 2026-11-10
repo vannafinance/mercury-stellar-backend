@@ -68,17 +68,18 @@ async function swapLpAsset(
 
 /**
  * Contract-level token symbol for a Vanna deposit/borrow call feeding an LP
- * pool. Aquarius and Soroswap each trade their OWN USDC-variant SAC (AQUSDC /
- * SOUSDC) — completely distinct on-chain tokens from generic USDC/BLUSDC, not
- * just aliases. Depositing/borrowing plain "USDC" credits the Blend USDC
- * lending pool, leaving the margin account's real AQUSDC/SOUSDC balance at
- * zero — AddLiquidity then traps with "zero balance is not sufficient to
+ * pool. Soroswap trades its OWN USDC-variant SAC (SOUSDC) — a distinct
+ * on-chain token from generic USDC/BLUSDC, not just an alias. Depositing /
+ * borrowing plain "USDC" credits the Blend USDC reserve, leaving the margin
+ * account's real SOUSDC balance at zero — AddLiquidity then traps with "zero balance is not sufficient to
  * spend" on the pool's actual USDC SAC, even though the deposit/borrow itself
- * succeeded. XLM has no such variant, so it passes through unchanged.
+ * succeeded. Aquarius trades Blend USDC itself (XLM/BLUSDC pool since
+ * mainnet-credit-layer), so its USDC leg is BLUSDC. XLM has no such variant,
+ * so it passes through unchanged.
  */
 function poolTokenSymbol(asset: TokenAsset, poolProtocol: string, poolType: PoolType): string {
   if (poolType !== 'lp' || asset !== 'USDC') return asset;
-  return isAquarius(poolProtocol) ? 'AQUSDC' : 'SOUSDC';
+  return isAquarius(poolProtocol) ? 'BLUSDC' : 'SOUSDC';
 }
 
 /** Protocol-aware "remove liquidity" for {@link closePosition}. */
@@ -202,7 +203,7 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
     // Leveraged LP positions carry TWO debt legs (paired-asset + same-asset
     // top-up) — both must be repaid, or the top-up leg is left orphaned.
     // Both legs go through poolTokenSymbol() — for an LP position, the real
-    // on-chain USDC-side debt is denominated in AQUSDC/SOUSDC (whichever the
+    // on-chain USDC-side debt is denominated in BLUSDC/SOUSDC (whichever the
     // borrow itself used), not generic USDC/Blend-USDC. Repaying the plain
     // "USDC" symbol here would target the wrong debt entirely.
     const collateralRepaySymbol = poolTokenSymbol(collateralAsset, poolProtocol, poolType);

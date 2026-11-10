@@ -50,7 +50,7 @@ export const toDropdownAsset = (raw: string | undefined): string | null => {
   const cleaned = raw.replace(/^0x/i, "").toUpperCase();
   if (cleaned === "XLM") return "XLM";
   if (cleaned === "USDC" || cleaned === "BLUSDC" || cleaned === "BLEND_USDC") return "BLUSDC";
-  if (cleaned === "AQUSDC" || cleaned === "AQUIRESUSDC" || cleaned === "AQUARIUS_USDC") return "AqUSDC";
+  if (cleaned === "AQUSDC" || cleaned === "AQUIRESUSDC" || cleaned === "AQUARIUS_USDC") return "BLUSDC"; // old Aquarius USDC names: Aquarius uses Blend USDC now
   if (cleaned === "SOUSDC" || cleaned === "SOROSWAPUSDC" || cleaned === "SOROSWAP_USDC") return "SoUSDC";
   return null;
 };
@@ -59,7 +59,7 @@ const normalizeContractTokenSymbol = (symbol: string): string =>
   symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
     ? "BLUSDC"
     : symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC"
-      ? "AQUSDC"
+      ? "BLUSDC"
       : symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC"
         ? "SOUSDC"
         : symbol;
@@ -106,7 +106,7 @@ export function RepayTab({ m, prefill, onTransfer }: { m: MarginScreen; prefill?
     }
   }, [m.address]);
 
-  // Live oracle price; BLUSDC/AQUSDC/SOUSDC alias to USDC inside the oracle module.
+  // Live oracle price; BLUSDC/SOUSDC alias to USDC inside the oracle module.
   const price = m.prices[ckey(sym)] ?? 1;
 
   // Debt and margin-account balance for the CURRENT asset, fetched together so the tiles never mix

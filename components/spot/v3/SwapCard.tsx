@@ -60,13 +60,13 @@ const STELLAR_TOKENS: SwapToken[] = [
   {
     id: CONTRACT_ADDRESSES.AQUARIUS_USDC,
     symbol: "USDC",
-    displaySymbol: "AqUSDC",
-    name: "USD Coin (Aquarius)",
+    // Aquarius's pool is XLM/BLUSDC: Blend USDC, shown as plain "USDC" as elsewhere in the app.
+    name: "USD Coin (Blend)",
     logo: "/coins/usdc.svg",
     decimals: 7,
     chain: "stellar",
     isVerified: true,
-    modelSymbol: "AQUSDC",
+    modelSymbol: "BLUSDC",
   },
 ];
 
@@ -100,12 +100,12 @@ const SOROSWAP_STELLAR_TOKENS: SwapToken[] = [
 /** The DEXes the user can pick in the header dropdown; quote and swap both go through the picked one. */
 const DEXES: { id: DexId; label: string; sym: string; hint: string }[] = [
   { id: "soroswap", label: "Soroswap", sym: "SOROSWAP", hint: "Soroswap XLM / SoUSDC pool" },
-  { id: "aquarius", label: "Aquarius", sym: "AQUARIUS", hint: "Aquarius XLM / AqUSDC pool" },
+  { id: "aquarius", label: "Aquarius", sym: "AQUARIUS", hint: "Aquarius XLM / USDC pool" },
 ];
 
 const tokensFor = (dex: DexId): SwapToken[] => (dex === "aquarius" ? STELLAR_TOKENS : SOROSWAP_STELLAR_TOKENS);
 
-// Display symbol (e.g. "AqUSDC"/"SoUSDC" instead of the functional "USDC"
+// Display symbol (e.g. "SoUSDC" instead of the functional "USDC"
 // every AquariusService/SoroswapService call, price lookup, and partner map
 // in this file keys off). Only ever use it for display — state and service
 // calls must keep using the real token symbol.
@@ -275,8 +275,8 @@ export const SwapCard = ({ baseSymbol, onPreview }: SwapCardProps) => {
 
   // Live on-chain prices for the active pair, used for the per-input USD echo,
   // the oracle exchange rate, price impact and the health-factor projection.
-  // The hook canonicalises symbols and refreshes every 30s; AqUSDC / SoUSDC
-  // alias to USDC inside oracle-price.ts.
+  // The hook canonicalises symbols and refreshes every 30s; SoUSDC
+  // aliases to USDC inside oracle-price.ts.
   const swapTokenPrices = useTokenPrices(
     [tokenIn?.symbol, tokenOut?.symbol].filter((s): s is string => Boolean(s)),
   );
@@ -664,7 +664,7 @@ export const SwapCard = ({ baseSymbol, onPreview }: SwapCardProps) => {
 
   const handleTokenSelect = useCallback(
     (displayToken: Token) => {
-      // The picker renders display-only tokens (symbol swapped to "AqUSDC"/
+      // The picker renders display-only tokens (symbol swapped to
       // "SoUSDC"), so recover the real functional token by id before touching
       // state — everything downstream (service calls, partner maps) keys off
       // the real "XLM"/"USDC" symbol. Then snap the OTHER side to a real

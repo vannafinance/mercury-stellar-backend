@@ -88,7 +88,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
   const tokenB = poolTokens[1] ?? "USDC";
   // Display-only — every balance fetch, reserve lookup, and the actual
   // removeLiquidity() call below MUST keep using the raw tokenB, not this.
-  const tokenBLabel = tokenB === "USDC" ? (isAquariusPool ? "AqUSDC" : "SoUSDC") : tokenB;
+  const tokenBLabel = tokenB === "USDC" ? (isAquariusPool ? "USDC" : "SoUSDC") : tokenB;
 
   // Resolve which actual on-chain pool this row is (order-insensitive on
   // tokens) — LP-balance reads and the removeLiquidity call MUST use this

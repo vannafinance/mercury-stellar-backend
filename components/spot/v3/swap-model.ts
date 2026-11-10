@@ -1,7 +1,7 @@
 /**
  * Spot's "after this swap" simulation on the program-exact account model (lib/account-model.ts):
  * a margin swap sells `inUsd` of one collateral line and adds `outUsd` to another; debts are unchanged
- * (the margin swap never borrows). Symbols are the margin store's keys (XLM, AQUSDC, SOUSDC, …). Health factor, leverage, room before liquidation and liquidation
+ * (the margin swap never borrows). Symbols are the margin store's keys (XLM, BLUSDC, SOUSDC, …). Health factor, leverage, room before liquidation and liquidation
  * prices of the result come from the same functions every V3 page uses.
  */
 import { accountNumbers, liqMultiplier, liqRoom, priceKey, type AccountNumbers, type LiqRoom, type ModelState } from "@/lib/account-model";

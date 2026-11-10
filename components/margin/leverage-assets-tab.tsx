@@ -85,7 +85,7 @@ export const LeverageAssetsTab = () => {
   const { refreshBalances } = useWallet();
   const normalizeContractTokenSymbol = (symbol: string) => {
     if (symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC") return "BLUSDC";
-    if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "AQUSDC";
+    if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "BLUSDC"; // old Aquarius USDC names: Aquarius uses Blend USDC now
     if (symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC") return "SOUSDC";
     return symbol;
   };
@@ -179,8 +179,8 @@ export const LeverageAssetsTab = () => {
   const isMBMode = collateralList.length === 1 && collateralList[0]?.balanceType.toLowerCase() === "mb";
 
   // Live oracle prices for USD conversions in deposit/borrow flows. Aliased
-  // tokens (BLUSDC/AQUSDC/SOUSDC) resolve to USDC inside oracle-price.ts.
-  const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  // tokens (BLUSDC/SOUSDC) resolve to USDC inside oracle-price.ts.
+  const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'SOUSDC']);
 
   // Same per-account /api/account snapshot the page HEADER reads (React Query
   // dedupes by key, so mounted consumers share the same in-memory response).
@@ -708,8 +708,6 @@ export const LeverageAssetsTab = () => {
           switch (normalizeContractTokenSymbol(asset)) {
             case "BLUSDC":
               return parseFloat(tokenBalances.USDC || tokenBalances.BLEND_USDC || "0") || 0;
-            case "AQUSDC":
-              return parseFloat(tokenBalances.AQUARIUS_USDC || "0") || 0;
             case "SOUSDC":
               return parseFloat(tokenBalances.SOROSWAP_USDC || "0") || 0;
             default:
@@ -725,9 +723,7 @@ export const LeverageAssetsTab = () => {
               const faucetHint =
                 item.asset === "BLUSDC"
                   ? "Blend USDC"
-                  : item.asset === "AQUSDC"
-                    ? "Aquarius USDC"
-                    : item.asset === "SOUSDC"
+                  : item.asset === "SOUSDC"
                       ? "Soroswap USDC"
                       : item.asset;
               toast.error(

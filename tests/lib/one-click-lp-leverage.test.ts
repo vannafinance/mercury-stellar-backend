@@ -106,7 +106,7 @@ describe("executeOneClickStrategy — leveraged Aquarius LP pairs at the live po
     expect(mocks.borrowTokens).toHaveBeenCalledTimes(2);
 
     const xlmCall = mocks.borrowTokens.mock.calls.find((c) => c[1] === "XLM");
-    const usdcCall = mocks.borrowTokens.mock.calls.find((c) => c[1] === "AQUSDC");
+    const usdcCall = mocks.borrowTokens.mock.calls.find((c) => c[1] === "BLUSDC");
     expect(xlmCall).toBeTruthy();
     expect(usdcCall).toBeTruthy();
 

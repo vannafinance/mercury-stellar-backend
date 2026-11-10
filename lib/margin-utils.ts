@@ -29,7 +29,7 @@
  *   - SAC tokens on this deployment are 7-decimal (stroops), so a stroop→WAD
  *     conversion multiplies by 1e11 (see `getMarginAccountTokenBalanceWad`).
  *   - Symbol normalization (`normalizeContractTokenSymbol`) maps the several UI
- *     aliases (USDC/BLUSDC, AQUSDC, SOUSDC) onto one symbol per asset; the
+ *     aliases (USDC/BLUSDC and the old Aquarius names, SOUSDC) onto one symbol per asset; the
  *     token ADDRESS sent on-chain comes from `tokenAddressFor`.
  *
  * Discovery is a single permanent storage read (`margin_of`), so there is no
@@ -46,6 +46,7 @@ import {
   marginValue,
   rpc,
   HEALTH_THRESHOLD,
+  getHealthLimits,
   connectedAddress,
   invokeWrite,
   marginOf,
@@ -123,13 +124,14 @@ export class MarginAccountService {
 
   private static normalizeContractTokenSymbol(tokenSymbol: string): string {
     const normalized = tokenSymbol?.toUpperCase();
-    if (normalized === 'BLUSDC' || normalized === 'BLEND_USDC' || normalized === 'USDC') {
+    if (
+      normalized === 'BLUSDC' || normalized === 'BLEND_USDC' || normalized === 'USDC' ||
+      // Old Aquarius USDC names: Aquarius uses the Blend USDC token since mainnet-credit-layer.
+      normalized === 'AQUSDC' || normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC'
+    ) {
       // One symbol for Blend USDC across the app; the token address is what
       // goes on-chain (tokenAddressFor maps USDC and BLUSDC to the same token).
       return 'USDC';
-    }
-    if (normalized === 'AQUSDC' || normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') {
-      return 'AQUSDC';
     }
     if (normalized === 'SOUSDC' || normalized === 'SOROSWAPUSDC' || normalized === 'SOROSWAP_USDC') {
       return 'SOUSDC';
@@ -164,11 +166,9 @@ export class MarginAccountService {
         const faucetHint =
           displaySymbol === 'BLUSDC'
             ? 'Blend USDC'
-            : displaySymbol === 'AQUSDC'
-              ? 'Aquarius USDC'
-              : displaySymbol === 'SOUSDC'
-                ? 'Soroswap USDC'
-                : displaySymbol;
+            : displaySymbol === 'SOUSDC'
+              ? 'Soroswap USDC'
+              : displaySymbol;
         return {
           ok: false,
           error: `You have no ${displaySymbol} in your wallet. Use the Faucet to mint ${faucetHint} (establishes the required trustline), then retry.`,
@@ -193,7 +193,7 @@ export class MarginAccountService {
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     if (!toCreditAsset(contractBorrowSymbol)) return { ok: true };
     const displayName =
-      contractBorrowSymbol === 'USDC' ? 'USDC' : contractBorrowSymbol === 'AQUSDC' ? 'Aquarius USDC' : contractBorrowSymbol === 'SOUSDC' ? 'Soroswap USDC' : contractBorrowSymbol;
+      contractBorrowSymbol === 'USDC' ? 'USDC' : contractBorrowSymbol === 'SOUSDC' ? 'Soroswap USDC' : contractBorrowSymbol;
     const MAX_UTILIZATION = 0.94;
     try {
       const s = await reserveStats(contractBorrowSymbol);
@@ -639,16 +639,30 @@ export class MarginAccountService {
       // Health pre-check (the release contract's panic text is stripped, so a
       // failed health assert would only surface as a generic InvalidAction).
       // Borrowed funds land in the account: allowed while
-      // (C + B) / (D + B) > 1.2  =>  B < (C - 1.2·D) / 0.2.
-      const [health, px] = await Promise.all([this.getMarginHealth(marginAccountAddress), priceUsd(tokenAddressFor(sym))]);
+      // (C + B) / (D + B) > L  =>  B < (C - L·D) / (L - 1), L = live borrow_limit.
+      const [health, px, limits] = await Promise.all([
+        this.getMarginHealth(marginAccountAddress),
+        priceUsd(tokenAddressFor(sym)),
+        getHealthLimits(),
+      ]);
       if (health && px > 0) {
         const borrowUsd = (Number(borrowAmountWad) / 1e18) * px;
-        const roomUsd = maxBorrowUsd(health.collateralUsd, health.debtUsd, 0);
+        // Per-account debt cap (CreditLayer max_account_debt), checked on-chain after the borrow.
+        if (limits.maxAccountDebtUsd !== null && health.debtUsd + borrowUsd > limits.maxAccountDebtUsd) {
+          const left = Math.max(0, limits.maxAccountDebtUsd - health.debtUsd);
+          return {
+            success: false,
+            error:
+              `Borrow not allowed: one account can owe at most ${limits.maxAccountDebtUsd.toFixed(2)} USD. ` +
+              `You can borrow about ${left.toFixed(2)} USD (${(left / px).toFixed(4)} ${this.displaySymbol(sym)}) more.`,
+          };
+        }
+        const roomUsd = maxBorrowUsd(health.collateralUsd, health.debtUsd, 0, limits.borrowLimit);
         if (borrowUsd > roomUsd) {
           return {
             success: false,
             error:
-              `Borrow not allowed for ${this.displaySymbol(sym)}: it would push your health factor below ${HEALTH_THRESHOLD}. ` +
+              `Borrow not allowed for ${this.displaySymbol(sym)}: it would push your health factor below ${limits.borrowLimit}. ` +
               `You can borrow at most about ${roomUsd.toFixed(2)} USD (${(roomUsd / px).toFixed(4)} ${this.displaySymbol(sym)}) right now. ` +
               `Add collateral or repay debt first.`,
           };
@@ -824,7 +838,7 @@ export class MarginAccountService {
     maxWithdrawUsd: number;
   } | null> {
     try {
-      const v = await marginValue(marginAccountAddress);
+      const [v, limits] = await Promise.all([marginValue(marginAccountAddress), getHealthLimits()]);
       const collateralUsd = wadToNumber(v.collateralWad);
       const debtUsd = wadToNumber(v.debtWad);
       const healthFactor = debtUsd > 0 ? collateralUsd / debtUsd : Infinity;
@@ -832,9 +846,10 @@ export class MarginAccountService {
         collateralUsd,
         debtUsd,
         healthFactor,
-        healthy: !(debtUsd > 0) || healthFactor > HEALTH_THRESHOLD,
-        maxBorrowUsd: maxBorrowUsd(collateralUsd, debtUsd),
-        maxWithdrawUsd: maxWithdrawUsd(collateralUsd, debtUsd),
+        // Liquidatable at HF <= liquidation_threshold; new debt needs HF > borrow_limit.
+        healthy: !(debtUsd > 0) || healthFactor > limits.liquidationThreshold,
+        maxBorrowUsd: maxBorrowUsd(collateralUsd, debtUsd, 0.005, limits.borrowLimit),
+        maxWithdrawUsd: maxWithdrawUsd(collateralUsd, debtUsd, 0.005, limits.borrowLimit),
       };
     } catch {
       return null;

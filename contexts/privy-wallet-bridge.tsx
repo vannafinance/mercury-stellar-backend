@@ -237,8 +237,8 @@ export const PrivyWalletBridge = () => {
           walletKind: null,
           walletProviderLabel: null,
           balance: "0",
-          tokenBalances: { XLM: "0", USDC: "0", BLEND_USDC: "0", AQUARIUS_USDC: "0", SOROSWAP_USDC: "0" },
-          depositedBalances: { XLM: "0", USDC: "0", AQUARIUS_USDC: "0", SOROSWAP_USDC: "0" },
+          tokenBalances: { XLM: "0", USDC: "0", BLEND_USDC: "0", SOROSWAP_USDC: "0" },
+          depositedBalances: { XLM: "0", USDC: "0", SOROSWAP_USDC: "0" },
           walletService: null,
         });
         clearMarginAccount();

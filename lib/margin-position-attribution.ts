@@ -5,7 +5,8 @@ const canonicalToken = (token: string): string => {
   // it fell through unmapped and rendered as the raw "BLEND_XLM".
   if (normalized === "BLEND_XLM") return "XLM";
   if (normalized === "BLEND_USDC" || normalized === "USDC") return "BLUSDC";
-  if (normalized === "AQUIRESUSDC" || normalized === "AQUARIUS_USDC") return "AQUSDC";
+  // Old Aquarius USDC names: Aquarius trades Blend USDC since mainnet-credit-layer.
+  if (normalized === "AQUSDC" || normalized === "AQUIRESUSDC" || normalized === "AQUARIUS_USDC") return "BLUSDC";
   if (normalized === "SOROSWAPUSDC" || normalized === "SOROSWAP_USDC") return "SOUSDC";
   return normalized;
 };

@@ -30,7 +30,7 @@ interface RowState {
 }
 
 const ALL_TOKENS: FaucetTokenId[] = [
-  "XLM", "BLEND_USDC", "AQUARIUS_USDC", "SOROSWAP_USDC",
+  "XLM", "BLEND_USDC", "SOROSWAP_USDC",
 ];
 
 // Persist one-time mint success per (wallet, token) so refreshing the page
@@ -63,7 +63,6 @@ const writePersisted = (wallet: string | null, state: PersistedState) => {
 const initialRows = (): Record<FaucetTokenId, RowState> => ({
   XLM: { status: "idle" },
   BLEND_USDC: { status: "idle" },
-  AQUARIUS_USDC: { status: "idle" },
   SOROSWAP_USDC: { status: "idle" },
 });
 

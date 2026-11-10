@@ -11,14 +11,13 @@ import {
   type AttributionHistoryEntry,
 } from "@/lib/margin-position-attribution";
 
-/** USD price of a display symbol (XLM, BLUSDC, AQUSDC, SOUSDC, …); 0 when unknown. */
+/** USD price of a display symbol (XLM, BLUSDC, SOUSDC, …); 0 when unknown. */
 export type PriceOf = (symbol: string) => number;
 
 /** The Stellar lending pools (earn hook keys), with the symbol each is shown / priced as. */
 export const LEND_ASSETS = [
   { asset: "XLM", sym: "XLM", route: "XLM" },
   { asset: "USDC", sym: "BLUSDC", route: "BLUSDC" },
-  { asset: "AQUARIUS_USDC", sym: "AQUSDC", route: "AqUSDC" },
   { asset: "SOROSWAP_USDC", sym: "SOUSDC", route: "SoUSDC" },
 ] as const;
 export type LendAsset = (typeof LEND_ASSETS)[number]["asset"];
@@ -30,7 +29,6 @@ export const lendSym = (asset: string) => LEND_ASSETS.find((a) => a.asset === as
 export const TOKEN_NAMES: Record<string, string> = {
   XLM: "Stellar Lumens",
   BLUSDC: "Blend USDC",
-  AQUSDC: "Aquarius USDC",
   SOUSDC: "Soroswap USDC",
   USDC: "USD Coin",
 };
@@ -45,7 +43,6 @@ export function walletHoldings(tokenBalances: Record<string, string | undefined>
   return {
     XLM: n("XLM"),
     BLUSDC: Math.max(n("BLEND_USDC"), n("USDC")),
-    AQUSDC: n("AQUARIUS_USDC"),
     SOUSDC: n("SOROSWAP_USDC"),
   };
 }

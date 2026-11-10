@@ -1,5 +1,5 @@
 // Hubble (BigQuery) analytics queries for the /stats page, scoped to the
-// CURRENT credit-layer architecture: the 4 Reserves (XLM, BLUSDC, AQUSDC,
+// CURRENT credit-layer architecture: the 3 Reserves (XLM, BLUSDC,
 // SOUSDC) + the CreditLayer. Each builder returns { query, params } for `runQuery`.
 //
 // Credit-layer events (testnet redeploy 2026-11-06):
@@ -34,7 +34,6 @@ const EVENT_NAME = "JSON_VALUE(topics_decoded, '$[0].symbol')";
 const POOLS = [
   CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM,
   CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC,
-  CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC,
   CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC,
 ].filter(Boolean) as string[];
 
@@ -47,7 +46,7 @@ const LOOKBACK_DAYS = 90;
 
 type Built = { query: string; params: Record<string, unknown> };
 
-/** Daily supply / redeem flow (underlying, WAD) across the 4 Reserves (90 days). */
+/** Daily supply / redeem flow (underlying, WAD) across the 3 Reserves (90 days). */
 export function tvlQuery(): Built {
   return {
     query: `

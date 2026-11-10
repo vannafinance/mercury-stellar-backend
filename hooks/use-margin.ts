@@ -112,7 +112,7 @@ const toWad = (amount: number): string => numberAmountToWad(amount).toString();
 const normalizeContractTokenSymbol = (symbol: string): string => {
   const s = symbol.toUpperCase();
   if (s === 'BLUSDC' || s === 'BLEND_USDC' || s === 'USDC') return 'USDC';
-  if (s === 'AQUSDC' || s === 'AQUIRESUSDC' || s === 'AQUARIUS_USDC') return 'AQUSDC';
+  if (s === 'AQUSDC' || s === 'AQUIRESUSDC' || s === 'AQUARIUS_USDC') return 'BLUSDC'; // old Aquarius USDC names: Aquarius uses Blend USDC now
   if (s === 'SOUSDC' || s === 'SOROSWAPUSDC' || s === 'SOROSWAP_USDC') return 'SOUSDC';
   return s;
 };

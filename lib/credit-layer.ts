@@ -1,6 +1,7 @@
 /**
- * Client for the Vanna credit-layer contracts (testnet redeploy 2026-11-06,
- * Protocol_V1_Soroban_testnet branch `testnet-credit-layer`, deploy/testnet.json).
+ * Client for the Vanna credit-layer contracts (testnet redeploy 2026-11-10,
+ * Protocol_V1_Soroban_testnet branch `mainnet-credit-layer`, deploy/testnet.json).
+ * Replaces the 2026-11-06 `testnet-credit-layer` deployment (CCDZE7VG…).
  *
  * The credit layer replaced the old AccountManager / Registry / RiskEngine /
  * lending-pool / vToken / SmartAccount / Controller contracts:
@@ -23,40 +24,52 @@ import { getReadSourceAddress } from '@/lib/read-source';
 import { markTxSubmitted } from './tx-progress';
 
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
-const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
+// Same RPC as lib/stellar-utils.ts (kept local to avoid an import cycle):
+// SDF's public RPC answered in 5-10s per call on 2026-11-09; Gateway.fm in ~0.2s.
+const SOROBAN_RPC_URL =
+  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-rpc.testnet.stellar.gateway.fm';
 
-/** Addresses written by deploy/deploy.sh to deploy/testnet.json. */
+/** Addresses written by deploy/deploy.sh to deploy/testnet.json (mainnet-credit-layer, 2026-11-10). */
 export const CREDIT_LAYER_ADDRESSES = {
   ADMIN: 'GB3QLYUAG4E35US6ACVRMEPQSGPR7YJFCHL3DR77SBNDRRXF524NPQMT',
-  CREDIT_LAYER: 'CCDZE7VGLWXOUGUBUXHXUMMBTMBSXG4R3VZSROLOCP73DSAA5AIAKYVP',
-  ORACLE: 'CAFMDZ4OZGMDIRTPLEOBFL5JLLOEETLWQIUNOL7MWGMJOJPZSQDQGQTE',
-  VALIDATOR_FACADE: 'CBPEQBRFELQZLIWWNAOTJQPOJSCQORT6GIV5KDBD4E5FNGPZHTVWOLG2',
+  CREDIT_LAYER: 'CAMQZ5XNLPFIQBI437CEPYQ3YURLGJFI6UOCKCZNQT46TLMBE7BOJ53I',
+  ORACLE: 'CAAJ4MKFAWTTDZ7UCK75ZQCM5KZSTB4G4RM442JMEXNMY5Z47QTBNNS5',
+  VALIDATOR_FACADE: 'CD7IKD67H36J7K7D4Z5IOV4DBRUEBDWJE5YBR6RY5TZCBKOZD6QKGYIC',
   REFLECTOR: 'CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63',
-  RESERVE_XLM: 'CC2GWN6QIB4YQ6CWIRGTMJFG6E2SMUW5QUROSHXX55VUEVDZ5PSODV36',
-  RESERVE_BLUSDC: 'CCV6MFO66JRAFMJEF7A3E726FF26LACLFOJ6BZOTBFXC3OVD7WBQLARE',
-  RESERVE_AQUSDC: 'CBRXVEAR5BU6SPFGVUPCI3AJHDGNTW6XK7X7UNPZSZTQUPUE765A2A6S',
-  RESERVE_SOUSDC: 'CDMROV7WSYG44ZKZS4KFVN4GJRNOV5BGFWSRXNRLM7IFP7YFTMYULCNN',
-  BLEND_VALIDATOR: 'CAMZ426UMBLLOJEOWDTB7MOSWJZQW7FPYLGFXYWYCAWOPJAJ2HI2LZLP',
-  BLEND_VALUER: 'CBAOEJK6JO77E3S3Y6WS6U5JOKB3ZZR5GH7RKM7U7FXMN6UVTTLLOPQN',
-  SOROSWAP_VALIDATOR: 'CCWKZG4MRD5ZCL4SQ4AIXQFXTVLPCY62PE5HQTKV6LU64VN467GQY6DR',
-  SOROSWAP_LP_ADAPTER: 'CDU6LOHZ4ZGDZ7YTDQJ3IC2QRXHDWGI3AOSNAOHHOFUNC2VVTIJHXI5B',
-  AQUARIUS_VALIDATOR: 'CDTY5OY2IZLVAF7CQDQC7C4JVL26BTCNH4P2F43F6TDVJXTM7CGXHGL6',
-  AQUARIUS_LP_ADAPTER: 'CBNZZ73PMPGR7XHWXLEENB5MM5JMKMG4PGMJFUWUYTO7ZKUWYMASB4QM',
-  /** Aquarius XLM/AQUSDC pool share token (held directly by the margin account). */
-  AQUARIUS_SHARE: 'CDZ3L5A7DY6OSJPTWCACOMEA4H6RC7B5CTFRHSPUUAHMEL2MAKY37JMG',
+  RESERVE_XLM: 'CCM6JLRDUJWNKCWQHIVH4OHFNFWJ2A2RZCBKCQVTMKXFUC2UFP4FS4TZ',
+  RESERVE_BLUSDC: 'CCACBEOY7UU2F4VYDW6A7N3MKTO7LYPKESZV6XYAOTHNUUPKE6KR3E7Q',
+  RESERVE_SOUSDC: 'CDEFUGH6KJ2SU7HHZNJECB2TT23PC5PK3DKSNCH3BTREDC3TJWTCPBN3',
+  BLEND_VALIDATOR: 'CCK6WPFKMI3TNIDA2Y2OLWTXOCR3G3JFQZB6PMUQXCMHJKCE47OVGS5T',
+  BLEND_VALUER: 'CCEBXXZ55DI3T4BPOB7BRF5SBTPHPASSWS7ZOUMGYJBISWDRHFHCAPZH',
+  SOROSWAP_VALIDATOR: 'CCQC3T6UMPUXYBQYCJA3ATX4CG7BXQNJEUJWL7D3MJJ6ASQBEJAJTHTB',
+  SOROSWAP_LP_ADAPTER: 'CARSAUCEBBGC2FQWGH5MUSZAF3FWGY5TJ5GCSHYOQH2OFUD3WYVJEIPP',
+  AQUARIUS_VALIDATOR: 'CDNJXHJQVLW7OZQXCE6AVHSDQENGGWIRLXPGBBLMCRXCONWFEIZCCWY7',
+  AQUARIUS_LP_ADAPTER: 'CAP3TG5INS5J6CFTOASXKT5HQED3BT6JRMRMPLC76KSL7CC3XWHT53CY',
+  /** Aquarius XLM/BLUSDC pool (0.3%, index 9ac7a9cd…) share token, held directly by the margin account. */
+  AQUARIUS_SHARE: 'CDAK6QXHAL4GOBK4YTZGRXHDPOG7YOL7X3Y4S7EHWO675BSAUC5IF5EC',
 } as const;
 
-/** The four credit-layer assets. Symbol = the reserve's `v<symbol>` share name. */
-export type CreditAsset = 'XLM' | 'BLUSDC' | 'AQUSDC' | 'SOUSDC';
+/**
+ * The three credit-layer assets. Testnet has two USDC test tokens: Blend and
+ * Aquarius use BLUSDC, Soroswap uses SOUSDC. The Aquarius test USDC (AQUSDC)
+ * was dropped in mainnet-credit-layer because its issuer account no longer
+ * exists, so it can't take new holders.
+ */
+export type CreditAsset = 'XLM' | 'BLUSDC' | 'SOUSDC';
 
 export const CREDIT_ASSETS: Record<CreditAsset, { token: string; reserve: string; decimals: number }> = {
   XLM: { token: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC', reserve: CREDIT_LAYER_ADDRESSES.RESERVE_XLM, decimals: 7 },
   BLUSDC: { token: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU', reserve: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC, decimals: 7 },
-  AQUSDC: { token: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5', reserve: CREDIT_LAYER_ADDRESSES.RESERVE_AQUSDC, decimals: 7 },
   SOUSDC: { token: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F', reserve: CREDIT_LAYER_ADDRESSES.RESERVE_SOUSDC, decimals: 7 },
 };
 
-/** Health threshold the contracts enforce for borrow, withdraw and liquidation (1.2). */
+/**
+ * Default health limit (1.2). Since mainnet-credit-layer the admin can move
+ * the two limits separately between 1.1 and 1.2 (`set_borrow_limit`,
+ * `set_liquidation_threshold`), so checks that must match the chain should use
+ * {@link getHealthLimits}; this constant is the fallback and the value both
+ * start at.
+ */
 export const HEALTH_THRESHOLD = 1.2;
 
 export const WAD = BigInt('1000000000000000000');
@@ -65,12 +78,14 @@ const STROOP_TO_WAD = BigInt('100000000000'); // 1e11
 /**
  * Maps any UI alias (USDC, BLEND_USDC, AQUARIUS_USDC, SoUSDC, …) to a credit
  * asset. Plain "USDC" means the Blend USDC test token, as everywhere else in the app.
+ * The old Aquarius aliases (AQUSDC, AQUARIUS_USDC) resolve to BLUSDC: Aquarius's
+ * allowed pool is XLM/BLUSDC now, so "Aquarius USDC" IS the Blend USDC token.
  */
 export function toCreditAsset(symbol: string): CreditAsset | null {
   const s = String(symbol || '').trim().toUpperCase().replace(/[\s-]/g, '_');
   if (s === 'XLM' || s === 'NATIVE') return 'XLM';
   if (['USDC', 'BLUSDC', 'BLEND_USDC', 'BLENDUSDC'].includes(s)) return 'BLUSDC';
-  if (['AQUSDC', 'AQUARIUS_USDC', 'AQUARIUSUSDC', 'AQUIRESUSDC'].includes(s)) return 'AQUSDC';
+  if (['AQUSDC', 'AQUARIUS_USDC', 'AQUARIUSUSDC', 'AQUIRESUSDC'].includes(s)) return 'BLUSDC';
   if (['SOUSDC', 'SOROSWAP_USDC', 'SOROSWAPUSDC'].includes(s)) return 'SOUSDC';
   return null;
 }
@@ -245,6 +260,42 @@ export async function reserveStats(symbol: string): Promise<ReserveStats> {
     borrowRatePerSecWad: BigInt(rate),
     originationFeeWad: BigInt(fee),
   };
+}
+
+export interface HealthLimits {
+  /** New debt, withdrawals and venue actions must leave HF above this (Trade prices). */
+  borrowLimit: number;
+  /** An account is liquidatable once HF is at or under this (Liquidation prices). */
+  liquidationThreshold: number;
+  /** Most debt (USD) one account may hold after a borrow; null = no cap. */
+  maxAccountDebtUsd: number | null;
+}
+
+const LIMITS_TTL_MS = 60_000;
+let limitsCache: { at: number; value: Promise<HealthLimits> } | null = null;
+
+/**
+ * The credit layer's live health limits (`borrow_limit`, `liquidation_threshold`,
+ * `max_account_debt`), cached for a minute. Falls back to 1.2 / no cap when a
+ * read fails, which are the values a fresh deployment starts with.
+ */
+export function getHealthLimits(): Promise<HealthLimits> {
+  if (limitsCache && Date.now() - limitsCache.at < LIMITS_TTL_MS) return limitsCache.value;
+  const cl = CREDIT_LAYER_ADDRESSES.CREDIT_LAYER;
+  const value = Promise.all([
+    readOr<bigint | null>(cl, 'borrow_limit', [], null),
+    readOr<bigint | null>(cl, 'liquidation_threshold', [], null),
+    readOr<bigint | null>(cl, 'max_account_debt', [], null),
+  ]).then(([borrow, liquidation, cap]) => ({
+    borrowLimit: borrow ? wadToNumber(borrow) : HEALTH_THRESHOLD,
+    liquidationThreshold: liquidation ? wadToNumber(liquidation) : HEALTH_THRESHOLD,
+    maxAccountDebtUsd: cap ? wadToNumber(cap) : null,
+  }));
+  limitsCache = { at: Date.now(), value };
+  value.catch(() => {
+    limitsCache = null;
+  });
+  return value;
 }
 
 /** Underlying value of `shares` (native share units) at the reserve's current rate, WAD. */

@@ -29,18 +29,18 @@ import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 
-const POOL_OPTIONS = ["XLM", "BLUSDC", "AqUSDC", "SoUSDC"] as const;
+const POOL_OPTIONS = ["XLM", "BLUSDC", "SoUSDC"] as const;
 
 const toInternalAsset = (value: string) => {
   if (value === 'BLUSDC' || value === 'USDC') return 'USDC';
-  if (value === 'AqUSDC' || value === 'AquiresUSDC' || value === 'AQUARIUS_USDC') return 'AQUARIUS_USDC';
+  if (value === 'AqUSDC' || value === 'AquiresUSDC' || value === 'AQUARIUS_USDC') return 'USDC'; // Aquarius uses Blend USDC now
   if (value === 'SoUSDC' || value === 'SoroswapUSDC' || value === 'SOROSWAP_USDC') return 'SOROSWAP_USDC';
   return value;
 };
 
 const toDisplayAsset = (value: string) => {
   if (value === 'USDC') return 'BLUSDC';
-  if (value === 'AQUARIUS_USDC' || value === 'AquiresUSDC') return 'AqUSDC';
+  if (value === 'AQUARIUS_USDC' || value === 'AquiresUSDC') return 'BLUSDC';
   if (value === 'SOROSWAP_USDC' || value === 'SoroswapUSDC') return 'SoUSDC';
   return value;
 };
@@ -76,7 +76,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const supply = useSupplyLiquidity();
   const { pools, refresh: refreshPools } = usePoolData();
   const { refresh: refreshPositions } = useUserPositions();
-  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'SOUSDC']);
 
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
   const selectedPoolConfig = STELLAR_POOLS[normalizedAsset as keyof typeof STELLAR_POOLS];
@@ -103,8 +103,6 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
       return maxSpendableXlm(xlmBalance, xlmMinReserve);
     } else if (normalizedAsset === 'USDC') {
       return parseFloat(storeTokenBalances.BLEND_USDC || storeTokenBalances.USDC || '0');
-    } else if (normalizedAsset === 'AQUARIUS_USDC') {
-      return parseFloat(storeTokenBalances.AQUARIUS_USDC || '0');
     } else if (normalizedAsset === 'SOROSWAP_USDC') {
       return parseFloat(storeTokenBalances.SOROSWAP_USDC || '0');
     }
@@ -134,7 +132,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
     if (numAmount > 0 && userAddress) {
       // No proactive "keep a small balance" block: for XLM, `availableBalance`
       // already reserves the real on-chain minimum + fee buffer (see
-      // maxSpendableXlm above), and non-native assets (BLUSDC/AqUSDC/SoUSDC)
+      // maxSpendableXlm above), and non-native assets (BLUSDC/SoUSDC)
       // have no reserve requirement of their own — their fees are paid in
       // XLM, not the supplied asset — so a genuine 100% supply is safe.
       showTxStep(`Supplying ${numAmount} ${selectedOption} to the lending pool`);
@@ -168,7 +166,6 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const unitPriceUsd =
     tokenPrices[
       normalizedAsset === 'XLM' ? 'XLM'
-        : normalizedAsset === 'AQUARIUS_USDC' ? 'AQUSDC'
         : normalizedAsset === 'SOROSWAP_USDC' ? 'SOUSDC'
         : 'BLUSDC'
     ] || (normalizedAsset === 'XLM' ? 0 : 1);

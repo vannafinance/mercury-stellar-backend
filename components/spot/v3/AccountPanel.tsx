@@ -53,7 +53,7 @@ export function AccountPanel({ preview }: { preview: SwapPreview | null }) {
   const acct = useV3Account();
   const { state, now, room, priceOf } = acct;
   const from = preview?.from ?? "XLM";
-  // Display symbol (AqUSDC / SoUSDC) for the paying token; the model keys stay AQUSDC / SOUSDC.
+  // Display symbol (e.g. SoUSDC) for the paying token; the model keys stay BLUSDC / SOUSDC.
   const fromLabel = preview?.fromLabel ?? from;
 
   const after = useMemo(() => {

@@ -20,8 +20,11 @@ describe("readinessDisplayAsset", () => {
     expect(readinessDisplayAsset("USDC")).toBe("BLUSDC");
     expect(readinessDisplayAsset("blend_usdc")).toBe("BLUSDC");
   });
-  it("keeps AQUSDC / SOUSDC / XLM distinct", () => {
-    expect(readinessDisplayAsset("AQUSDC")).toBe("AQUSDC");
+  it("reads the old Aquarius USDC names as BLUSDC (Aquarius trades Blend USDC now)", () => {
+    expect(readinessDisplayAsset("AQUSDC")).toBe("BLUSDC");
+    expect(readinessDisplayAsset("aquarius_usdc")).toBe("BLUSDC");
+  });
+  it("keeps SOUSDC / XLM distinct", () => {
     expect(readinessDisplayAsset("SOUSDC")).toBe("SOUSDC");
     expect(readinessDisplayAsset("XLM")).toBe("XLM");
   });
@@ -100,7 +103,7 @@ describe("walletSacBalance - failed simulation is unknown, not zero", () => {
       .spyOn(ContractService, "getSorobanTokenWalletBalance")
       .mockRejectedValueOnce(new Error("Token balance simulation failed for test-contract"));
 
-    const bal = await walletSacBalance(g, "AQUSDC");
+    const bal = await walletSacBalance(g, "SOUSDC");
     expect(bal).toBe(Number.POSITIVE_INFINITY);
     spy.mockRestore();
   });
@@ -110,7 +113,7 @@ describe("walletSacBalance - failed simulation is unknown, not zero", () => {
       .spyOn(ContractService, "getSorobanTokenWalletBalance")
       .mockResolvedValueOnce("42.5000000");
 
-    const bal = await walletSacBalance(g, "AQUSDC");
+    const bal = await walletSacBalance(g, "SOUSDC");
     expect(bal).toBe(42.5);
     spy.mockRestore();
   });

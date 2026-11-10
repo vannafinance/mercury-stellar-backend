@@ -139,7 +139,8 @@ export function TraderFarm({ p }: { p: Portfolio }) {
       if (lpBal <= POSITION_DUST) return;
       const aqPoolStats = aquariusPools.find((x) => x.pool.id === pool.id)?.stats ?? null;
       const [tokenA, tokenB] = pool.tokens;
-      const tokenBLabel = tokenB === "USDC" ? "AqUSDC" : tokenB;
+      // Aquarius trades Blend USDC, which the app shows as plain "USDC".
+      const tokenBLabel = tokenB;
       const { amountA: shareA, amountB: shareB } = aquariusLpUnderlyingAmounts(
         lpBal,
         aqPoolStats ?? { reserveA: "0", reserveB: "0", totalShares: "0", feeFraction: "0.30%", feeRaw: 30 },
@@ -150,13 +151,13 @@ export function TraderFarm({ p }: { p: Portfolio }) {
       out.push({
         id: pool.id,
         protocol: "Aquarius",
-        tokens: [tokenA, tokenB === "USDC" ? "AQUSDC" : tokenB],
+        tokens: [tokenA, tokenB === "USDC" ? "BLUSDC" : tokenB],
         label: `${tokenA} / ${tokenBLabel}`,
         kind: "LP",
         holdings: `${lpBal.toFixed(2)} LP`,
         desc: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenBLabel}`,
         apy: decApy(rawApy),
-        usd: shareA * priceOf(tokenA) + shareB * priceOf(tokenB === "USDC" ? "AQUSDC" : tokenB),
+        usd: shareA * priceOf(tokenA) + shareB * priceOf(tokenB === "USDC" ? "BLUSDC" : tokenB),
         legacy: {
           id: pool.id,
           cell: [
@@ -190,7 +191,7 @@ export function TraderFarm({ p }: { p: Portfolio }) {
       if (!stats) return;
       const [tokenA, tokenB] = pool.tokens;
       total += parseFloat(stats.reserveA || "0") * priceOf(tokenA);
-      total += parseFloat(stats.reserveB || "0") * priceOf(tokenB === "USDC" ? "AQUSDC" : tokenB);
+      total += parseFloat(stats.reserveB || "0") * priceOf(tokenB === "USDC" ? "BLUSDC" : tokenB);
     });
     return total;
   }, [ssStats, aquariusPools, priceOf]);

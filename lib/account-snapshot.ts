@@ -26,8 +26,8 @@ import {
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
 
-// "USDC" is the canonical peg the three USDC-flavoured collateral variants
-// (BLUSDC/AQUSDC/SOUSDC, already in ACTIVE_ASSETS) resolve to on-chain — kept
+// "USDC" is the canonical peg the two USDC-flavoured collateral variants
+// (BLUSDC/SOUSDC, already in ACTIVE_ASSETS) resolve to on-chain — kept
 // as its own priced symbol since Reflector exposes it as a real feed.
 const PRICEABLE_TOKENS = ["USDC", ...ACTIVE_ASSETS] as const;
 export const USD_DUST_EPSILON = 0.01;
@@ -66,7 +66,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 const canonicalMarginToken = (token: string): string => {
   const n = token.toUpperCase();
   if (n === "BLEND_USDC" || n === "USDC") return "BLUSDC";
-  if (n === "AQUIRESUSDC" || n === "AQUARIUS_USDC") return "AQUSDC";
+  if (n === "AQUSDC" || n === "AQUIRESUSDC" || n === "AQUARIUS_USDC") return "BLUSDC"; // old Aquarius USDC names: Aquarius uses Blend USDC now
   if (n === "SOROSWAPUSDC" || n === "SOROSWAP_USDC") return "SOUSDC";
   return n;
 };
@@ -75,7 +75,6 @@ const debtSymbolToAssetType = (symbol: string): AssetType | null => {
   switch (symbol.toUpperCase()) {
     case "XLM": return ASSET_TYPES.XLM;
     case "BLUSDC": return ASSET_TYPES.USDC;
-    case "AQUSDC": return ASSET_TYPES.AQUARIUS_USDC;
     case "SOUSDC": return ASSET_TYPES.SOROSWAP_USDC;
     default: return null;
   }
@@ -330,10 +329,10 @@ async function computeMarginSnapshotUncached(
     .filter(([sym]) => isTrackingSymbol(sym))
     .reduce((sum, [, bal]) => sum + parseFloat(bal.usdValue), 0);
 
-  // Excludes every SAC-reconciled key (not just XLM/BLUSDC) so AQUSDC/SOUSDC
+  // Excludes every SAC-reconciled key (not just XLM/BLUSDC) so SOUSDC
   // — already summed into rawAssetValue above — aren't counted a second
   // time here. The prior XLM/BLUSDC-only exclusion let a margin account's
-  // own AQUSDC/SOUSDC balance (including freshly-borrowed debt sitting in
+  // own SOUSDC balance (including freshly-borrowed debt sitting in
   // the account) get double-counted as collateral, artificially propping up
   // the displayed Net Health Factor as more was borrowed.
   const nonSacCollateralValue = Object.entries(collateralBalances)

@@ -29,8 +29,8 @@ const fmtUsd = (n: number): string =>
  * LP — those live under the Farm tab). XLM is ONE shared native-token balance
  * across both venues (same SAC), so it's queried once and shown once — reading
  * it per-venue would show the same balance twice and double-count it into the
- * total. USDC is a genuinely distinct SAC per venue (AQUSDC/SOUSDC), so those
- * two are queried and shown separately.
+ * total. Aquarius trades Blend USDC (BLUSDC) and Soroswap its own SoUSDC, two
+ * distinct SACs, so those two are queried and shown separately.
  */
 export const SpotSection = () => {
   const { isDark } = useTheme();
@@ -51,12 +51,12 @@ export const SpotSection = () => {
     // These are all raw SAC balances held directly BY the margin account
     // (not deposited into an Aquarius/Soroswap LP or lent to Blend — those
     // live under the Farm tab), so Venue is "Margin Account" for every row,
-    // same as XLM. AQUSDC vs SOUSDC are genuinely distinct SAC tokens, so
+    // same as XLM. BLUSDC vs SOUSDC are genuinely distinct SAC tokens, so
     // that distinction is shown on the Asset column instead (displaySymbol),
     // not smuggled into Venue.
     const entries: { symbol: "USDC"; displaySymbol: string; venue: string; balance: string }[] = [
       { symbol: "USDC" as const, displaySymbol: "XLM", venue: "Margin Account", balance: xlm },
-      { symbol: "USDC", displaySymbol: "AqUSDC", venue: "Margin Account", balance: aqUsdc },
+      { symbol: "USDC", displaySymbol: "BLUSDC", venue: "Margin Account", balance: aqUsdc },
       { symbol: "USDC", displaySymbol: "SoUSDC", venue: "Margin Account", balance: ssUsdc },
     ];
     // First entry is actually XLM — fix its price-lookup symbol separately below.

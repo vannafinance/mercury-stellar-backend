@@ -60,7 +60,7 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
   const leverage = collat > 0 ? Math.min(10, 1 + borrowed / collat) : 1;
   const ltv = gross > 0 ? (borrowed / gross) * 100 : 0;
   const { history, isLoading: historyLoading } = useMarginHistory();
-  const interestPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  const interestPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "SOUSDC"]);
   const netBorrowedInterest = useMemo(() => {
     if (historyLoading) return 0;
     const netBorrowCash = buildNetBorrowCashByToken(history);

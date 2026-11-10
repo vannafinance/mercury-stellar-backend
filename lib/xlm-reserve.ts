@@ -4,7 +4,7 @@ import { SOROBAN_RPC_URL } from "@/lib/stellar-utils";
 
 // Stellar network base reserve: every account must hold (2 + subentries) of
 // these. Subentries = trustlines, offers, data entries, signers. A Vanna user
-// typically holds several trustlines (USDC, BLUSDC, AQUSDC, SOUSDC, LP shares),
+// typically holds several trustlines (USDC, BLUSDC, SOUSDC, LP shares),
 // each adding 0.5 XLM to the floor — so a flat "keep 0.5 XLM" is wrong.
 const BASE_RESERVE_XLM = 0.5;
 

@@ -1,8 +1,8 @@
 import { OP_FLOW, type ReviewFundingPocket, type WorkflowOp, type WorkflowView } from "./workflow/types";
 import { assetForVenueSpelling, resolveAssetDef } from "./registry/assets";
 
-export type WalletBalanceKey = "XLM" | "BLEND_USDC" | "AQUARIUS_USDC" | "SOROSWAP_USDC";
-export type EarnDepositKey = "XLM" | "USDC" | "AQUARIUS_USDC" | "SOROSWAP_USDC";
+export type WalletBalanceKey = "XLM" | "BLEND_USDC" | "SOROSWAP_USDC";
+export type EarnDepositKey = "XLM" | "USDC" | "SOROSWAP_USDC";
 export type FundingPocket = "wallet" | "earn" | "account";
 
 function assetDef(asset: string) {
@@ -18,7 +18,6 @@ export function walletBalanceKey(asset: string): WalletBalanceKey | null {
   switch (def.id) {
     case "XLM": return "XLM";
     case "BLUSDC": return "BLEND_USDC";
-    case "AQUSDC": return "AQUARIUS_USDC";
     case "SOUSDC": return "SOROSWAP_USDC";
     default: return null;
   }
@@ -27,7 +26,7 @@ export function walletBalanceKey(asset: string): WalletBalanceKey | null {
 export function earnDepositKey(asset: string): EarnDepositKey | null {
   const key = walletBalanceKey(asset);
   if (key === "BLEND_USDC") return "USDC";
-  if (key === "XLM" || key === "AQUARIUS_USDC" || key === "SOROSWAP_USDC") return key;
+  if (key === "XLM" || key === "SOROSWAP_USDC") return key;
   return null;
 }
 

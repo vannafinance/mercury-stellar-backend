@@ -9,7 +9,7 @@
  * - Supply: `useSupplyLiquidity` (`supply` on the asset's credit-layer Reserve). The amount is in the
  *   underlying asset; native XLM keeps the wallet's REAL on-chain minimum reserve (base +
  *   subentries, via getXlmMinReserve / maxSpendableXlm) plus a fee buffer back, so a 100% supply
- *   can neither trap the account nor be blocked by a flat over-reserve. BLUSDC / AqUSDC / SoUSDC
+ *   can neither trap the account nor be blocked by a flat over-reserve. BLUSDC / SoUSDC
  *   read their own wallet balance entry (their fees are paid in XLM, so a full supply is safe).
  * - Withdraw: `useWithdrawLiquidity` (`reserve.redeem`). The amount is in vToken SHARES (the hook
  *   checks it against the vToken balance); the 100% pill pins to the exact balance string so
@@ -177,7 +177,7 @@ export function EarnForm({
     if (!userAddress || !ok) return;
     if (sup) {
       // No proactive "keep a small balance" block: for XLM, `walletBal` already reserves the real
-      // on-chain minimum + fee buffer, and BLUSDC/AqUSDC/SoUSDC have no reserve of their own.
+      // on-chain minimum + fee buffer, and BLUSDC/SoUSDC have no reserve of their own.
       showTxStep(`Supplying ${a} ${sym} to the lending pool`);
       try {
         await supply.mutateAsync({ amount: a, assetType: def.assetType });

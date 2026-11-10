@@ -71,7 +71,7 @@ describe("getLitePositionsFromChain", () => {
     });
     mocks.getDebts.mockResolvedValue({
       success: true,
-      data: { AQUSDC: { amount: "10", usdValue: "10" } },
+      data: { BLUSDC: { amount: "10", usdValue: "10" } },
     });
 
     const positions = await getLitePositionsFromChain("CACCT");

@@ -91,7 +91,6 @@ export type PoolStats = RawPoolStats & {
 export type AllPoolStats = {
   XLM: PoolStats;
   USDC: PoolStats;
-  AQUARIUS_USDC: PoolStats;
   SOROSWAP_USDC: PoolStats;
 };
 
@@ -107,22 +106,19 @@ const enrich = async (s: RawPoolStats, assetType: AssetType): Promise<PoolStats>
 
 /** Read all lending pools concurrently and enrich with APY/exchange-rate. */
 export async function computeAllPoolStats(): Promise<AllPoolStats> {
-  const [xlm, usdc, aquarius, soroswap] = await Promise.all([
+  const [xlm, usdc, soroswap] = await Promise.all([
     ContractService.getPoolStats(ASSET_TYPES.XLM),
     ContractService.getPoolStats(ASSET_TYPES.USDC),
-    ContractService.getPoolStats(ASSET_TYPES.AQUARIUS_USDC),
     ContractService.getPoolStats(ASSET_TYPES.SOROSWAP_USDC),
   ]);
-  const [xlmE, usdcE, aquariusE, soroswapE] = await Promise.all([
+  const [xlmE, usdcE, soroswapE] = await Promise.all([
     enrich(xlm, ASSET_TYPES.XLM),
     enrich(usdc, ASSET_TYPES.USDC),
-    enrich(aquarius, ASSET_TYPES.AQUARIUS_USDC),
     enrich(soroswap, ASSET_TYPES.SOROSWAP_USDC),
   ]);
   return {
     XLM: xlmE,
     USDC: usdcE,
-    AQUARIUS_USDC: aquariusE,
     SOROSWAP_USDC: soroswapE,
   };
 }

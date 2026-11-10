@@ -5,14 +5,14 @@
  * `{ amount, usdValue }` maps the margin UI has always consumed:
  *   - plain token holdings: margin.assets() Token entries -> SAC balance(margin)
  *   - LP holdings held directly by the margin: Soroswap pair token and the
- *     Aquarius XLM/AQUSDC share token -> balance(margin), priced by the oracle
+ *     Aquarius XLM/BLUSDC share token -> balance(margin), priced by the oracle
  *   - Blend venue: BLEND_VALUER.positions(BLEND_POOL, margin) for the per-token
  *     split, oracle.get_price(BLEND_POOL, margin) for the whole position's USD
  *   - debts: margin.debts() -> reserve.debt_of(margin) (WAD)
  *   - health: CreditLayer.margin_value(margin) -> (collateral USD, debt USD)
  *
  * Balance keys stay the ones the UI already renders: XLM, USDC + BLUSDC (Blend
- * USDC, mirrored), AQUSDC, SOUSDC, BLEND_XLM / BLEND_USDC (Blend supply),
+ * USDC, mirrored), SOUSDC, BLEND_XLM / BLEND_USDC (Blend supply),
  * SS_XLM_USDC (Soroswap LP), AQ_XLM_USDC (Aquarius LP).
  *
  * Every read is a simulation (no signature). Nothing is cached in browser
@@ -47,7 +47,6 @@ const NATIVE_DECIMALS = 7;
 const UI_SYMBOL: Record<CreditAsset, string> = {
   XLM: 'XLM',
   BLUSDC: 'USDC',
-  AQUSDC: 'AQUSDC',
   SOUSDC: 'SOUSDC',
 };
 
@@ -272,21 +271,24 @@ export function healthFactorOf(collateralUsd: number, debtUsd: number): number {
 /**
  * Largest extra borrow (USD) that keeps the account healthy. Borrowed funds
  * land in the margin account, so they count on both sides:
- *   (C + B) / (D + B) > 1.2   <=>   B < (C - 1.2·D) / 0.2
- * (contracts: credit_layer health::is_healthy + shared math::is_healthy, strict >).
+ *   (C + B) / (D + B) > L   <=>   B < (C - L·D) / (L - 1)
+ * where L is the credit layer's `borrow_limit` (1.2 unless the admin moved it;
+ * pass the live value from getHealthLimits()). Contracts: credit_layer
+ * health::meets_limit + shared math::is_healthy, strict >.
  * `buffer` (default 0.5%) keeps the estimate just inside the strict bound.
  */
-export function maxBorrowUsd(collateralUsd: number, debtUsd: number, buffer = 0.005): number {
-  const t = HEALTH_THRESHOLD;
+export function maxBorrowUsd(collateralUsd: number, debtUsd: number, buffer = 0.005, limit = HEALTH_THRESHOLD): number {
+  const t = limit;
   const room = (collateralUsd - t * debtUsd) / (t - 1);
   return Math.max(0, room * (1 - buffer));
 }
 
 /**
  * Largest withdrawal (USD) that keeps the account healthy:
- *   (C - W) / D > 1.2   <=>   W < C - 1.2·D   (no debt => everything).
+ *   (C - W) / D > L   <=>   W < C - L·D   (no debt => everything),
+ * with L the credit layer's `borrow_limit` (see maxBorrowUsd).
  */
-export function maxWithdrawUsd(collateralUsd: number, debtUsd: number, buffer = 0.005): number {
+export function maxWithdrawUsd(collateralUsd: number, debtUsd: number, buffer = 0.005, limit = HEALTH_THRESHOLD): number {
   if (!(debtUsd > 0)) return Math.max(0, collateralUsd);
-  return Math.max(0, (collateralUsd - HEALTH_THRESHOLD * debtUsd) * (1 - buffer));
+  return Math.max(0, (collateralUsd - limit * debtUsd) * (1 - buffer));
 }

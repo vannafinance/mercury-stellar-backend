@@ -208,7 +208,7 @@ export default function RiskExplorer({ wallets, chainName, tokenPrices }: RiskEx
   const cc = useChartColors();
 
   // Default selection mirrors the app's primary asset on Stellar. XLM is
-  // real volatile collateral; BLUSDC/AQUSDC/SOUSDC are pegs. Source of
+  // real volatile collateral; BLUSDC/SOUSDC are pegs. Source of
   // truth: lib/analytics/stellar/canon.ts.
   const [selectedAsset, setSelectedAsset] = useState<StellarAsset>(ACTIVE_ASSETS[0]);
   const [priceChangePct, setPriceChangePct] = useState(0);
@@ -266,7 +266,7 @@ export default function RiskExplorer({ wallets, chainName, tokenPrices }: RiskEx
             ha.matchFn(w) && w.leverageX >= lev.min && w.leverageX < lev.max;
         } else {
           // Stellar collateral aliasing: shocking USDC also moves
-          // BLUSDC/AQUSDC/SOUSDC (they all reference USDC under the hood
+          // BLUSDC/SOUSDC (they all reference USDC under the hood
           // in Risk Engine via canonical_price_symbol). XLM only matches
           // XLM. `resolveUsdAlias` mirrors the contract behaviour exactly.
           const walletKey = resolveUsdAlias(w.primaryAsset);

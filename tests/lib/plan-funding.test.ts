@@ -21,7 +21,8 @@ describe("plan wait-to-approve funding", () => {
     expect(walletBalanceKey("XLM")).toBe("XLM");
     expect(walletBalanceKey("BLUSDC")).toBe("BLEND_USDC");
     expect(walletBalanceKey("USDC")).toBe("BLEND_USDC");
-    expect(walletBalanceKey("AQUSDC")).toBe("AQUARIUS_USDC");
+    // The wallet store has no AQUARIUS_USDC key since mainnet-credit-layer (no AQUSDC reserve).
+    expect(walletBalanceKey("AQUSDC")).toBeNull();
     expect(earnDepositKey("BLUSDC")).toBe("USDC");
     expect(marginBalanceKey("BLUSDC")).toBe("USDC");
   });

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Portfolio → Trader → Spot: every token the margin account holds directly (XLM / BLUSDC / AQUSDC /
+ * Portfolio → Trader → Spot: every token the margin account holds directly (XLM / BLUSDC /
  * SOUSDC SAC balances from the margin store: deposits, borrowed proceeds and swapped tokens; Blend
  * supply and LP receipts live on the Farm tab), plus its swap history (Aquarius / Soroswap swaps via
  * `getSpotHistory`, Mercury + RPC). There is no on-chain entry price for Stellar spot balances, so no

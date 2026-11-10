@@ -31,7 +31,6 @@ const NATIVE_TOKEN_SCALE = BigInt(10_000_000);
 const TOKEN_SYMBOLS: Record<string, string> = {
   [CONTRACT_ADDRESSES.BLEND_XLM]: "XLM",
   [CONTRACT_ADDRESSES.BLEND_USDC]: "BLUSDC",
-  [CONTRACT_ADDRESSES.AQUARIUS_USDC]: "AqUSDC",
   [CONTRACT_ADDRESSES.SOROSWAP_USDC]: "SoUSDC",
 };
 
@@ -132,7 +131,7 @@ export function transfersToSpotHistory(
 
     // A swap sends out exactly one token. Two tokens leaving in the same
     // transaction is an LP deposit (e.g. Aquarius returns a few stroops of the
-    // over-supplied side, which would otherwise read as XLM -> AqUSDC).
+    // over-supplied side, which would otherwise read as XLM -> BLUSDC).
     const outgoingTokens = Array.from(totals.values()).filter((total) => total.out > ZERO).length;
     if (outgoingTokens !== 1) continue;
 
@@ -148,6 +147,8 @@ export function transfersToSpotHistory(
     }
     if (!input || !output || input.token === output.token) continue;
 
+    // Aquarius's pool is XLM/BLUSDC and Soroswap's is XLM/SOUSDC, so the USDC
+    // leg tells the venue apart (AQUARIUS_USDC is the BLUSDC token).
     const protocol: SpotProtocol =
       input.token === CONTRACT_ADDRESSES.AQUARIUS_USDC ||
       output.token === CONTRACT_ADDRESSES.AQUARIUS_USDC

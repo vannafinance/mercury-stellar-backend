@@ -11,13 +11,15 @@
 import { CREDIT_ASSETS, oraclePriceWad, toCreditAsset, wadToNumber } from './credit-layer';
 import { CONTRACT_ADDRESSES } from './stellar-utils';
 
-// UI aliases that name the same asset. Each USDC variant (BLUSDC / AQUSDC /
-// SOUSDC) is its own token with its own oracle feed, so they are NOT collapsed
-// onto one another; plain "USDC" means Blend USDC, as everywhere else.
+// UI aliases that name the same asset. Each USDC variant (BLUSDC / SOUSDC) is
+// its own token with its own oracle feed, so they are NOT collapsed onto one
+// another; plain "USDC" means Blend USDC, as everywhere else. The old Aquarius
+// USDC names (AQUSDC / AQUARIUS_USDC) now mean Blend USDC: Aquarius trades it.
 const PRICE_ALIASES: Record<string, string> = {
   BLUSDC: 'USDC',
   BLEND_USDC: 'USDC',
-  AQUARIUS_USDC: 'AQUSDC',
+  AQUARIUS_USDC: 'USDC',
+  AQUSDC: 'USDC',
   SOROSWAP_USDC: 'SOUSDC',
   BLXLM: 'XLM',
   BLEND_XLM: 'XLM',
@@ -37,7 +39,6 @@ function assetAddressForSymbol(symbol: string): string | null {
 const FALLBACK_PRICES: Record<string, number> = {
   XLM: 0.16,
   USDC: 1.0,
-  AQUSDC: 1.0,
   SOUSDC: 1.0,
   /** Rough LP-token USD when oracle has no feed — matches analytics canon. */
   AQ_XLM_USDC: 0.4,

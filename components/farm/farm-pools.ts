@@ -29,13 +29,13 @@ export const HIDDEN_POOL_IDS = new Set<string>(["aquarius-xlm-usdt"]);
 export const POSITION_DUST = 1e-4;
 
 /**
- * Display label of a token inside a venue. "USDC" is a different SAC per venue (Blend's BLUSDC,
- * Aquarius's AqUSDC, Soroswap's SoUSDC). Display only — every balance read and every
+ * Display label of a token inside a venue. Blend's USDC is BLUSDC and Soroswap's is SoUSDC (a
+ * different SAC); Aquarius trades the same Blend USDC token, shown there as plain "USDC". Display only — every balance read and every
  * transaction keeps using the raw symbol from the pool config.
  */
 export function venueLabel(venue: "Blend" | "Aquarius" | "Soroswap", sym: string): string {
   if (sym !== "USDC") return sym;
-  return venue === "Blend" ? "BLUSDC" : venue === "Aquarius" ? "AqUSDC" : "SoUSDC";
+  return venue === "Blend" ? "BLUSDC" : venue === "Aquarius" ? "USDC" : "SoUSDC";
 }
 
 export const blendRef = (token: BlendToken): FarmPoolRef => ({ kind: "blend", id: token.toLowerCase(), venue: "Blend", token, label: venueLabel("Blend", token) });
@@ -70,14 +70,14 @@ export function resolveFarmPool(rawId: string | undefined | null): FarmPoolRef |
   return aq ? aquariusRef(aq) : null;
 }
 
-/** "XLM" / "XLM / AqUSDC". */
+/** "XLM" / "XLM / USDC". */
 export const poolTitle = (p: FarmPoolRef) => (p.kind === "blend" ? p.token : `${p.labels[0]} / ${p.labels[1]}`);
 
 /** USD price of a farm token from a `useTokenPrices(["XLM","USDC","USDT"])` map (USDC variants alias to USDC). */
 export function priceFor(prices: Record<string, number>, sym: string): number {
   const s = sym.toUpperCase();
   if (s === "XLM") return prices.XLM ?? 0;
-  if (s === "USDC" || s === "BLUSDC" || s === "AQUSDC" || s === "SOUSDC") return prices.USDC ?? 1;
+  if (s === "USDC" || s === "BLUSDC" || s === "SOUSDC") return prices.USDC ?? 1;
   if (s === "USDT") return prices.USDT ?? 1;
   return 0;
 }

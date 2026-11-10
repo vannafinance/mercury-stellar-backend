@@ -47,7 +47,7 @@ const CollateralComponent = (props: Collateral) => {
   const { getPrice } = useTokenPrices();
   const getTokenBalanceKey = (symbol: string) => {
     if (symbol === "BLUSDC" || symbol === "BLEND_USDC") return "BLEND_USDC";
-    if (symbol === "AqUSDC" || symbol === "AquiresUSDC") return "AQUARIUS_USDC";
+    if (symbol === "AqUSDC" || symbol === "AquiresUSDC") return "BLEND_USDC"; // old Aquarius USDC names: Aquarius uses Blend USDC now
     if (symbol === "SoUSDC" || symbol === "SoroswapUSDC") return "SOROSWAP_USDC";
     return symbol;
   };
@@ -57,7 +57,7 @@ const CollateralComponent = (props: Collateral) => {
   const userAddress = useUserStore((state) => state.address);
 
   // Real on-chain XLM minimum reserve — (2 + subentries) × 0.5 XLM. A flat
-  // reserve is wrong once the account holds a few trustlines (BLUSDC/AQUSDC/
+  // reserve is wrong once the account holds a few trustlines (BLUSDC/
   // SOUSDC/LP), so a "100%"/Max click on XLM would set an amount that passes
   // this component's own math but still traps on-chain with "resulting
   // balance is not within the allowed range" (Contract #10).
@@ -120,13 +120,13 @@ const CollateralComponent = (props: Collateral) => {
     }
   }, [isEditing, props.collaterals?.amount, props.collaterals?.amountInUsd, props.collaterals?.asset, props.collaterals?.balanceType]);
 
-  // Live oracle-backed prices. AqUSDC / SoUSDC fall through the canonicalize
+  // Live oracle-backed prices. SoUSDC falls through the canonicalize
   // step inside oracle-price.ts (alias → USDC), so we only request the base
   // symbols and then look the selection up directly.
-  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'SOUSDC']);
   const priceFor = (symbol: string): number => {
     const upper = symbol.toUpperCase();
-    if (upper === 'AQUSDC' || upper === 'SOUSDC' || upper === 'BLUSDC' || upper === 'USDC') {
+    if (upper === 'SOUSDC' || upper === 'BLUSDC' || upper === 'USDC') {
       return tokenPrices[upper] ?? tokenPrices.USDC ?? 1;
     }
     return tokenPrices[upper] ?? 1;

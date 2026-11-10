@@ -68,19 +68,19 @@ const XLM_DEPOSIT_EPSILON = 1e-7;
 /** Contract symbol of a UI token (same mapping as the previous Leverage tab). */
 const normalizeContractTokenSymbol = (symbol: string) => {
   if (symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC") return "BLUSDC";
-  if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "AQUSDC";
+  if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "BLUSDC"; // old Aquarius USDC names: Aquarius uses Blend USDC now
   if (symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC") return "SOUSDC";
   return symbol;
 };
 
 /** Token names for the picker. */
-const NAMES: Record<string, string> = { XLM: "Stellar Lumens", BLUSDC: "Blend USDC", AqUSDC: "Aquarius USDC", SoUSDC: "Soroswap USDC" };
+const NAMES: Record<string, string> = { XLM: "Stellar Lumens", BLUSDC: "Blend USDC", SoUSDC: "Soroswap USDC" };
 /** Lending-pool key of a borrowable token (`/api/pools` shape). */
-const POOL_KEY: Record<string, "XLM" | "USDC" | "AQUARIUS_USDC" | "SOROSWAP_USDC"> = { XLM: "XLM", BLUSDC: "USDC", AqUSDC: "AQUARIUS_USDC", SoUSDC: "SOROSWAP_USDC" };
+const POOL_KEY: Record<string, "XLM" | "USDC" | "SOROSWAP_USDC"> = { XLM: "XLM", BLUSDC: "USDC", SoUSDC: "SOROSWAP_USDC" };
 const bal4 = (v: number) => nf(v, v >= 1000 ? 2 : 4);
 /** "<faucet name>" used in the no-balance hint. */
 const faucetHint = (asset: string) =>
-  asset === "BLUSDC" ? "Blend USDC" : asset === "AQUSDC" ? "Aquarius USDC" : asset === "SOUSDC" ? "Soroswap USDC" : asset;
+  asset === "BLUSDC" ? "Blend USDC" : asset === "SOUSDC" ? "Soroswap USDC" : asset;
 
 interface Row {
   id: string;
@@ -111,7 +111,7 @@ export function LeverageTab({ m }: { m: MarginScreen }) {
   const pxB = useCallback((s: string) => m.prices[ckey(s)] ?? 0, [m.prices]);
 
   // Real on-chain XLM minimum reserve — a flat reserve is wrong once the account
-  // holds a few trustlines (BLUSDC/AQUSDC/SOUSDC/LP), so a "100%" click on XLM
+  // holds a few trustlines (BLUSDC/SOUSDC/LP), so a "100%" click on XLM
   // would set an amount that passes the app's own math but still traps on-chain
   // with "resulting balance is not within the allowed range" (Contract #10).
   const [xlmMinReserve, setXlmMinReserve] = useState(1.5);

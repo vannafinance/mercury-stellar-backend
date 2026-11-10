@@ -6,7 +6,7 @@
  *
  * Data: live lending-pool stats (GET /api/pools), the wallet's lender positions and its indexed
  * supply / withdraw events (hooks/use-earn.ts), Reflector oracle prices. Only the real Vanna
- * Stellar lending pools (XLM, BLUSDC, AqUSDC, SoUSDC).
+ * Stellar lending pools (XLM, BLUSDC, SoUSDC).
  */
 import "./earn-v3.css";
 import { useCallback, useMemo, useState } from "react";

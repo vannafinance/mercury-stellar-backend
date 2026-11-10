@@ -19,7 +19,7 @@ import { ViewHead } from "../shell";
 export const SCENARIOS: Array<{ slug: string; cat: string; title: string; desc: string }> = [
   { slug: "single-asset", cat: "Market risk", title: "Single Asset Risk Explorer", desc: "A single asset price drop across every position holding it as collateral or exposure." },
   { slug: "multi-asset-crash", cat: "Market risk", title: "Multi-Asset Correlated Crash", desc: "Correlated crash across the Stellar ecosystem: XLM deep bear, flash crash and stable-pool contagion presets." },
-  { slug: "stablecoin-depeg", cat: "Market risk", title: "Stablecoin Depeg Scenario", desc: "BLUSDC / AQUSDC / SOUSDC depegs: collateral value drops and borrower debt exposure changes." },
+  { slug: "stablecoin-depeg", cat: "Market risk", title: "Stablecoin Depeg Scenario", desc: "BLUSDC / SOUSDC depegs: collateral value drops and borrower debt exposure changes." },
   { slug: "black-swan", cat: "Market risk", title: "Black Swan Multi-Shock", desc: "Every Stellar risk vector at once: XLM crash, USDC depeg, oracle failure, venue exploit and rate spike." },
   { slug: "lp-il-amplification", cat: "Leverage risk", title: "Leveraged LP Impermanent Loss Amplification", desc: "Leveraged Aquarius / Soroswap LP positions: impermanent loss amplified by Vanna leverage." },
   { slug: "leverage-concentration", cat: "Leverage risk", title: "High-Leverage Concentration Risk", desc: "How much debt sits at each leverage band, and what a move does to the most leveraged." },

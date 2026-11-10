@@ -603,7 +603,7 @@ function LpAddPanel({ pool }: { pool: LpPool }) {
   const isAquariusPool = pool.kind === "aquarius";
   const dexName = pool.venue;
   // Every balance fetch, reserve lookup and the actual addLiquidity() call MUST keep using the raw
-  // tokens; the labels (AqUSDC / SoUSDC) are display only.
+  // tokens; the labels (e.g. SoUSDC) are display only.
   const [tokenA, tokenB] = pool.tokens;
   const [tokenALabel, tokenBLabel] = pool.labels;
   const { reserveA, reserveB, totalShares } = useLpReserves(pool);

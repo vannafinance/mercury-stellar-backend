@@ -21,7 +21,6 @@ export const tradeItems = [
 export const DropdownOptions = [
   "XLM",
   "BLUSDC",
-  "AqUSDC",
   "SoUSDC",
 ];
 

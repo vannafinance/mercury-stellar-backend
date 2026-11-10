@@ -18,7 +18,7 @@ const GRADIENT = "linear-gradient(135deg, #FC5457 10%, #703AE6 80%)";
 /** Canonicalise a UI token symbol to the key used by the price hook. */
 const priceKey = (sym: string): string => {
   if (sym === "BLUSDC" || sym === "BLEND_USDC" || sym === "USDC") return "BLUSDC";
-  if (sym === "AqUSDC" || sym === "AQUARIUS_USDC") return "AQUSDC";
+  if (sym === "AqUSDC" || sym === "AQUARIUS_USDC") return "BLUSDC"; // old Aquarius USDC names: Aquarius uses Blend USDC now
   if (sym === "SoUSDC" || sym === "SOROSWAP_USDC") return "SOUSDC";
   return sym;
 };
@@ -58,7 +58,7 @@ type BorrowMode = "single" | "dual";
  */
 export const DualBorrow = ({ depositUsd, leverage, setLeverage, onChange }: DualBorrowProps) => {
   const { isDark } = useTheme();
-  const prices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  const prices = useTokenPrices(["XLM", "USDC", "BLUSDC", "SOUSDC"]);
   const bgColor = isDark ? "#1A1A1A" : "#ffffff";
 
   const [mode, setMode] = useState<BorrowMode>("single");

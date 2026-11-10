@@ -31,17 +31,17 @@ import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 
-const POOL_OPTIONS = ["XLM", "BLUSDC", "AqUSDC", "SoUSDC"] as const;
+const POOL_OPTIONS = ["XLM", "BLUSDC", "SoUSDC"] as const;
 
 const toInternalAsset = (value: string) => {
-  if (value === 'AqUSDC' || value === 'AquiresUSDC' || value === 'AQUARIUS_USDC') return 'AQUARIUS_USDC';
+  if (value === 'AqUSDC' || value === 'AquiresUSDC' || value === 'AQUARIUS_USDC') return 'USDC'; // Aquarius uses Blend USDC now
   if (value === 'SoUSDC' || value === 'SoroswapUSDC' || value === 'SOROSWAP_USDC') return 'SOROSWAP_USDC';
   if (value === 'BLUSDC' || value === 'USDC') return 'USDC';
   return value;
 };
 
 const toDisplayAsset = (value: string) => {
-  if (value === 'AQUARIUS_USDC' || value === 'AquiresUSDC') return 'AqUSDC';
+  if (value === 'AQUARIUS_USDC' || value === 'AquiresUSDC') return 'BLUSDC';
   if (value === 'SOROSWAP_USDC' || value === 'SoroswapUSDC') return 'SoUSDC';
   if (value === 'USDC') return 'BLUSDC';
   return value;
@@ -76,7 +76,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   const withdraw = useWithdrawLiquidity();
   const { pools, refresh: refreshPools } = usePoolData();
   const { positions, refresh: refreshPositions } = useUserPositions();
-  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'SOUSDC']);
 
   useMutationToast(withdraw, {
     loading: (v) => `Withdrawing ${v.amount} v${v.assetType} from the lending pool`,
@@ -153,7 +153,6 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   const unitPriceUsd =
     tokenPrices[
       normalizedAsset === 'XLM' ? 'XLM'
-        : normalizedAsset === 'AQUARIUS_USDC' ? 'AQUSDC'
         : normalizedAsset === 'SOROSWAP_USDC' ? 'SOUSDC'
         : 'BLUSDC'
     ] || (normalizedAsset === 'XLM' ? 0 : 1);
