@@ -13,6 +13,9 @@
 substitutions:
   _REGION: us-central1
   _REPO: vanna
+  # Image name in the Artifact Registry repo. Each environment that must not move another's
+  # `:latest` tag passes its own (scripts/deploy-credit-layer.sh uses vanna-app-credit-layer).
+  _IMAGE: vanna-app
   _SERVICE: vanna-app-dev
   _SITE_URL: https://test.stellar.vanna.finance
   # Public value (inlined into the client bundle). Empty means Privy sign-in is
@@ -60,8 +63,8 @@ steps:
       - build
       - --build-arg=NEXT_PUBLIC_SITE_URL=${_SITE_URL}
       - --build-arg=NEXT_PUBLIC_PRIVY_APP_ID=${_PRIVY_APP_ID}
-      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/vanna-app:${_TAG}
-      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/vanna-app:latest
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_TAG}
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:latest
       - .
 
   # Explicit push rather than the top-level `images:` key — that pushes only
@@ -72,7 +75,7 @@ steps:
     args:
       - push
       - --all-tags
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/vanna-app
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}
 
   - id: deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
@@ -81,7 +84,7 @@ steps:
       - run
       - deploy
       - ${_SERVICE}
-      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/vanna-app:${_TAG}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_TAG}
       - --region=${_REGION}
       - --platform=managed
       - --service-account=${_RUNTIME_SA}
