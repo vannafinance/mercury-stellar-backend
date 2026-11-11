@@ -127,6 +127,15 @@ function appendTxHash(message: string, raw: string): string {
 // ─── public API ──────────────────────────────────────────────────────────────
 
 /**
+ * Freighter set to a network other than testnet (detected in lib/credit-layer.ts
+ * before building a transaction). Every normalizer passes it through unchanged,
+ * because the generic fallbacks would hide the one step that fixes it.
+ */
+export const WRONG_NETWORK_MESSAGE =
+  'Your Freighter wallet is set to another network. Open Freighter, switch the network to Testnet, then try again.';
+const WRONG_NETWORK_MARKER = 'switch the network to testnet';
+
+/**
  * Normalize a generic Soroban contract error. Used as a fallback in all
  * domain-specific normalizers below.
  */
@@ -139,6 +148,7 @@ export function normalizeContractError(
   const lower = text.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (lower.includes(WRONG_NETWORK_MARKER)) return WRONG_NETWORK_MESSAGE;
   if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   const code = contractErrorCode(text);
   if (code !== null) return appendTxHash(`On-chain contract rejected the transaction (error #${code}).`, text);
@@ -158,6 +168,7 @@ export function normalizeSupplyError(
   const lower = text.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (lower.includes(WRONG_NETWORK_MARKER)) return WRONG_NETWORK_MESSAGE;
   if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   const code = contractErrorCode(text);
   if (code !== null) return appendTxHash(lendingErrorMessage(code, 'supply') ?? `Supply contract error #${code}.`, text);
@@ -180,6 +191,7 @@ export function normalizeWithdrawError(
   const lower = text.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (lower.includes(WRONG_NETWORK_MARKER)) return WRONG_NETWORK_MESSAGE;
   if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   const code = contractErrorCode(text);
   if (code !== null) return appendTxHash(lendingErrorMessage(code, 'withdraw') ?? `Withdrawal contract error #${code}.`, text);
@@ -197,6 +209,7 @@ export function normalizeDepositCollateralError(raw: string | undefined): string
   const lower = compact.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (lower.includes(WRONG_NETWORK_MARKER)) return WRONG_NETWORK_MESSAGE;
   if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   if (
     lower.includes('error(contract, #10)') ||
@@ -236,6 +249,7 @@ export function normalizeTransferCollateralError(
   const lower = compact.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (lower.includes(WRONG_NETWORK_MARKER)) return WRONG_NETWORK_MESSAGE;
   if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   if (
     lower.includes('error(contract, #10)') ||
@@ -296,6 +310,7 @@ export function normalizeRepayError(raw: string | undefined, asset: string): str
   const lower = compact.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (lower.includes(WRONG_NETWORK_MARKER)) return WRONG_NETWORK_MESSAGE;
   if (isBudgetExceeded(full)) return BUDGET_EXCEEDED_MESSAGE;
   if (
     full.includes('arithdomain') ||
@@ -318,6 +333,8 @@ export function normalizeCreateAccountError(msg: string): string {
   const m = (msg ?? '').toLowerCase();
   if (!m) return 'Failed to create margin account. Please try again.';
   if (isCancel(m)) return 'Transaction cancelled by user.';
+  // Freighter on the wrong network (lib/credit-layer.ts freighterNetworkProblem): already user-facing.
+  if (m.includes(WRONG_NETWORK_MARKER)) return WRONG_NETWORK_MESSAGE;
   if (isUnfundedWalletError(m)) return unfundedWalletMessage('open your margin account');
   if (isBudgetExceeded(m)) return BUDGET_EXCEEDED_MESSAGE;
   const code = contractErrorCode(msg);

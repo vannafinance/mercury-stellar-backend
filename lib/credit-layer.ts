@@ -19,9 +19,10 @@
  * mins are native.
  */
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { getAddress, signTransaction } from '@/lib/wallet-adapter';
+import { getAddress, signTransaction, getActiveWalletKind } from '@/lib/wallet-adapter';
 import { getReadSourceAddress } from '@/lib/read-source';
 import { markTxSubmitted } from './tx-progress';
+import { WRONG_NETWORK_MESSAGE } from './errors/normalize';
 
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
 // Same RPC as lib/stellar-utils.ts (kept local to avoid an import cycle):
@@ -403,13 +404,62 @@ export async function invokeWrite(
   return last;
 }
 
+/**
+ * Freighter signs for whatever network the user picked in the extension. This
+ * app is on testnet, so a Freighter set to Mainnet signs a transaction the
+ * testnet rejects — and the wallet's testnet account usually doesn't exist
+ * either, which used to surface as a misleading "not enough funds" error.
+ * Returns a user-facing message when Freighter is on the wrong network.
+ */
+async function freighterNetworkProblem(): Promise<string | null> {
+  if (typeof window === 'undefined' || getActiveWalletKind() === 'privy') return null;
+  try {
+    const freighter = await import('@stellar/freighter-api');
+    const details = await freighter.getNetworkDetails();
+    const passphrase = (details as { networkPassphrase?: string })?.networkPassphrase;
+    if (passphrase && passphrase !== NETWORK_PASSPHRASE) {
+      return WRONG_NETWORK_MESSAGE;
+    }
+  } catch {
+    // Older extension or no Freighter: nothing to check.
+  }
+  return null;
+}
+
+/**
+ * Loads the wallet's ledger account. On testnet a brand-new wallet has no
+ * ledger account until it receives XLM, so fund it once from Friendbot (free,
+ * testnet only) instead of failing with "account not found".
+ */
+async function loadOrFundTestnetAccount(s: StellarSdk.rpc.Server, address: string): Promise<StellarSdk.Account> {
+  try {
+    return await s.getAccount(address);
+  } catch (err: any) {
+    const msg = String(err?.message ?? err);
+    if (NETWORK_PASSPHRASE !== StellarSdk.Networks.TESTNET || !/not found|does not exist/i.test(msg)) throw err;
+    const res = await fetch(`https://friendbot.stellar.org/?addr=${encodeURIComponent(address)}`);
+    if (!res.ok && res.status !== 400) throw err; // 400 = already funded meanwhile
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        return await s.getAccount(address);
+      } catch {
+        // wait for the funding ledger to close
+      }
+    }
+    throw err;
+  }
+}
+
 async function invokeOnce(contractId: string, fn: string, args: StellarSdk.xdr.ScVal[], label: string): Promise<TxResult> {
   try {
     const who = await getAddress();
     if (who.error || !who.address) return { success: false, error: 'Wallet not connected' };
+    const networkProblem = await freighterNetworkProblem();
+    if (networkProblem) return { success: false, error: networkProblem };
     const s = rpc();
     await waitPastLedger(s, lastSubmittedLedger);
-    const account = await s.getAccount(who.address);
+    const account = await loadOrFundTestnetAccount(s, who.address);
     const tx = new StellarSdk.TransactionBuilder(account, {
       fee: (parseInt(StellarSdk.BASE_FEE) * 100).toString(),
       networkPassphrase: NETWORK_PASSPHRASE,
