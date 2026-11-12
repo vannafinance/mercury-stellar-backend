@@ -31,7 +31,7 @@ import {
 } from "./portfolio-math";
 
 /** Every symbol the Portfolio prices (the venue USDC wrappers resolve to USDC in the oracle). */
-const PRICED = ["XLM", "USDC", "BLUSDC", "SOUSDC"];
+const PRICED = ["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"];
 
 export function usePortfolio() {
   const address = useUserStore((s) => s.address);
@@ -53,7 +53,7 @@ export function usePortfolio() {
   );
 
   /**
-   * Oracle price per symbol: the symbol itself first (the oracle aliases BLUSDC / SOUSDC),
+   * Oracle price per symbol: the symbol itself first (the oracle aliases BLUSDC / AQUSDC / SOUSDC),
    * then what it follows (`priceKey`), stables falling back to $1 as the rest of the app does.
    */
   const priceOf = useCallback(

@@ -57,7 +57,7 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
   const cleaned = raw.replace(/^0x/i, "").toUpperCase();
   if (cleaned === "XLM") return "XLM";
   if (cleaned === "USDC" || cleaned === "BLUSDC" || cleaned === "BLEND_USDC") return "BLUSDC";
-  if (cleaned === "AQUSDC" || cleaned === "AQUIRESUSDC" || cleaned === "AQUARIUS_USDC") return "BLUSDC"; // old Aquarius USDC names: Aquarius uses Blend USDC now
+  if (cleaned === "AQUSDC" || cleaned === "AQUIRESUSDC" || cleaned === "AQUARIUS_USDC") return "AqUSDC";
   if (cleaned === "SOUSDC" || cleaned === "SOROSWAPUSDC" || cleaned === "SOROSWAP_USDC") return "SoUSDC";
   return null;
 };
@@ -66,7 +66,7 @@ const normalizeContractTokenSymbol = (symbol: string): string =>
   symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
     ? "BLUSDC"
     : symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC"
-      ? "BLUSDC"
+      ? "AQUSDC"
       : symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC"
         ? "SOUSDC"
         : symbol;
@@ -144,8 +144,8 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   // an exact on-chain amount.
   const [currentAvailableBalanceWad, setCurrentAvailableBalanceWad] = useState<string>('0');
   // Live USD prices via the on-chain Reflector oracle (XLM/USDC) with
-  // BLUSDC/SOUSDC aliased to USDC inside the oracle module.
-  const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'SOUSDC']);
+  // BLUSDC/AQUSDC/SOUSDC aliased to USDC inside the oracle module.
+  const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
   const selectedTokenPrice =
     tokenPrices[normalizeContractTokenSymbol(selectedRepayCurrency)] ?? 1;
   const repayAmountInUsd = repayAmount * selectedTokenPrice;

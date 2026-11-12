@@ -52,8 +52,8 @@ const STELLAR_TOKENS: Token[] = [
   {
     id: CONTRACT_ADDRESSES.AQUARIUS_USDC,
     symbol: "USDC",
-    // Aquarius's pool is XLM/BLUSDC: Blend USDC, shown as plain "USDC" as elsewhere in the app.
-    name: "USD Coin (Blend)",
+    displaySymbol: "AqUSDC",
+    name: "USD Coin (Aquarius)",
     logo: "/coins/usdc.svg",
     decimals: 7,
     chain: "stellar",
@@ -87,7 +87,7 @@ const SOROSWAP_STELLAR_TOKENS: Token[] = [
 ];
 
 // Presentational-only view of a token with `symbol` swapped for its
-// `displaySymbol` (e.g. "SoUSDC" instead of the functional "USDC"
+// `displaySymbol` (e.g. "AqUSDC"/"SoUSDC" instead of the functional "USDC"
 // every AquariusService/SoroswapService call, price lookup, and partner map
 // in this file keys off). Only ever pass the result to display components —
 // state (tokenIn/tokenOut) and service calls must keep using the real token.
@@ -216,7 +216,7 @@ export const SwapCard = ({
 
   // Live on-chain prices for the active pair, used for the per-input USD echo
   // and the click-to-swap conversion ratio chip. The hook canonicalises symbols
-  // and refreshes every 30s; SoUSDC aliases to USDC inside oracle-price.ts.
+  // and refreshes every 30s; AqUSDC / SoUSDC alias to USDC inside oracle-price.ts.
   const swapTokenPrices = useTokenPrices(
     [tokenIn?.symbol, tokenOut?.symbol].filter((s): s is string => Boolean(s)),
   );
@@ -687,7 +687,7 @@ export const SwapCard = ({
   }, [tokenIn, tokenOut, amountIn, amountOut]);
 
   const handleTokenSelect = useCallback((displayToken: Token) => {
-    // The modal renders display-only tokens (symbol swapped to
+    // The modal renders display-only tokens (symbol swapped to "AqUSDC"/
     // "SoUSDC"), so recover the real functional token by id before touching
     // state — everything downstream (service calls, partner maps) keys off
     // the real "XLM"/"USDC" symbol.
@@ -772,7 +772,7 @@ export const SwapCard = ({
       return {
         ...result,
         dexProtocol: (isAquarius ? "aquarius" : "soroswap") as "aquarius" | "soroswap",
-        // Display-only symbol (e.g. SoUSDC) — this feeds spot-history, a
+        // Display-only symbol (AqUSDC/SoUSDC) — this feeds spot-history, a
         // purely presentational record, not any further on-chain call.
         tokenInSymbol: displaySymbolOf(tokenIn),
         tokenOutSymbol: displaySymbolOf(tokenOut),

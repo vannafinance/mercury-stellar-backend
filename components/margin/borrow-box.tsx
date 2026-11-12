@@ -34,7 +34,7 @@ interface BorrowBoxProps {
  * are kept in sync and clamped to [1, MAX_LEVERAGE].
  *
  * USD conversions use the shared token-price hook; aliased USDC variants
- * (BLUSDC/SOUSDC) are canonicalised before the price lookup.
+ * (BLUSDC/AQUSDC/SOUSDC) are canonicalised before the price lookup.
  */
 export const BorrowBox = ({
   mode = "Deposit",
@@ -45,17 +45,17 @@ export const BorrowBox = ({
   onTokenChange,
 }: BorrowBoxProps) => {
   const { isDark } = useTheme();
-  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   const getCollateralBalanceKey = (symbol: string) => {
     if (symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC") return "BLUSDC";
-    if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "BLUSDC"; // old Aquarius USDC names: Aquarius uses Blend USDC now
+    if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "AQUSDC";
     if (symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC") return "SOUSDC";
     return symbol;
   };
   const getBorrowedBalanceKey = (symbol: string) => {
     if (symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC") return "BLUSDC";
-    if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "BLUSDC"; // old Aquarius USDC names: Aquarius uses Blend USDC now
+    if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "AQUSDC";
     if (symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC") return "SOUSDC";
     return symbol;
   };

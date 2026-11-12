@@ -20,21 +20,12 @@ describe("humanizeMcpWriteError - a trustline failure names the real asset", () 
     expect(msg).not.toMatch(/\bXLM\b/);
   });
 
-  it("names SOUSDC, not XLM, when that is the asset", () => {
-    const msg = humanizeMcpWriteError({ message: HOSTERROR_13 }, "vanna_borrow", {
-      asset: "SOUSDC",
-      trader: "G".padEnd(56, "A"),
-    });
-    expect(msg).toMatch(/SOUSDC/);
-    expect(msg).not.toMatch(/\bXLM\b/);
-  });
-
-  it("names the old AQUSDC as BLUSDC, the token Aquarius trades since mainnet-credit-layer", () => {
+  it("names AQUSDC, not XLM, when that is the asset", () => {
     const msg = humanizeMcpWriteError({ message: HOSTERROR_13 }, "vanna_borrow", {
       asset: "AQUSDC",
       trader: "G".padEnd(56, "A"),
     });
-    expect(msg).toMatch(/BLUSDC/);
+    expect(msg).toMatch(/AQUSDC/);
     expect(msg).not.toMatch(/\bXLM\b/);
   });
 

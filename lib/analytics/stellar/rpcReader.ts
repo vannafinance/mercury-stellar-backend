@@ -23,7 +23,7 @@ const ASSET_TYPE_TO_SYMBOL: Record<AssetType, StellarAsset> = {
   XLM: "XLM",
   USDC: "BLUSDC",
   BLEND_USDC: "BLUSDC",
-  AQUARIUS_USDC: "BLUSDC", // old type name; Aquarius trades Blend USDC now
+  AQUARIUS_USDC: "AQUSDC",
   SOROSWAP_USDC: "SOUSDC",
 };
 

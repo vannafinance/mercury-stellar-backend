@@ -14,8 +14,8 @@
  *
  * Nothing here is persisted; every figure is a live chain read.
  *
- * Symbols: the action tabs use the app's dropdown symbols (`XLM`, `BLUSDC`, `SoUSDC`);
- * the store keys collateral / debt by their canonical upper-case form (`XLM`, `BLUSDC`,
+ * Symbols: the action tabs use the app's dropdown symbols (`XLM`, `BLUSDC`, `AqUSDC`, `SoUSDC`);
+ * the store keys collateral / debt by their canonical upper-case form (`XLM`, `BLUSDC`, `AQUSDC`,
  * `SOUSDC`). {@link ckey} maps one onto the other.
  */
 import { useMemo } from "react";
@@ -35,16 +35,16 @@ import { EMPTY_STATE } from "./mg-sim";
 const DUST = 1e-9;
 
 /** Every symbol the screen prices (aliases resolve to USDC inside the oracle module). */
-export const PRICE_SYMBOLS = ["XLM", "USDC", "BLUSDC", "SOUSDC"];
+export const PRICE_SYMBOLS = ["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"];
 
 /**
  * Canonical margin-store key of a UI / contract symbol — same mapping as the store's
- * `canonicalMarginToken` (BLEND_USDC / USDC → BLUSDC, AquiresUSDC / AQUSDC → BLUSDC, …).
+ * `canonicalMarginToken` (BLEND_USDC / USDC → BLUSDC, AquiresUSDC → AQUSDC, …).
  */
 export const ckey = (symbol: string): string => {
   const n = (symbol || "").toUpperCase();
   if (n === "BLEND_USDC" || n === "USDC") return "BLUSDC";
-  if (n === "AQUSDC" || n === "AQUIRESUSDC" || n === "AQUARIUS_USDC") return "BLUSDC"; // old Aquarius USDC names: Aquarius uses Blend USDC now
+  if (n === "AQUIRESUSDC" || n === "AQUARIUS_USDC") return "AQUSDC";
   if (n === "SOROSWAPUSDC" || n === "SOROSWAP_USDC") return "SOUSDC";
   return n;
 };
@@ -130,6 +130,8 @@ export function useMarginScreen(): MarginScreen {
       switch (ckey(s)) {
         case "BLUSDC":
           return clean(parseFloat(tokenBalances.USDC || tokenBalances.BLEND_USDC || "0"));
+        case "AQUSDC":
+          return clean(parseFloat(tokenBalances.AQUARIUS_USDC || "0"));
         case "SOUSDC":
           return clean(parseFloat(tokenBalances.SOROSWAP_USDC || "0"));
         default:

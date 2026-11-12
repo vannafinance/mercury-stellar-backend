@@ -44,7 +44,7 @@ interface PoolOption {
   protocol: string;
   poolVersion: string;
   feeTier: string;
-  storeKey: "XLM" | "USDC" | "SOROSWAP_USDC";
+  storeKey: "XLM" | "USDC" | "AQUARIUS_USDC" | "SOROSWAP_USDC";
   tags: string[];
 }
 
@@ -59,8 +59,7 @@ const POOL_OPTIONS: PoolOption[] = [
   },
   {
     id: "xlm-usdc-aquarius", type: "lp", tokens: ["XLM", "USDC"], protocol: "Aquarius", poolVersion: "AMM",
-    // Aquarius trades Blend USDC, so its USDC side borrows from the BLUSDC reserve.
-    feeTier: "0.3%", storeKey: "USDC", tags: ["Vanna", "Aquarius"],
+    feeTier: "0.3%", storeKey: "AQUARIUS_USDC", tags: ["Vanna", "Aquarius"],
   },
   {
     id: "xlm-usdc-soroswap", type: "lp", tokens: ["XLM", "USDC"], protocol: "Soroswap", poolVersion: "DEX",
@@ -69,8 +68,8 @@ const POOL_OPTIONS: PoolOption[] = [
 ];
 
 /**
- * Display-only symbol for a pool's generic "USDC" entry — SoUSDC and
- * BLUSDC are genuinely distinct SAC tokens (Aquarius trades BLUSDC, shown as "USDC"), but `PoolOption.tokens`/
+ * Display-only symbol for a pool's generic "USDC" entry — AqUSDC/SoUSDC/
+ * BLUSDC are genuinely distinct SAC tokens, but `PoolOption.tokens`/
  * `collateralAsset`/`borrowAsset` stay the generic "XLM"|"USDC" everywhere
  * else in this file (state, TokenAsset typing, the actual borrow/swap/
  * addLiquidity calls in lib/one-click-strategy.ts resolve the real on-chain
@@ -78,7 +77,7 @@ const POOL_OPTIONS: PoolOption[] = [
  */
 const poolAssetLabel = (pool: Pick<PoolOption, "protocol">, asset: string): string => {
   if (asset !== "USDC") return asset;
-  if (pool.protocol === "Aquarius") return "USDC";
+  if (pool.protocol === "Aquarius") return "AqUSDC";
   if (pool.protocol === "Soroswap") return "SoUSDC";
   return "BLUSDC";
 };
@@ -127,7 +126,7 @@ const PoolTokenBadge = ({ symbol, size = 20 }: { symbol: string; size?: number }
     return <Image src={icon} alt={symbol} width={size} height={size} className="rounded-full" />;
   }
   const palette: Record<string, string> = {
-    XLM: "#703AE6", USDC: "#2775CA", BLUSDC: "#10B981", SoUSDC: "#FF007A",
+    XLM: "#703AE6", USDC: "#2775CA", BLUSDC: "#10B981", AqUSDC: "#F59E0B", SoUSDC: "#FF007A",
   };
   const bg = palette[symbol] || "#595959";
   return (
@@ -275,9 +274,9 @@ export const OneClickStrategy = () => {
       tvl: formatTvl(earnPools.USDC.totalSupply, prices.USDC || 1),
     },
     "xlm-usdc-aquarius": {
-      supplyApr: parseFloat(earnPools.USDC.supplyAPY) || 0,
-      borrowApr: parseFloat(earnPools.USDC.borrowAPY) || 0,
-      tvl: formatTvl(earnPools.USDC.totalSupply, prices.USDC || 1),
+      supplyApr: parseFloat(earnPools.AQUARIUS_USDC.supplyAPY) || 0,
+      borrowApr: parseFloat(earnPools.AQUARIUS_USDC.borrowAPY) || 0,
+      tvl: formatTvl(earnPools.AQUARIUS_USDC.totalSupply, prices.USDC || 1),
     },
     "xlm-usdc-soroswap": {
       supplyApr: parseFloat(earnPools.SOROSWAP_USDC.supplyAPY) || 0,

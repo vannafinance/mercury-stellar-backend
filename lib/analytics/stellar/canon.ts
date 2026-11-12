@@ -12,9 +12,8 @@ import { CONTRACT_ADDRESSES } from '../../stellar-utils';
 export type StellarAsset =
   | "XLM"
   | "BLUSDC"
+  | "AQUSDC"
   | "SOUSDC";
-// No AQUSDC since mainnet-credit-layer: Aquarius trades BLUSDC. Old event
-// text naming AQUSDC still prices through resolveUsdAlias / fallbackPriceForSymbol.
 
 /** Tracking collateral symbols emitted by SmartAccount when a user
  *  deposits into Blend / Aquarius / Soroswap. UI may surface them as
@@ -31,7 +30,7 @@ export type StellarProtocol = "Blend" | "Aquarius" | "Soroswap";
 
 // User-selectable assets (matches earn ALL_ASSETS / DropdownOptions).
 export const ACTIVE_ASSETS: StellarAsset[] = [
-  "XLM", "BLUSDC", "SOUSDC",
+  "XLM", "BLUSDC", "AQUSDC", "SOUSDC",
 ];
 
 export const PROTOCOLS: StellarProtocol[] = ["Blend", "Aquarius", "Soroswap"];
@@ -52,6 +51,7 @@ export const FALLBACK_PRICES: Record<StellarSymbol, number> = {
   XLM: 0.16,
   USDC: 1.0 as never, // listed for readability — see resolveUsdAlias
   BLUSDC: 1.0,
+  AQUSDC: 1.0,
   SOUSDC: 1.0,
   BLEND_XLM: 0.16,
   BLEND_USDC: 1.0,
@@ -60,8 +60,8 @@ export const FALLBACK_PRICES: Record<StellarSymbol, number> = {
 } as Record<StellarSymbol, number>;
 
 /** Maps every variant to its underlying price symbol, mirroring the
- *  contract-side `canonical_price_symbol` in `risk_engine.rs`. The
- *  USD-pegged variants (BLUSDC/SOUSDC, the old AQUSDC name, plus their BLEND_USDC
+ *  contract-side `canonical_price_symbol` in `risk_engine.rs`. The three
+ *  USD-pegged variants (BLUSDC/AQUSDC/SOUSDC, plus their BLEND_USDC
  *  tracking alias) collapse into the shared "USDC" bucket. */
 export function resolveUsdAlias(sym: string): "XLM" | "USDC" {
   const u = (sym || "").toUpperCase();
@@ -84,8 +84,9 @@ export function fallbackPriceForSymbol(sym: string): number | undefined {
     case "XLM":
       return FALLBACK_PRICES.XLM;
     case "BLUSDC":
-    case "AQUSDC": // old name of Aquarius's USDC, which is BLUSDC now
       return FALLBACK_PRICES.BLUSDC;
+    case "AQUSDC":
+      return FALLBACK_PRICES.AQUSDC;
     case "SOUSDC":
       return FALLBACK_PRICES.SOUSDC;
     case "BLEND_XLM":
@@ -121,7 +122,7 @@ export function isTrackingSymbol(sym: string): boolean {
 export function protocolFor(sym: string): StellarProtocol | null {
   const u = (sym || "").toUpperCase();
   if (u.startsWith("BLEND_") || u === "BLUSDC") return "Blend";
-  if (u.startsWith("AQ_")) return "Aquarius";
+  if (u.startsWith("AQ_") || u === "AQUSDC") return "Aquarius";
   if (u.startsWith("SS_") || u === "SOUSDC") return "Soroswap";
   return null;
 }
@@ -137,6 +138,7 @@ export const ASSET_META: Record<StellarAsset, {
 }> = {
   XLM: { symbol: "XLM", name: "Stellar Lumens", icon: "/coins/xlmbg.png", decimals: 7, poolKey: "LENDING_PROTOCOL_XLM" },
   BLUSDC: { symbol: "BLUSDC", name: "Blend USDC", icon: "/icons/usdc-icon.svg", decimals: 7, poolKey: "LENDING_PROTOCOL_BLEND_USDC" },
+  AQUSDC: { symbol: "AQUSDC", name: "Aquarius USDC", icon: "/icons/usdc-icon.svg", decimals: 7, poolKey: "LENDING_PROTOCOL_AQUARIUS_USDC" },
   SOUSDC: { symbol: "SOUSDC", name: "Soroswap USDC", icon: "/icons/usdc-icon.svg", decimals: 7, poolKey: "LENDING_PROTOCOL_SOROSWAP_USDC" },
 };
 
@@ -215,6 +217,15 @@ export const STELLAR_STRESS_PRESETS: StellarStressPreset[] = [
     direction: "down",
     priceChangePct: 5,
     protocol: "Blend",
+  },
+  {
+    id: "aqusdc-depeg",
+    name: "Aquarius USDC Depeg",
+    description: "Aquarius pool USDC slips to $0.93 — mainly affects AQUSDC LP collateral.",
+    asset: "AQUSDC",
+    direction: "down",
+    priceChangePct: 7,
+    protocol: "Aquarius",
   },
   {
     id: "sousdc-depeg",

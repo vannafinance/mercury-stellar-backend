@@ -69,7 +69,9 @@ export const SupplyLiquidityTab = () => {
   const normalizedAsset =
     selectedOption === 'BLUSDC' || selectedOption === 'USDC'
       ? 'USDC'
-      : selectedOption === 'SoUSDC' || selectedOption === 'SoroswapUSDC'
+      : selectedOption === 'AqUSDC' || selectedOption === 'AquiresUSDC'
+        ? 'AQUARIUS_USDC'
+        : selectedOption === 'SoUSDC' || selectedOption === 'SoroswapUSDC'
           ? 'SOROSWAP_USDC'
           : selectedOption;
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
@@ -83,6 +85,8 @@ export const SupplyLiquidityTab = () => {
       return Math.max(0, xlmBalance - 1).toFixed(2); // Keep 1 XLM for fees
     } else if (normalizedAsset === 'USDC') {
       return tokenBalances?.BLEND_USDC || tokenBalances?.USDC || '0';
+    } else if (normalizedAsset === 'AQUARIUS_USDC') {
+      return tokenBalances?.AQUARIUS_USDC || '0';
     } else if (normalizedAsset === 'SOROSWAP_USDC') {
       return tokenBalances?.SOROSWAP_USDC || '0';
     }

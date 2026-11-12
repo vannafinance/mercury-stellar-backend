@@ -158,7 +158,7 @@ async function runOneCheck(opts: {
   }
   if (bestAmt <= 0) {
     bestAmt = Math.max(1, debt * 0.15);
-    asset = "USDC"; // Blend USDC (no AQUSDC reserve since mainnet-credit-layer)
+    asset = "AQUSDC";
   }
   const desiredRepay = Math.max(1, bestAmt * 0.2);
   const repayAmt = Math.min(bestAmt, desiredRepay);

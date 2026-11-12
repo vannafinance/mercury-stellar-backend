@@ -3,7 +3,7 @@
 /**
  * Portfolio → Balances: every token the user holds, split between the connected wallet and the margin
  * account, with amounts and USD values. Wallet balances come from the wallet store (on-chain reads:
- * XLM from Horizon, BLUSDC / SOUSDC from their SAC contracts — the store's USDC and
+ * XLM from Horizon, BLUSDC / AQUSDC / SOUSDC from their SAC contracts — the store's USDC and
  * BLEND_USDC keys mirror the same Blend USDC, shown once as BLUSDC); margin holdings from the margin
  * store (the same rows the health factor values, Blend supply / LP tracking positions included).
  */

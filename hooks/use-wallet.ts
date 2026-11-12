@@ -49,13 +49,14 @@ export const refreshWalletBalancesOnChain = (targetAddress: string): Promise<voi
         Promise.all([
           ContractService.getShareBalance(targetAddress, ASSET_TYPES.XLM),
           ContractService.getShareBalance(targetAddress, ASSET_TYPES.USDC),
+          ContractService.getShareBalance(targetAddress, ASSET_TYPES.AQUARIUS_USDC),
           ContractService.getShareBalance(targetAddress, ASSET_TYPES.SOROSWAP_USDC),
         ]),
         12_000,
         'Deposited balance refresh',
-      ).then(([XLM, USDC, SOROSWAP_USDC]) => {
+      ).then(([XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC]) => {
         useUserStore.getState().set({
-          depositedBalances: { XLM, USDC, SOROSWAP_USDC },
+          depositedBalances: { XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC },
         });
       }).catch((error) => {
         console.warn('Deposited balances refresh failed; wallet balances remain current:', error);
@@ -219,8 +220,8 @@ export const useWallet = () => {
           walletKind: null,
           walletProviderLabel: null,
           balance: '0',
-          tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', SOROSWAP_USDC: '0' },
-          depositedBalances: { XLM: '0', USDC: '0', SOROSWAP_USDC: '0' },
+          tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
+          depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
           isLoading: false,
           walletService: null,
         });
@@ -327,8 +328,8 @@ export const useWallet = () => {
       walletKind: null,
       walletProviderLabel: null,
       balance: '0',
-      tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', SOROSWAP_USDC: '0' },
-      depositedBalances: { XLM: '0', USDC: '0', SOROSWAP_USDC: '0' },
+      tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
+      depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
       manuallyDisconnected: true, // Mark as manually disconnected to prevent auto-reconnect
       isLoading: false,
       walletService: null,
@@ -399,9 +400,7 @@ export const useWithdraw = () => {
       if (!address) throw new Error('Please connect your wallet first');
       if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
 
-      // BLEND_USDC and the old AQUARIUS_USDC type both name the Blend USDC reserve.
-      const depositedKey =
-        assetType === ASSET_TYPES.BLEND_USDC || assetType === ASSET_TYPES.AQUARIUS_USDC ? ASSET_TYPES.USDC : assetType;
+      const depositedKey = assetType === ASSET_TYPES.BLEND_USDC ? ASSET_TYPES.USDC : assetType;
       const depositedAmount = parseFloat(depositedBalances[depositedKey] || '0');
       if (amount > depositedAmount) {
         throw new Error('Cannot withdraw more than deposited balance');

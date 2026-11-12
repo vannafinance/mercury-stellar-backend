@@ -51,64 +51,63 @@ vi.mock("@/lib/oracle-price", () => ({
 
 import { reconcileMarginRawSacCollateral } from "@/lib/analytics/stellar/farmTrackingCollateral";
 
-describe("reconcileMarginRawSacCollateral — BLUSDC/SOUSDC live-balance overlay", () => {
+describe("reconcileMarginRawSacCollateral — AQUSDC/SOUSDC live-balance overlay", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("overwrites a stale SOUSDC collateral-ledger figure with the real (near-zero) live balance", async () => {
+  it("overwrites a stale AQUSDC collateral-ledger figure with the real (near-zero) live balance", async () => {
     mocks.getMarginAccountTokenBalance.mockImplementation((_addr: string, sac: string) => {
-      // XLM/USDC untouched; SOUSDC mostly deployed into the LP — only 0.76 left raw.
+      // XLM/USDC untouched; AQUSDC mostly deployed into the LP — only 0.76 left raw.
       if (sac === "XLM") return Promise.resolve("1000.0000000");
       if (sac === "USDC") return Promise.resolve("0.0000000");
-      if (sac === "SOUSDC") return Promise.resolve("0.7598883");
+      if (sac === "AQUSDC") return Promise.resolve("0.7598883");
+      if (sac === "SOUSDC") return Promise.resolve("0.0000000");
       return Promise.resolve("0.0000000");
     });
 
-    // Stale on-chain ledger value from before the SOUSDC was deployed into Soroswap.
+    // Stale on-chain ledger value from before the AQUSDC was deployed into Aquarius.
     const balances: Record<string, { amount: string; usdValue: string }> = {
-      SOUSDC: { amount: "161.8700000", usdValue: "161.87" },
+      AQUSDC: { amount: "161.8700000", usdValue: "161.87" },
     };
 
     await reconcileMarginRawSacCollateral("CACCT", balances, () => 1);
 
-    // Three credit assets since mainnet-credit-layer (no AQUSDC): XLM, BLUSDC (read as "USDC"), SOUSDC.
-    expect(mocks.getMarginAccountTokenBalance).toHaveBeenCalledWith("CACCT", "USDC");
+    expect(mocks.getMarginAccountTokenBalance).toHaveBeenCalledWith("CACCT", "AQUSDC");
     expect(mocks.getMarginAccountTokenBalance).toHaveBeenCalledWith("CACCT", "SOUSDC");
-    expect(mocks.getMarginAccountTokenBalance).not.toHaveBeenCalledWith("CACCT", "AQUSDC");
     // The stale 161.87 must be gone — replaced by the real live balance.
-    expect(parseFloat(balances.SOUSDC.amount)).toBeCloseTo(0.7598883, 6);
-    expect(parseFloat(balances.SOUSDC.usdValue)).toBeCloseTo(0.76, 2);
+    expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(0.7598883, 6);
+    expect(parseFloat(balances.AQUSDC.usdValue)).toBeCloseTo(0.76, 2);
   });
 
-  it("leaves a genuinely-held SOUSDC balance untouched (not deployed to any LP)", async () => {
+  it("leaves a genuinely-held AQUSDC balance untouched (not deployed to any LP)", async () => {
     mocks.getMarginAccountTokenBalance.mockImplementation((_addr: string, sac: string) => {
-      if (sac === "SOUSDC") return Promise.resolve("50.0000000");
+      if (sac === "AQUSDC") return Promise.resolve("50.0000000");
       return Promise.resolve("0.0000000");
     });
 
     const balances: Record<string, { amount: string; usdValue: string }> = {};
     await reconcileMarginRawSacCollateral("CACCT", balances, () => 1);
 
-    expect(parseFloat(balances.SOUSDC.amount)).toBeCloseTo(50, 6);
+    expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(50, 6);
   });
 
   it("does not net same-asset debt out of the raw SAC balance — borrowed proceeds are legitimate leverage collateral", async () => {
-    // A dual-borrow/leverage account: 75 SOUSDC raw balance, 50 of which was just
+    // A dual-borrow/leverage account: 75 AQUSDC raw balance, 50 of which was just
     // borrowed. The contract's own ledger (record_borrow_and_credit /
     // apply_deposit_borrow_ledger in SmartAccountContract) credits borrowed proceeds
     // straight into CollateralBalanceWAD, and RiskEngine's real health factor is
     // computed against that same balance — so the display must not strip it back out.
     mocks.getMarginAccountTokenBalance.mockImplementation((_addr: string, sac: string) => {
-      if (sac === "SOUSDC") return Promise.resolve("75.0000000");
+      if (sac === "AQUSDC") return Promise.resolve("75.0000000");
       return Promise.resolve("0.0000000");
     });
 
     const balances: Record<string, { amount: string; usdValue: string }> = {};
     const usd = await reconcileMarginRawSacCollateral("CACCT", balances, () => 1);
 
-    expect(parseFloat(balances.SOUSDC.amount)).toBeCloseTo(75, 6);
-    expect(parseFloat(balances.SOUSDC.usdValue)).toBeCloseTo(75, 2);
+    expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(75, 6);
+    expect(parseFloat(balances.AQUSDC.usdValue)).toBeCloseTo(75, 2);
     expect(usd).toBeCloseTo(75, 2);
   });
 
@@ -128,7 +127,7 @@ describe("reconcileMarginRawSacCollateral — BLUSDC/SOUSDC live-balance overlay
     });
 
     const balances: Record<string, { amount: string; usdValue: string }> = {};
-    const priceMap: Record<string, number> = { XLM: 0.15, BLUSDC: 1.0, SOUSDC: 1.0 };
+    const priceMap: Record<string, number> = { XLM: 0.15, BLUSDC: 1.0, AQUSDC: 1.0, SOUSDC: 1.0 };
 
     const grossUsd = await reconcileMarginRawSacCollateral(
       "CACCT",

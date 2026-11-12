@@ -3,8 +3,7 @@
 // quotes, and add/remove-liquidity + swaps from both the margin account
 // (CreditLayer.margin_execute; token amounts in WAD 1e18, minimums native) and
 // the user's wallet. The credit layer's Aquarius validator accepts ONLY the
-// XLM/BLUSDC constant_product pool (0.3%) at AQUARIUS_POOL_INDEX_HEX. Aquarius's "USDC" is the
-// Blend USDC token (BLUSDC) since mainnet-credit-layer; the app shows it as plain "USDC". On-chain reserves/LP shares are 7-decimal (SCALAR_7). Pool reserve
+// XLM/AQUSDC constant_product pool at AQUARIUS_POOL_INDEX_HEX. On-chain reserves/LP shares are 7-decimal (SCALAR_7). Pool reserve
 // order is sorted by contract address, so reserves are re-mapped onto each
 // pool config's token order before display.
 
@@ -24,7 +23,7 @@ import type { VenueExecuteArgs } from './blend-utils';
 // ── Aquarius Swap constants ─────────────────────────────────────────────────
 // XLM Soroban token contract (wrapped native XLM on testnet)
 const XLM_CONTRACT = 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC';
-// Pool token order (sorted): TokenA = Blend USDC (CAQCFVLO… < CDLZFC3S…), TokenB = XLM
+// Pool token order (sorted): TokenA = Aquarius USDC, TokenB = XLM
 const POOL_SORTED_TOKENS = [CONTRACT_ADDRESSES.AQUARIUS_USDC, XLM_CONTRACT];
 
 /** Tokens the Spot-swap feature supports on Aquarius. */
@@ -200,15 +199,14 @@ const toWad = (amount: number): bigint => {
 /** Slippage applied to a margin swap's quoted output to set min_out. */
 const MARGIN_SWAP_SLIPPAGE_PCT = 1;
 
-/** True when the pair is the one pool margin actions may use (XLM / USDC, i.e. XLM / BLUSDC). */
+/** True when the pair is the one pool margin actions may use (XLM / AqUSDC). */
 export function isAquariusMarginPair(tokenA: string, tokenB: string): boolean {
   const pair = [tokenA.toUpperCase(), tokenB.toUpperCase()].sort().join('/');
-  // AQUSDC: old name of Aquarius's USDC, kept so stale callers still resolve.
-  return pair === 'USDC/XLM' || pair === 'BLUSDC/XLM' || pair === 'AQUSDC/XLM';
+  return pair === 'USDC/XLM' || pair === 'AQUSDC/XLM';
 }
 
 const MARGIN_PAIR_ONLY_ERROR =
-  'Margin liquidity on Aquarius is only available for the XLM / USDC pool.';
+  'Margin liquidity on Aquarius is only available for the XLM / AqUSDC pool.';
 
 const SCALAR_7 = 1e7;
 const fromStroopScalar = (raw: string | undefined): string => {
@@ -233,7 +231,7 @@ export function mapAquariusReservesToConfig(
   let reserveB = bySym[cfgTokenB?.toUpperCase()] ?? fromStroopScalar(raw1);
 
   // API `tokens_str` is sometimes [XLM, USDC] while reserves stay [USDC, XLM].
-  // For XLM/USDC, the XLM reserve count should be well above USDC's (XLM < $1).
+  // For XLM/USDC, XLM reserve count should dwarf USDC (~96:1 on testnet).
   if (cfg?.id === 'aquarius-xlm-usdc') {
     const a = parseFloat(reserveA);
     const b = parseFloat(reserveB);
@@ -388,7 +386,7 @@ export class AquariusService {
   }
 
   /**
-   * Wallet's balance of Aquarius's USDC (the Blend USDC classic asset, matched by issuer), via Horizon.
+   * Wallet's Aquarius-issued USDC balance (matched by issuer), via Horizon.
    * Returns "0" if there is no such trustline or on error.
    */
   static async getAquariusUsdcWalletBalance(walletAddress: string): Promise<string> {
@@ -416,7 +414,7 @@ export class AquariusService {
   }
 
   /**
-   * Whether the wallet holds the USDC (Blend USDC issuer) trustline — required before an
+   * Whether the wallet holds the Aquarius USDC trustline — required before an
    * XLM→USDC wallet swap can settle. Returns false on error.
    */
   static async hasAquariusUsdcTrustline(walletAddress: string): Promise<boolean> {
@@ -456,7 +454,7 @@ export class AquariusService {
     const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
 
     if (text.includes('trustline entry is missing for account')) {
-      return 'USDC trustline is missing in your wallet. Please add the USDC trustline (use the Faucet\'s Blend USDC), then retry swap.';
+      return 'USDC trustline is missing in your wallet. Please add Aquarius USDC trustline, then retry swap.';
     }
 
     if (text.includes('Error(Contract, #13)')) {
@@ -504,7 +502,7 @@ export class AquariusService {
   }
 
   /**
-   * Margin account's LP balance in the XLM/USDC (BLUSDC) pool: the pool's share token
+   * Margin account's LP balance in the XLM/AqUSDC pool: the pool's share token
    * (CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_SHARE, 7 decimals) is held directly by
    * the margin account, so this is `share.balance(margin)`. Returns "0" for any
    * other pair or on error.
@@ -607,7 +605,7 @@ export class AquariusService {
   }
 
   /**
-   * Margin account's LP share balance (7-decimal). For the XLM/USDC (BLUSDC) pool this
+   * Margin account's LP share balance (7-decimal). For the XLM/AqUSDC pool this
    * is the share token balance ({@link getLpBalance}); for any other pool it
    * falls back to the pool's own `get_user_shares`. Returns "0" on error.
    */
@@ -737,11 +735,11 @@ export class AquariusService {
     }
   }
 
-  /** Token contract for an Aquarius symbol ("USDC" = Blend USDC, BLUSDC). */
+  /** Token contract for an Aquarius symbol ("USDC" = AqUSDC). */
   private static tokenFor(symbol: string): string {
     const s = symbol.toUpperCase();
     if (s === 'XLM') return XLM_CONTRACT;
-    if (s === 'USDC' || s === 'BLUSDC' || s === 'AQUSDC') return CONTRACT_ADDRESSES.AQUARIUS_USDC;
+    if (s === 'USDC' || s === 'AQUSDC') return CONTRACT_ADDRESSES.AQUARIUS_USDC;
     throw new Error(`Unsupported Aquarius token: ${symbol}`);
   }
 
@@ -780,7 +778,7 @@ export class AquariusService {
 
   /** Swap: tokens=[in, out], amounts=[amount_in WAD], min_out NATIVE. */
   static buildSwapArgs(tokenIn: string, tokenOut: string, amountIn: number, minOutNative: bigint = BigInt(0)): VenueExecuteArgs {
-    if (!isAquariusMarginPair(tokenIn, tokenOut)) throw new Error('Margin swaps on Aquarius are only available for XLM <-> USDC.');
+    if (!isAquariusMarginPair(tokenIn, tokenOut)) throw new Error('Margin swaps on Aquarius are only available for XLM <-> AqUSDC.');
     const amountStroops = floorAmountToStroops(amountIn);
     if (amountStroops <= BigInt(0)) throw new Error('Invalid swap amount');
     return {
@@ -798,7 +796,7 @@ export class AquariusService {
   }
 
   /**
-   * Add liquidity to the Aquarius XLM/USDC (BLUSDC) pool from the margin account via
+   * Add liquidity to the Aquarius XLM/AqUSDC pool from the margin account via
    * CreditLayer.margin_execute(…, AddLiquidity, …). The validator pulls the
    * pool-ratio amounts from the margin account; the share token lands there.
    * Any other pool is refused before signing (the validator would reject it).
@@ -825,7 +823,7 @@ export class AquariusService {
   }
 
   /**
-   * Remove liquidity from the Aquarius XLM/USDC (BLUSDC) pool from the margin account
+   * Remove liquidity from the Aquarius XLM/AqUSDC pool from the margin account
    * via CreditLayer.margin_execute(…, RemoveLiquidity, …). `lpAmount` is in LP
    * share units (human, 7 decimals); it is sent as WAD, which the validator
    * rescales to native share units. Resolves after the tx confirms, so callers
@@ -1059,7 +1057,7 @@ export class AquariusService {
       const amountInStroops = BigInt(Math.round(amountIn * 1e7));
 
       // Spot swaps run inside the margin account, and the credit layer's
-      // Aquarius validator always routes the XLM/BLUSDC pair through the one
+      // Aquarius validator always routes the XLM/AqUSDC pair through the one
       // configured pool index — so quote that pool, not the best of all pools
       // for the pair (the pair also has other pools, e.g. a concentrated one).
       const poolIndices = isAquariusMarginPair(tokenInSymbol, resolvedTokenOutSymbol)
@@ -1111,7 +1109,7 @@ export class AquariusService {
   ): Promise<Buffer> {
     const isXlmUsdcPair = sortedTokens[0] === POOL_SORTED_TOKENS[0] && sortedTokens[1] === POOL_SORTED_TOKENS[1];
     const fallback = isXlmUsdcPair ? Buffer.from(CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX, 'hex') : null;
-    // XLM/BLUSDC: always the configured pool, which getSwapQuote quotes too
+    // XLM/AqUSDC: always the configured pool, which getSwapQuote quotes too
     // (the pair has other pools, e.g. a concentrated one).
     if (fallback) return fallback;
     try {
@@ -1144,7 +1142,7 @@ export class AquariusService {
 
   /**
    * Swap inside the margin account via CreditLayer.margin_execute(…, Swap, …).
-   * The validator always routes through the configured XLM/BLUSDC pool index,
+   * The validator always routes through the configured XLM/AqUSDC pool index,
    * so min_out is quoted against that same pool, less
    * {@link MARGIN_SWAP_SLIPPAGE_PCT}% (0 when no quote is available).
    */
@@ -1190,8 +1188,8 @@ export class AquariusService {
   /**
    * Execute a swap via the Aquarius router.
    * user = walletAddress (standard G... account — Freighter can sign directly).
-   * Swap amounts come from the wallet's own XLM / Blend USDC balance. XLM <-> USDC
-   * uses the configured XLM/BLUSDC pool, the same one the quote and margin swaps use.
+   * Swap amounts come from the wallet's own XLM / Aquarius USDC balance. XLM <-> USDC
+   * uses the configured XLM/AqUSDC pool, the same one the quote and margin swaps use.
    */
   static async aquariusSwap(
     walletAddress: string,

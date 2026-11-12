@@ -14,10 +14,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  *      executeOneClickStrategy's LP branch). The old closePosition only
  *      repaid the paired-asset leg, leaving the top-up leg orphaned forever.
  *   3. The repay calls passed the generic `borrowAsset` ("USDC") straight to
- *      repayLoan — but an LP's real on-chain debt is denominated in the
- *      pool's own USDC (whatever the borrow itself used, via
- *      poolTokenSymbol()): SOUSDC for Soroswap, BLUSDC for Aquarius (its pool
- *      is XLM/BLUSDC since mainnet-credit-layer).
+ *      repayLoan — but an Aquarius/Soroswap LP's real on-chain debt is
+ *      denominated in AQUSDC/SOUSDC (whatever the borrow itself used, via
+ *      poolTokenSymbol()). Repaying plain "USDC" targets Blend's USDC debt
+ *      instead — the wrong debt entirely.
  *   4. Repay amounts weren't capped at what's actually spendable in the
  *      margin account, unlike the Pro-mode Repay tab — risking
  *      Error(Contract,#10) "balance is not sufficient to spend" instead of a
@@ -104,11 +104,11 @@ describe("closePosition — leveraged Aquarius LP exit", () => {
     const removeCall = mocks.aquariusRemoveLiquidity.mock.calls[0];
     expect(removeCall[4]).toBeCloseTo(6.8712, 4);
 
-    // Both debt legs repaid — and the paired leg uses BLUSDC, the explicit
-    // symbol of the Blend USDC token Aquarius's XLM/BLUSDC pool trades.
+    // Both debt legs repaid — and the paired leg uses AQUSDC (Aquarius's own
+    // USDC), NOT generic "USDC" (which would hit Blend's debt instead).
     expect(mocks.repayLoan).toHaveBeenCalledTimes(2);
     const xlmRepay = mocks.repayLoan.mock.calls.find((c) => c[1] === "XLM");
-    const aqUsdcRepay = mocks.repayLoan.mock.calls.find((c) => c[1] === "BLUSDC");
+    const aqUsdcRepay = mocks.repayLoan.mock.calls.find((c) => c[1] === "AQUSDC");
     expect(xlmRepay).toBeTruthy();
     expect(aqUsdcRepay).toBeTruthy();
     expect(mocks.repayLoan.mock.calls.some((c) => c[1] === "USDC")).toBe(false);
@@ -123,7 +123,7 @@ describe("closePosition — leveraged Aquarius LP exit", () => {
     expect(removeCall[4]).toBeCloseTo(6.8712 * 0.5, 4);
 
     const xlmRepay = mocks.repayLoan.mock.calls.find((c) => c[1] === "XLM");
-    const aqUsdcRepay = mocks.repayLoan.mock.calls.find((c) => c[1] === "BLUSDC");
+    const aqUsdcRepay = mocks.repayLoan.mock.calls.find((c) => c[1] === "AQUSDC");
     expect(Number(BigInt(xlmRepay![2])) / 1e18).toBeCloseTo(10, 4);
     expect(Number(BigInt(aqUsdcRepay![2])) / 1e18).toBeCloseTo(0.265, 4);
   });
@@ -132,14 +132,14 @@ describe("closePosition — leveraged Aquarius LP exit", () => {
     await closePosition({ ...baseParams, collateralBorrowAmount: 0, exitPct: 100 });
 
     expect(mocks.repayLoan).toHaveBeenCalledTimes(1);
-    expect(mocks.repayLoan.mock.calls[0][1]).toBe("BLUSDC");
+    expect(mocks.repayLoan.mock.calls[0][1]).toBe("AQUSDC");
   });
 
   it("caps each repay leg at what's actually spendable in the margin account", async () => {
-    // Only 0.1 BLUSDC and 5 XLM are really sitting in the account — far less
-    // than the stored debt figures (0.53 BLUSDC, 20 XLM top-up).
+    // Only 0.1 AQUSDC and 5 XLM are really sitting in the account — far less
+    // than the stored debt figures (0.53 AQUSDC, 20 XLM top-up).
     mocks.getMarginAccountTokenBalanceWad.mockImplementation((_addr: string, symbol: string) => {
-      if (symbol === "BLUSDC") return Promise.resolve(toWad(0.1));
+      if (symbol === "AQUSDC") return Promise.resolve(toWad(0.1));
       if (symbol === "XLM") return Promise.resolve(toWad(5));
       return Promise.resolve(toWad(1_000_000));
     });
@@ -148,7 +148,7 @@ describe("closePosition — leveraged Aquarius LP exit", () => {
 
     expect(res.success).toBe(true);
     const xlmRepay = mocks.repayLoan.mock.calls.find((c) => c[1] === "XLM");
-    const aqUsdcRepay = mocks.repayLoan.mock.calls.find((c) => c[1] === "BLUSDC");
+    const aqUsdcRepay = mocks.repayLoan.mock.calls.find((c) => c[1] === "AQUSDC");
     // Capped to the spendable balance, not the (larger) stored debt amount.
     expect(Number(BigInt(xlmRepay![2])) / 1e18).toBeCloseTo(5, 4);
     expect(Number(BigInt(aqUsdcRepay![2])) / 1e18).toBeCloseTo(0.1, 4);
@@ -176,6 +176,6 @@ describe("closePosition — leveraged Aquarius LP exit", () => {
     expect(mocks.aquariusRemoveLiquidity).not.toHaveBeenCalled();
     expect(mocks.soroswapRemoveLiquidity).toHaveBeenCalled();
     expect(mocks.repayLoan.mock.calls.some((c) => c[1] === "SOUSDC")).toBe(true);
-    expect(mocks.repayLoan.mock.calls.some((c) => c[1] === "USDC" || c[1] === "BLUSDC")).toBe(false);
+    expect(mocks.repayLoan.mock.calls.some((c) => c[1] === "USDC" || c[1] === "AQUSDC")).toBe(false);
   });
 });

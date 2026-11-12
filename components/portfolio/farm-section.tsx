@@ -85,7 +85,7 @@ export const FarmSection = () => {
     (sym: string): number => {
       const s = sym.toUpperCase();
       if (s === "XLM") return prices.XLM ?? 0;
-      if (s === "USDC" || s === "BLUSDC" || s === "SOUSDC") return prices.USDC ?? 1;
+      if (s === "USDC" || s === "BLUSDC" || s === "AQUSDC" || s === "SOUSDC") return prices.USDC ?? 1;
       if (s === "USDT") return prices.USDT ?? 1;
       return 0;
     },
@@ -144,8 +144,7 @@ export const FarmSection = () => {
       if (lpBal <= POSITION_DUST) return;
       const aqPoolStats = aquariusPools.find((p) => p.pool.id === pool.id)?.stats ?? null;
       const [tokenA, tokenB] = pool.tokens;
-      // Aquarius trades Blend USDC, which the app shows as plain "USDC".
-      const tokenBLabel = tokenB;
+      const tokenBLabel = tokenB === "USDC" ? "AqUSDC" : tokenB;
       const { amountA: shareA, amountB: shareB } = aquariusLpUnderlyingAmounts(
         lpBal,
         aqPoolStats ?? { reserveA: "0", reserveB: "0", totalShares: "0", feeFraction: "0.30%", feeRaw: 30 },

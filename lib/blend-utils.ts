@@ -278,9 +278,8 @@ export class BlendService {
   /**
    * Get the actual token balance held by a margin account, reading
    * `token.balance(marginAccountAddress)` directly on the asset's own SAC.
-   * Despite the Blend-specific name, this reads any of the three
-   * margin-supported assets (XLM, USDC = BLUSDC, SOUSDC). AQUSDC (the old
-   * Aquarius USDC name) reads BLUSDC, the token Aquarius trades now.
+   * Despite the Blend-specific name, this reads any of the four
+   * margin-supported assets (XLM, USDC = BLUSDC, AQUSDC, SOUSDC).
    */
   static async getMarginAccountTokenBalance(
     marginAccountAddress: string,
@@ -288,7 +287,8 @@ export class BlendService {
   ): Promise<string> {
     const tokenContractId =
       token === 'XLM' ? CONTRACT_ADDRESSES.BLEND_XLM
-      : token === 'USDC' || token === 'AQUSDC' ? CONTRACT_ADDRESSES.BLEND_USDC
+      : token === 'USDC' ? CONTRACT_ADDRESSES.BLEND_USDC
+      : token === 'AQUSDC' ? CONTRACT_ADDRESSES.AQUARIUS_USDC
       : CONTRACT_ADDRESSES.SOROSWAP_USDC;
     const raw = await readOr<bigint>(tokenContractId, 'balance', [sc.address(marginAccountAddress)], BigInt(0));
     return (Number(raw) / 1e7).toFixed(7);

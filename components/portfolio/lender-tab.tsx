@@ -10,12 +10,13 @@ import { transactionTableHeadings } from "@/components/earn/acitivity-tab";
 import { formatTokenAmount } from "@/lib/utils/format-amount";
 import { useTheme } from "@/contexts/theme-context";
 
-const ASSETS = ["XLM", "USDC", "SOROSWAP_USDC"] as const;
+const ASSETS = ["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const;
 
-// The SoUSDC variant pegs to USDC — they have no separate oracle entry.
+// AQ/SO USDC variants peg to USDC — they have no separate oracle entry.
 const PRICE_TOKEN: Record<string, string> = {
   XLM: "XLM",
   USDC: "USDC",
+  AQUARIUS_USDC: "USDC",
   SOROSWAP_USDC: "USDC",
 };
 

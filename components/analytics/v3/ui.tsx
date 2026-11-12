@@ -135,7 +135,7 @@ export function Notice({ children, tone = "" }: { children: ReactNode; tone?: "w
 
 // ---- assets ---------------------------------------------------------------------------------------
 const NAMES: Record<string, string> = {
-  XLM: "Stellar Lumens", USDC: "USD Coin", BLUSDC: "Blend USDC", SOUSDC: "Soroswap USDC",
+  XLM: "Stellar Lumens", USDC: "USD Coin", BLUSDC: "Blend USDC", AQUSDC: "Aquarius USDC", SOUSDC: "Soroswap USDC",
   BLND: "Blend", AQUA: "Aquarius", WETH: "Wrapped Ether", EURC: "Euro Coin",
 };
 

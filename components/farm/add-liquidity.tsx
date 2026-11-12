@@ -93,7 +93,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
   // Display-only — every balance fetch, reserve lookup, and the actual
   // addLiquidity() call below MUST keep using the raw tokenB ("XLM"/"USDC"),
   // not this label. Only ever use tokenBLabel in rendered text.
-  const tokenBLabel = tokenB === "USDC" ? (isAquariusPool ? "USDC" : "SoUSDC") : tokenB;
+  const tokenBLabel = tokenB === "USDC" ? (isAquariusPool ? "AqUSDC" : "SoUSDC") : tokenB;
 
   // Resolve which actual on-chain pool this row is (order-insensitive on
   // tokens) — every stats/balance fetch below MUST use this pool's own

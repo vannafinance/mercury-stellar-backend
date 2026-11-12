@@ -56,12 +56,12 @@ export const transactionTableHeadings = [
 const DISPLAY_SYMBOL: Record<string, string> = {
   XLM: "XLM",
   USDC: "BLUSDC",
-  AQUARIUS_USDC: "BLUSDC",
+  AQUARIUS_USDC: "AqUSDC",
   SOROSWAP_USDC: "SoUSDC",
 };
 
 const toInternalAsset = (value: string): string => {
-  if (value === "AqUSDC" || value === "AQUARIUS_USDC") return "USDC"; // Aquarius uses Blend USDC now
+  if (value === "AqUSDC" || value === "AQUARIUS_USDC") return "AQUARIUS_USDC";
   if (value === "SoUSDC" || value === "SOROSWAP_USDC") return "SOROSWAP_USDC";
   if (value === "BLEND_USDC") return "USDC";
   if (value === "BLUSDC") return "USDC";

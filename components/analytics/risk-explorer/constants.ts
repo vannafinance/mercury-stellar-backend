@@ -58,6 +58,7 @@ export function mapSnapshotsToWallets(snapshots: AccountSnapshot[]): WalletPosit
 export const TOKEN_PRICES: Record<StellarAsset, number> = {
   XLM: FALLBACK_PRICES.XLM,
   BLUSDC: FALLBACK_PRICES.BLUSDC,
+  AQUSDC: FALLBACK_PRICES.AQUSDC,
   SOUSDC: FALLBACK_PRICES.SOUSDC,
 };
 
@@ -65,6 +66,7 @@ export const TOKEN_PRICES: Record<StellarAsset, number> = {
 export const SIM_ASSETS = [
   { symbol: "XLM", name: "Stellar Lumens", icon: "★" },
   { symbol: "BLUSDC", name: "Blend USDC", icon: "$" },
+  { symbol: "AQUSDC", name: "Aquarius USDC", icon: "$" },
   { symbol: "SOUSDC", name: "Soroswap USDC", icon: "$" },
 ] as const;
 

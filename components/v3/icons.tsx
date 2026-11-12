@@ -1,7 +1,7 @@
 /**
  * V3 icons: token / venue logos (the design's real logos, public/logos-v3) and the design's small
  * line icons. `Icon` falls back to the app's token icon, then to a lettered circle. The venue USDC
- * wrappers (BLUSDC / SOUSDC, and the old AQUSDC name) show the USDC logo.
+ * wrappers (BLUSDC / AQUSDC / SOUSDC) show the USDC logo.
  */
 import type { ReactNode } from "react";
 import { iconPaths } from "@/lib/constants";

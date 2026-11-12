@@ -11,8 +11,16 @@ const FRIENDBOT_URL = 'https://friendbot.stellar.org';
 const BLEND_FAUCET_URL = '/api/faucet/blend';
 const SOROSWAP_FAUCET_URL = 'https://api.soroswap.finance/api/faucet';
 
+// Aquarius publishes this faucet keypair's secret in their app bundle. It's
+// the testnet-only distribution account that pays out classic assets like
+// USDC/AQUA. We use the same keypair to mint AQUARIUS_USDC for the user.
+const AQUARIUS_FAUCET_SECRET = 'SBPQCB4DOUQ26OC43QNAA3ODZOGECHJUVHDHYRHKYPL4SA22RRYGHQCX';
+const AQUARIUS_USDC_CODE = 'USDC';
+const AQUARIUS_USDC_ISSUER = 'GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER';
+const AQUARIUS_USDC_FAUCET_AMOUNT = '1000.0000000';
+
 export type FaucetTokenId =
-  | 'XLM' | 'BLEND_USDC' | 'SOROSWAP_USDC';
+  | 'XLM' | 'BLEND_USDC' | 'AQUARIUS_USDC' | 'SOROSWAP_USDC';
 
 export interface FaucetResult {
   ok: boolean;
@@ -151,9 +159,77 @@ export const fundBlendAssets = async (address: string): Promise<FaucetResult> =>
   }
 };
 
-// No Aquarius USDC faucet since mainnet-credit-layer: Aquarius trades Blend
-// USDC (BLUSDC), so the Blend faucet funds it. The old Aquarius test USDC's
-// issuer account no longer exists, so it can't take new holders.
+// ─── Aquarius classic assets via published distribution keypair ───────────
+// Aquarius's testnet distribution flow: build a tx with a changeTrust op
+// (user-signed, default source) and a payment op sourced by the faucet
+// account (faucet-signed). Both signatures are needed to submit. The faucet
+// keypair IS the issuing account for both USDC and AQUA on this testnet
+// (verified live), so an issuer-sourced payment always succeeds regardless
+// of its displayed balance — issuance is unlimited by Stellar protocol design.
+const fundAquariusClassicAsset = async (
+  address: string,
+  assetCode: string,
+  assetIssuer: string,
+  amount: string,
+): Promise<FaucetResult> => {
+  try {
+    const horizonServer = new StellarSdk.Horizon.Server(HORIZON_URL);
+    const userAccount = await horizonServer.loadAccount(address);
+    const faucetKeypair = StellarSdk.Keypair.fromSecret(AQUARIUS_FAUCET_SECRET);
+    const asset = new StellarSdk.Asset(assetCode, assetIssuer);
+
+    const balanceLine = userAccount.balances.find((b) => {
+      const asAsset = b as { asset_code?: string; asset_issuer?: string };
+      return asAsset.asset_code === assetCode && asAsset.asset_issuer === assetIssuer;
+    });
+    const needsTrustline = !balanceLine;
+
+    const txBuilder = new StellarSdk.TransactionBuilder(userAccount, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    }).setTimeout(120);
+
+    if (needsTrustline) {
+      txBuilder.addOperation(StellarSdk.Operation.changeTrust({ asset }));
+    }
+    txBuilder.addOperation(
+      StellarSdk.Operation.payment({
+        source: faucetKeypair.publicKey(),
+        destination: address,
+        asset,
+        amount,
+      })
+    );
+
+    const builtTx = txBuilder.build();
+    // Faucet signs first (it's the source of the payment op). Then the user
+    // signs (they're the tx source and the source of changeTrust).
+    builtTx.sign(faucetKeypair);
+
+    const userSigned = await signTransaction(builtTx.toXDR(), {
+      networkPassphrase: NETWORK_PASSPHRASE,
+      address,
+    });
+    if (userSigned.error) return { ok: false, error: String(userSigned.error) };
+
+    const finalTx = StellarSdk.TransactionBuilder.fromXDR(
+      userSigned.signedTxXdr,
+      NETWORK_PASSPHRASE
+    );
+    const result = await horizonServer.submitTransaction(finalTx as StellarSdk.Transaction);
+    return { ok: true, hash: result.hash };
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { extras?: { result_codes?: unknown } } }; message?: string };
+    const horizonExtras = err?.response?.data?.extras?.result_codes;
+    const msg = horizonExtras
+      ? JSON.stringify(horizonExtras).slice(0, 200)
+      : err?.message || 'Aquarius faucet submission failed';
+    return { ok: false, error: msg };
+  }
+};
+
+export const fundAquariusUsdc = (address: string) =>
+  fundAquariusClassicAsset(address, AQUARIUS_USDC_CODE, AQUARIUS_USDC_ISSUER, AQUARIUS_USDC_FAUCET_AMOUNT);
 
 // Mint behaviour per token. The UI uses this to decide whether to keep the
 // button disabled forever after the first success ('one-time'), enforce a
@@ -181,10 +257,18 @@ export const FAUCET_TOKEN_META: Record<FaucetTokenId, FaucetTokenMeta> = {
   BLEND_USDC: {
     label: 'Blend USDC',
     icon: '/icons/usdc-icon.svg',
-    description: 'Blend testnet basket · USDC (also traded on Aquarius) + BLND + wETH + wBTC (one-time)',
+    description: 'Blend testnet basket · USDC + BLND + wETH + wBTC (one-time)',
     // Blend's faucet sends the basket (changeTrust + payments) once. After
     // that the trustlines exist, balances are paid; nothing to re-mint.
     category: 'one-time',
+  },
+  AQUARIUS_USDC: {
+    label: 'Aquarius USDC',
+    icon: '/icons/aquarius-logo.png',
+    description: 'Classic asset on Aquarius testnet · 1,000 USDC per mint',
+    // Aquarius distribution keypair pays 1,000 USDC per call — no rate
+    // limit on testnet, can be re-run as many times as needed.
+    category: 'unlimited',
   },
   SOROSWAP_USDC: {
     label: 'Soroswap USDC',
@@ -204,6 +288,8 @@ export const runFaucet = async (
       return fundXlmViaFriendbot(address);
     case 'BLEND_USDC':
       return fundBlendAssets(address);
+    case 'AQUARIUS_USDC':
+      return fundAquariusUsdc(address);
     case 'SOROSWAP_USDC':
       return fundSoroswapUsdc(address);
   }

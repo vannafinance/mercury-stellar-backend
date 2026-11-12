@@ -2,7 +2,7 @@
 // testnet transactions through the app's own service code; only the wallet
 // signer is replaced by a local key. Skipped unless E2E_SECRET is set:
 //   E2E_SECRET=$(stellar keys show <funded testnet key>) npx vitest run tests/credit-layer-live-e2e.test.ts
-// The wallet needs ~3,000 XLM plus a little BLUSDC/SOUSDC (faucets) to cover repay shortfalls.
+// The wallet needs ~3,000 XLM plus a little BLUSDC/AQUSDC/SOUSDC (faucets) to cover repay shortfalls.
 import { describe, it, expect, vi } from 'vitest';
 import * as S from '@stellar/stellar-sdk';
 
@@ -51,8 +51,8 @@ describe.skipIf(!SECRET)('credit layer live e2e', () => {
     expect(await M.discoverExistingAccount(ME)).toBe(margin);
     await step('deposit 2000 XLM', M.depositCollateralTokens(margin, 'XLM', W(2000)));
     await step('borrow 100 SOUSDC', M.borrowTokens(margin, 'SOUSDC', W(100)));
-    // Three reserves (XLM, BLUSDC, SOUSDC); Blend and Aquarius both use BLUSDC.
-    await step('borrow 50 BLUSDC', M.borrowTokens(margin, 'BLUSDC', W(50)));
+    await step('borrow 30 AQUSDC', M.borrowTokens(margin, 'AQUSDC', W(30)));
+    await step('borrow 20 BLUSDC', M.borrowTokens(margin, 'BLUSDC', W(20)));
     log('health', await M.getMarginHealth(margin));
 
     // Venues
@@ -64,8 +64,8 @@ describe.skipIf(!SECRET)('credit layer live e2e', () => {
     const lp = Number(await SS.getLpBalance(margin));
     log('soroswap lp', lp);
     await step('soroswap remove all LP', SS.removeLiquidity(ME, margin, lp, 'XLM', 'USDC'));
-    await step('aquarius swap 10 XLM->BLUSDC', AQ.aquariusSwapFromMargin(ME, margin, 'XLM' as any, 10, 'USDC' as any));
-    await step('aquarius add 20 XLM + 1 BLUSDC', AQ.addLiquidity(ME, margin, 'XLM', 'USDC', 20, 1));
+    await step('aquarius swap 10 XLM->AQUSDC', AQ.aquariusSwapFromMargin(ME, margin, 'XLM' as any, 10, 'USDC' as any));
+    await step('aquarius add 20 XLM + 1 AQUSDC', AQ.addLiquidity(ME, margin, 'XLM', 'USDC', 20, 1));
     const share = Number(await AQ.getLpBalance(margin, 'XLM', 'USDC'));
     log('aquarius share', share);
     await step('aquarius remove all', AQ.removeLiquidity(ME, margin, 'XLM', 'USDC', share));
@@ -75,11 +75,11 @@ describe.skipIf(!SECRET)('credit layer live e2e', () => {
 
     // Close out: repay every debt (shortfall comes from the wallet), withdraw some XLM
     await step('repay SOUSDC max', M.repayLoan(margin, 'SOUSDC', W(1000)));
+    await step('repay AQUSDC max', M.repayLoan(margin, 'AQUSDC', W(1000)));
     await step('repay BLUSDC max', M.repayLoan(margin, 'BLUSDC', W(1000)));
     await step('withdraw 500 XLM', M.withdrawCollateralBalance(margin, 'XLM', W(500)));
     const h = await M.getMarginHealth(margin);
     log('final health', h);
-    expect(h).not.toBeNull();
-    expect(h!.debtUsd).toBe(0);
+    expect(h?.debtUsd).toBe(0);
   }, 900_000);
 });

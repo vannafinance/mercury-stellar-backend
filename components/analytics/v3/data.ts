@@ -73,7 +73,7 @@ export interface AnalyticsData {
   pools: PoolRow[];
   poolTotals: ReturnType<typeof poolTotals>;
   poolsLoaded: boolean;
-  /** Live Reflector prices by asset symbol (XLM, BLUSDC, SOUSDC); null when the oracle returned none. */
+  /** Live Reflector prices by asset symbol (XLM, BLUSDC, AQUSDC, SOUSDC); null when the oracle returned none. */
   oraclePrices: Record<string, number | null>;
   oracleLoaded: boolean;
   oracleReadAt: number | null;
@@ -121,7 +121,7 @@ export function useAnalyticsData(): AnalyticsData {
       }
     }
     if (oraclePrices.XLM) out.XLM = oraclePrices.XLM;
-    const usdc = oraclePrices.BLUSDC ?? oraclePrices.SOUSDC ?? null;
+    const usdc = oraclePrices.BLUSDC ?? oraclePrices.AQUSDC ?? oraclePrices.SOUSDC ?? null;
     if (usdc) out.USDC = usdc;
     return out;
   }, [rows, oraclePrices]);

@@ -157,6 +157,40 @@ export const tableBody = {
         },
       ],
     },
+    {
+      cell: [
+        {
+          chain: "AqUSDC",
+          title: "AqUSDC",
+          tag: "Active",
+        },
+        {
+          title: "0 AqUSDC",
+          tag: "0.0000 AqUSDC",
+        },
+        {
+          title: "2.50%",
+          tag: "2.50%",
+        },
+        {
+          title: "0 AqUSDC",
+          tag: "0.0000 AqUSDC",
+        },
+        {
+          title: "4.00%",
+          tag: "4.00%",
+        },
+        {
+          title: "0.00%",
+          tag: "0.00%",
+        },
+        {
+          onlyIcons: ["BLUSDC", "XLM"],
+          tag: "Collateral",
+          clickable: "toggle",
+        },
+      ],
+    },
   ],
 };
 
@@ -184,6 +218,17 @@ export const STELLAR_POOLS = {
     vToken: CONTRACT_ADDRESSES.VUSDC_TOKEN,
     nativeContract: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
   },
+  AQUARIUS_USDC: {
+    id: 'AQUARIUS_USDC',
+    name: 'Aquarius USD Coin',
+    symbol: 'AqUSDC',
+    icon: '/icons/usdc-icon.svg',
+    decimals: 7,
+    issuer: 'GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER',
+    nativeContract: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
+    lendingProtocol: CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC,
+    vToken: CONTRACT_ADDRESSES.VAQUARIUS_USDC_TOKEN,
+  },
   SOROSWAP_USDC: {
     id: 'SOROSWAP_USDC',
     name: 'Soroswap USD Coin',
@@ -198,6 +243,6 @@ export const STELLAR_POOLS = {
 
 // Supported assets for dropdown
 export const STELLAR_ASSETS = [
-  'XLM', 'USDC', 'SOROSWAP_USDC',
+  'XLM', 'USDC', 'AQUARIUS_USDC', 'SOROSWAP_USDC',
 ] as const;
 export type StellarAsset = typeof STELLAR_ASSETS[number];

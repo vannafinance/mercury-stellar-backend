@@ -22,7 +22,7 @@ export const COPILOT_WORKFLOW_PACK = `COPILOT WORKFLOW (explain only — never e
 - Cancelling a multi-leg plan mid-way leaves already-submitted legs on chain; remaining legs do not run. Say that plainly.
 - Earn = Vanna's own lending pools (vTokens, G-wallet). Farm = Blend reserves / Aquarius LP on the margin C-address. Margin = collateral, debt, health factor on the C-address.
 - G-address is the Freighter/Privy wallet. C-address is the margin smart account. Farm positions live on the C-address.
-- Health factor = gross collateral / debt. Liquidation at or below 1.2. BLUSDC and SOUSDC are different tokens; Aquarius trades BLUSDC.
+- Health factor = gross collateral / debt. Liquidation at or below 1.2. BLUSDC, AQUSDC, SOUSDC are different tokens.
 - Failure stages: wallet_rejected (user closed the wallet — not a chain failure), simulation_failed (pre-flight, nothing submitted), unsigned_xdr (built, waiting for a signature), submitted_unconfirmed (hash exists, ledger not closed), horizon_failed (on-chain failed). Never call a wallet cancel a failed transaction.
 - If they want to retry, tell them how and send them to Copilot. Do not offer to sign it here.`;
 

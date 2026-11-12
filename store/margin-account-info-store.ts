@@ -46,7 +46,7 @@ export const isSnapshotFeedSuppressed = () => Date.now() < snapshotFeedSuppresse
 const canonicalMarginToken = (token: string): string => {
   const normalized = token.toUpperCase();
   if (normalized === 'BLEND_USDC' || normalized === 'USDC') return 'BLUSDC';
-  if (normalized === 'AQUSDC' || normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') return 'BLUSDC'; // old Aquarius USDC names: Aquarius uses Blend USDC now
+  if (normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') return 'AQUSDC';
   if (normalized === 'SOROSWAPUSDC' || normalized === 'SOROSWAP_USDC') return 'SOUSDC';
   return normalized;
 };
@@ -542,7 +542,7 @@ export const refreshBorrowedBalances = async (
         // full snapshot below sets the authoritative set.
         //
         // And NEVER let the fast partial overwrite SAC keys
-        // (XLM/BLUSDC/SOUSDC). Those are owned by
+        // (XLM/BLUSDC/AQUSDC/SOUSDC). Those are owned by
         // reconcileMarginRawSacCollateral in the full snapshot; skipping them
         // here avoids a brief flicker between two reads of the same balance.
         const sacKeys = new Set(MARGIN_SAC_BALANCE_KEYS);

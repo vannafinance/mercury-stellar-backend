@@ -138,6 +138,7 @@ export const CONTRACT_ADDRESSES = {
   // Reserve share tokens (the old vToken role), one per reserve
   VXLM_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_XLM,
   VBLEND_USDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC,
+  VAQUARIUS_USDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_AQUSDC,
   VSOROSWAP_USDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_SOUSDC,
   // Back-compat alias used by earn constants
   VUSDC_TOKEN: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC,
@@ -145,6 +146,7 @@ export const CONTRACT_ADDRESSES = {
   // Lending reserves — XLM + per-USDC-variant
   LENDING_PROTOCOL_XLM: CREDIT_LAYER_ADDRESSES.RESERVE_XLM,
   LENDING_PROTOCOL_BLEND_USDC: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC,
+  LENDING_PROTOCOL_AQUARIUS_USDC: CREDIT_LAYER_ADDRESSES.RESERVE_AQUSDC,
   LENDING_PROTOCOL_SOROSWAP_USDC: CREDIT_LAYER_ADDRESSES.RESERVE_SOUSDC,
   // Back-compat alias for call sites still keyed on a single "USDC" pool —
   // resolves to the Blend USDC reserve specifically, not a shared canonical one.
@@ -152,9 +154,7 @@ export const CONTRACT_ADDRESSES = {
 
   // Three genuinely distinct USDC test tokens — one per DEX's own real pool.
   BLEND_USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
-  // Aquarius moved to BLUSDC (mainnet-credit-layer, 2026-11-07): the old Aquarius
-  // test USDC (CAZRY5GS…) lost its issuer account and can't take new holders.
-  AQUARIUS_USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
+  AQUARIUS_USDC_TOKEN: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
   SOROSWAP_USDC_TOKEN: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F',
   // Back-compat alias for old single-USDC call sites — resolves to Blend's own token.
   USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
@@ -165,10 +165,11 @@ export const CONTRACT_ADDRESSES = {
   BLEND_USDC: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
 
   // Aquarius AMM (testnet, external). The credit layer's Aquarius validator
-  // accepts only this constant_product XLM/BLUSDC pool (0.3%, index below).
+  // accepts this constant_product XLM/AQUSDC pool (0.3%, index below) — the one the
+  // app uses — and the XLM/BLUSDC pool CBXVVJ5B… at the same index.
   AQUARIUS_ROUTER: 'CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD',
-  AQUARIUS_XLM_USDC_POOL: 'CBXVVJ5BOTUVRPXUY54LXFILWC4ZTJWRP2GIVHBMOEAOPHSLGHBG3NNP',
-  AQUARIUS_USDC: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
+  AQUARIUS_XLM_USDC_POOL: 'CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX',
+  AQUARIUS_USDC: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
   AQUARIUS_POOL_INDEX_HEX: '9ac7a9cde23ac2ada11105eeaa42e43c2ea8332ca0aa8f41f58d7160274d718e',
   /** Share (LP) token of AQUARIUS_XLM_USDC_POOL; the margin account holds it directly. */
   AQUARIUS_XLM_USDC_SHARE: CREDIT_LAYER_ADDRESSES.AQUARIUS_SHARE,
@@ -192,12 +193,11 @@ export const ASSET_TYPES = {
 } as const;
 
 // Classic-side issuers (for trustline / Horizon balance checks).
-// Blend USDC (BLUSDC, SAC CAQCFVLO…) is the classic asset USDC:GATALTGT….
-// Aquarius trades BLUSDC since mainnet-credit-layer, so USDC_AQUARIUS is the
-// same issuer; the old Aquarius test USDC issuer (GAHPYWLK…) no longer exists.
+// Blend USDC (BLUSDC, SAC CAQCFVLO…) is the classic asset USDC:GATALTGT…;
+// Aquarius USDC (AQUSDC, SAC CAZRY5GS…) is USDC:GAHPYWLK… (issuer alive, 2026-11-12).
 export const ASSET_ISSUERS = {
   USDC_BLEND: 'GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56',
-  USDC_AQUARIUS: 'GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56',
+  USDC_AQUARIUS: 'GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER',
 } as const;
 
 export type AssetType = typeof ASSET_TYPES[keyof typeof ASSET_TYPES];
@@ -208,8 +208,7 @@ export function lendingPoolAddress(assetType: AssetType): string {
     case ASSET_TYPES.XLM: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
     case ASSET_TYPES.USDC:
     case ASSET_TYPES.BLEND_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
-    // No AQUSDC reserve since mainnet-credit-layer; Aquarius's USDC is BLUSDC.
-    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
+    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC;
     case ASSET_TYPES.SOROSWAP_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC;
     default: throw new Error(`Unsupported asset type: ${assetType}`);
   }
@@ -221,7 +220,7 @@ export function vTokenAddress(assetType: AssetType): string {
     case ASSET_TYPES.XLM: return CONTRACT_ADDRESSES.VXLM_TOKEN;
     case ASSET_TYPES.USDC:
     case ASSET_TYPES.BLEND_USDC: return CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
-    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
+    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.VAQUARIUS_USDC_TOKEN;
     case ASSET_TYPES.SOROSWAP_USDC: return CONTRACT_ADDRESSES.VSOROSWAP_USDC_TOKEN;
     default: throw new Error(`Unsupported asset type: ${assetType}`);
   }
@@ -886,6 +885,7 @@ export class ContractService {
     XLM: string;
     USDC: string;
     BLEND_USDC: string;
+    AQUARIUS_USDC: string;
     SOROSWAP_USDC: string;
   }> {
     const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
@@ -911,8 +911,8 @@ export class ContractService {
       ? rpcAccountResult.value.sequenceNumber()
       : undefined;
     const tokenContracts = [
-      // Aquarius's USDC is the Blend USDC token now, so it is not read twice.
       CONTRACT_ADDRESSES.BLEND_USDC,
+      CONTRACT_ADDRESSES.AQUARIUS_USDC,
       CONTRACT_ADDRESSES.SOROSWAP_USDC,
     ] as const;
     const tokenResults = sourceSequence === undefined
@@ -934,7 +934,8 @@ export class ContractService {
         : '0';
     };
     const blendUsdc = valueAt(0);
-    const soroswapUsdc = valueAt(1);
+    const aquariusUsdc = valueAt(1);
+    const soroswapUsdc = valueAt(2);
 
     if (horizonResult.status === 'rejected' && tokenResults.every((r) => r.status === 'rejected')) {
       throw new Error('Unable to read wallet balances from Horizon or Soroban RPC');
@@ -944,6 +945,7 @@ export class ContractService {
       XLM: xlmBalance,
       USDC: blendUsdc,
       BLEND_USDC: blendUsdc,
+      AQUARIUS_USDC: aquariusUsdc,
       SOROSWAP_USDC: soroswapUsdc,
     };
   }

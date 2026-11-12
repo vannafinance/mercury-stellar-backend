@@ -26,7 +26,7 @@ const DTABS: [DTab, string, string?][] = [
   ["analytics", "Analytics"],
 ];
 
-/** Pool screen for route id `id` (XLM / BLUSDC / SoUSDC and their aliases, case-insensitive). */
+/** Pool screen for route id `id` (XLM / BLUSDC / AqUSDC / SoUSDC and their aliases, case-insensitive). */
 export function EarnPool({ id, initialTab = "details", initialMode = "supply" }: { id: string; initialTab?: DTab; initialMode?: EarnMode }) {
   const router = useRouter();
   const d = useEarnV3();

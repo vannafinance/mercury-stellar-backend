@@ -25,9 +25,8 @@ describe('MarginAccountService.normalizeContractTokenSymbol', () => {
   it('maps BLUSDC → USDC', () => expect(normalize('BLUSDC')).toBe('USDC'));
   it('maps BLEND_USDC → USDC', () => expect(normalize('BLEND_USDC')).toBe('USDC'));
   it('maps USDC → USDC', () => expect(normalize('USDC')).toBe('USDC'));
-  // Aquarius trades Blend USDC since mainnet-credit-layer: the old Aquarius names are Blend USDC.
-  it('maps AQUARIUS_USDC → USDC (Blend USDC)', () => expect(normalize('AQUARIUS_USDC')).toBe('USDC'));
-  it('maps AQUSDC → USDC (Blend USDC)', () => expect(normalize('AQUSDC')).toBe('USDC'));
+  it('maps AQUARIUS_USDC → AQUSDC', () => expect(normalize('AQUARIUS_USDC')).toBe('AQUSDC'));
+  it('maps AQUSDC → AQUSDC', () => expect(normalize('AQUSDC')).toBe('AQUSDC'));
   it('maps SOROSWAP_USDC → SOUSDC', () => expect(normalize('SOROSWAP_USDC')).toBe('SOUSDC'));
   it('maps SOUSDC → SOUSDC', () => expect(normalize('SOUSDC')).toBe('SOUSDC'));
   it('uppercases unrecognised symbols', () => expect(normalize('xlm')).toBe('XLM'));

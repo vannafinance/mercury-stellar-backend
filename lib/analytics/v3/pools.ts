@@ -8,10 +8,11 @@ import type { AllPoolStats } from "@/lib/pool-stats";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { finite } from "./format";
 
-/** The three Vanna lending pools (XLM, BLUSDC, SOUSDC), in display order. `key` is the `/api/pools` key. */
+/** The four Vanna lending pools, in display order. `key` is the `/api/pools` key. */
 export const POOLS = [
   { key: "XLM", symbol: "XLM", name: "Stellar Lumens", address: CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM },
   { key: "USDC", symbol: "BLUSDC", name: "Blend USDC", address: CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC },
+  { key: "AQUARIUS_USDC", symbol: "AQUSDC", name: "Aquarius USDC", address: CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC },
   { key: "SOROSWAP_USDC", symbol: "SOUSDC", name: "Soroswap USDC", address: CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC },
 ] as const satisfies ReadonlyArray<{ key: keyof AllPoolStats; symbol: string; name: string; address: string }>;
 
@@ -19,8 +20,8 @@ export const POOLS = [
 export function poolSymbolFor(symbol: string): string | null {
   const u = symbol.toUpperCase();
   if (u === "XLM") return "XLM";
-  // AQUSDC / AQUARIUS_USDC: old Aquarius USDC names; Aquarius uses BLUSDC now.
-  if (u === "USDC" || u === "BLUSDC" || u === "BLEND_USDC" || u === "AQUSDC" || u === "AQUARIUS_USDC") return "BLUSDC";
+  if (u === "USDC" || u === "BLUSDC" || u === "BLEND_USDC") return "BLUSDC";
+  if (u === "AQUSDC" || u === "AQUARIUS_USDC") return "AQUSDC";
   if (u === "SOUSDC" || u === "SOROSWAP_USDC") return "SOUSDC";
   return null;
 }

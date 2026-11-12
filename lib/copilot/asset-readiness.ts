@@ -23,14 +23,12 @@ import { AquariusService } from "@/lib/aquarius-utils";
 const BLEND_FAUCET_URL =
   "https://ewqw4hx7oa.execute-api.us-east-1.amazonaws.com/getAssets";
 
-/**
- * Aquarius's USDC is the Blend USDC classic asset (USDC:GATALTGT…) since
- * mainnet-credit-layer. The old Aquarius test USDC and its faucet key are gone
- * (the issuer account no longer exists), so nothing here mints it: Blend USDC
- * comes from the Blend faucet.
- */
+/** Aquarius testnet distribution key - same as faucet-utils (public in Aquarius app). */
+const AQUARIUS_FAUCET_SECRET =
+  "SBPQCB4DOUQ26OC43QNAA3ODZOGECHJUVHDHYRHKYPL4SA22RRYGHQCX";
 const AQUARIUS_USDC_CODE = "USDC";
 const AQUARIUS_USDC_ISSUER = ASSET_ISSUERS.USDC_AQUARIUS;
+const AQUARIUS_USDC_FAUCET_AMOUNT = "1000.0000000";
 
 const SOROSWAP_FAUCET_URL = "https://api.soroswap.finance/api/faucet";
 
@@ -77,14 +75,15 @@ function looksG(a?: string | null): a is string {
 export function readinessDisplayAsset(raw?: string | null): string {
   const u = String(raw || "").trim().toUpperCase().replace(/[\s_-]/g, "");
   if (!u || u === "XLM") return u || "XLM";
-  // AQUSDC / Aquarius USDC: old names of the token Aquarius trades, which is BLUSDC now.
-  if (u === "USDC" || u === "BLUSDC" || u === "BLENDUSDC" || u === "AQUSDC" || u === "AQUARIUSUSDC") return "BLUSDC";
+  if (u === "USDC" || u === "BLUSDC" || u === "BLENDUSDC") return "BLUSDC";
+  if (u === "AQUSDC" || u === "AQUARIUSUSDC") return "AQUSDC";
   if (u === "SOUSDC" || u === "SOROSWAPUSDC") return "SOUSDC";
   return String(raw || "").trim().toUpperCase() || "TOKEN";
 }
 
 function sacContractFor(display: string): string | null {
   if (display === "BLUSDC") return CONTRACT_ADDRESSES.BLEND_USDC;
+  if (display === "AQUSDC") return CONTRACT_ADDRESSES.AQUARIUS_USDC;
   if (display === "SOUSDC") return CONTRACT_ADDRESSES.SOROSWAP_USDC;
   return null;
 }
@@ -163,19 +162,19 @@ export async function fetchBlendFaucetXdr(
 }
 
 /**
- * Build the changeTrust for Aquarius's USDC (the Blend USDC classic asset) when the
- * wallet lacks it. Only the user signs. There is no mint: the old Aquarius faucet
- * cannot issue Blend USDC, which comes from the Blend faucet. `opts` is kept for
- * callers; `mintIfMissing` no longer adds anything.
+ * Build Aquarius USDC changeTrust (+ optional faucet payment), faucet-signed.
+ * User still signs as tx source. Returns null XDR path via alreadyReady when
+ * trustline exists and `mintIfMissing` is false.
  */
 export async function buildAquariusUsdcSetupXdr(
   gAddress: string,
   opts: { mintIfMissing?: boolean } = {},
 ): Promise<{ xdr: string } | { alreadyReady: true } | { error: string }> {
-  void opts;
+  const mintIfMissing = opts.mintIfMissing !== false;
   try {
     const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
     const userAccount = await horizon.loadAccount(gAddress);
+    const faucetKeypair = StellarSdk.Keypair.fromSecret(AQUARIUS_FAUCET_SECRET);
     const asset = new StellarSdk.Asset(AQUARIUS_USDC_CODE, AQUARIUS_USDC_ISSUER);
 
     const hasTrust = userAccount.balances.some((b) => {
@@ -185,15 +184,31 @@ export async function buildAquariusUsdcSetupXdr(
       const line = b as StellarSdk.Horizon.HorizonApi.BalanceLineAsset;
       return line.asset_code === AQUARIUS_USDC_CODE && line.asset_issuer === AQUARIUS_USDC_ISSUER;
     });
-    if (hasTrust) return { alreadyReady: true };
 
-    const built = new StellarSdk.TransactionBuilder(userAccount, {
+    if (hasTrust && !mintIfMissing) return { alreadyReady: true };
+
+    const txBuilder = new StellarSdk.TransactionBuilder(userAccount, {
       fee: StellarSdk.BASE_FEE,
       networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .setTimeout(180)
-      .addOperation(StellarSdk.Operation.changeTrust({ asset }))
-      .build();
+    }).setTimeout(180);
+
+    if (!hasTrust) {
+      txBuilder.addOperation(StellarSdk.Operation.changeTrust({ asset }));
+    }
+    if (mintIfMissing) {
+      txBuilder.addOperation(
+        StellarSdk.Operation.payment({
+          source: faucetKeypair.publicKey(),
+          destination: gAddress,
+          asset,
+          amount: AQUARIUS_USDC_FAUCET_AMOUNT,
+        }),
+      );
+    }
+
+    const built = txBuilder.build();
+    if (built.operations.length === 0) return { alreadyReady: true };
+    built.sign(faucetKeypair);
     return { xdr: built.toXDR() };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Aquarius setup failed" };
@@ -281,7 +296,7 @@ export function classifyTrustlineFailure(raw: string, opts?: {
       message:
         `This ${asset} operation needs a lending-pool treasury trustline that is not configured ` +
         `(account ${missingAccount.slice(0, 4)}…${missingAccount.slice(-4)}). ` +
-        `That is a protocol setup issue, not your wallet. Try a different asset (e.g. SOUSDC or XLM) ` +
+        `That is a protocol setup issue, not your wallet. Try a different asset (e.g. AQUSDC or XLM) ` +
         `or ask an admin to configure the pool treasury.`,
     };
   }
@@ -299,7 +314,7 @@ export function classifyTrustlineFailure(raw: string, opts?: {
     reason: "wallet_setup",
     message:
       `${asset} is not ready in your wallet (trustline / faucet funding missing). ` +
-      `Use Faucet to mint ${asset === "BLUSDC" ? "Blend USDC" : asset}, ` +
+      `Use Faucet to mint ${asset === "BLUSDC" ? "Blend USDC" : asset === "AQUSDC" ? "Aquarius USDC" : asset}, ` +
       `then retry. No transaction was submitted.`,
   };
 }
@@ -339,6 +354,51 @@ async function ensureWalletAssetReady(
             ? `After Soroswap faucet mint, wallet has ~${bal.toFixed(4)} SOUSDC but you need ${amount}. Try a smaller amount.`
             : `Could not auto-fund SOUSDC (${"error" in minted ? minted.error : "faucet failed"}). Open Faucet → Soroswap USDC, then retry.`,
           facts: { available: bal, requested: amount, asset: "SOUSDC" },
+        };
+      }
+    }
+    return { status: "ready" };
+  }
+
+  if (display === "AQUSDC") {
+    const hasClassic = await AquariusService.hasAquariusUsdcTrustline(trader);
+    const bal = await walletSacBalance(trader, "AQUSDC");
+    const needFunds = amount > 0 && bal + 1e-7 < amount;
+
+    if (!hasClassic || needFunds) {
+      const setup = await buildAquariusUsdcSetupXdr(trader, { mintIfMissing: needFunds || !hasClassic });
+      if ("error" in setup) {
+        return {
+          status: "blocked",
+          reason: "setup_failed",
+          message: `Could not prepare AQUSDC trustline/faucet setup: ${setup.error}`,
+        };
+      }
+      if ("xdr" in setup) {
+        return {
+          status: "needs_setup",
+          kind: needFunds ? "aquarius_setup" : "classic_trustline",
+          asset: "AQUSDC",
+          unsigned_xdr: setup.xdr,
+          label: needFunds
+            ? "Setup AQUSDC trustline + faucet mint"
+            : "Open AQUSDC (Aquarius USDC) trustline",
+          message:
+            `AQUSDC is not ready in your wallet yet` +
+            (!hasClassic ? " (classic trustline missing)" : "") +
+            (needFunds ? ` - need ${amount}, have ~${bal.toFixed(4)}` : "") +
+            `. Sign this setup transaction first; Copilot continues your original action automatically after it confirms.`,
+        };
+      }
+      // alreadyReady but still short on SAC balance (shouldn't mint-skip)
+      if (needFunds) {
+        return {
+          status: "blocked",
+          reason: "insufficient_balance",
+          message:
+            `Wallet has ~${bal.toFixed(4)} AQUSDC but you need ${amount}. ` +
+            `Mint more via Faucet or reduce the amount.`,
+          facts: { available: bal, requested: amount, asset: "AQUSDC" },
         };
       }
     }
@@ -425,9 +485,10 @@ export async function preflightAssetReadiness(params: {
 
   if (SWAP_OPS.has(op) && looksG(trader)) {
     const out = readinessDisplayAsset(params.token_out || params.asset);
-    // Aquarius's USDC out (the Blend USDC classic asset) requires a trustline
-    if (out === "USDC" || out === "BLUSDC") {
-      if (op.includes("aquarius")) {
+    // Aquarius classic USDC out requires trustline
+    if (out === "AQUSDC" || out === "USDC" || out === "BLUSDC") {
+      // Prefer Aquarius classic check when swapping to USDC family on Aquarius
+      if (out === "AQUSDC" || (op.includes("aquarius") && (out === "USDC" || out === "BLUSDC"))) {
         const has = await AquariusService.hasAquariusUsdcTrustline(trader);
         if (!has) {
           const setup = await buildAquariusChangeTrustXdr(trader);
@@ -435,11 +496,11 @@ export async function preflightAssetReadiness(params: {
             return {
               status: "needs_setup",
               kind: "classic_trustline",
-              asset: "BLUSDC",
+              asset: "AQUSDC",
               unsigned_xdr: setup.xdr,
-              label: "Open USDC (Blend USDC) trustline",
+              label: "Open Aquarius USDC trustline",
               message:
-                `Your wallet needs a USDC (Blend USDC) trustline before this swap can settle. ` +
+                `Your wallet needs an Aquarius USDC trustline before this swap can settle. ` +
                 `Sign this setup first; Copilot retries the swap after it confirms.`,
             };
           }

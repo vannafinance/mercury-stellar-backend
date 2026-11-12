@@ -8,7 +8,7 @@ export interface Token {
   issuer?: string;
   isNative?: boolean;
   isVerified?: boolean;
-  /** UI-only override for `symbol` (e.g. "SoUSDC" instead of the functional
+  /** UI-only override for `symbol` (e.g. "AqUSDC" instead of the functional
    *  "USDC" used everywhere the service layer keys balances/quotes/swaps by
    *  the underlying 'XLM'|'USDC' contract type). Only ever applied when
    *  building the token objects handed to presentational components. */

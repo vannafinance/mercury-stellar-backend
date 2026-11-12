@@ -114,7 +114,7 @@ export function LendingPools({ p }: { p: Portfolio }) {
     ["Value", "1fr", (r) => <Ct>{usd(r.val)}</Ct>],
   ];
   const vis = colDefs.filter((c) => !hide.includes(c[0]));
-  // Earn pool route ids: XLM, BLUSDC, SoUSDC (app/earn/[id] maps them to the pool).
+  // Earn pool route ids: XLM, BLUSDC, AqUSDC, SoUSDC (app/earn/[id] maps them to the pool).
   const goEarn = (route: string, action?: "supply" | "withdraw") =>
     router.push(`/earn/${route}?tab=your-positions${action ? `&action=${action}` : ""}`);
   const poolSyms = Array.from(new Set([...rows.map((r) => r.sym), ...earn.transactions.map((x) => lendSym(x.asset))]));

@@ -4,23 +4,20 @@
  * symbol (same names the rest of the app uses — see STELLAR_POOLS in lib/constants/earn), the
  * oracle symbol it is priced with, and its on-chain contracts.
  *
- * There is no Aquarius USDC pool any more: Aquarius uses Blend USDC (BLUSDC) since
- * mainnet-credit-layer, so its old route names open the USDC pool.
- *
- * SOROSWAP_USDC has no Reflector entry of their own; it piggybacks on USDC's
+ * AQUARIUS_USDC / SOROSWAP_USDC have no Reflector entry of their own; they piggyback on USDC's
  * oracle price (the alias resolves inside oracle-price.ts), exactly as the pre-V3 Earn page did.
  */
 import { ASSET_TYPES, CONTRACT_ADDRESSES, type AssetType } from "@/lib/stellar-utils";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 
 /** Keys of the pools /api/pools and useUserPositions return. */
-export type PoolKey = "XLM" | "USDC" | "SOROSWAP_USDC";
+export type PoolKey = "XLM" | "USDC" | "AQUARIUS_USDC" | "SOROSWAP_USDC";
 
 export interface EarnPoolDef {
   key: PoolKey;
   /** ContractService asset type (same string as `key`). */
   assetType: AssetType;
-  /** Display symbol (XLM / BLUSDC / SoUSDC). */
+  /** Display symbol (XLM / BLUSDC / AqUSDC / SoUSDC). */
   sym: string;
   /** Oracle symbol for USD values. */
   priceSym: "XLM" | "USDC";
@@ -30,7 +27,7 @@ export interface EarnPoolDef {
 }
 
 /** Every Earn pool, in the order the app has always listed them. */
-export const EARN_POOLS: EarnPoolDef[] = (["XLM", "USDC", "SOROSWAP_USDC"] as const).map((key) => ({
+export const EARN_POOLS: EarnPoolDef[] = (["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const).map((key) => ({
   key,
   assetType: ASSET_TYPES[key] as AssetType,
   sym: STELLAR_POOLS[key].symbol,
@@ -46,8 +43,8 @@ export const EARN_PRICE_SYMS = ["XLM", "USDC"];
 /** Every spelling a route / deep link may use for a pool (case-insensitive). */
 const ALIASES: Record<PoolKey, string[]> = {
   XLM: ["xlm"],
-  // Old Aquarius USDC names: Aquarius uses this Blend USDC token now.
-  USDC: ["usdc", "blusdc", "blend_usdc", "aqusdc", "aquarius_usdc", "aquiresusdc"],
+  USDC: ["usdc", "blusdc", "blend_usdc"],
+  AQUARIUS_USDC: ["aqusdc", "aquarius_usdc", "aquiresusdc"],
   SOROSWAP_USDC: ["sousdc", "soroswap_usdc", "soroswapusdc"],
 };
 

@@ -43,7 +43,7 @@ const normalizeContractTokenSymbol = (symbol: string) =>
   symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
     ? "USDC"
     : symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC"
-      ? "USDC"
+      ? "AQUSDC"
       : symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC"
         ? "SOUSDC"
         : symbol;
@@ -100,9 +100,11 @@ export function TransferTab({ m }: { m: MarginScreen }) {
         const c = normalizeContractTokenSymbol(sym);
         return c === "USDC"
           ? parseFloat(balances.BLEND_USDC) || 0
-          : c === "SOUSDC"
-            ? parseFloat(balances.SOROSWAP_USDC) || 0
-            : parseFloat(balances.XLM) || 0;
+          : c === "AQUSDC"
+            ? parseFloat(balances.AQUARIUS_USDC) || 0
+            : c === "SOUSDC"
+              ? parseFloat(balances.SOROSWAP_USDC) || 0
+              : parseFloat(balances.XLM) || 0;
       } catch (error) {
         console.error("Error fetching selected wallet balance:", error);
         return 0;

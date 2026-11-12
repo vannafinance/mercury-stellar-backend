@@ -79,7 +79,7 @@ export const LiteHome = () => {
     }
   }, [tick, marginAccountAddress, qc]);
 
-  const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "SOUSDC"]);
+  const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
 
   const positions = useMemo<LitePosition[]>(() => {
     if (liteRecords.length === 0) return [];

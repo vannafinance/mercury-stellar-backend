@@ -5,14 +5,14 @@
  * `{ amount, usdValue }` maps the margin UI has always consumed:
  *   - plain token holdings: margin.assets() Token entries -> SAC balance(margin)
  *   - LP holdings held directly by the margin: Soroswap pair token and the
- *     Aquarius XLM/BLUSDC share token -> balance(margin), priced by the oracle
+ *     Aquarius XLM/AQUSDC share token -> balance(margin), priced by the oracle
  *   - Blend venue: BLEND_VALUER.positions(BLEND_POOL, margin) for the per-token
  *     split, oracle.get_price(BLEND_POOL, margin) for the whole position's USD
  *   - debts: margin.debts() -> reserve.debt_of(margin) (WAD)
  *   - health: CreditLayer.margin_value(margin) -> (collateral USD, debt USD)
  *
  * Balance keys stay the ones the UI already renders: XLM, USDC + BLUSDC (Blend
- * USDC, mirrored), SOUSDC, BLEND_XLM / BLEND_USDC (Blend supply),
+ * USDC, mirrored), AQUSDC, SOUSDC, BLEND_XLM / BLEND_USDC (Blend supply),
  * SS_XLM_USDC (Soroswap LP), AQ_XLM_USDC (Aquarius LP).
  *
  * Every read is a simulation (no signature). Nothing is cached in browser
@@ -47,6 +47,7 @@ const NATIVE_DECIMALS = 7;
 const UI_SYMBOL: Record<CreditAsset, string> = {
   XLM: 'XLM',
   BLUSDC: 'USDC',
+  AQUSDC: 'AQUSDC',
   SOUSDC: 'SOUSDC',
 };
 

@@ -65,7 +65,7 @@ describe("margin_executed spot history decoding", () => {
 describe("token-transfer spot history fallback", () => {
   const account = "CACCT";
 
-  it("reconstructs an Aquarius XLM/BLUSDC swap from SEP-41 transfer events", () => {
+  it("reconstructs an Aquarius swap from SEP-41 transfer events", () => {
     const out = decodeSpotTransfer(
       CONTRACT_ADDRESSES.BLEND_XLM,
       ["transfer", account, "CPOOL"],
@@ -89,7 +89,7 @@ describe("token-transfer spot history fallback", () => {
       expect.objectContaining({
         protocol: "aquarius",
         tokenIn: "XLM",
-        tokenOut: "BLUSDC",
+        tokenOut: "AqUSDC",
         amountIn: "1.2500000",
         amountOut: "0.2500000",
         txHash: "tx-transfer",
@@ -124,8 +124,8 @@ describe("token-transfer spot history fallback", () => {
   });
 
   it("excludes an LP deposit whose over-supplied side is refunded", () => {
-    // Aquarius deposit_liquidity (XLM/BLUSDC pool): XLM and BLUSDC both leave,
-    // a few stroops of BLUSDC come back. Not a swap, though it has an outgoing and an incoming leg.
+    // Aquarius deposit_liquidity: XLM and AqUSDC both leave, a few stroops of
+    // AqUSDC come back. Not a swap, though it has an outgoing and an incoming leg.
     const legs = [
       decodeSpotTransfer(CONTRACT_ADDRESSES.AQUARIUS_USDC, ["transfer", account, "CPOOL"], BigInt("20000000"), account, "tx-lp", 400),
       decodeSpotTransfer(CONTRACT_ADDRESSES.BLEND_XLM, ["transfer", account, "CPOOL", "native"], BigInt("2601400000"), account, "tx-lp", 400),

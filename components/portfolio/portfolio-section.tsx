@@ -44,10 +44,11 @@ export const PortfolioSection = () => {
   const totalBorrowed = snapshot?.totalBorrowedValue ?? store.totalBorrowedValue ?? 0;
 
   // Wallet (spendable) USD = Σ wallet token balance × live oracle price.
-  const prices = useTokenPrices(["XLM", "USDC", "BLUSDC", "SOUSDC"]);
+  const prices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
   const walletUsd = useMemo(() => {
     const priceKey = (sym: string): string =>
       sym === "BLEND_USDC" ? "BLUSDC"
+      : sym === "AQUARIUS_USDC" ? "AQUSDC"
       : sym === "SOROSWAP_USDC" ? "SOUSDC"
       : sym;
     return Object.entries(tokenBalances).reduce((sum, [sym, amt]) => {
@@ -67,7 +68,7 @@ export const PortfolioSection = () => {
   const { transactions: earnTx, isLoading: earnTxLoading } = useEarnTransactions();
   const netEarnings = useMemo(() => {
     const priceFor: Record<string, string> = {
-      XLM: "XLM", USDC: "USDC", SOROSWAP_USDC: "USDC",
+      XLM: "XLM", USDC: "USDC", AQUARIUS_USDC: "USDC", SOROSWAP_USDC: "USDC",
     };
     if (earnTxLoading) return 0;
     const netPrincipalByAsset: Record<string, number> = {};
@@ -77,7 +78,7 @@ export const PortfolioSection = () => {
       netPrincipalByAsset[tx.asset] = (netPrincipalByAsset[tx.asset] ?? 0) +
         (tx.type === "supply" ? amt : -amt);
     }
-    return (["XLM", "USDC", "SOROSWAP_USDC"] as const).reduce((sum, asset) => {
+    return (["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const).reduce((sum, asset) => {
       // A missing history entry means "we don't know this asset's principal",
       // NOT "principal is 0" — defaulting to 0 misreports the ENTIRE deposit
       // as earned yield whenever Mercury hasn't (yet) indexed this asset's

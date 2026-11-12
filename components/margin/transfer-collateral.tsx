@@ -44,7 +44,7 @@ export const TransferCollateral = () => {
     symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
       ? "USDC"
       : symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC"
-        ? "USDC"
+        ? "AQUSDC"
         : symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC"
           ? "SOUSDC"
           : symbol;
@@ -60,7 +60,7 @@ export const TransferCollateral = () => {
   const [walletBalance, setWalletBalance] = useState<number>(0);
   // Real on-chain XLM minimum reserve (base + subentries) — a flat "keep 1
   // XLM" undershoots for a wallet holding several trustlines (USDC, BLUSDC,
-  // SOUSDC, LP shares, ...), each adding 0.5 XLM to the real floor.
+  // AQUSDC, SOUSDC, LP shares, ...), each adding 0.5 XLM to the real floor.
   // That underestimate let Max/100% fill in more than the wallet could
   // actually send, which then traps on-chain with Error(Contract, #10)
   // ("resulting balance is not within the allowed range") — same bug the
@@ -108,7 +108,7 @@ export const TransferCollateral = () => {
     };
   }, [userAddress]);
 
-  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
   const sourceBalance = selectedTransferType === "MB" ? walletBalance : marginAccountBalance;
   const maxTransferableBalance = computeMaxTransferableBalance(
     selectedTransferType,
@@ -180,6 +180,7 @@ export const TransferCollateral = () => {
       const contractTokenSymbol = normalizeContractTokenSymbol(tokenSymbol);
 
       if (contractTokenSymbol === "USDC") return parseFloat(balances.BLEND_USDC) || 0;
+      if (contractTokenSymbol === "AQUSDC") return parseFloat(balances.AQUARIUS_USDC) || 0;
       if (contractTokenSymbol === "SOUSDC") return parseFloat(balances.SOROSWAP_USDC) || 0;
 
       return parseFloat(balances.XLM) || 0;
@@ -195,6 +196,7 @@ export const TransferCollateral = () => {
   const getTokenSacAddress = (tokenSymbol: string): string => {
     switch (normalizeContractTokenSymbol(tokenSymbol)) {
       case "USDC": return CONTRACT_ADDRESSES.BLEND_USDC;
+      case "AQUSDC": return CONTRACT_ADDRESSES.AQUARIUS_USDC;
       case "SOUSDC": return CONTRACT_ADDRESSES.SOROSWAP_USDC;
       default: return CONTRACT_ADDRESSES.BLEND_XLM; // XLM SAC
     }

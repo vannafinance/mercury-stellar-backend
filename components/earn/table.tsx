@@ -35,9 +35,9 @@ const ITEMS_PER_PAGE = 4;
 
 // Every token the protocol supports across Earn/Farm pools — kept in sync
 // with `ACTIVE_ASSETS` in lib/analytics/stellar/canon.ts (that module treats
-// BLUSDC/SOUSDC as distinct symbols since Risk Engine prices them
+// BLUSDC/AQUSDC/SOUSDC as distinct symbols since Risk Engine prices them
 // separately; these filter facets only need the plain human-facing asset
-// name a pool is denominated in, so "USDC" covers both variants here).
+// name a pool is denominated in, so "USDC" covers all three variants here).
 const ALL_POOL_ASSETS = ["XLM", "USDC"];
 
 const FILTER_OPTIONS = {

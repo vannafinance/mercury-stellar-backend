@@ -21,7 +21,7 @@ const canonical = (t: string): string => {
   // and rendered as the raw "BLEND_XLM" in history rows.
   if (u === "BLEND_XLM") return "XLM";
   if (u === "BLEND_USDC" || u === "USDC") return "BLUSDC";
-  if (u === "AQUARIUS_USDC" || u === "AQUSDC") return "BLUSDC"; // Aquarius uses Blend USDC now
+  if (u === "AQUARIUS_USDC") return "AQUSDC";
   if (u === "SOROSWAP_USDC") return "SOUSDC";
   return u;
 };

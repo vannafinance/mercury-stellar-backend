@@ -95,6 +95,7 @@ export async function getLitePositionsFromChain(
   // protocol aggregates so multiple open pools never double-count one liability.
   let remainingXlmDebt = amountOf(debts, "XLM");
   let remainingBlendUsdcDebt = amountOf(debts, "BLUSDC", "USDC");
+  let remainingAqUsdcDebt = amountOf(debts, "AQUSDC", "AQUARIUS_USDC");
   let remainingSoUsdcDebt = amountOf(debts, "SOUSDC", "SOROSWAP_USDC");
   const positions: LitePositionRecord[] = [];
 
@@ -174,10 +175,9 @@ export async function getLitePositionsFromChain(
     if (!(lp > DUST) || !stats) return;
     const { amountA, amountB } = aquariusLpUnderlyingAmounts(lp, stats, pool.tokens[0], pool.tokens[1]);
     const xlmBorrow = Math.min(amountA, remainingXlmDebt);
-    // Aquarius trades Blend USDC, so its USDC leg is BLUSDC debt (what Blend supply did not take).
-    const usdcBorrow = Math.min(amountB, remainingBlendUsdcDebt);
+    const usdcBorrow = Math.min(amountB, remainingAqUsdcDebt);
     remainingXlmDebt -= xlmBorrow;
-    remainingBlendUsdcDebt -= usdcBorrow;
+    remainingAqUsdcDebt -= usdcBorrow;
     const equityXlm = Math.max(0, amountA - xlmBorrow);
     const equityUsd = equityXlm * xlmPrice;
     positions.push(record({

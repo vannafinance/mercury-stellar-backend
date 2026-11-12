@@ -29,7 +29,7 @@
  *   - SAC tokens on this deployment are 7-decimal (stroops), so a stroop→WAD
  *     conversion multiplies by 1e11 (see `getMarginAccountTokenBalanceWad`).
  *   - Symbol normalization (`normalizeContractTokenSymbol`) maps the several UI
- *     aliases (USDC/BLUSDC and the old Aquarius names, SOUSDC) onto one symbol per asset; the
+ *     aliases (USDC/BLUSDC, AQUSDC, SOUSDC) onto one symbol per asset; the
  *     token ADDRESS sent on-chain comes from `tokenAddressFor`.
  *
  * Discovery is a single permanent storage read (`margin_of`), so there is no
@@ -124,14 +124,13 @@ export class MarginAccountService {
 
   private static normalizeContractTokenSymbol(tokenSymbol: string): string {
     const normalized = tokenSymbol?.toUpperCase();
-    if (
-      normalized === 'BLUSDC' || normalized === 'BLEND_USDC' || normalized === 'USDC' ||
-      // Old Aquarius USDC names: Aquarius uses the Blend USDC token since mainnet-credit-layer.
-      normalized === 'AQUSDC' || normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC'
-    ) {
+    if (normalized === 'BLUSDC' || normalized === 'BLEND_USDC' || normalized === 'USDC') {
       // One symbol for Blend USDC across the app; the token address is what
       // goes on-chain (tokenAddressFor maps USDC and BLUSDC to the same token).
       return 'USDC';
+    }
+    if (normalized === 'AQUSDC' || normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') {
+      return 'AQUSDC';
     }
     if (normalized === 'SOUSDC' || normalized === 'SOROSWAPUSDC' || normalized === 'SOROSWAP_USDC') {
       return 'SOUSDC';
@@ -166,9 +165,11 @@ export class MarginAccountService {
         const faucetHint =
           displaySymbol === 'BLUSDC'
             ? 'Blend USDC'
-            : displaySymbol === 'SOUSDC'
-              ? 'Soroswap USDC'
-              : displaySymbol;
+            : displaySymbol === 'AQUSDC'
+              ? 'Aquarius USDC'
+              : displaySymbol === 'SOUSDC'
+                ? 'Soroswap USDC'
+                : displaySymbol;
         return {
           ok: false,
           error: `You have no ${displaySymbol} in your wallet. Use the Faucet to mint ${faucetHint} (establishes the required trustline), then retry.`,
@@ -193,7 +194,7 @@ export class MarginAccountService {
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     if (!toCreditAsset(contractBorrowSymbol)) return { ok: true };
     const displayName =
-      contractBorrowSymbol === 'USDC' ? 'USDC' : contractBorrowSymbol === 'SOUSDC' ? 'Soroswap USDC' : contractBorrowSymbol;
+      contractBorrowSymbol === 'USDC' ? 'USDC' : contractBorrowSymbol === 'AQUSDC' ? 'Aquarius USDC' : contractBorrowSymbol === 'SOUSDC' ? 'Soroswap USDC' : contractBorrowSymbol;
     const MAX_UTILIZATION = 0.94;
     try {
       const s = await reserveStats(contractBorrowSymbol);

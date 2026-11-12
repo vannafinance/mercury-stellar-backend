@@ -29,14 +29,14 @@ const tabs = [
 ];
 
 const toInternalAsset = (value: string) => {
-  if (value === "AqUSDC" || value === "AQUARIUS_USDC") return "USDC"; // Aquarius uses Blend USDC now
+  if (value === "AqUSDC" || value === "AQUARIUS_USDC") return "AQUARIUS_USDC";
   if (value === "SoUSDC" || value === "SOROSWAP_USDC") return "SOROSWAP_USDC";
   if (value === "BLUSDC") return "USDC";
   return value.toUpperCase();
 };
 
 const toDisplayAsset = (value: string) => {
-  if (value === "AQUARIUS_USDC") return "BLUSDC";
+  if (value === "AQUARIUS_USDC") return "AqUSDC";
   if (value === "SOROSWAP_USDC") return "SoUSDC";
   if (value === "USDC") return "BLUSDC";
   return value;
@@ -61,7 +61,7 @@ const toIsoDate = (timestamp: number): string => {
   return new Date(timestamp).toISOString().split("T")[0];
 };
 
-// AQUARIUS_USDC (old name, now Blend USDC) / SOROSWAP_USDC have no separate Reflector entry; they peg
+// AQUARIUS_USDC / SOROSWAP_USDC have no separate Reflector entry; they peg
 // to USDC via the alias map inside oracle-price.ts.
 const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   XLM: 'XLM',

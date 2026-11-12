@@ -10,7 +10,7 @@ import { usePoolData } from "@/hooks/use-earn";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
 
 const toInternalAsset = (value: string): string => {
-  if (value === "AqUSDC" || value === "AQUARIUS_USDC") return "USDC"; // Aquarius uses Blend USDC now
+  if (value === "AqUSDC" || value === "AQUARIUS_USDC") return "AQUARIUS_USDC";
   if (value === "SoUSDC" || value === "SOROSWAP_USDC") return "SOROSWAP_USDC";
   if (value === "BLUSDC") return "USDC";
   return value.toUpperCase();

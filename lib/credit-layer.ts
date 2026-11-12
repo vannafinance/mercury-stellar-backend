@@ -45,27 +45,36 @@ export const CREDIT_LAYER_ADDRESSES = {
   RESERVE_XLM: 'CCM6JLRDUJWNKCWQHIVH4OHFNFWJ2A2RZCBKCQVTMKXFUC2UFP4FS4TZ',
   RESERVE_BLUSDC: 'CCACBEOY7UU2F4VYDW6A7N3MKTO7LYPKESZV6XYAOTHNUUPKE6KR3E7Q',
   RESERVE_SOUSDC: 'CDEFUGH6KJ2SU7HHZNJECB2TT23PC5PK3DKSNCH3BTREDC3TJWTCPBN3',
+  /** Added 2026-11-12 with deploy/manage.sh add-asset AQUSDC (Aquarius test USDC; its issuer is alive). */
+  RESERVE_AQUSDC: 'CAMZ7W43OBHHBNGEYBTNMGI3RTQGJJ6VFCCHH7KRXPBASDHKPDMSORCP',
   BLEND_VALIDATOR: 'CCK6WPFKMI3TNIDA2Y2OLWTXOCR3G3JFQZB6PMUQXCMHJKCE47OVGS5T',
   BLEND_VALUER: 'CCEBXXZ55DI3T4BPOB7BRF5SBTPHPASSWS7ZOUMGYJBISWDRHFHCAPZH',
   SOROSWAP_VALIDATOR: 'CCQC3T6UMPUXYBQYCJA3ATX4CG7BXQNJEUJWL7D3MJJ6ASQBEJAJTHTB',
   SOROSWAP_LP_ADAPTER: 'CARSAUCEBBGC2FQWGH5MUSZAF3FWGY5TJ5GCSHYOQH2OFUD3WYVJEIPP',
-  AQUARIUS_VALIDATOR: 'CDNJXHJQVLW7OZQXCE6AVHSDQENGGWIRLXPGBBLMCRXCONWFEIZCCWY7',
+  AQUARIUS_VALIDATOR: 'CCF2AT3BRHELYLI7FD3OB67KEHGWD7NG55WTDK2Y5MR3OTI23VS5X2HL',
   AQUARIUS_LP_ADAPTER: 'CAP3TG5INS5J6CFTOASXKT5HQED3BT6JRMRMPLC76KSL7CC3XWHT53CY',
-  /** Aquarius XLM/BLUSDC pool (0.3%, index 9ac7a9cd…) share token, held directly by the margin account. */
-  AQUARIUS_SHARE: 'CDAK6QXHAL4GOBK4YTZGRXHDPOG7YOL7X3Y4S7EHWO675BSAUC5IF5EC',
+  /**
+   * Aquarius XLM/AQUSDC pool (CD3LFMML…, 0.3%, index 9ac7a9cd…) share token, held directly
+   * by the margin account. This is the Aquarius pool the app uses.
+   */
+  AQUARIUS_SHARE: 'CDZ3L5A7DY6OSJPTWCACOMEA4H6RC7B5CTFRHSPUUAHMEL2MAKY37JMG',
+  /** Aquarius XLM/BLUSDC pool (CBXVVJ5B…) share token. Also allowed on-chain; not offered in the UI. */
+  AQUARIUS_BLUSDC_SHARE: 'CDAK6QXHAL4GOBK4YTZGRXHDPOG7YOL7X3Y4S7EHWO675BSAUC5IF5EC',
 } as const;
 
 /**
- * The three credit-layer assets. Testnet has two USDC test tokens: Blend and
- * Aquarius use BLUSDC, Soroswap uses SOUSDC. The Aquarius test USDC (AQUSDC)
- * was dropped in mainnet-credit-layer because its issuer account no longer
- * exists, so it can't take new holders.
+ * The four credit-layer assets: XLM and one USDC test token per venue — Blend
+ * uses BLUSDC, Aquarius AQUSDC, Soroswap SOUSDC. mainnet-credit-layer's first
+ * testnet deploy (2026-11-10) left AQUSDC out on the README's word that its
+ * issuer no longer existed; the issuer is alive (checked on Horizon 2026-11-12),
+ * so AQUSDC was added back with deploy/manage.sh add-asset.
  */
-export type CreditAsset = 'XLM' | 'BLUSDC' | 'SOUSDC';
+export type CreditAsset = 'XLM' | 'BLUSDC' | 'AQUSDC' | 'SOUSDC';
 
 export const CREDIT_ASSETS: Record<CreditAsset, { token: string; reserve: string; decimals: number }> = {
   XLM: { token: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC', reserve: CREDIT_LAYER_ADDRESSES.RESERVE_XLM, decimals: 7 },
   BLUSDC: { token: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU', reserve: CREDIT_LAYER_ADDRESSES.RESERVE_BLUSDC, decimals: 7 },
+  AQUSDC: { token: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5', reserve: CREDIT_LAYER_ADDRESSES.RESERVE_AQUSDC, decimals: 7 },
   SOUSDC: { token: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F', reserve: CREDIT_LAYER_ADDRESSES.RESERVE_SOUSDC, decimals: 7 },
 };
 
@@ -84,14 +93,12 @@ const STROOP_TO_WAD = BigInt('100000000000'); // 1e11
 /**
  * Maps any UI alias (USDC, BLEND_USDC, AQUARIUS_USDC, SoUSDC, …) to a credit
  * asset. Plain "USDC" means the Blend USDC test token, as everywhere else in the app.
- * The old Aquarius aliases (AQUSDC, AQUARIUS_USDC) resolve to BLUSDC: Aquarius's
- * allowed pool is XLM/BLUSDC now, so "Aquarius USDC" IS the Blend USDC token.
  */
 export function toCreditAsset(symbol: string): CreditAsset | null {
   const s = String(symbol || '').trim().toUpperCase().replace(/[\s-]/g, '_');
   if (s === 'XLM' || s === 'NATIVE') return 'XLM';
   if (['USDC', 'BLUSDC', 'BLEND_USDC', 'BLENDUSDC'].includes(s)) return 'BLUSDC';
-  if (['AQUSDC', 'AQUARIUS_USDC', 'AQUARIUSUSDC', 'AQUIRESUSDC'].includes(s)) return 'BLUSDC';
+  if (['AQUSDC', 'AQUARIUS_USDC', 'AQUARIUSUSDC', 'AQUIRESUSDC'].includes(s)) return 'AQUSDC';
   if (['SOUSDC', 'SOROSWAP_USDC', 'SOROSWAPUSDC'].includes(s)) return 'SOUSDC';
   return null;
 }
