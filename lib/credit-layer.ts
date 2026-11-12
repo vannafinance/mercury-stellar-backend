@@ -27,8 +27,13 @@ import { WRONG_NETWORK_MESSAGE } from './errors/normalize';
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
 // Same RPC as lib/stellar-utils.ts (kept local to avoid an import cycle):
 // SDF's public RPC answered in 5-10s per call on 2026-11-09; Gateway.fm in ~0.2s.
+// Server: Gateway.fm; browser: Ankr (Gateway.fm blocks browser CORS preflights).
+// See the note on SOROBAN_RPC_URL in lib/stellar-utils.ts.
 const SOROBAN_RPC_URL =
-  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-rpc.testnet.stellar.gateway.fm';
+  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
+  (typeof window === 'undefined'
+    ? 'https://soroban-rpc.testnet.stellar.gateway.fm'
+    : 'https://rpc.ankr.com/stellar_testnet_soroban');
 
 /** Addresses written by deploy/deploy.sh to deploy/testnet.json (mainnet-credit-layer, 2026-11-10). */
 export const CREDIT_LAYER_ADDRESSES = {
