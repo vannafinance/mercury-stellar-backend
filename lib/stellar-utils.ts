@@ -4,13 +4,23 @@ import { RETRY, withRetry } from '@/lib/copilot/retry-policy';
 import { markTxSubmitted } from './tx-progress';
 
 export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
-// Gateway.fm public testnet RPC. SDF's soroban-testnet.stellar.org started
-// spiking to 5-10s per simulateTransaction (2026-11-08/09, measured), which
-// made every margin snapshot hit its 12s deadline (UI showed $0 / "No debt").
-// Gateway.fm answered the same calls in ~0.2s with the same 7-day event
-// retention. Override with NEXT_PUBLIC_SOROBAN_RPC_URL if this one degrades.
+// Which testnet RPC to use depends on where the code runs:
+//  - Server (API routes, analytics scan): Gateway.fm. SDF's soroban-testnet.stellar.org
+//    spiked to 5-10s per simulateTransaction (2026-11-08/09, measured), which made every
+//    margin snapshot hit its 12s deadline; Gateway.fm answered in ~0.2s with the same
+//    7-day event retention.
+//  - Browser (the user's own simulate → sign → send): Ankr. Gateway.fm answers the CORS
+//    preflight the SDK triggers (it sends X-Client-Name / X-Client-Version headers)
+//    without Access-Control-Allow-Origin, so browsers block every call to it — every
+//    write failed before reaching the network (2026-11-12). Ankr allows those headers
+//    and is just as fast. If a browser call still fails at the network level, the
+//    rpc.Server patch below retries it once on SDF, whose CORS is also correct.
+// NEXT_PUBLIC_SOROBAN_RPC_URL overrides both.
+const SERVER_RPC_URL = 'https://soroban-rpc.testnet.stellar.gateway.fm';
+const BROWSER_RPC_URL = 'https://rpc.ankr.com/stellar_testnet_soroban';
+const BROWSER_FALLBACK_RPC_URL = 'https://soroban-testnet.stellar.org';
 export const SOROBAN_RPC_URL =
-  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-rpc.testnet.stellar.gateway.fm';
+  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || (typeof window === 'undefined' ? SERVER_RPC_URL : BROWSER_RPC_URL);
 
 /**
  * Gateway.fm (like most fast public RPCs) answers bursts of ~40 parallel
@@ -25,6 +35,12 @@ export const SOROBAN_RPC_URL =
 function isRateLimited(err: any): boolean {
   const status = err?.response?.status ?? err?.status;
   return status === 429 || /\b429\b|too many requests/i.test(String(err?.message ?? ''));
+}
+
+/** A transport failure with no HTTP response: CORS block, DNS, offline, connection reset. */
+function isNetworkFailure(err: any): boolean {
+  if (err?.response) return false;
+  return /network error|failed to fetch|load failed|cors|econnreset|etimedout|socket hang up/i.test(String(err?.message ?? err ?? ''));
 }
 
 /**
@@ -51,6 +67,7 @@ const rpcProto = (StellarSdk as any)?.rpc?.Server?.prototype;
 if (rpcProto && !rpcProto[RPC_RETRY_PATCHED]) {
   rpcProto[RPC_RETRY_PATCHED] = true;
   const serverSide = typeof window === 'undefined';
+  let browserFallback: unknown = null;
   let extraServers: unknown[] | null = null;
   let rotation = 0;
   /** Server to run a read on: the caller's own, or (server-side, primary URL only) the next in rotation. */
@@ -84,6 +101,11 @@ if (rpcProto && !rpcProto[RPC_RETRY_PATCHED]) {
         } catch (err) {
           // An extra read RPC that errors for any other reason: answer from the primary.
           if (target !== this && !isRateLimited(err)) return original.apply(this, args);
+          // Browser: the primary unreachable (CORS, network) — try SDF once.
+          if (!serverSide && isNetworkFailure(err)) {
+            browserFallback ??= new StellarSdk.rpc.Server(BROWSER_FALLBACK_RPC_URL);
+            return original.apply(browserFallback, args);
+          }
           if (!isRateLimited(err) || attempt >= 5) throw err;
           const delay = 250 * 2 ** attempt + Math.floor(Math.random() * 250);
           await new Promise((resolve) => setTimeout(resolve, delay));
