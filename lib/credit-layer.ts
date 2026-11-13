@@ -127,7 +127,7 @@ export const sc = {
   address: (a: string) => StellarSdk.nativeToScVal(a, { type: 'address' }),
   u256: (v: bigint | string | number) => StellarSdk.nativeToScVal(BigInt(v), { type: 'u256' }),
   u128: (v: bigint | string | number) => StellarSdk.nativeToScVal(BigInt(v), { type: 'u128' }),
-  bool: (v: boolean) => StellarSdk.nativeToScVal(v, { type: 'bool' }),
+  bool: (v: boolean) => StellarSdk.xdr.ScVal.scvBool(v),
   addresses: (list: string[]) => StellarSdk.xdr.ScVal.scvVec(list.map((a) => sc.address(a))),
   u128s: (list: (bigint | string | number)[]) => StellarSdk.xdr.ScVal.scvVec(list.map((v) => sc.u128(v))),
   /** A unit enum variant, e.g. ExternalAction::Swap or PriceMode::Liquidation. */

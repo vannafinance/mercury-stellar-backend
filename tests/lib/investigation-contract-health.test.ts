@@ -68,7 +68,7 @@ function rpcStub(options: {
       );
     }
     if (name === "is_healthy") {
-      return success(StellarSdk.nativeToScVal(options.healthy ?? true, { type: "bool" }), at(verdictLedgers, verdictCall++));
+      return success(StellarSdk.xdr.ScVal.scvBool(options.healthy ?? true), at(verdictLedgers, verdictCall++));
     }
     throw new Error(`unexpected method ${name}`);
   });

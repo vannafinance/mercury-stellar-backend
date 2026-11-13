@@ -68,6 +68,13 @@ describe.skipIf(!SECRET)('credit layer live e2e', () => {
     await step('aquarius add 20 XLM + 1 AQUSDC', AQ.addLiquidity(ME, margin, 'XLM', 'USDC', 20, 1));
     const share = Number(await AQ.getLpBalance(margin, 'XLM', 'USDC'));
     log('aquarius share', share);
+    // Protocol 30 regression (2026-11-13): with an Aquarius LP share held, every health check reads
+    // Aquarius pool storage whose keys carry ScValType 22; @stellar/stellar-sdk 14 could not decode
+    // the simulation, so borrow / withdraw failed while deposit (no health check) worked.
+    await step('borrow 5 BLUSDC while holding Aquarius LP', M.borrowTokens(margin, 'BLUSDC', W(5)));
+    await step('borrow 20 XLM while holding Aquarius LP', M.borrowTokens(margin, 'XLM', W(20)));
+    await step('withdraw 10 XLM while holding Aquarius LP', M.withdrawCollateralBalance(margin, 'XLM', W(10)));
+    log('health with Aquarius LP', await M.getMarginHealth(margin));
     await step('aquarius remove all', AQ.removeLiquidity(ME, margin, 'XLM', 'USDC', share));
 
     log('collateral', JSON.stringify((await M.getCollateralBalances(margin)).data));
@@ -77,6 +84,7 @@ describe.skipIf(!SECRET)('credit layer live e2e', () => {
     await step('repay SOUSDC max', M.repayLoan(margin, 'SOUSDC', W(1000)));
     await step('repay AQUSDC max', M.repayLoan(margin, 'AQUSDC', W(1000)));
     await step('repay BLUSDC max', M.repayLoan(margin, 'BLUSDC', W(1000)));
+    await step('repay XLM max', M.repayLoan(margin, 'XLM', W(1000)));
     await step('withdraw 500 XLM', M.withdrawCollateralBalance(margin, 'XLM', W(500)));
     const h = await M.getMarginHealth(margin);
     log('final health', h);

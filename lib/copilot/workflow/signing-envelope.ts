@@ -1,4 +1,4 @@
-import { BASE_FEE, Networks, Operation, Transaction, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
+import { BASE_FEE, Networks, Operation, SignerKey, Transaction, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
 import { SOROBAN_RPC_URL } from "@/lib/stellar-utils";
 import { ResearchError } from "../investigation/scope";
 
@@ -60,7 +60,8 @@ export async function refreshSigningEnvelope(unsignedXdr: string, wallet: string
     minAccountSequence: old.minAccountSequence,
     minAccountSequenceAge: old.minAccountSequenceAge,
     minAccountSequenceLedgerGap: old.minAccountSequenceLedgerGap,
-    extraSigners: old.extraSigners,
+    // SDK 16 returns extraSigners as xdr.SignerKey; the builder still takes StrKey strings.
+    extraSigners: old.extraSigners?.map((key) => SignerKey.encodeSignerKey(key)),
   });
   // Re-simulation must generate current auth, resource data and fees. Contract arguments
   // (including any explicit protocol deadline or slippage floor) remain byte-for-byte identical.

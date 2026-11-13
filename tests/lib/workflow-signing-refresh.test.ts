@@ -134,7 +134,7 @@ describe("safe signing recovery", () => {
   it("rejects a sequence consumed by another transaction while the wallet popup was open", async () => {
     await expect(checkSigningPreconditions(envelope().toXDR(), {
       getAccount: async () => new Account(wallet.publicKey(), "2"),
-      getLatestLedger: async () => ({ id: "ledger", sequence: 42, protocolVersion: "25" }),
+      getLatestLedger: async () => ({ id: "ledger", sequence: 42, protocolVersion: "25" }) as never,
     })).rejects.toThrow("account or ledger changed");
   });
 });
